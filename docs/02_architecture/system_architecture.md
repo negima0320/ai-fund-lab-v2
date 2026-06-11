@@ -66,7 +66,11 @@ AI Fund Lab vNext は、
 
 ---
 
-# 3. 全体フロー
+# 3. フロー
+
+## 3.1 Daily Decision Flow
+
+日次の投資判断フロー。
 
 ```text
 J-Quants API
@@ -89,6 +93,16 @@ Capital Allocation Engine
     ↓
 Safety Guard
     ↓
+Order Manager
+```
+
+---
+
+## 3.2 Execution Flow
+
+注文実行と口座同期のフロー。
+
+```text
 Order Manager
     ↓
 立花証券 API

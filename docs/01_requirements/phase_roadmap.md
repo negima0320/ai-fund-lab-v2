@@ -158,6 +158,52 @@ Feature Builder基盤
 
 ---
 
+Acceptance Criteria
+
+データ管理
+
+```text
+取得日を保存する
+
+対象日を保存する
+
+銘柄コードを保存する
+```
+
+重複防止
+
+```text
+同日再取得で重複しない
+```
+
+障害対応
+
+```text
+取得失敗をログに残す
+
+欠損をログに残す
+```
+
+データ分離
+
+```text
+Raw Data
+
+Feature Data
+
+Future Label Data
+```
+
+を分離する。
+
+セキュリティ
+
+```text
+APIキーをGit管理しない
+```
+
+---
+
 # 5. Phase2
 
 ## Broker Foundation

@@ -355,6 +355,18 @@ Position Management AI は未来を見ない。
 追加購入候補
 ```
 
+注意:
+
+```text
+ADD は買い増し命令ではない。
+
+ADD は買い増し候補シグナルである。
+
+最終的な購入可否、購入金額、保有上限判定は Capital Allocation Engine が行う。
+
+含み損ポジションへのナンピン目的ADDは禁止。
+```
+
 ---
 
 ## REDUCE
