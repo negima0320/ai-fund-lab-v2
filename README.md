@@ -5,6 +5,543 @@
 - [要件定義・設計ドキュメント](docs/README.md)
 - [システム構成の全体像](docs/ai-found-lab.png)
 
+## Phase1-A Data Foundation
+
+Phase1-A は AI 本体を作らず、J-Quants API から取得した市場データを保存し、後続の Feature Builder / Future Label Builder が使える土台を作る。
+
+### Runtime Storage
+
+生成物は原則としてプロジェクト直下の `.runtime/` に集約する。
+
+```text
+.runtime/
+  data/
+    raw/
+    features/
+    labels/
+  logs/
+  cache/
+  reports/
+  tmp/
+```
+
+`.runtime/` は削除可能な実行時ディレクトリであり、Git 管理しない。ローカルの取得データ、ログ、認証キャッシュ、レポート、実験成果物、tmp ファイルをリポジトリ各所に散らばらせない。
+
+保存先は環境変数で変更できる。
+
+```text
+AI_FUND_LAB_RUNTIME_DIR=.runtime
+AI_FUND_LAB_DATA_DIR=.runtime/data
+AI_FUND_LAB_LOG_DIR=.runtime/logs
+AI_FUND_LAB_CACHE_DIR=.runtime/cache
+AI_FUND_LAB_REPORT_DIR=.runtime/reports
+AI_FUND_LAB_TMP_DIR=.runtime/tmp
+```
+
+未指定の場合、`AI_FUND_LAB_RUNTIME_DIR` 配下に集約される。コードから保存先を使う場合は `RuntimePaths` を経由する。
+
+### Data Layers
+
+`MarketDataStore` は保存責務を以下に分離する。
+
+```text
+Raw Data:
+  .runtime/data/raw/
+
+Feature Data:
+  .runtime/data/features/
+
+Future Label Data:
+  .runtime/data/labels/
+```
+
+保存時には `fetched_at`, `target_date`, `code`, `source`, `endpoint` を持たせる。同じ `target_date + code + endpoint` の再保存は upsert として扱い、既存レコードを置き換えて重複を作らない。
+
+`future_return_*`, `future_max_return_*`, `future_max_drawdown_*` は Feature Data ではなく Future Label Data に保存する。推論 feature には使わない。
+
+### J-Quants Credentials
+
+J-Quants V2 API を前提にする。API キーなどの認証情報は `.env` または環境変数で管理し、Git 管理しない。
+
+```text
+JQUANTS_API_KEY=
+JQUANTS_BASE_URL=https://api.jquants.com
+JQUANTS_RATE_LIMIT_PER_MINUTE=60
+JQUANTS_TIMEOUT_SECONDS=30
+```
+
+`.env.example` は雛形として Git 管理するが、実値を入れた `.env` / `.env.*` は Git 管理しない。
+
+### Commands
+
+```bash
+python3 -m pytest
+python3 scripts/storage_report.py
+python3 scripts/storage_report.py --runtime-dir .runtime
+```
+
+`scripts/storage_report.py` は `.runtime/data/raw`, `.runtime/data/features`, `.runtime/data/labels`, `logs`, `cache`, `reports`, `tmp` の容量を表示する。
+
+## Phase1-B J-Quants Raw Fetch
+
+Phase1-B では Light プランで利用可能な J-Quants V2 raw endpoint の取得ユースケースを追加する。AI 本体、broker 連携、注文機能はまだ実装しない。
+
+### Supported Endpoints
+
+```text
+daily_quotes:
+  GET /v2/equities/bars/daily
+  output: .runtime/data/raw/jquants/equities_bars_daily/data.jsonl
+
+listed_issues:
+  GET /v2/equities/master
+  output: .runtime/data/raw/jquants/listed_issues/data.jsonl
+
+trading_calendar:
+  GET /v2/markets/calendar
+  output: .runtime/data/raw/jquants/trading_calendar/data.jsonl
+
+fins_summary:
+  GET /v2/fins/summary
+  output: .runtime/data/raw/jquants/fins_summary/data.jsonl
+```
+
+### Daily Fetch CLI
+
+```bash
+python3 scripts/fetch_jquants_daily.py --endpoint daily_quotes --date 2026-06-01
+python3 scripts/fetch_jquants_daily.py --endpoint all --from-date 2026-06-01 --to-date 2026-06-30
+python3 scripts/fetch_jquants_daily.py --endpoint all --date 2026-06-01 --dry-run --runtime-dir .runtime
+```
+
+`--dry-run` は実 API 取得も保存も行わず、取得予定 endpoint、対象日、保存先だけを表示する。実行ログは `.runtime/logs/` 配下に出す。
+
+### Pagination Policy
+
+J-Quants response に `pagination_key` が含まれる場合、次 request に `pagination_key` を付与して続きのページを取得する。無限ループ防止のため `--max-pages` を設定できる。pagination 中の失敗は endpoint、target date、取得済みページ数を runtime log に記録する。API key や token はログに出さない。
+
+### Missing Data Log Policy
+
+`daily_quotes` が空だった場合は、欠損または非営業日の可能性として `.runtime/logs/jquants_ingestion.log` に記録する。Phase1-B では厳密な品質判定までは行わず、後続で trading calendar と組み合わせて WARNING / INFO を精緻化する。
+
+### Rate Limit Policy
+
+J-Quants Light プランの基本 rate limit である `60 req/min` を `JQUANTS_RATE_LIMIT_PER_MINUTE` のデフォルトにする。429 を受けた場合は rate limit handling に入り、テストでは sleep を mock して長時間待機しない。
+
+## Phase1-B-LiveSmoke
+
+実 API の疎通確認は通常 pytest から分離し、明示的な手動 CLI のみで行う。`python3 -m pytest` は mock のみで実 API を呼ばない。
+
+### Smoke Dry Run
+
+```bash
+python3 scripts/smoke_jquants_api.py --endpoint all --date 2026-06-01 --from-date 2026-06-01 --to-date 2026-06-07 --max-pages 1 --dry-run --runtime-dir .runtime
+```
+
+dry-run は実 API 取得も保存も行わず、endpoint、parameter、runtime 保存先、rate limit、max_pages を表示する。
+
+### Smoke Live Commands
+
+```bash
+python3 scripts/smoke_jquants_api.py --endpoint daily_quotes --date 2026-06-01 --max-pages 1
+python3 scripts/smoke_jquants_api.py --endpoint listed_issues --date 2026-06-01 --max-pages 1
+python3 scripts/smoke_jquants_api.py --endpoint trading_calendar --from-date 2026-06-01 --to-date 2026-06-07 --max-pages 1
+python3 scripts/smoke_jquants_api.py --endpoint fins_summary --date 2026-06-01 --max-pages 1
+python3 scripts/smoke_jquants_api.py --endpoint all --date 2026-06-01 --from-date 2026-06-01 --to-date 2026-06-07 --max-pages 1
+```
+
+実行時は `JQUANTS_API_KEY` を `.env` または環境変数から読む。API key、token、Authorization、x-api-key の値は stdout/stderr/log に出さない。取得結果は Phase1-B の raw ingestion 経由で `.runtime/data/raw/jquants/` 配下へ保存する。
+
+## Phase1-C Raw Reliability
+
+Phase1-C では J-Quants raw data の信頼性を上げるため、取引カレンダーに基づく営業日判定、取得計画の自動生成、raw 欠損検査レポートを追加する。AI 本体、feature 計算、label 生成、backtest、paper trading、broker / order 連携には進まない。
+
+### Trading Calendar Service
+
+`.runtime/data/raw/jquants/trading_calendar/data.jsonl` を読み、`HolDiv == "1"` を営業日として扱う。
+
+```text
+is_business_day(date)
+list_business_days(from_date, to_date)
+previous_business_day(date)
+next_business_day(date)
+```
+
+calendar raw が未取得の場合は、先に `trading_calendar` を取得する必要があることを示すエラーにする。
+
+### Fetch Plan Policy
+
+```text
+daily_quotes:
+  営業日ごとに取得する。非営業日は skip し INFO log に残す。
+
+trading_calendar:
+  from_date から to_date までを range 指定で取得する。
+
+listed_issues:
+  指定 date、期間指定時は to_date の snapshot を取得する。
+
+fins_summary:
+  営業日ごとに取得する。ただし開示がない日は異常とは限らないため、空でも即 ERROR にしない。
+```
+
+dry-run では fetch plan を表示する。
+
+```bash
+python3 scripts/fetch_jquants_daily.py --endpoint daily_quotes --from-date 2026-06-01 --to-date 2026-06-07 --dry-run --runtime-dir .runtime
+```
+
+### Raw Quality Check
+
+```bash
+python3 scripts/check_jquants_raw_quality.py --endpoint all --from-date 2026-06-01 --to-date 2026-06-07 --runtime-dir .runtime --output both
+```
+
+レポート保存先:
+
+```text
+.runtime/reports/jquants_raw_quality/
+```
+
+判定の意味:
+
+```text
+OK:
+  対象期間の期待データが揃っている、または fins_summary のように空が通常あり得る。
+
+WARNING:
+  営業日の daily_quotes が欠損、対象日の listed_issues が欠損、calendar raw が不足、duplicate key がある。
+
+ERROR:
+  Phase1-Cでは原則未使用。将来、破損ファイルや読み取り不能などで導入する。
+```
+
+レポート、ログ、raw data は `.runtime` 配下に集約する。API key、token、Authorization、x-api-key の値は stdout/stderr/log/report に出さない。
+
+## Phase1-D Raw Store Hardening
+
+Phase1-D では Raw Data Store を堅牢化する。保存抽象、schema validation、再取得 diff、manifest を追加する。AI 本体、feature 計算、label 生成、backtest、paper trading、broker / order 連携には進まない。
+
+### Raw Storage Backend
+
+Raw storage は backend 抽象を経由する。
+
+```text
+AI_FUND_LAB_RAW_STORAGE_FORMAT=jsonl
+```
+
+デフォルトは `jsonl`。Parquet は Phase1-D では interface と明確な未対応エラーまでに留める。理由は `pandas` / `pyarrow` 依存をこの段階で増やすと Data Foundation の初期検証が重くなるため。後続で schema が安定してから `parquet` backend を有効化する。
+
+### Endpoint Schemas
+
+```text
+daily_quotes:
+  required: Date, Code, O, H, L, C, Vo
+  business key: Date + Code
+  empty on business day: WARNING
+  required欠損: ERROR
+
+listed_issues:
+  required: Date, Code, CoName, Mkt
+  business key: Date + Code
+  snapshot型
+
+trading_calendar:
+  required: Date, HolDiv
+  business key: Date
+  HolDiv == "1" を営業日扱い
+
+fins_summary:
+  required: DiscDate, Code
+  business key: DiscDate + Code
+  空の日があっても即 ERROR にしない
+```
+
+Validation result は `OK / WARNING / ERROR` を返す。required field 欠損や key 欠損は `ERROR`、duplicate key や型正規化警告は `WARNING` とする。ERROR でも自動削除はしない。まず report / log / manifest で可視化する。
+
+### Re-run / Diff Policy
+
+再実行時のデフォルトは安全な upsert。`target_date + business_key + endpoint` で重複を作らず、同じ key は置き換える。自動削除や危険な replace は Phase1-D では導入しない。再取得時は以下を diff summary として残す。
+
+```text
+record_count_before
+record_count_after
+inserted_count
+updated_count
+unchanged_count
+deleted_or_missing_count
+duplicate_key_count
+changed_keys_sample
+```
+
+### Raw Manifest
+
+取得 manifest は以下に追記保存する。
+
+```text
+.runtime/data/raw/jquants/manifest.jsonl
+```
+
+manifest には `fetched_at`, `endpoint`, `target_date`, `from_date`, `to_date`, `record_count`, `storage_format`, `storage_path`, `status`, `validation_status`, `diff_summary`, sanitized `request_params` を保存する。API key、token、Authorization、x-api-key の値は保存しない。
+
+### CLI Additions
+
+`fetch_jquants_daily.py --dry-run` は保存形式、manifest予定、validation予定を表示する。実保存後は validation summary と diff summary を表示し、manifest を更新する。
+
+`check_jquants_raw_quality.py` の markdown/json report には validation summary も含める。
+
+## Phase1-E Raw Store Operations
+
+Phase1-E では Parquet backend、schema versioning、JSONL から Parquet への安全移行、manifest 表示と再取得対象抽出を追加する。通常 pytest は実 API を呼ばない。
+
+### Parquet Backend
+
+`pandas` / `pyarrow` を利用して Parquet 保存を有効化する。
+
+```bash
+AI_FUND_LAB_RAW_STORAGE_FORMAT=parquet python3 scripts/fetch_jquants_daily.py --endpoint daily_quotes --date 2026-06-01
+```
+
+保存先例:
+
+```text
+.runtime/data/raw/jquants/equities_bars_daily/data.parquet
+.runtime/data/raw/jquants/listed_issues/data.parquet
+.runtime/data/raw/jquants/trading_calendar/data.parquet
+.runtime/data/raw/jquants/fins_summary/data.parquet
+```
+
+JSONL の既存動作は維持する。`.parquet` は Git 管理しない。
+
+### Schema Versioning
+
+全 endpoint schema は `schema_version=1` から開始する。schema version は validation result、manifest、quality report に出力する。将来 schema を変更する場合は version を上げ、manifest でどの schema で保存・検査されたか追跡する。
+
+### JSONL to Parquet Migration
+
+移行は元 JSONL を削除しない安全移行とする。
+
+```bash
+python3 scripts/migrate_raw_storage.py --endpoint all --from-format jsonl --to-format parquet --runtime-dir .runtime --dry-run --validate
+python3 scripts/migrate_raw_storage.py --endpoint all --from-format jsonl --to-format parquet --runtime-dir .runtime --validate
+```
+
+実行時は record count と validation を確認し、manifest に `MIGRATED` event を追記する。
+
+### Manifest CLI
+
+```bash
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --latest --format table
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --needs-refetch --format table
+```
+
+`--needs-refetch` は `validation_status != OK`、`status == ERROR`、`record_count == 0` などから再取得候補を表示する。実 API 再取得は行わない。
+
+Manifest と report には API key、token、Authorization、x-api-key の値を出さない。
+
+## Phase1-F Raw Operations Check
+
+Phase1-F では運用前点検として validation drilldown、refetch plan、Parquet readiness、manifest filter/summary を追加する。実 API は呼ばず、raw data と manifest/report の検査だけを行う。
+
+### Validation Drilldown
+
+```bash
+python3 scripts/inspect_raw_validation.py --endpoint daily_quotes --runtime-dir .runtime --storage-format parquet --limit 20 --output table
+python3 scripts/inspect_raw_validation.py --endpoint daily_quotes --runtime-dir .runtime --storage-format parquet --output markdown --save-report
+```
+
+daily_quotes schema v1 の field mapping:
+
+```text
+Date -> Date
+Code -> Code
+O -> O / Open / AdjustmentOpen / AdjO
+H -> H / High / AdjustmentHigh / AdjH
+L -> L / Low / AdjustmentLow / AdjL
+C -> C / Close / AdjustmentClose / AdjC
+Vo -> Vo / Volume / AdjustmentVolume / AdjVo
+```
+
+現在の daily_quotes validation=ERROR は、schema v1 が `O/H/L/C/Vo` を required としている一方、実 raw の一部 record で unadjusted 側が null になっているため。`AdjO/AdjH/AdjL/AdjC/AdjVo` には値がある record があるため、schema v2 で adjusted fields を正式に primary にするか、v1 strict schema のまま upstream 欠損として扱うかを次フェーズで決める。Phase1-F では ERROR を安易に OK 扱いしない。
+
+価格 0 は欠損ではなく値として扱う。null / 空文字は欠損扱い。
+
+### Refetch Plan
+
+```bash
+python3 scripts/build_jquants_refetch_plan.py --endpoint all --from-date 2026-06-01 --to-date 2026-06-07 --runtime-dir .runtime --reason all --output markdown --dry-run
+```
+
+priority:
+
+```text
+daily_quotes 営業日欠損: HIGH
+trading_calendar 欠損: HIGH
+listed_issues 欠損: MEDIUM
+fins_summary 空日: LOW
+```
+
+この CLI は実 API を呼ばず、suggested command を出すだけ。
+
+### Parquet Readiness
+
+```bash
+python3 scripts/check_parquet_readiness.py --runtime-dir .runtime
+```
+
+READY 条件:
+
+```text
+jsonl/parquet record_count 一致
+schema validation status 一致
+latest manifest が parquet
+migration event が manifest にある
+parquet が .runtime/data/raw 配下
+pandas / pyarrow が利用可能
+secret leak なし
+```
+
+Parquet infrastructure が READY でも、daily_quotes schema validation ERROR が残る場合は、Parquet 既定化前に schema v2 方針を確認する。
+
+### Manifest Filter / Summary
+
+```bash
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --summary
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --validation-status ERROR --storage-format parquet
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --needs-refetch
+```
+
+manifest / report / log には API key、token、Authorization、x-api-key の値を出さない。
+
+## Phase1-G Daily Quotes Normalized Raw
+
+Phase1-G では `daily_quotes` raw schema v1 を変更せず、後続処理が使いやすい normalized raw schema v2 を別レイヤーに追加する。これは feature 計算でも label 生成でもなく、raw data foundation の正規化層である。AI 本体、broker 連携、注文機能には進まない。
+
+### 保存先
+
+raw は引き続き以下に保存する。
+
+```text
+.runtime/data/raw/jquants/equities_bars_daily/
+```
+
+normalized raw は raw と分離して以下に保存する。
+
+```text
+.runtime/data/raw_normalized/jquants/equities_bars_daily/data.parquet
+.runtime/data/raw_normalized/jquants/equities_bars_daily/data.jsonl
+```
+
+`.runtime/data/raw_normalized` は `.runtime` 配下の削除可能な生成物であり、Git 管理しない。
+
+### Daily Quotes Normalized Schema v2
+
+必須フィールド:
+
+```text
+Date
+Code
+Open
+High
+Low
+Close
+Volume
+PriceSource
+SchemaVersion
+```
+
+business key は `Date + Code`。`SchemaVersion` は `2`。
+
+正規化方針:
+
+```text
+AdjO/AdjH/AdjL/AdjC/AdjVo が揃っている場合:
+  Open/High/Low/Close/Volume = AdjO/AdjH/AdjL/AdjC/AdjVo
+  PriceSource = adjusted
+
+調整後フィールドが揃わず、O/H/L/C/Vo が揃っている場合:
+  Open/High/Low/Close/Volume = O/H/L/C/Vo
+  PriceSource = unadjusted
+
+どちらも揃わない場合:
+  normalized output から除外し、normalization report の ERROR sample に記録する
+```
+
+null / 空文字の price・volume は `ERROR`。price 0 / volume 0 は欠損ではないが `WARNING` として検査対象にする。
+
+### Normalize CLI
+
+```bash
+python3 scripts/normalize_jquants_raw.py --endpoint daily_quotes --runtime-dir .runtime --input-format auto --output-format parquet --dry-run --validate
+python3 scripts/normalize_jquants_raw.py --endpoint daily_quotes --runtime-dir .runtime --input-format parquet --output-format parquet --validate
+python3 scripts/normalize_jquants_raw.py --endpoint daily_quotes --runtime-dir .runtime --input-format jsonl --output-format jsonl --validate --limit-errors 20
+```
+
+`--dry-run` は実 API を呼ばず、保存も manifest 更新もしない。通常実行時も実 API は呼ばず、既存 raw file を読み込んで normalized raw を生成する。
+
+### Manifest
+
+正規化実行時は `.runtime/data/raw/jquants/manifest.jsonl` に `NORMALIZED` event を追記する。
+
+```text
+event_type=NORMALIZED
+source_endpoint=/v2/equities/bars/daily
+normalized_endpoint=daily_quotes_normalized
+raw_schema_version=1
+normalized_schema_version=2
+input_storage_format
+output_storage_format
+input_record_count
+output_record_count
+validation_status
+normalization_report
+storage_path
+```
+
+request params は sanitized して保存する。API key、token、Authorization、x-api-key の値は manifest / stdout / stderr / report / log に出さない。
+
+### Quality Report
+
+`scripts/check_jquants_raw_quality.py` は `daily_quotes` について raw schema v1 と normalized schema v2 の status を分けて表示する。
+
+```bash
+python3 scripts/check_jquants_raw_quality.py --endpoint daily_quotes --from-date 2026-06-01 --to-date 2026-06-07 --runtime-dir .runtime --output both
+```
+
+raw v1 が `ERROR` でも、normalized v2 が `OK` であれば、raw の原本性を保ったまま後続の Data Foundation に進める状態として扱える。ただし raw v1 の ERROR は隠さず、品質レポート上に残す。
+
+## Phase1-H Final Audit
+
+Phase1-H は Phase1 の最終監査、daily_quotes 正規化除外レコードの品質分類、Phase2 への引き継ぎ資料作成を行う。新しい AI、feature 本体、future label、backtest、paper trading、broker/order は実装しない。
+
+Phase1 の完了レポート:
+
+```text
+docs/phase_reports/phase1_completion_report.md
+.runtime/reports/phase1_final/phase1_completion_report.md
+```
+
+主要CLI:
+
+```bash
+python3 scripts/inspect_daily_quote_exclusions.py --runtime-dir .runtime --save-report
+python3 scripts/audit_phase1_completion.py --runtime-dir .runtime
+python3 scripts/write_phase1_completion_report.py --runtime-dir .runtime
+python3 scripts/storage_report.py --runtime-dir .runtime
+python3 scripts/check_jquants_raw_quality.py --endpoint all --from-date 2026-06-01 --to-date 2026-06-07 --runtime-dir .runtime
+python3 scripts/show_jquants_manifest.py --endpoint all --runtime-dir .runtime --summary
+python3 scripts/check_parquet_readiness.py --runtime-dir .runtime
+```
+
+Phase2へ進む前の注意:
+
+```text
+Phase2のfeature builderは daily_quotes_normalized を読む。
+raw daily_quotes v1 は原本証跡として残す。
+正規化から除外されたdaily_quotes recordは、根拠ある品質ルールができるまでfeature/AI入力へ混入させない。
+future_return_* は引き続きlabel専用でありfeatureに入れない。
+```
+
 ## プロジェクトの目的
 
 AI Fund Lab の目的は、AIを活用した株式売買システムを構築し、

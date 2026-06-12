@@ -41,3 +41,13 @@ AI Fund Lab vNext の要件定義、設計方針、AI設計をまとめたドキ
 ## Diagram
 
 - [System Overview](ai-found-lab.png)
+
+## vNext Phase1 Data Foundation Notes
+
+- Phase1-G adds `daily_quotes_normalized` raw schema v2 without modifying raw schema v1.
+- Raw data remains under `.runtime/data/raw/jquants/`; normalized raw is written under `.runtime/data/raw_normalized/jquants/`.
+- `scripts/normalize_jquants_raw.py --endpoint daily_quotes --dry-run` shows the normalization plan without API calls, saves, or manifest writes.
+- Normalized daily quotes prefer `AdjO/AdjH/AdjL/AdjC/AdjVo`; if those are incomplete, they fall back to `O/H/L/C/Vo`.
+- `check_jquants_raw_quality.py` reports raw v1 and normalized v2 statuses separately.
+- API keys and tokens must stay in `.env` or environment variables and must not appear in stdout, logs, reports, or manifest.
+- Phase1-H final handoff report: [Phase1 Completion Report](phase_reports/phase1_completion_report.md).
