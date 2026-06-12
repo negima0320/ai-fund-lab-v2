@@ -6,9 +6,11 @@
 
 このドキュメントは、AI Fund Lab vNext の Candidate AI が利用する特徴量候補を定義する。
 
-Phase2-A では設計のみを行う。特徴量実装、学習データ生成、future label 生成、AI 学習、backtest、paper trading、broker 連携、注文機能は行わない。
+Phase2-A では先行設計として特徴量候補を整理した。Phase4-A では正式ロードマップ上の `Candidate AI vNext` 開始に合わせて、このcatalogをCandidate AI設計の参照資料として再確認する。
 
-目的は、Phase3 の Training Data Design に進む前に、Candidate AI が何を観測し、何を観測してはいけないかを固定することである。
+Phase4-A では設計のみを行う。特徴量実装、学習データ生成、future label 生成、AI 学習、推論処理、backtest、paper trading、broker 連携、注文機能は行わない。
+
+目的は、Phase4-B 以降の Training Data Design に進む前に、Candidate AI が何を観測し、何を観測してはいけないかを固定することである。
 
 ---
 
@@ -51,7 +53,7 @@ Candidate AI の出力は `candidate_list`, `candidate_score`, `candidate_reason
 
 # 3. 利用可能データ
 
-Phase2-A で想定する利用可能データは以下である。
+Phase4-A で想定する利用可能データは以下である。
 
 ```text
 J-Quants daily quotes normalized raw
@@ -92,7 +94,7 @@ J-Quants fins summary
   同一業種内の相対モメンタム
 ```
 
-daily quotes は Phase1-G で作成した `daily_quotes_normalized` を読む。raw v1 は原本証跡として残すが、Phase2 の特徴量入力には原則として normalized raw を使う。
+daily quotes は Phase1で作成した `daily_quotes_normalized` を読む。raw v1 は原本証跡として残すが、Candidate AI の特徴量入力には原則として normalized raw を使う。
 
 ---
 
@@ -285,30 +287,34 @@ Phase1-Hで確認された daily_quotes 正規化除外recordは、OHLCV/adjuste
 
 ---
 
-# 9. Phase2-Aでやらないこと
+# 9. Phase4-Aでやらないこと
 
-Phase2-Aでは以下を行わない。
+Phase4-Aでは以下を行わない。
 
 ```text
 feature計算実装
 future_return_* label生成
 AI学習
+推論処理
 期待値ランキング作成
 利益予測
 backtest
+Historical Evaluation
 paper trading
 broker連携
 注文機能
 Opportunity AI実装
 Position Management AI実装
 Capital Allocation実装
+Order Manager実装
+Portfolio自動更新
 ```
 
 ---
 
-# 10. Phase2-A完了条件
+# 10. Phase4-A完了条件
 
-Phase2-Aは以下を満たせば完了とする。
+Phase4-Aは以下を満たせば完了とする。
 
 ```text
 candidate_feature_catalog.md が存在する
@@ -316,14 +322,15 @@ Candidate AIの責務から逸脱していない
 Opportunity AIの責務と混ざっていない
 featureごとにleakage確認がある
 使用禁止データが明記されている
-Phase3でTraining Data Designに進める
+daily_quotes_normalized 利用前提が明記されている
+Phase4-BでTraining Data Designに進める
 ```
 
 ---
 
-# 11. Phase3への引き継ぎ
+# 11. Phase4-Bへの引き継ぎ
 
-Phase3で決めること:
+Phase4-Bで決めること:
 
 ```text
 feature table の物理保存先とschema
@@ -339,4 +346,4 @@ candidate_score の意味と校正方法
 候補数を50銘柄程度に制御する方法
 ```
 
-Phase3では、このcatalogをもとに Training Data Design を作る。ただし、future系はlabelとしてのみ扱い、Candidate AIのfeatureには混入させない。
+Phase4-Bでは、このcatalogをもとに Training Data Design を作る。ただし、future系はlabelとしてのみ扱い、Candidate AIのfeatureには混入させない。

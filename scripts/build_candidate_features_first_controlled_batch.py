@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from ai_fund_lab_v2.candidate_ai import build_first_controlled_batch_summary  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Execute the Phase4-S first controlled Candidate feature batch.")
+    parser.add_argument("--runtime-dir", default=".runtime")
+    parser.add_argument("--report-dir", default="reports/candidate_ai/full_range")
+    parser.add_argument("--input-format", choices=("auto", "jsonl", "parquet"), default="auto")
+    parser.add_argument("--max-codes-per-chunk", type=int, default=30)
+    parser.add_argument("--max-chunks-to-execute", type=int, default=2)
+    parser.add_argument("--data-source-type", choices=("mock", "real_runtime", "skipped"), default=None)
+    parser.add_argument("--run-id", default=None)
+    args = parser.parse_args(argv)
+    summary = build_first_controlled_batch_summary(
+        runtime_dir=args.runtime_dir,
+        report_dir=args.report_dir,
+        input_format=args.input_format,
+        max_codes_per_chunk=args.max_codes_per_chunk,
+        max_chunks_to_execute=args.max_chunks_to_execute,
+        data_source_type=args.data_source_type,
+        run_id=args.run_id,
+    )
+    print(json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True))
+    return 0 if summary["status"] in {"OK", "BLOCKED", "SKIPPED"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
