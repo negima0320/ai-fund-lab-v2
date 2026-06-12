@@ -76,11 +76,11 @@ Phase2 feature builders should read normalized raw, not raw v1 daily quotes dire
 
 ## Daily Quote Exclusion Policy
 
-- raw daily_quotes records: 4449
-- normalized daily_quotes records: 4231
-- excluded records: 218
-- missing patterns: `{'all_ohlcv_and_adjusted_ohlcv_missing': 218}`
-- estimated reasons: `{'unknown_no_price_volume': 218}`
+- raw daily_quotes records: 2
+- normalized daily_quotes records: 1
+- excluded records: 1
+- missing patterns: `{'all_ohlcv_and_adjusted_ohlcv_missing': 1}`
+- estimated reasons: `{'unknown_not_joined_to_listed_issues': 1}`
 
 Do not treat excluded records as normal without a market-data reason. Keep raw v1 unchanged, keep excluded records out of normalized raw, and investigate unknown/no-price-volume records before Phase2 features.
 
@@ -118,8 +118,8 @@ The normal test suite uses mocks and fixtures and does not call the live J-Quant
 
 ## Completion Decision
 
-- audit_status: WARNING
-- decision: 条件付き完了
+- audit_status: NG
+- decision: 未完了
 
 Phase1 can be treated as conditionally complete when normalized raw is used as the Phase2 input and the excluded daily quote records remain excluded until a later quality rule justifies inclusion.
 

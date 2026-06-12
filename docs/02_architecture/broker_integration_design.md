@@ -190,6 +190,138 @@ Order Managerは、
 
 ---
 
+## Phase2 Broker Foundation の範囲
+
+Phase2 Broker Foundation では、将来の立花証券 API 接続に備えた Broker interface、Tachibana request/response stub、mock transport、read-only client skeleton、正規化snapshot保存形式を作る。
+
+現時点では立花証券の契約が未完了のため、Phase2では実API接続を行わない。
+
+対象:
+
+```text
+Broker interface設計
+
+Tachibana API request/response stub
+
+mock transport
+
+read-only client skeleton
+
+balance / positions / orders の正規化model設計
+
+broker snapshot保存形式
+
+将来live接続するための安全ガード
+```
+
+禁止:
+
+```text
+実API login
+
+実API logout
+
+実API read smoke
+
+live接続CLI
+
+新規注文
+
+売却注文
+
+取消注文
+
+訂正注文
+
+実売買
+
+第二パスワード利用
+
+実口座情報取得
+
+AI判断との接続
+```
+
+Phase2 の完了条件は、実APIなしで broker sync の流れをmockで再現でき、balance / positions / orders のstub responseを正規化し、normalized snapshotを `.runtime/broker/` に保存できることとする。Portfolio Stateは更新せず、その直前のinputとして使える形までをPhase2範囲にする。
+
+## 立花証券 API 候補
+
+公式リファレンス `e_api_v4r9` で確認する Phase2 候補は以下。
+
+```text
+CLMAuthLoginRequest:
+  ログインstub。sAuthIdを含むpayload形を固定するが、Phase2では実loginしない。
+
+CLMAuthLogoutRequest:
+  ログアウトstub。payload形を固定するが、Phase2では実logoutしない。
+
+CLMZanKaiSummary:
+  可能額サマリー。現物株式買付可能額、信用新規建可能額、出金可能額などを取得する候補。
+
+CLMZanKaiKanougaku:
+  買余力。株式現物買付可能額などを取得する候補。
+
+CLMGenbutuKabuList:
+  現物保有銘柄一覧。指定なしで全保有銘柄を取得する。
+
+CLMShinyouTategyokuList:
+  信用建玉一覧。指定なしで全信用建玉を取得する。
+
+CLMOrderList:
+  注文一覧。銘柄コード、注文執行予定日、注文照会状態で任意絞り込み可能。
+
+CLMOrderListDetail:
+  注文約定一覧詳細。Phase2では必要に応じて調査対象に留める。
+```
+
+Phase2 最小実装では `CLMZanKaiSummary`, `CLMGenbutuKabuList`, `CLMShinyouTategyokuList`, `CLMOrderList` のstub responseを中心に扱う。注文入力系の `CLMKabuNewOrder`, `CLMKabuCorrectOrder`, `CLMKabuCancelOrder` は実装しない。
+
+## 正規化snapshot
+
+Phase2-B4では、mock responseを以下の中間形式へ正規化する。
+
+```text
+BrokerBalanceSnapshot
+BrokerPositionSnapshot
+BrokerOrderSnapshot
+```
+
+正規化modelには raw response そのものを混入させない。保持するのは `raw_clmid`, `raw_result_code`, warning などの最小メタ情報に限定する。account id、URL、token、password、auth id、第二パスワードは保存しない。
+
+保存先は以下に限定する。
+
+```text
+.runtime/broker/snapshots/balance/
+.runtime/broker/snapshots/positions/
+.runtime/broker/snapshots/orders/
+```
+
+snapshot は JSON で保存し、同時に簡易 manifest JSON を保存する。この出力は Portfolio State 更新前の input として扱い、Phase2 では Portfolio State を更新しない。
+
+## Mock Broker Sync
+
+Phase2-B5では、mock clientから以下を順番に取得し、normalizerとsnapshot writerへ接続する。
+
+```text
+CLMZanKaiSummary
+CLMZanKaiKanougaku
+CLMGenbutuKabuList
+CLMShinyouTategyokuList
+CLMOrderList
+```
+
+sync結果は `BrokerSyncResult` として返す。これは Portfolio State 更新前のinputであり、Phase2ではPortfolio Stateを変更しない。
+
+mock sync CLI は以下のみを許可する。
+
+```bash
+PYTHONPATH=src python3 -m ai_fund_lab_v2.cli.broker_sync --mode mock --runtime-dir .runtime
+```
+
+`--mode live` は提供しない。実API接続、login/logout実行、live smoke CLI、発注系APIはPhase2範囲外とする。
+
+---
+
 ## 更新タイミング
 
 最低

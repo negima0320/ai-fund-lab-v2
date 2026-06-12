@@ -34,6 +34,7 @@ AI Fund Lab vNext の要件定義、設計方針、AI設計をまとめたドキ
 ## 03_ai_design
 
 - [Candidate AI Design](03_ai_design/candidate_ai_design.md)
+- [Candidate Feature Catalog](03_ai_design/candidate_feature_catalog.md)
 - [Opportunity AI Design](03_ai_design/opportunity_ai_design.md)
 - [Position Management AI Design](03_ai_design/position_management_ai_design.md)
 - [Capital Allocation Design](03_ai_design/capital_allocation_design.md)
@@ -51,3 +52,4 @@ AI Fund Lab vNext の要件定義、設計方針、AI設計をまとめたドキ
 - `check_jquants_raw_quality.py` reports raw v1 and normalized v2 statuses separately.
 - API keys and tokens must stay in `.env` or environment variables and must not appear in stdout, logs, reports, or manifest.
 - Phase1-H final handoff report: [Phase1 Completion Report](phase_reports/phase1_completion_report.md).
+- Phase2 Broker Foundation plan: [Phase2 Broker Foundation Plan](phase_reports/phase2_broker_foundation_plan.md).
