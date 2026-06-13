@@ -154,6 +154,7 @@ def test_jquants_pagination_failure_logs_endpoint_target_and_pages_without_secre
     payloads: list[Any] = [
         {"data": [{"Date": "2026-06-01", "Code": "11110"}], "pagination_key": "page-2"},
         make_http_error(500),
+        make_http_error(500),
     ]
     secret = "pagination-secret"
 
@@ -241,7 +242,7 @@ def test_jquants_client_handles_429_with_mocked_sleep_and_no_secret_leak(tmp_pat
         client.get_daily_quotes(code="72030", date="2026-06-01")
 
     assert "rate limit exceeded" in str(exc_info.value)
-    assert sleep_calls == [1.0]
+    assert sleep_calls == [60.0]
     assert_no_secret_leaked(tmp_path, secret, str(exc_info.value))
 
 

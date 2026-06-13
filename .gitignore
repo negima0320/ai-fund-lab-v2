@@ -4,6 +4,8 @@
 
 .runtime/
 data/
+!src/ai_fund_lab_v2/data/
+!src/ai_fund_lab_v2/data/*.py
 logs/
 cache/
 tmp/
