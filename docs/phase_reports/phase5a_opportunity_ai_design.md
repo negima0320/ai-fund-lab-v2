@@ -4,530 +4,645 @@
 
 ## 1. 目的
 
-この資料は、Phase5 Opportunity AI vNext の実装前設計を定義する。
+この資料は、AI Fund Lab vNext Phase5 Opportunity AI の実装前設計を定義する。
 
-Phase4 Candidate AI は、全銘柄からモメンタム候補 Top50 を抽出する候補抽出器として成立した。一方で、Candidate score は買い順位としては不十分であり、Top50 には大きく上昇する候補と大きく下落する候補が混在する。
+Phase4 Candidate AI は、全銘柄から上昇候補 Top50 を抽出する目的を達成した。Phase5 では、その Candidate Top50 を入力として、候補銘柄の期待値を判定し、期待値が高い買い候補を 5 銘柄程度へ順位付けする。
 
-Phase5-A の目的は、実装・学習・推論に進む前に、Opportunity AI の責務、入力、出力、label、feature、評価指標、leakage guardrail を固定することである。
+Opportunity AI は「地雷除去専用AI」ではない。主責務は、Candidate 群の中から最も期待値が高い銘柄を選ぶことである。downside risk、drawdown、no_buy_reason は、期待値評価を構成するリスク評価要素として扱う。
 
-## 2. Phase5 の責務
+Phase5-A では設計のみを行う。実装、学習、推論、backtest、Paper Trading、Broker API、発注、資金配分、promotion、reader switch は行わない。
+
+## 2. Opportunity AI の責務
 
 Opportunity AI がやること:
 
 ```text
-Candidate Top50 から Opportunity TopN を選ぶ
-downside / drawdown risk が高い候補を落とす
-一時的な吹き上げ候補と持続上昇候補を分ける
-candidate_score を上流 prior として扱う
-market regime に応じて絞り込み強度を変える
-買い検討に進める候補の順位と理由を出す
+Candidate AI が抽出した候補50銘柄を順位付けする
+Candidate 群の中で期待値を比較する
+期待値が高い買い候補5銘柄程度へ絞る
+expected_edge_score を出す
+buy_rank を出す
+expected_return_horizon を出す
+downside_risk_score を出す
+buy_reason / no_buy_reason を出す
 ```
 
 Opportunity AI がやらないこと:
 
 ```text
-全銘柄から候補を探す
-購入株数を決める
-購入金額を決める
-保有継続を判断する
-売却を判断する
-発注する
-Broker API を呼ぶ
-Portfolio を更新する
-Paper Trading を行う
-Annual Return を評価する
+全銘柄から候補を抽出しない
+保有継続を判断しない
+売却を判断しない
+購入株数を決めない
+購入金額を決めない
+資金配分をしない
+発注しない
+Broker API を呼ばない
+Paper Trading を行わない
+Portfolio を更新しない
+Annual Return / final_assets を評価しない
 ```
 
-責務境界:
+Opportunity AI の問い:
 
 ```text
+Candidate AI が抽出した候補の中で、
+どの銘柄が最も期待値が高いか？
+```
+
+## 3. Candidate AI との境界
+
 Candidate AI:
-  全銘柄 -> Top50
-  上昇候補を広く拾う
+
+```text
+全銘柄から上昇候補を抽出する
+4000銘柄程度 -> Top50
+candidate_list を出す
+candidate_score を出す
+candidate_reason を出す
+```
 
 Opportunity AI:
-  Top50 -> Top5 / Top10 / Top20
-  買い検討に進める候補を選別する
+
+```text
+Candidate Top50 の中で期待値を比較する
+Top50 -> Top5 / Top10 / Top20
+expected_edge_score を出す
+buy_rank を出す
+downside_risk_score を出す
+buy_reason / no_buy_reason を出す
+```
+
+重要:
+
+```text
+Candidate score は買い順位ではない
+Opportunity AI は candidate_score を参考情報として使える
+ただし buy_rank は expected_edge_score に基づいて決める
+Phase5 で Phase4 Candidate AI 自体を修正しない
+```
+
+## 4. 後続 Phase との境界
 
 Position Management AI:
-  購入後の HOLD / EXIT / ADD / REDUCE
+
+```text
+購入後の保有継続を判断する
+売却を判断する
+ADD / REDUCE を判断する
+```
 
 Capital Allocation Engine:
-  購入金額と株数を決める
-
-Order Manager:
-  注文を実行・管理する
-```
-
-## 3. Phase4 からの前提
-
-Phase4 最終判定:
 
 ```text
-Phase4 final status: SUCCESS
-readiness_status: PHASE4_COMPLETE_WITH_IMPROVEMENT_OPPORTUNITIES
-Candidate AI role: candidate extraction only
+購入金額を決める
+購入株数を決める
+資金配分を決める
 ```
 
-Phase4 の強み:
+Broker / Order / Paper Trading:
 
 ```text
-CandidateTop50 は FutureReturnTop50 を random より約 4.9 倍捕捉した
-CandidateTop50 は FutureMaxTop50 を random より 7.5 倍捕捉した
-FutureMaxTop10 / FutureReturnTop10 捕捉でも random を上回った
-latest target_date 2026-06-12 で 4,164 eligible 銘柄から Top50 を生成できた
+Broker API 接続は Phase5 対象外
+Paper Trading は Phase5 対象外
+実発注は Phase5 対象外
+Order Manager は Phase5 対象外
 ```
 
-Phase4 の弱み:
+Opportunity AI の出力は、後続 Phase が使う買い候補順位である。実際に買う金額、買う株数、保有後の売却判断は Phase5 の責務ではない。
+
+## 5. 入力データ
+
+### 5.1 Candidate AI 出力
 
 ```text
-Candidate score 単体では Best / Worst を分離できない
-score と future_return_20d の相関は弱い、または逆方向
-score と downside_bad の相関が正
-Top50 には高 drawdown 候補が混ざる
-down regime では win rate / return / downside_bad_rate が悪化する
-短期 volume surge は Winner より Worst 側で高い傾向がある
-```
-
-Phase5 の基本方針:
-
-```text
-Candidate AI の「吹く銘柄を拾う力」は残す
-買い順位は Candidate score から直接作らない
-downside / drawdown / 持続性 / entry confirmation を重視する
-短期出来高急増を単純加点しない
-down regime では候補数と閾値を厳しくする
-```
-
-## 4. Input
-
-### 4.1 Candidate AI output
-
-必須入力:
-
-```text
-target_date
-code
-candidate_rank
+candidate_list
 candidate_score
 candidate_reason
-excluded_reason
+candidate_rank
+target_date
+code
 feature_version
 model_version
 inference_run_id
 ```
 
-Candidate score の扱い:
+`candidate_score` の扱い:
 
 ```text
-candidate_score は upstream prior として使う
-candidate_score を buy_rank に直結しない
-candidate_rank だけで Opportunity TopN を決めない
+上流の候補抽出スコアとして扱う
+期待値の prior としては使える
+buy_rank に直結しない
 score が高いほど安全とは仮定しない
 ```
 
-### 4.2 Phase4 feature
+### 5.2 市場データ
 
-Phase4 feature table から再利用する候補:
+```text
+価格
+出来高
+高値
+安値
+```
+
+### 5.3 テクニカル
+
+```text
+価格モメンタム
+出来高モメンタム
+トレンド強度
+ボラティリティ
+```
+
+Phase4 feature からの再利用候補:
 
 ```text
 price_momentum_return_5d
 price_momentum_return_20d
 price_momentum_return_60d
+volume_momentum_ratio_5d
+volume_momentum_ratio_1d_20d
 trend_close_over_ma_20d
 trend_ma_5_20_ratio
 trend_ma_20_60_ratio
-volume_momentum_ratio_5d
-volume_momentum_ratio_1d_20d
-liquidity_avg_volume_20d
 volatility_return_std_20d
-universe_eligible
+liquidity_avg_volume_20d
 ```
 
-Phase5 では、これらをそのまま買い材料として扱わず、以下の観点で再解釈する。
+### 5.4 ファンダメンタル
 
 ```text
-momentum:
-  持続上昇の確認
-
-trend:
-  上昇基調の確認
-
-liquidity:
-  実運用可能性と大幅下落耐性の補助
-
-volume surge:
-  関心増加ではなく過熱・材料一巡リスクとしても見る
-
-volatility:
-  upside 機会と drawdown risk の両面を見る
+売上成長
+利益成長
+ROE
+財務健全性
 ```
 
-### 4.3 Opportunity feature
-
-Phase5-C 以降で追加検討する feature:
+候補 feature:
 
 ```text
-momentum_consistency_score
-  5d / 20d / 60d momentum の方向と過熱度
-
-trend_confirmation_score
-  close over MA, MA ratio, high proximity の統合
-
-liquidity_stability_score
-  avg volume / turnover と欠損・急減の確認
-
-volume_surge_risk_score
-  1d / 5d volume ratio が極端に高い候補のリスク
-
-drawdown_proxy_score
-  過去20d/60d volatility、急落回数、下ヒゲ的変動の proxy
-
-entry_overheat_score
-  短期 return が中期 trend に対して過剰な候補のリスク
-
-regime_observable_feature
-  target_date 時点で観測可能な TOPIX / market trend feature
+sales_growth_rate
+operating_profit_growth_rate
+ordinary_profit_growth_rate
+net_income_growth_rate
+roe
+equity_ratio
+operating_margin
+earnings_revision_signal
 ```
 
-### 4.4 Market regime input
+財務情報は、`as_of_date` 時点で公表済みのものだけを使う。
 
-Phase4-BM の regime proxy は評価用であり、そのまま推論 feature にしない。
-
-Phase5 で推論に使う場合は、以下を守る。
+### 5.5 市場環境
 
 ```text
-target_date 時点で観測可能な market index data だけで作る
-future_return や post-selection return を使わない
-up / flat / down の定義を固定する
-regime_unknown を許容する
-regime は売買停止ではなく絞り込み強度の調整に使う
+TOPIX
+市場トレンド
+セクター強弱
 ```
 
-## 5. Output
+候補 feature:
 
-Opportunity AI は candidate ごとに以下を出力する。
+```text
+topix_return_5d
+topix_return_20d
+topix_ma_5_20_ratio
+market_regime
+market_risk_flag
+sector_return_20d
+sector_rank_20d
+stock_vs_sector_return_20d
+sector_momentum_flag
+```
+
+TOPIX、市場トレンド、セクター強弱は、`as_of_date` 時点で観測可能な feature として設計する。評価後にしか分からない regime label や future 情報を推論 feature に混入させない。
+
+## 6. 利用禁止データ
+
+以下は入力 feature として使うこと、推論時に参照することを禁止する。
+
+```text
+future_return_*
+future_max_return_*
+future_max_drawdown_*
+top_decile_*
+downside_bad_*
+```
+
+また以下も禁止する。
+
+```text
+trade_result
+trade_profit
+selected
+bought
+sold
+cash
+portfolio
+annual_return
+final_assets
+```
+
+禁止対象:
+
+```text
+feature table
+training dataset の feature columns
+inference input
+selection logic
+buy_rank 生成ロジック
+```
+
+例外:
+
+```text
+future_return_* などの future 系データは、
+system_requirements.md の学習データ要件に従い、
+学習・評価ラベルとしてのみ利用可能。
+```
+
+## 7. 出力
+
+Opportunity AI は以下を出力する。
 
 ```text
 target_date
 code
-candidate_rank
-candidate_score
-opportunity_score
-opportunity_rank
-opportunity_bucket
+expected_edge_score
+buy_rank
+expected_return_horizon
 downside_risk_score
-confirmation_score
-regime_adjustment
-reject_reason
-opportunity_reason
+buy_reason
+no_buy_reason
+candidate_score
+candidate_rank
 model_version
 feature_version
 inference_run_id
 created_at
 ```
 
-`opportunity_bucket` の候補:
+### 7.1 expected_edge_score
+
+期待値スコア。
 
 ```text
-TOP5
-TOP10
-TOP20
-REJECT_RISK
-REJECT_NO_CONFIRMATION
-REJECT_REGIME
-REJECT_DATA_QUALITY
+上昇余地
+勝率
+下落リスク
+ドローダウン
+トレンド継続性
+市場環境
+流動性
 ```
 
-`reject_reason` の候補:
+を統合したスコアとする。
+
+### 7.2 buy_rank
+
+購入候補順位。
 
 ```text
-high_drawdown_risk
-weak_trend_confirmation
-excessive_short_volume_surge
-overheated_short_term_move
-low_liquidity
-down_regime_threshold_not_met
-insufficient_feature_history
-data_quality_issue
+expected_edge_score が高い順に付与する
+Top5 を主な買い候補とする
+Top10 / Top20 は監査・比較用にも出す
 ```
 
-## 6. Label Design
+### 7.3 expected_return_horizon
 
-Phase5 label は Candidate Top50 内の選別品質を学ぶために使う。推論時 feature には使わない。
+期待値評価の対象期間。
 
-### 6.1 Primary label
-
-Primary label 候補:
+初期案:
 
 ```text
-opportunity_label_20d
+20営業日
 ```
 
-初期定義案:
+システム要件の保有期間 5〜30 営業日に合わせ、Phase5 初期は 20 営業日を中心に設計する。
+
+### 7.4 downside_risk_score
+
+期待値を減点するリスクスコア。
 
 ```text
-positive if:
-  future_return_20d > 0
-  and future_max_return_20d is above candidate-top50 threshold
-  and future_max_drawdown_20d is not worse than downside threshold
-
-negative if:
-  downside_bad_20d == true
-  or future_max_drawdown_20d <= drawdown threshold
-  or future_return_20d <= loss threshold
+下落リスク
+最大ドローダウンリスク
+過熱リスク
+短期 volume surge リスク
+市場悪化リスク
+低流動性リスク
 ```
 
-この label は、単なる future_max_return 上位ではなく、20営業日後リターンと途中 drawdown を同時に見る。
+を表現する。
 
-### 6.2 Auxiliary labels
+これは Opportunity AI の主目的ではなく、expected_edge_score の構成要素である。
 
-補助 label:
+### 7.5 buy_reason
+
+例:
 
 ```text
-sustained_upside_20d
-  一時的な高値ではなく、20d return も positive な候補
+企業品質良好
+価格モメンタム強い
+トレンド継続性が高い
+流動性が十分
+市場環境良好
+セクター強弱が追い風
+上昇余地に対してリスクが許容範囲
+```
 
-downside_bad_20d
-  一定以上の下落・drawdown を起こした候補
+### 7.6 no_buy_reason
 
+例:
+
+```text
+期待値不足
+リスク過大
+市場環境悪化
+トレンド確認不足
+短期出来高急増が過熱寄り
+ドローダウンリスクが高い
+流動性不足
+```
+
+`no_buy_reason` は「地雷除去」を主目的にするためではなく、期待値が低い理由を説明可能にするために出す。
+
+## 8. Label 設計方針
+
+Opportunity AI は期待値を学習する。
+
+入力 feature ではなく、学習・評価ラベル候補として扱うもの:
+
+```text
+future_return_20d
+future_max_return_20d
 future_max_drawdown_20d
-  20営業日内の最大下落幅
-
-future_return_20d_positive
-  20営業日後がプラスか
-
-future_max_return_20d_high
-  20営業日内に十分な上昇余地があったか
-
-whipsaw_after_spike_20d
-  一度吹いた後に失速・大幅下落した候補
-
-failed_breakout_20d
-  entry 時点の強さが持続しなかった候補
+downside_bad_20d
+top_decile_20d
 ```
 
-### 6.3 Label guardrail
+expected_edge_score の label は、単純な future_return だけでなく、以下を統合して設計する。
 
 ```text
-future_return_*
-future_max_return_*
-future_max_drawdown_*
-downside_bad_*
-top_decile_*
-label_*
+将来リターン
+上昇余地
+勝率
+下落リスク
+最大ドローダウン
+top decile 捕捉
 ```
 
-これらは label table または evaluation table にのみ保存する。Feature table、inference input、selection logic へ混入させない。
-
-## 7. Dataset Design
-
-Phase5-D で作る dataset の単位:
+初期 label 案:
 
 ```text
-1 row = target_date + code in Candidate Top50
+expected_edge_label_20d
+  future_return_20d
+  + future_max_return_20d
+  - drawdown_penalty(future_max_drawdown_20d)
+  - downside_penalty(downside_bad_20d)
+  + top_decile_bonus(top_decile_20d)
 ```
 
-母集団:
+分類 label 候補:
 
 ```text
-Phase4 Candidate AI が feature-only inference で選んだ Top50
+opportunity_positive_20d
+high_expected_edge_20d
+top_decile_20d
+downside_bad_20d
 ```
 
-禁止:
+回帰 label 候補:
 
 ```text
-future label を使って Candidate Top50 を作り直す
-Candidate Top50 外の銘柄を Opportunity training row に混ぜる
-推論時に label table を読む
-mock path を formal path に上書きする
-Phase4 artifact を破壊する
+risk_adjusted_future_return_20d
+future_return_20d
+future_max_return_20d
+future_max_drawdown_20d
 ```
 
-必須メタデータ:
+Phase5-B で、閾値、重み、positive / negative 定義、neutral 扱いを固定する。
+
+## 9. 評価指標
+
+Opportunity AI 単体の評価指標:
 
 ```text
-target_date
-as_of_date
-code
-candidate_inference_run_id
-candidate_model_version
-candidate_feature_version
-opportunity_feature_version
-label_version
-dataset_version
-split_name
-created_at
+selected_mean_future_return
+selected_mean_future_max_return
+selected_top_decile_rate
+selected_downside_bad_rate
 ```
 
-Train / validation / test split:
+CandidateTop50 との比較:
 
 ```text
-time-based split を維持する
-Candidate AI と同じ期間境界を初期候補にする
-random split は使わない
-same target_date の row を複数 split に分けない
+CandidateTop50 平均 vs OpportunityTop5
+CandidateTop50 平均 vs OpportunityTop10
+CandidateTop50 平均 vs OpportunityTop20
 ```
 
-## 8. Evaluation Metrics
-
-Opportunity AI 単体の成功条件:
+比較観点:
 
 ```text
-Opportunity 上位候補の期待値が Candidate Top50 平均を上回る
-downside_bad_rate が Candidate Top50 より下がる
-drawdown risk が Candidate Top50 より下がる
-future_max_return 捕捉力を大きく毀損しない
+mean_future_return_20d
+mean_future_max_return_20d
+top_decile_rate_20d
+downside_bad_rate_20d
+future_max_drawdown_20d
+win_rate_20d
 ```
 
-主要評価:
+成功条件:
 
 ```text
-top5_avg_return_20d
-top10_avg_return_20d
-top20_avg_return_20d
-top5_win_rate_20d
-top10_win_rate_20d
-top20_win_rate_20d
-top5_future_max_return_20d
-top10_future_max_return_20d
-top20_future_max_return_20d
-top5_downside_bad_rate_20d
-top10_downside_bad_rate_20d
-top20_downside_bad_rate_20d
-top5_max_drawdown_20d
-top10_max_drawdown_20d
-top20_max_drawdown_20d
-```
-
-Lift 評価:
-
-```text
-topN_return_lift_vs_candidate_top50
-topN_win_rate_lift_vs_candidate_top50
-topN_downside_bad_reduction_vs_candidate_top50
-topN_drawdown_reduction_vs_candidate_top50
-topN_future_max_capture_retention
-```
-
-Ranking 評価:
-
-```text
-opportunity_score_future_return_correlation
-opportunity_score_future_max_return_correlation
-opportunity_score_downside_bad_correlation
-precision_at_5
-precision_at_10
-precision_at_20
+OpportunityTop5 / Top10 / Top20 の期待値が CandidateTop50 平均を上回る
+selected_mean_future_return が改善する
+selected_mean_future_max_return が改善または十分維持される
+selected_top_decile_rate が改善する
+selected_downside_bad_rate が悪化しない、可能なら低下する
 ```
 
 失敗条件:
 
 ```text
-TopN が Candidate Top50 平均と差がない
-TopN downside_bad_rate が Candidate Top50 と同等または悪化
-future_max_return 捕捉をほぼ失う
-down regime で候補品質が制御不能
+CandidateTop50 と差がない
 candidate_score の並べ替えだけになっている
+selected_downside_bad_rate が大きく悪化する
+future_max_return_20d 型の上昇候補捕捉を大きく失う
+down regime で品質劣化を制御できない
 ```
 
-## 9. Regime Policy
+Opportunity AI 単体では以下を評価しない。
 
-初期方針:
+```text
+annual_return
+final_assets
+portfolio drawdown
+profit factor
+actual trade result
+```
+
+これらは後続の統合評価、Paper Trading、Historical Evaluation の責務である。
+
+## 10. Phase4 結果の反映
+
+Phase4 で分かったこと:
+
+```text
+Candidate AI は future_max_return_20d 型の上昇候補捕捉に強い
+Candidate score 単体では Best / Worst を分離しきれない
+高 score 候補にも downside risk が混ざる
+down regime では候補品質が悪化する
+volume surge は Winner より Worst 側でも高く、単純加点に向かない
+```
+
+Opportunity Score への反映:
+
+```text
+candidate_score は prior として扱い、buy_rank に直結しない
+future_max_return 型の捕捉力を維持する評価指標を置く
+future_return_20d と drawdown を合わせて期待値を評価する
+downside_risk_score を expected_edge_score の減点要素にする
+volume surge は単純加点ではなく、持続性・過熱度とセットで評価する
+market regime / TOPIX / セクター強弱を観測可能 feature として設計する
+```
+
+Phase5 でやらないこと:
+
+```text
+Phase4 Candidate AI を修正しない
+Candidate Top50 の作成条件を future label で変えない
+Candidate score を買い順位として扱わない
+```
+
+## 11. Regime / 市場環境の扱い
+
+Opportunity AI は、市場環境を期待値評価の一部として扱う。
+
+利用候補:
+
+```text
+TOPIX return
+TOPIX moving average ratio
+TOPIX volatility
+market trend
+sector relative strength
+sector rank
+stock vs sector return
+```
+
+Regime 設計方針:
 
 ```text
 up regime:
-  Top20 まで広めに残す
-  momentum / trend confirmation を重視
+  上昇余地と trend continuation を素直に評価しやすい
 
 flat regime:
-  Top10 を標準候補にする
-  downside risk と confirmation のバランスを見る
+  expected edge と downside risk のバランスを重視する
 
 down regime:
-  Top5 程度まで強く絞る
-  drawdown filter と liquidity filter を強める
-  weak confirmation は reject する
+  expected_edge_score の閾値を厳しくする
+  downside_risk_score の重みを上げる
+  Top5 への絞り込みを強める
 
 unknown regime:
-  flat regime より保守的に扱う
+  保守的に扱う
 ```
 
-Regime は最終売買停止判断ではない。Phase5 では Opportunity ranking の閾値調整に限定する。
-
-## 10. Model Design
-
-Phase5-E の初期候補:
+禁止:
 
 ```text
-baseline rule scorer
-  downside / confirmation / candidate prior を明示式で統合
-
-LightGBM ranker or classifier
-  Candidate Top50 内の opportunity_label_20d を学習
-
-two-stage model
-  1. downside risk model
-  2. confirmation / opportunity ranking model
+future 情報を使った regime label を推論 feature に使わない
+評価後にしか分からない up / flat / down 判定を feature にしない
+post-selection return を regime 判定に使わない
 ```
 
-推奨初手:
+Regime feature は、必ず `as_of_date` 時点で観測可能な market data だけで作る。
+
+## 12. Leakage Audit 方針
+
+Phase5 では、入力 feature と label / evaluation data を明確に分離する。
+
+入力 feature 一覧:
 
 ```text
-Phase5-B/C/D で label と feature を固める
-Phase5-E では rule baseline と LightGBM classifier を比較する
-downside_risk_score と confirmation_score は別々に監査可能にする
+candidate_score
+candidate_rank
+candidate_reason encoded features
+price
+volume
+high
+low
+price_momentum_features
+volume_momentum_features
+trend_features
+volatility_features
+quality_features
+liquidity_features
+TOPIX_features
+market_trend_features
+sector_strength_features
 ```
 
-Candidate score の統合:
+禁止列一覧:
 
 ```text
-candidate_prior_score = clipped / normalized candidate_score
-opportunity_score = f(candidate_prior_score, confirmation_score, downside_risk_score, regime_adjustment)
+future_return_*
+future_max_return_*
+future_max_drawdown_*
+top_decile_*
+downside_bad_*
+trade_result
+trade_profit
+selected
+bought
+sold
+cash
+portfolio
+annual_return
+final_assets
 ```
 
-ただし `candidate_prior_score` が `opportunity_score` を支配しないよう、feature importance と ablation で確認する。
-
-## 11. Leakage Audit
-
-Phase5 で必須の監査:
+監査項目:
 
 ```text
-feature column に future_* / label_* / downside_bad_* がない
+forbidden_feature_columns が 0 件である
+future 系列が feature table に存在しない
+trade 結果系列が feature table に存在しない
+portfolio 系列が feature table に存在しない
 inference path が label table を読まない
-Candidate Top50 は feature-only inference artifact から読む
-regime feature は target_date 時点で観測可能な market data だけで作る
 as_of_date <= target_date を満たす
-財務・銘柄マスタは公表日または有効日 <= as_of_date のみ使う
-target_date より後の価格・出来高を feature に使わない
-train / validation / test が時系列分離されている
-same target_date が複数 split に混ざらない
+財務情報は公表日 <= as_of_date のものだけ使う
+TOPIX / sector feature は as_of_date 以前の情報だけで作る
+same target_date が train / validation / test にまたがらない
 ```
 
-監査出力:
+監査出力候補:
 
 ```text
 leakage_audit_status
-forbidden_feature_columns
-label_feature_overlap_count
+forbidden_feature_column_count
 future_column_in_feature_count
-split_leakage_status
+trade_result_column_in_feature_count
+portfolio_column_in_feature_count
 as_of_date_violation_count
+label_feature_overlap_count
 regime_observability_status
 ```
 
-## 12. Artifact Policy
+## 13. Artifact Policy
 
-Phase5 は Phase4 artifact を破壊しない。
+Phase5 は Phase4 成果物を破壊しない。
 
 読み取り候補:
 
 ```text
+Phase4 formal Candidate inference output
+Phase4 feature table
+Phase4 label table
 reports/candidate_ai/full_range/
 reports/candidate_ai/final_check/
-formal Candidate inference output
-formal Candidate feature table
-formal Candidate label table
 ```
 
 書き込み候補:
@@ -543,58 +658,81 @@ models/opportunity_ai/
 禁止:
 
 ```text
-mock path overwrite
-reader switch
-promotion
-live path update
-Broker path update
-Portfolio path update
+Phase4 成果物を破壊しない
+mock path を上書きしない
+promotion を行わない
+reader switch を行わない
+Broker path を更新しない
+Portfolio path を更新しない
 ```
 
-## 13. Phase5 Roadmap
-
-Phase5 の推奨順序:
+## 14. Phase5-B 以降のロードマップ
 
 ```text
-Phase5-A: Opportunity AI Design Document
-Phase5-B: Downside / Drawdown Label Design
-Phase5-C: Opportunity Feature Design / Expansion
-Phase5-D: Candidate Top50 -> Opportunity Dataset Builder
-Phase5-E: Opportunity Model Training
-Phase5-F: Opportunity Inference
-Phase5-G: Opportunity Quality Audit
-Phase5-H: Candidate + Opportunity Combined Validation
+Phase5-B Opportunity Label Design
+Phase5-C Opportunity Feature Design / Expansion
+Phase5-D Candidate Top50 to Opportunity Dataset Builder
+Phase5-E Opportunity Model Training
+Phase5-F Opportunity Inference
+Phase5-G Opportunity Quality Audit
+Phase5-H Candidate + Opportunity Combined Validation
 ```
 
-各 subphase の完了条件:
-
-```text
 Phase5-B:
-  label schema / thresholds / label audit を固定
+
+```text
+expected_edge_label_20d を具体化する
+future_return_20d / future_max_return_20d / future_max_drawdown_20d / downside_bad_20d / top_decile_20d の扱いを固定する
+label schema と label audit を定義する
+```
 
 Phase5-C:
-  feature schema / forbidden columns / as_of_date rule を固定
 
-Phase5-D:
-  Candidate Top50 only dataset を再現可能に生成
-
-Phase5-E:
-  baseline と model training を比較し、downside reduction を確認
-
-Phase5-F:
-  latest target_date で Opportunity TopN を生成
-
-Phase5-G:
-  Top5 / Top10 / Top20 の quality audit を実施
-
-Phase5-H:
-  Candidate + Opportunity の combined lift と risk reduction を確認
+```text
+Opportunity feature schema を固定する
+Candidate feature 再利用列を固定する
+TOPIX / market trend / sector strength feature を as_of_date ルール込みで設計する
 ```
 
-## 14. Phase5-A Conclusion
+Phase5-D:
 
-Phase5 Opportunity AI は、Candidate AI の後段に置く「地雷除去 + 本命候補選別AI」として設計する。
+```text
+Candidate Top50 だけを母集団にした Opportunity dataset を設計・生成する
+feature / label / split / audit の分離を守る
+```
 
-Phase4 の Candidate AI は、20営業日以内に一度大きく吹く銘柄を random より高く捕捉できた。ただし、その候補には高 drawdown / downside_bad 候補も混在する。Phase5 では、Candidate score を買い順位として使わず、momentum consistency、trend confirmation、liquidity、volume surge risk、drawdown proxy、market regime を使って Candidate Top50 を Top5 / Top10 / Top20 に絞る。
+Phase5-E:
 
-Phase5-A では設計のみを行った。実装、学習、推論、backtest、Paper Trading、Broker API、発注、promotion、reader switch は行っていない。
+```text
+expected_edge_score を学習する model を作る
+rule baseline と model を比較する
+```
+
+Phase5-F:
+
+```text
+latest target_date の Candidate Top50 から Opportunity TopN を出す
+```
+
+Phase5-G:
+
+```text
+OpportunityTop5 / Top10 / Top20 の品質を監査する
+```
+
+Phase5-H:
+
+```text
+Candidate + Opportunity の combined validation を行う
+CandidateTop50 から OpportunityTopN へ絞った改善を確認する
+```
+
+## 15. Phase5-A 結論
+
+Phase5 Opportunity AI は、Candidate AI が抽出した候補50銘柄の中から、期待値が高い買い候補を順位付けする AI として設計する。
+
+主出力は `expected_edge_score` と `buy_rank` である。`downside_risk_score` と `no_buy_reason` は重要だが、地雷除去を主目的にするためではなく、期待値をリスク調整して説明可能にするための構成要素である。
+
+Phase4 の成果は、Candidate AI が future_max_return_20d 型の上昇候補を捕捉できる一方、Candidate score 単体では期待値の高低や downside risk を分離しきれない、という前提として反映する。Phase5 では Phase4 Candidate AI を修正せず、Candidate Top50 の中で期待値を比較し、Top5 / Top10 / Top20 の quality lift を評価する。
+
+この資料により、Phase5-B Opportunity Label Design に進める状態になった。
