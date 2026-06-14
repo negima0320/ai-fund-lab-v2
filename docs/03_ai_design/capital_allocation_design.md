@@ -14,6 +14,16 @@ Capital Allocation Engine
 
 ---
 
+Phase7のBuy / Hold / Replace / Defensive Exit / Emergency Exitを含む詳細ポリシーは、以下に定義する。
+
+- `docs/03_ai_design/capital_allocation_phase7_policy_design.md`
+
+この基本設計書はCapital Allocation Engineの最小責務を定義する。
+
+Phase7では、Phase5 / Phase6の判断を受けて最終売買ポリシー案を作るため、保有継続、入れ替え、防御レビュー、緊急終了候補の整理も詳細設計側で扱う。
+
+---
+
 # 2. Capital Allocation Engine の役割
 
 ## 一言で言うと
@@ -85,6 +95,14 @@ Capital Allocation Engine は、
 ```
 
 もしない。
+
+---
+
+補足。
+
+Phase7詳細設計で扱うHold / Replace / Defensive / Emergencyは、Phase7が銘柄選定AIや売却AIになるという意味ではない。
+
+Phase5 Opportunity AIとPhase6 Position Management AIの出力を受けて、資金配分上の最終ポリシー案として整理するものである。
 
 ---
 
