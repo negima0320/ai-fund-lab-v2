@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from ai_fund_lab_v2.broker.models import (
+    BrokerAccountSnapshot,
     BrokerBalanceSnapshot,
+    BrokerExecutionSnapshot,
     BrokerOrderSnapshot,
     BrokerPositionSnapshot,
     BrokerSnapshot,
@@ -31,6 +33,9 @@ class BrokerSnapshotWriteResult:
 class BrokerSnapshotWriter:
     paths: BrokerRuntimePaths
 
+    def write_accounts(self, snapshots: list[BrokerAccountSnapshot]) -> BrokerSnapshotWriteResult:
+        return self._write("accounts", snapshots, self.paths.account_snapshots)
+
     def write_balance(self, snapshot: BrokerBalanceSnapshot) -> BrokerSnapshotWriteResult:
         return self._write("balance", [snapshot], self.paths.balance_snapshots)
 
@@ -39,6 +44,42 @@ class BrokerSnapshotWriter:
 
     def write_orders(self, snapshots: list[BrokerOrderSnapshot]) -> BrokerSnapshotWriteResult:
         return self._write("orders", snapshots, self.paths.orders_snapshots)
+
+    def write_executions(self, snapshots: list[BrokerExecutionSnapshot]) -> BrokerSnapshotWriteResult:
+        return self._write("executions", snapshots, self.paths.executions_snapshots)
+
+    def write_sync_result(self, sync_result: Any) -> BrokerSnapshotWriteResult:
+        self.paths.ensure_dirs()
+        batch_id = broker_snapshot_id("sync")
+        data_path = self.paths.sync_results / f"{batch_id}.json"
+        manifest_path = self.paths.sync_results / f"{batch_id}.manifest.json"
+        if hasattr(sync_result, "to_dict"):
+            record = sync_result.to_dict()
+        elif is_dataclass(sync_result):
+            record = asdict(sync_result)
+        else:
+            raise TypeError("sync_result must be a dataclass or expose to_dict")
+        payload = sanitize_mapping(
+            {
+                "kind": "sync_result",
+                "batch_id": batch_id,
+                "created_at": utc_now_iso(),
+                "record_count": 1,
+                "records": [_jsonable(record)],
+            }
+        )
+        manifest = sanitize_mapping(
+            {
+                "kind": "sync_result",
+                "batch_id": batch_id,
+                "created_at": payload["created_at"],
+                "record_count": 1,
+                "data_path": str(data_path),
+            }
+        )
+        _write_json(data_path, payload)
+        _write_json(manifest_path, manifest)
+        return BrokerSnapshotWriteResult("sync_result", data_path, manifest_path, 1)
 
     def _write(self, kind: str, snapshots: list[BrokerSnapshot], directory: Path) -> BrokerSnapshotWriteResult:
         self.paths.ensure_dirs()

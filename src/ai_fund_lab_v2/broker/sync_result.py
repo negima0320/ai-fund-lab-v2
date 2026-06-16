@@ -17,9 +17,11 @@ class BrokerSyncResult:
     started_at: str = field(default_factory=utc_now_iso)
     finished_at: str = ""
     status: str = "success"
+    account_snapshot_count: int = 0
     balance_snapshot_count: int = 0
     position_snapshot_count: int = 0
     order_snapshot_count: int = 0
+    execution_snapshot_count: int = 0
     snapshot_paths: tuple[str, ...] = ()
     manifest_paths: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
@@ -34,9 +36,11 @@ class BrokerSyncResult:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "status": self.status,
+            "account_snapshot_count": self.account_snapshot_count,
             "balance_snapshot_count": self.balance_snapshot_count,
             "position_snapshot_count": self.position_snapshot_count,
             "order_snapshot_count": self.order_snapshot_count,
+            "execution_snapshot_count": self.execution_snapshot_count,
             "snapshot_paths": list(self.snapshot_paths),
             "manifest_paths": list(self.manifest_paths),
             "warnings": list(self.warnings),

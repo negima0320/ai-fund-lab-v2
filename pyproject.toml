@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "AI Fund Lab vNext data foundation"
 requires-python = ">=3.9"
 dependencies = [
+  "moomoo-api>=10.7.6708",
   "pandas>=2",
   "pyarrow>=15",
 ]

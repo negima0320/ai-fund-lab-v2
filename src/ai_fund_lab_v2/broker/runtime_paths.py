@@ -23,12 +23,24 @@ class BrokerRuntimePaths:
         return self.snapshots / "balance"
 
     @property
+    def account_snapshots(self) -> Path:
+        return self.snapshots / "accounts"
+
+    @property
     def positions_snapshots(self) -> Path:
         return self.snapshots / "positions"
 
     @property
     def orders_snapshots(self) -> Path:
         return self.snapshots / "orders"
+
+    @property
+    def executions_snapshots(self) -> Path:
+        return self.snapshots / "executions"
+
+    @property
+    def sync_results(self) -> Path:
+        return self.broker_root / "sync_results"
 
     @property
     def logs(self) -> Path:
@@ -38,9 +50,12 @@ class BrokerRuntimePaths:
         return (
             self.broker_root,
             self.snapshots,
+            self.account_snapshots,
             self.balance_snapshots,
             self.positions_snapshots,
             self.orders_snapshots,
+            self.executions_snapshots,
+            self.sync_results,
             self.logs,
         )
 
