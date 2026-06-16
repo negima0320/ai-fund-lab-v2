@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aifundlab.phase9.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__WORKING_DIRECTORY__/scripts/run_phase9g_daily_operation.py</string>
+    <string>--date</string>
+    <string>__YYYY_MM_DD_OR_WRAPPER_DATE__</string>
+    <string>--mode</string>
+    <string>dry-run</string>
+    <string>--output-root</string>
+    <string>__WORKING_DIRECTORY__/.runtime/phase9</string>
+    <string>--runtime-dir</string>
+    <string>__WORKING_DIRECTORY__/.runtime</string>
+    <string>--reports-root</string>
+    <string>__WORKING_DIRECTORY__/reports</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__WORKING_DIRECTORY__</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>20</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__WORKING_DIRECTORY__/.runtime/phase9/scheduler_logs/phase9_daily.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__WORKING_DIRECTORY__/.runtime/phase9/scheduler_logs/phase9_daily.err.log</string>
+</dict>
+</plist>
+

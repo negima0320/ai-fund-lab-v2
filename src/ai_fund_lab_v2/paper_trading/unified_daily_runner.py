@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import pandas as pd
+
+from ai_fund_lab_v2.broker.models import utc_now_iso
+from ai_fund_lab_v2.paper_trading.approval_mode import AUTO_FOR_PAPER_TRADING, validate_approval_mode
+from ai_fund_lab_v2.paper_trading.business_day_tracker import update_business_day_tracker
+from ai_fund_lab_v2.paper_trading.daily_continuation import run_daily_continuation
+from ai_fund_lab_v2.paper_trading.daily_inference_runner import run_daily_inference
+from ai_fund_lab_v2.paper_trading.feature_refresh import run_feature_refresh
+from ai_fund_lab_v2.paper_trading.first_daily_run import run_first_daily_paper_trading_run
+from ai_fund_lab_v2.paper_trading.first_virtual_fill import run_first_virtual_fill
+from ai_fund_lab_v2.paper_trading.ledger import load_ledger
+from ai_fund_lab_v2.paper_trading.operation_log import build_operation_log, write_operation_log
+from ai_fund_lab_v2.paper_trading.reporting.blog_report_v2_writer import write_blog_report_v2
+from ai_fund_lab_v2.paper_trading.run_lock import RunLockError, acquire_run_lock, release_run_lock
+
+
+UNIFIED_DAILY_RUNNER_COMPLETED = "UNIFIED_DAILY_RUNNER_COMPLETED"
+UNIFIED_DAILY_RUNNER_BLOCKED = "UNIFIED_DAILY_RUNNER_BLOCKED"
+UNIFIED_MODES = {"dry-run", "paper-trading", "report-only", "fill-only"}
+
+
+@dataclass(frozen=True)
+class BusinessDates:
+    run_date: str
+    data_target_date: str
+    decision_for: str
+    virtual_order_date: str
+    virtual_execution_date: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class UnifiedDailyRunResult:
+    status: str
+    run_id: str
+    mode: str
+    approval_mode: str
+    business_dates: BusinessDates
+    step_statuses: dict[str, Any]
+    manifest_path: str
+    operation_log_json_path: str
+    operation_log_markdown_path: str
+    report_markdown_path: str
+    report_json_path: str
+    blog_report_v2_markdown_path: str = ""
+    blog_report_v2_json_path: str = ""
+    warnings: tuple[str, ...] = ()
+    blocked_reasons: tuple[str, ...] = ()
+    broker_order_api_called: bool = False
+    open_d_started: bool = False
+    unlock_trade_called: bool = False
+    live_order_allowed: bool = False
+    scheduler_auto_registered: bool = False
+    model_retraining_executed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["business_dates"] = self.business_dates.to_dict()
+        payload["warnings"] = list(self.warnings)
+        payload["blocked_reasons"] = list(self.blocked_reasons)
+        return payload
+
+
+def run_unified_daily_paper_trading(
+    *,
+    run_date: str,
+    ledger_path: Path | str = ".runtime/phase9/ledger/latest.json",
+    mode: str = "dry-run",
+    approval_mode: str = AUTO_FOR_PAPER_TRADING,
+    allow_api_fetch: bool = False,
+    skip_market_data_refresh: bool = False,
+    skip_feature_refresh: bool = False,
+    skip_inference: bool = False,
+    skip_virtual_fill: bool = False,
+    skip_tracker_update: bool = False,
+    skip_blog_report_v2: bool = False,
+    force_unlock: bool = False,
+    runtime_dir: Path | str = ".runtime",
+    operation_root: Path | str = ".runtime/daily_operation",
+    quotes_path: Path | str = ".runtime/phase9/canonical_data/normalized_daily_quotes/data.parquet",
+    feature_root: Path | str = ".runtime/phase9/features",
+    reports_root: Path | str = "reports",
+    phase_report_markdown_path: Path | str = "docs/phase_reports/phase9u_unified_daily_paper_trading_runner.md",
+    phase_report_json_path: Path | str = "reports/phase_reports/phase9u_unified_daily_paper_trading_runner.json",
+) -> UnifiedDailyRunResult:
+    if mode not in UNIFIED_MODES:
+        raise ValueError(f"Unsupported unified daily mode: {mode}")
+    approval = validate_approval_mode(approval_mode=approval_mode, execution_mode=mode)
+    if approval_mode == AUTO_FOR_PAPER_TRADING and mode != "paper-trading":
+        approval_mode = "review_only"
+        approval = validate_approval_mode(approval_mode=approval_mode, execution_mode=mode)
+    if not approval.allowed:
+        raise ValueError(",".join(approval.blocked_reasons))
+    run_id = f"aifundlab_daily_{run_date}_{uuid4().hex}"
+    started_at = utc_now_iso()
+    lock = acquire_run_lock(run_id=run_id, run_date=run_date, mode=mode, operation_root=operation_root, force_unlock=force_unlock)
+    step_statuses: dict[str, Any] = {"run_lock": "ACQUIRED"}
+    warnings: list[str] = []
+    blocked: list[str] = []
+    report_refs: dict[str, str] = {}
+    ledger_refs: dict[str, str] = {"ledger_path": str(ledger_path)}
+    artifact_refs: dict[str, str] = {}
+    blog_md = ""
+    blog_json = ""
+    status = UNIFIED_DAILY_RUNNER_COMPLETED
+    try:
+        dates = resolve_business_dates(run_date=run_date, quotes_path=quotes_path)
+        step_statuses["business_date_resolve"] = dates.to_dict()
+
+        if skip_market_data_refresh:
+            step_statuses["market_data_refresh"] = "SKIPPED_BY_FLAG"
+        elif allow_api_fetch:
+            step_statuses["market_data_refresh"] = "API_FETCH_ALLOWED_BUT_NOT_AUTO_EXECUTED_IN_UNIFIED_RUNNER"
+            warnings.append("market_data_refresh_runner_should_be_called_by_future_launchd_profile_when_enabled")
+        else:
+            step_statuses["market_data_refresh"] = "SKIPPED_API_FETCH_NOT_ALLOWED"
+
+        step_statuses["canonical_normalized_update"] = "USING_EXISTING_CANONICAL_NORMALIZED"
+
+        if skip_feature_refresh:
+            step_statuses["feature_refresh"] = "SKIPPED_BY_FLAG"
+        else:
+            feature = run_feature_refresh(
+                target_data_until=dates.data_target_date,
+                dry_run=mode != "paper-trading",
+                execute=mode == "paper-trading",
+                feature_output_root=feature_root,
+            )
+            step_statuses["feature_refresh"] = feature.status
+            artifact_refs["feature_refresh_manifest"] = feature.manifest_path
+            warnings.extend(feature.warnings)
+            if feature.blocked_reasons:
+                blocked.extend(feature.blocked_reasons)
+
+        fill_result = None
+        if skip_virtual_fill:
+            step_statuses["virtual_fill"] = "SKIPPED_BY_FLAG"
+        elif mode in {"paper-trading", "fill-only", "dry-run"} and _has_due_pending_orders(ledger_path=ledger_path, run_date=run_date):
+            fill_result = run_first_virtual_fill(
+                ledger_path=ledger_path,
+                quotes_path=quotes_path,
+                execution_date=run_date,
+                mode="execute" if mode in {"paper-trading", "fill-only"} else "dry-run",
+                runtime_dir=runtime_dir,
+                docs_report_path=Path("docs/phase_reports") / "phase9u_unified_virtual_fill.md",
+                json_report_path=Path("reports/phase_reports") / "phase9u_unified_virtual_fill.json",
+            )
+            step_statuses["virtual_fill"] = fill_result.status
+            ledger_refs["virtual_fill_execution_record"] = fill_result.execution_record_path
+            warnings.extend(fill_result.warnings)
+            blocked.extend(fill_result.blocked_reasons)
+        else:
+            step_statuses["virtual_fill"] = "NO_DUE_PENDING_ORDERS"
+
+        if mode != "fill-only":
+            continuation = run_daily_continuation(
+                run_date=dates.data_target_date,
+                ledger_path=ledger_path,
+                quotes_path=quotes_path,
+                mode="paper-trading" if mode == "paper-trading" else "dry-run",
+                approval_mode=approval_mode,
+                runtime_dir=runtime_dir,
+                update_tracker=False,
+                docs_report_path=Path("docs/phase_reports") / "phase9u_unified_daily_continuation.md",
+                json_report_path=Path("reports/phase_reports") / "phase9u_unified_daily_continuation.json",
+            )
+            step_statuses["ledger_valuation"] = continuation.valuation_status
+            report_refs["daily_performance_report"] = continuation.performance_report_json_path
+            warnings.extend(continuation.warnings)
+            blocked.extend(continuation.blocked_reasons)
+        else:
+            step_statuses["ledger_valuation"] = "SKIPPED_FILL_ONLY"
+
+        if skip_inference or mode in {"fill-only", "report-only"}:
+            step_statuses["daily_inference"] = "SKIPPED_BY_MODE_OR_FLAG"
+        elif mode == "paper-trading":
+            first_run = run_first_daily_paper_trading_run(
+                decision_for=dates.decision_for,
+                data_until=dates.data_target_date,
+                ledger_path=ledger_path,
+                mode="paper-trading",
+                runtime_dir=runtime_dir,
+                reports_root=reports_root,
+                feature_root=feature_root,
+                canonical_quotes_path=quotes_path,
+                approval_mode=approval_mode,
+            )
+            step_statuses["daily_inference"] = first_run.inference_status
+            step_statuses["auto_approval"] = "CREATED" if first_run.auto_approval_json_path else "SKIPPED"
+            step_statuses["pending_order_creation"] = first_run.pending_order_count
+            artifact_refs["first_daily_run_manifest"] = first_run.manifest_path
+            warnings.extend(first_run.warnings)
+            blocked.extend(first_run.blocked_reasons)
+        else:
+            inference = run_daily_inference(
+                decision_for=dates.decision_for,
+                data_until=dates.data_target_date,
+                runtime_dir=runtime_dir,
+                reports_root=reports_root,
+                feature_root=feature_root,
+                canonical_quotes_path=quotes_path,
+                ledger_path=ledger_path,
+            )
+            step_statuses["daily_inference"] = inference.status
+            step_statuses["auto_approval"] = "SKIPPED_NON_PAPER_MODE"
+            step_statuses["pending_order_creation"] = 0
+            artifact_refs["daily_inference_manifest"] = inference.manifest_path
+            warnings.extend(inference.warnings)
+            blocked.extend(inference.blocked_reasons)
+
+        if skip_tracker_update:
+            step_statuses["tracker_update"] = "SKIPPED_BY_FLAG"
+        else:
+            tracker = update_business_day_tracker(
+                ledger_path=ledger_path,
+                business_day_index=_next_tracker_index(Path(runtime_dir) / "phase9" / "tracker" / "phase9_30bd_tracker.json"),
+                run_date=run_date,
+                decision_for=dates.decision_for,
+                status="UNIFIED_DAILY_RUN_DONE",
+                tracker_root=Path(runtime_dir) / "phase9" / "tracker",
+                report_root=Path(reports_root) / "phase9" / "tracker",
+            )
+            step_statuses["tracker_update"] = tracker.status
+            report_refs["tracker_report"] = tracker.report_json_path
+            if tracker.blocked_reasons:
+                warnings.extend(tracker.blocked_reasons)
+
+        if skip_blog_report_v2:
+            step_statuses["blog_report_v2"] = "SKIPPED_BY_FLAG"
+        else:
+            blog = write_blog_report_v2(
+                decision_for=dates.decision_for,
+                execution_date=run_date,
+                inference_root=Path(runtime_dir) / "phase9" / "inference",
+                ledger_path=ledger_path,
+                output_root=Path(reports_root) / "public" / "phase9_daily",
+            )
+            step_statuses["blog_report_v2"] = blog.status
+            blog_md = blog.markdown_path
+            blog_json = blog.json_path
+            report_refs["blog_report_v2"] = blog.json_path
+            if blog.redaction_violations:
+                blocked.extend(f"blog_redaction:{item}" for item in blog.redaction_violations)
+
+        if blocked:
+            status = UNIFIED_DAILY_RUNNER_BLOCKED
+        manifest_path = _write_manifest(
+            run_id=run_id,
+            run_date=run_date,
+            dates=dates,
+            mode=mode,
+            approval_mode=approval_mode,
+            step_statuses=step_statuses,
+            warnings=warnings,
+            blocked=blocked,
+            operation_root=operation_root,
+        )
+        phase_report_md, phase_report_json = _write_phase_report(
+            run_id=run_id,
+            run_date=run_date,
+            status=status,
+            mode=mode,
+            dates=dates,
+            step_statuses=step_statuses,
+            warnings=warnings,
+            blocked=blocked,
+            blog_md=blog_md,
+            blog_json=blog_json,
+            markdown_path=phase_report_markdown_path,
+            json_path=phase_report_json_path,
+        )
+        op_log = build_operation_log(
+            run_id=run_id,
+            date=run_date,
+            mode=mode,
+            started_at=started_at,
+            status=status,
+            step_statuses=step_statuses,
+            artifact_refs=artifact_refs,
+            ledger_refs=ledger_refs,
+            report_refs={**report_refs, "phase9u_report": str(phase_report_json)},
+            warnings=tuple(dict.fromkeys(warnings)),
+            blocked_reasons=tuple(dict.fromkeys(blocked)),
+            prohibited_flags=prohibited_flags(),
+        )
+        log_json, log_md = write_operation_log(op_log, operation_root)
+        return UnifiedDailyRunResult(
+            status=status,
+            run_id=run_id,
+            mode=mode,
+            approval_mode=approval_mode,
+            business_dates=dates,
+            step_statuses=step_statuses,
+            manifest_path=str(manifest_path),
+            operation_log_json_path=str(log_json),
+            operation_log_markdown_path=str(log_md),
+            report_markdown_path=str(phase_report_md),
+            report_json_path=str(phase_report_json),
+            blog_report_v2_markdown_path=blog_md,
+            blog_report_v2_json_path=blog_json,
+            warnings=tuple(dict.fromkeys(warnings)),
+            blocked_reasons=tuple(dict.fromkeys(blocked)),
+        )
+    finally:
+        release_run_lock(run_id=lock.run_id, operation_root=operation_root)
+
+
+def resolve_business_dates(*, run_date: str, quotes_path: Path | str) -> BusinessDates:
+    data_target = _latest_available_date(run_date=run_date, quotes_path=Path(quotes_path))
+    next_day = _next_business_day(data_target)
+    return BusinessDates(
+        run_date=run_date,
+        data_target_date=data_target,
+        decision_for=data_target,
+        virtual_order_date=next_day,
+        virtual_execution_date=next_day,
+    )
+
+
+def prohibited_flags() -> dict[str, bool]:
+    return {
+        "broker_order_api_called": False,
+        "moomoo_simulate_order_called": False,
+        "tachibana_order_called": False,
+        "open_d_started": False,
+        "login_called": False,
+        "logout_called": False,
+        "unlock_trade_called": False,
+        "real_trade_executed": False,
+        "live_order_allowed": False,
+        "model_retraining_executed": False,
+        "full_backtest_executed": False,
+        "scheduler_auto_registered": False,
+    }
+
+
+def _latest_available_date(*, run_date: str, quotes_path: Path) -> str:
+    if not quotes_path.is_file():
+        return run_date
+    frame = pd.read_parquet(quotes_path)
+    date_col = "date" if "date" in frame.columns else "Date"
+    dates = sorted({str(value) for value in frame[date_col].astype(str) if str(value) <= run_date})
+    return dates[-1] if dates else run_date
+
+
+def _has_due_pending_orders(*, ledger_path: Path | str, run_date: str) -> bool:
+    ledger = load_ledger(ledger_path)
+    for order in ledger.pending_orders:
+        if order.status not in {"APPROVED", "PENDING_VIRTUAL_FILL"}:
+            continue
+        due = order.virtual_execution_date or run_date
+        if due <= run_date:
+            return True
+    return False
+
+
+def _next_tracker_index(path: Path) -> int:
+    if not path.is_file():
+        return 1
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("entries", []) if isinstance(payload, dict) else []
+    if not entries:
+        return 1
+    return max(int(entry.get("business_day_index") or 0) for entry in entries) + 1
+
+
+def _next_business_day(value: str) -> str:
+    current = date.fromisoformat(value) + timedelta(days=1)
+    while current.weekday() >= 5:
+        current += timedelta(days=1)
+    return current.isoformat()
+
+
+def _write_manifest(
+    *,
+    run_id: str,
+    run_date: str,
+    dates: BusinessDates,
+    mode: str,
+    approval_mode: str,
+    step_statuses: dict[str, Any],
+    warnings: list[str],
+    blocked: list[str],
+    operation_root: Path | str,
+) -> Path:
+    path = Path(operation_root) / "runs" / run_date / "unified_daily_run_manifest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "run_date": run_date,
+                "mode": mode,
+                "approval_mode": approval_mode,
+                "business_dates": dates.to_dict(),
+                "step_statuses": step_statuses,
+                "warnings": list(dict.fromkeys(warnings)),
+                "blocked_reasons": list(dict.fromkeys(blocked)),
+                "prohibited_flags": prohibited_flags(),
+                "created_at": utc_now_iso(),
+            },
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_phase_report(
+    *,
+    run_id: str,
+    run_date: str,
+    status: str,
+    mode: str,
+    dates: BusinessDates,
+    step_statuses: dict[str, Any],
+    warnings: list[str],
+    blocked: list[str],
+    blog_md: str,
+    blog_json: str,
+    markdown_path: Path | str,
+    json_path: Path | str,
+) -> tuple[Path, Path]:
+    payload = {
+        "status": status,
+        "run_id": run_id,
+        "run_date": run_date,
+        "mode": mode,
+        "launchd_command": "python3 scripts/run_aifundlab_daily_paper_trading.py --mode paper-trading --approval-mode auto_for_paper_trading --allow-api-fetch",
+        "business_dates": dates.to_dict(),
+        "step_statuses": step_statuses,
+        "blog_report_v2_markdown_path": blog_md,
+        "blog_report_v2_json_path": blog_json,
+        "warnings": list(dict.fromkeys(warnings)),
+        "blocked_reasons": list(dict.fromkeys(blocked)),
+        "prohibited_flags": prohibited_flags(),
+    }
+    json_path = Path(json_path)
+    md_path = Path(markdown_path)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    md_path.write_text(_render_phase_report(payload), encoding="utf-8")
+    return md_path, json_path
+
+
+def _render_phase_report(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Phase9-U Unified Daily Paper Trading Runner",
+        "",
+        f"- status: {payload['status']}",
+        f"- run_date: {payload['run_date']}",
+        f"- mode: {payload['mode']}",
+        f"- launchd_command: `{payload['launchd_command']}`",
+        "",
+        "## Business Dates",
+        "",
+    ]
+    lines.extend(f"- {key}: {value}" for key, value in payload["business_dates"].items())
+    lines += ["", "## Step Statuses", ""]
+    lines.extend(f"- {key}: {value}" for key, value in payload["step_statuses"].items())
+    lines += ["", "## Reports", "", f"- blog_report_v2: {payload['blog_report_v2_markdown_path']}", ""]
+    if payload["blocked_reasons"]:
+        lines += ["## Blocked Reasons", ""]
+        lines.extend(f"- {reason}" for reason in payload["blocked_reasons"])
+    return "\n".join(lines) + "\n"

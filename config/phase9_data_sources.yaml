@@ -1,0 +1,10 @@
+phase9_data_sources:
+  raw_daily_quotes: .runtime/data/raw/jquants/equities_bars_daily/responses
+  normalized_daily_quotes: .runtime/phase9/canonical_data/normalized_daily_quotes/data.parquet
+  listed_info: .runtime/data/raw/jquants/listed_issues/data.parquet
+  trading_calendar: .runtime/data/raw/jquants/trading_calendar/data.parquet
+  candidate_features: .runtime/phase9/features/2026-06-15/candidate_features.parquet
+  opportunity_features: .runtime/phase9/features/2026-06-15/opportunity_feature_input.parquet
+  position_features: .runtime/phase9/features/2026-06-15/position_feature_input.parquet
+  capital_policy_inputs: .runtime/phase9/features/2026-06-15/capital_policy_input.parquet
+  model_manifests: null

@@ -1,0 +1,4 @@
+# Phase9 daily operation example. Edit paths before use.
+# Runs at 20:00 local machine time.
+0 20 * * 1-5 cd /path/to/ai-fund-lab-v2 && /usr/bin/python3 scripts/run_phase9g_daily_operation.py --date $(date +\%F) --mode dry-run --output-root .runtime/phase9 --runtime-dir .runtime --reports-root reports >> .runtime/phase9/scheduler_logs/phase9_daily.out.log 2>> .runtime/phase9/scheduler_logs/phase9_daily.err.log
+
