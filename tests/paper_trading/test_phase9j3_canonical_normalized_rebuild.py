@@ -208,8 +208,24 @@ def _write_listed(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"target_date": "2026-06-15", "Date": "2026-06-15", "code": "10010", "Code": "10010"},
-            {"target_date": "2026-06-15", "Date": "2026-06-15", "code": "10020", "Code": "10020"},
+            {
+                "target_date": "2026-06-15",
+                "Date": "2026-06-15",
+                "code": "10010",
+                "Code": "10010",
+                "CoName": "Fixture One",
+                "ProdCat": "011",
+                "MktNm": "プライム",
+            },
+            {
+                "target_date": "2026-06-15",
+                "Date": "2026-06-15",
+                "code": "10020",
+                "Code": "10020",
+                "CoName": "Fixture Two",
+                "ProdCat": "011",
+                "MktNm": "スタンダード",
+            },
         ]
     ).to_parquet(path, index=False)
 

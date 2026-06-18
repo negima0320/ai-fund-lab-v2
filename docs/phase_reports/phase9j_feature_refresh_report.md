@@ -10,7 +10,7 @@
 
 | AI | status | rows | max_date | schema_hash | artifact |
 | --- | --- | ---: | --- | --- | --- |
-| candidate | FEATURES_READY | 4989 | 2026-06-16 | `4586c0a0024c78cf` | `.runtime/phase9/features/2026-06-16/candidate_features.parquet` |
+| candidate | FEATURES_READY | 4989 | 2026-06-16 | `1ede9c508b3a16cb` | `.runtime/phase9/features/2026-06-16/candidate_features.parquet` |
 | opportunity | FEATURES_READY | 4989 | 2026-06-16 | `944e345929c4d2c9` | `.runtime/phase9/features/2026-06-16/opportunity_feature_input.parquet` |
 | position | FEATURES_READY | 0 | 2026-06-16 | `3ddf67ff43f207fb` | `.runtime/phase9/features/2026-06-16/position_feature_input.parquet` |
 | capital | FEATURES_READY | 1 | 2026-06-16 | `d66489c1ef814918` | `.runtime/phase9/features/2026-06-16/capital_policy_input.parquet` |

@@ -27,7 +27,19 @@ def _write_quotes(path: Path) -> None:
 
 def _write_listed(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"target_date": "2026-06-15", "Date": "2026-06-15", "code": "10010", "Code": "10010"}]).to_parquet(path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "target_date": "2026-06-15",
+                "Date": "2026-06-15",
+                "code": "10010",
+                "Code": "10010",
+                "CoName": "普通株10010",
+                "ProdCat": "011",
+                "MktNm": "プライム",
+            }
+        ]
+    ).to_parquet(path, index=False)
 
 
 def _write_config(path: Path, *, quotes: Path | None, listed: Path | None) -> None:

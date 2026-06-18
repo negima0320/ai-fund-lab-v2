@@ -297,9 +297,11 @@ def _build_candidate_rows(
         frame = frame[frame["universe_eligible"].astype(bool)]
     rows: list[dict[str, Any]] = []
     for item in frame.to_dict(orient="records"):
-        score = _candidate_score(item)
+        raw_score = _candidate_raw_score(item)
+        rank_score = raw_score
+        score_clipped = _clip(raw_score, 0.0, 100.0)
         confidence = map_public_confidence(
-            internal_score=score,
+            internal_score=score_clipped,
             risk_penalty=0,
             safety_status="READY_FOR_REVIEW",
             short_reason="Momentum and liquidity screen passed.",
@@ -309,8 +311,14 @@ def _build_candidate_rows(
                 "code": str(item.get("code") or item.get("Code") or ""),
                 "issue_code": str(item.get("code") or item.get("Code") or ""),
                 "issue_name": "",
-                "score": round(score, 6),
-                "confidence": round(score / 100.0, 6),
+                "score": round(rank_score, 6),
+                "raw_score_preclip": round(raw_score, 6),
+                "rank_score": round(rank_score, 6),
+                "score_clipped": round(score_clipped, 6),
+                "score_saturation_flag": _score_saturation_flag(raw_score, score_clipped),
+                "score_source": "raw_preclip_rank_score",
+                "rank_tiebreaker": "rank_score_desc,liquidity_desc,code_asc",
+                "confidence": round(score_clipped / 100.0, 6),
                 "public_confidence_score": confidence.public_confidence_score,
                 "public_confidence_label": confidence.public_confidence_label,
                 "short_reason": confidence.short_reason,
@@ -320,12 +328,22 @@ def _build_candidate_rows(
                 "data_until": data_until,
                 "feature_schema_hash": feature_schema_hash,
                 "source_data_refs": source_data_refs,
+                "is_current_listed": bool(item.get("is_current_listed", True)),
+                "has_current_name": bool(item.get("has_current_name", True)),
+                "is_fresh_price": bool(item.get("is_fresh_price", True)),
+                "product_category": str(item.get("product_category") or ""),
+                "market_name": str(item.get("market_name") or ""),
+                "is_allowed_product": bool(item.get("is_allowed_product", True)),
+                "universe_exclusion_reason": str(item.get("universe_exclusion_reason") or ""),
+                "rank_liquidity": round(_candidate_liquidity_rank_value(item), 6),
             }
         )
-    rows.sort(key=lambda row: (-float(row["score"]), row["code"]))
+    rows.sort(key=lambda row: (-float(row["rank_score"]), -float(row["rank_liquidity"]), row["code"]))
+    rows = rows[:limit]
+    _assign_public_scores_from_rank_score(rows, raw_key="rank_score")
     for index, row in enumerate(rows[:limit], start=1):
         row["rank"] = index
-    return rows[:limit]
+    return rows
 
 
 def _build_opportunity_rows(
@@ -343,9 +361,12 @@ def _build_opportunity_rows(
     for candidate in candidate_rows:
         code = str(candidate["code"])
         features = by_code.get(code, {})
-        score = _opportunity_score(float(candidate["score"]), features)
+        candidate_rank_score = float(candidate.get("rank_score") or candidate.get("raw_score_preclip") or candidate.get("score") or 0.0)
+        raw_score = _opportunity_raw_score(candidate_rank_score, features)
+        rank_score = raw_score
+        score_clipped = _clip(raw_score, 0.0, 100.0)
         confidence = map_public_confidence(
-            internal_score=score,
+            internal_score=score_clipped,
             risk_penalty=0,
             safety_status="READY_FOR_REVIEW",
             short_reason="Candidate strength with opportunity ranking.",
@@ -355,8 +376,15 @@ def _build_opportunity_rows(
                 "code": code,
                 "issue_code": code,
                 "issue_name": "",
-                "opportunity_score": round(score, 6),
-                "expected_edge_score": round(score / 100.0, 6),
+                "opportunity_score": round(rank_score, 6),
+                "candidate_rank_score": round(candidate_rank_score, 6),
+                "raw_score_preclip": round(raw_score, 6),
+                "rank_score": round(rank_score, 6),
+                "score_clipped": round(score_clipped, 6),
+                "expected_edge_score": round(score_clipped / 100.0, 6),
+                "score_saturation_flag": _score_saturation_flag(raw_score, score_clipped),
+                "score_source": "raw_preclip_rank_score",
+                "rank_tiebreaker": "rank_score_desc,liquidity_desc,code_asc",
                 "public_confidence_score": confidence.public_confidence_score,
                 "public_confidence_label": confidence.public_confidence_label,
                 "short_reason": confidence.short_reason,
@@ -367,12 +395,22 @@ def _build_opportunity_rows(
                 "feature_schema_hash": feature_schema_hash,
                 "source_data_refs": source_data_refs,
                 "provisional_inference_manifest": True,
+                "is_current_listed": bool(candidate.get("is_current_listed", True)),
+                "has_current_name": bool(candidate.get("has_current_name", True)),
+                "is_fresh_price": bool(candidate.get("is_fresh_price", True)),
+                "product_category": str(candidate.get("product_category") or ""),
+                "market_name": str(candidate.get("market_name") or ""),
+                "is_allowed_product": bool(candidate.get("is_allowed_product", True)),
+                "universe_exclusion_reason": str(candidate.get("universe_exclusion_reason") or ""),
+                "rank_liquidity": round(_opportunity_liquidity_rank_value(features), 6),
             }
         )
-    rows.sort(key=lambda row: (-float(row["opportunity_score"]), row["code"]))
-    for index, row in enumerate(rows[:limit], start=1):
+    rows.sort(key=lambda row: (-float(row["rank_score"]), -float(row["rank_liquidity"]), row["code"]))
+    rows = rows[:limit]
+    _assign_public_scores_from_rank_score(rows, raw_key="rank_score", expected_edge=True)
+    for index, row in enumerate(rows, start=1):
         row["rank"] = index
-    return rows[:limit]
+    return rows
 
 
 def _build_position_rows(*, ledger: PaperTradingLedger, decision_for: str, data_until: str) -> list[dict[str, Any]]:
@@ -503,24 +541,68 @@ def _build_order_plan(*, allocation_rows: list[dict[str, Any]], decision_for: st
     }
 
 
-def _candidate_score(row: Mapping[str, Any]) -> float:
+def _candidate_raw_score(row: Mapping[str, Any]) -> float:
     ret5 = _float(row.get("price_momentum_return_5d"))
     ret20 = _float(row.get("price_momentum_return_20d"))
     volume = _float(row.get("volume_momentum_ratio_5d"), default=1.0)
     volatility = _float(row.get("volatility_return_std_20d"))
     trend = _float(row.get("trend_close_over_ma_20d"))
     liquidity = math.log10(max(_float(row.get("liquidity_avg_volume_20d")), 1.0)) / 7.0
-    score = 50.0 + ret5 * 80.0 + ret20 * 120.0 + (volume - 1.0) * 8.0 + trend * 100.0 - volatility * 300.0 + liquidity * 10.0
-    return _clip(score, 0.0, 100.0)
+    return 50.0 + ret5 * 80.0 + ret20 * 120.0 + (volume - 1.0) * 8.0 + trend * 100.0 - volatility * 300.0 + liquidity * 10.0
 
 
-def _opportunity_score(candidate_score: float, row: Mapping[str, Any]) -> float:
+def _candidate_score(row: Mapping[str, Any]) -> float:
+    return _clip(_candidate_raw_score(row), 0.0, 100.0)
+
+
+def _opportunity_raw_score(candidate_rank_score: float, row: Mapping[str, Any]) -> float:
     ret20 = _float(row.get("feature__price_momentum_return_20d"))
     trend = _float(row.get("feature__trend_close_over_ma_20d"))
     volume = _float(row.get("feature__volume_momentum_ratio_5d"), default=1.0)
     volatility = _float(row.get("feature__volatility_return_std_20d"))
-    score = candidate_score * 0.65 + 35.0 + ret20 * 80.0 + trend * 70.0 + (volume - 1.0) * 5.0 - volatility * 220.0
-    return _clip(score, 0.0, 100.0)
+    return candidate_rank_score * 0.65 + 35.0 + ret20 * 80.0 + trend * 70.0 + (volume - 1.0) * 5.0 - volatility * 220.0
+
+
+def _opportunity_score(candidate_score: float, row: Mapping[str, Any]) -> float:
+    return _clip(_opportunity_raw_score(candidate_score, row), 0.0, 100.0)
+
+
+def _candidate_liquidity_rank_value(row: Mapping[str, Any]) -> float:
+    return _float(row.get("liquidity_avg_volume_20d"))
+
+
+def _opportunity_liquidity_rank_value(row: Mapping[str, Any]) -> float:
+    return _float(row.get("feature__liquidity_avg_volume_20d"))
+
+
+def _score_saturation_flag(raw_score: float, score_clipped: float) -> bool:
+    return abs(raw_score - score_clipped) > 1e-9
+
+
+def _assign_public_scores_from_rank_score(rows: list[dict[str, Any]], *, raw_key: str, expected_edge: bool = False) -> None:
+    values = [float(row.get(raw_key) or 0.0) for row in rows]
+    if not rows:
+        return
+    min_value = min(values)
+    max_value = max(values)
+    span = max_value - min_value
+    for row in rows:
+        raw_value = float(row.get(raw_key) or 0.0)
+        if span <= 1e-12:
+            normalized = 0.5
+        else:
+            normalized = (raw_value - min_value) / span
+        public_score = max(0, min(100, int(round(40 + normalized * 60))))
+        confidence = map_public_confidence(
+            internal_score=public_score,
+            risk_penalty=0,
+            safety_status="READY_FOR_REVIEW",
+            short_reason=str(row.get("short_reason") or "Phase9 rank score based public score."),
+        )
+        row["public_confidence_score"] = confidence.public_confidence_score
+        row["public_confidence_label"] = confidence.public_confidence_label
+        if expected_edge:
+            row["expected_edge_score"] = round(normalized, 6)
 
 
 def _load_close_map(path: Path, *, decision_for: str) -> dict[str, Decimal]:

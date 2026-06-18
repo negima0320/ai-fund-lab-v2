@@ -121,8 +121,8 @@ def run_unified_daily_paper_trading(
         if skip_market_data_refresh:
             step_statuses["market_data_refresh"] = "SKIPPED_BY_FLAG"
         elif allow_api_fetch:
-            step_statuses["market_data_refresh"] = "API_FETCH_ALLOWED_BUT_NOT_AUTO_EXECUTED_IN_UNIFIED_RUNNER"
-            warnings.append("market_data_refresh_runner_should_be_called_by_future_launchd_profile_when_enabled")
+            step_statuses["market_data_refresh"] = "MARKET_DATA_REFRESH_NOT_CONNECTED_BLOCKED"
+            blocked.append("market_data_refresh_not_connected_in_unified_runner")
         else:
             step_statuses["market_data_refresh"] = "SKIPPED_API_FETCH_NOT_ALLOWED"
 
@@ -168,14 +168,28 @@ def run_unified_daily_paper_trading(
                 run_date=dates.data_target_date,
                 ledger_path=ledger_path,
                 quotes_path=quotes_path,
-                mode="paper-trading" if mode == "paper-trading" else "dry-run",
+                mode="paper-trading" if mode == "paper-trading" and not blocked else "dry-run",
                 approval_mode=approval_mode,
+                operation_run_date=run_date,
+                expected_valuation_date=run_date if mode == "paper-trading" else dates.data_target_date,
+                run_id=run_id,
                 runtime_dir=runtime_dir,
                 update_tracker=False,
                 docs_report_path=Path("docs/phase_reports") / "phase9u_unified_daily_continuation.md",
                 json_report_path=Path("reports/phase_reports") / "phase9u_unified_daily_continuation.json",
             )
             step_statuses["ledger_valuation"] = continuation.valuation_status
+            valuation_payload = _read_json_safely(Path(continuation.performance_report_json_path)).get("valuation", {})
+            step_statuses["valuation_context"] = {
+                "run_date": run_date,
+                "decision_for": dates.decision_for,
+                "data_target_date": dates.data_target_date,
+                "valuation_date": valuation_payload.get("valuation_date", dates.data_target_date),
+                "quote_source_path": valuation_payload.get("quote_source_path", str(quotes_path)),
+                "quote_source_max_date": valuation_payload.get("quote_source_max_date", ""),
+                "stale_price_source": valuation_payload.get("stale_price_source", False),
+                "market_data_refresh_status": step_statuses["market_data_refresh"],
+            }
             report_refs["daily_performance_report"] = continuation.performance_report_json_path
             warnings.extend(continuation.warnings)
             blocked.extend(continuation.blocked_reasons)
@@ -244,6 +258,7 @@ def run_unified_daily_paper_trading(
                 execution_date=run_date,
                 inference_root=Path(runtime_dir) / "phase9" / "inference",
                 ledger_path=ledger_path,
+                performance_report_path=report_refs.get("daily_performance_report") or None,
                 output_root=Path(reports_root) / "public" / "phase9_daily",
             )
             step_statuses["blog_report_v2"] = blog.status
@@ -373,6 +388,16 @@ def _next_tracker_index(path: Path) -> int:
     if not entries:
         return 1
     return max(int(entry.get("business_day_index") or 0) for entry in entries) + 1
+
+
+def _read_json_safely(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _next_business_day(value: str) -> str:

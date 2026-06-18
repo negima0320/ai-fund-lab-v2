@@ -29,8 +29,8 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     markdown = Path(result.markdown_path).read_text(encoding="utf-8")
 
     assert result.status == BLOG_REPORT_V2_READY
-    assert result.markdown_path.endswith("_blog_report_v3.md")
-    assert result.json_path.endswith("_blog_report_v3.json")
+    assert result.markdown_path.endswith("_blog_report_v4.md")
+    assert result.json_path.endswith("_blog_report_v4.json")
     assert result.candidate_count == 50
     assert result.opportunity_count == 20
     assert result.buy_count == 5
@@ -54,26 +54,61 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     assert payload["summary"]["current_asset"] == "993140.0"
     assert payload["summary"]["current_asset_display"] == "993,140円"
     assert payload["summary"]["pnl_rate_display"] == "-0.69%"
-    assert "| rank |" not in markdown
-    assert "|---" not in markdown
-    assert "1位 " in markdown
-    assert "- Candidate Score:" in markdown
-    assert "- Opportunity Score:" in markdown
-    assert markdown.count("- Opportunity Score:") == 5
+    assert "|" not in markdown
+    assert "```latex" not in markdown
+    assert "```" not in markdown
+    assert "$$" not in markdown
+    assert "\\begin{array}" not in markdown
+    assert "- Candidate Score:" not in markdown
+    assert "- Opportunity Score:" not in markdown
+    assert "Candidate AIの初期選定で上位に入りました。" not in markdown
+    assert "公開用に0-100へ丸めた説明スコアです。" not in markdown
+    candidate_section = _section(markdown, "## Candidate Top50", "## 本日の購入候補 Top5")
+    candidate_lines = [line for line in candidate_section.splitlines() if line and line[0].isdigit()]
+    assert len(candidate_lines) == 50
+    for row in payload["candidate_top50"]:
+        assert f"{row['rank']}. {row['code']} 補完銘柄{row['code']} / Score {row['candidate_score']}" in candidate_section
+    for row in payload["opportunity_top20"][:5]:
+        assert (
+            f"{row['rank']}. {row['code']} {row['name']} / "
+            f"Opportunity Score {row['opportunity_score']} / AI信頼度 {row['public_confidence_score']}"
+        ) in markdown
+        assert row["short_reason"] not in markdown
+        assert row["public_confidence_note"] not in markdown
     assert "## Opportunity Top20" not in markdown
+    assert "## 資産状況" in markdown
+    assert "- 現金: 283,330円" in markdown
+    assert "- 株式評価額: 709,810円" in markdown
+    assert "- 現在資産: 993,140円" in markdown
+    assert "- 損益: -6,860円" in markdown
     assert "## 本日の購入候補 Top5" in markdown
     assert "## 本日の購入銘柄" in markdown
     assert "## 現在保有中の銘柄" in markdown
+    assert "1. 1001 補完銘柄1001 / 100株 / 評価額 99,000円 / 損益 -1,000円" in markdown
+    assert "1. 1001 補完銘柄1001 / 100株 / 約定価格 100円" in markdown
+    assert "購入理由: AI評価上位かつ資金配分ルールを満たしたため。" in markdown
     assert markdown.index("## 現在保有中の銘柄") < markdown.index("## 本日の購入銘柄")
     assert markdown.index("## 本日の購入銘柄") < markdown.index("## 本日の売却銘柄")
     assert markdown.index("## 本日の売却銘柄") < markdown.index("## Candidate Top50")
     assert markdown.index("## Candidate Top50") < markdown.index("## 本日の購入候補 Top5")
     assert "本日は売却銘柄はありません。" in markdown
+    assert "## Data Quality" in markdown
+    assert "- missing_name_count: 0" in markdown
+    assert "- listed_info_unmatched_count: 0" in markdown
+    assert "- stale_price_count: 0" in markdown
+    assert "- disallowed_product_count: 0" in markdown
+    assert "- universe_hard_gate_violation_count: 0" in markdown
+    assert "score_all_same_flag" not in markdown
+    assert "J-Quants listed_info" not in markdown
     assert "これは仮想運用です。" in markdown
     assert "実売買ではありません。" in markdown
     assert "投資判断は自己責任でお願いします。" in markdown
     assert result.redaction_status == "PUBLIC_REPORT_READY"
     assert payload["data_quality"]["missing_name_count"] == 0
+    assert payload["data_quality"]["listed_info_unmatched_count"] == 0
+    assert payload["data_quality"]["stale_price_count"] == 0
+    assert payload["data_quality"]["disallowed_product_count"] == 0
+    assert payload["data_quality"]["universe_hard_gate_violation_count"] == 0
     assert payload["data_quality"]["score_all_same_flag"] is False
 
 
@@ -101,8 +136,14 @@ def test_phase9t_blog_report_v2_missing_name_and_score_fallbacks(tmp_path: Path)
     assert payload["data_quality"]["missing_name_count"] > 0
     assert payload["data_quality"]["score_missing_count"] > 0
     assert result.redaction_status == "PUBLIC_REPORT_READY"
-    assert "| rank |" not in markdown
+    assert "|" not in markdown
+    assert "## Data Quality" in markdown
+    assert "- missing_name_count:" in markdown
     assert "## 注意書き" in markdown
+
+
+def _section(markdown: str, start: str, end: str) -> str:
+    return markdown.split(start, maxsplit=1)[1].split(end, maxsplit=1)[0]
 
 
 def _write_inference_artifacts(tmp_path: Path, *, include_missing_score: bool = False) -> Path:

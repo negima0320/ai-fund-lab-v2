@@ -47,6 +47,13 @@ REQUIRED_COLUMNS = {
         "volatility_return_std_20d",
         "trend_close_over_ma_20d",
         "liquidity_avg_volume_20d",
+        "is_current_listed",
+        "has_current_name",
+        "is_fresh_price",
+        "product_category",
+        "market_name",
+        "is_allowed_product",
+        "universe_exclusion_reason",
     ),
     "opportunity": (
         "target_date",
@@ -79,6 +86,9 @@ REQUIRED_COLUMNS = {
         "source_position_feature_path",
     ),
 }
+
+ALLOWED_PHASE9_PRODUCT_CATEGORIES = {"011", "021"}
+ALLOWED_PHASE9_MARKETS = {"プライム", "スタンダード", "グロース"}
 
 
 @dataclass(frozen=True)
@@ -270,9 +280,14 @@ def _execute_refresh(
             for ai_name in AI_NAMES
         ]
     listed = _read_table(listed_path) if listed_path.is_file() else pd.DataFrame()
-    listed = listed[listed.get("target_date", listed.get("Date", "")).astype(str) <= target_data_until].copy() if not listed.empty else listed
+    listed = _latest_listed_snapshot(listed, target_data_until=target_data_until)
 
-    candidate = _build_candidate_feature_frame(quotes=quotes, target_data_until=target_data_until, created_at=created_at)
+    candidate = _build_candidate_feature_frame(
+        quotes=quotes,
+        listed=listed,
+        target_data_until=target_data_until,
+        created_at=created_at,
+    )
     opportunity = _build_opportunity_feature_input(candidate)
     position = _build_position_feature_input(target_data_until=target_data_until, created_at=created_at)
     capital = _build_capital_policy_input(
@@ -319,7 +334,13 @@ def _audit_existing(*, target_data_until: str, feature_root: Path, source_refs: 
     ]
 
 
-def _build_candidate_feature_frame(*, quotes: pd.DataFrame, target_data_until: str, created_at: str) -> pd.DataFrame:
+def _build_candidate_feature_frame(
+    *,
+    quotes: pd.DataFrame,
+    listed: pd.DataFrame,
+    target_data_until: str,
+    created_at: str,
+) -> pd.DataFrame:
     source_rows = pd.DataFrame(
         {
             "date": quotes["target_date"].astype(str),
@@ -337,9 +358,112 @@ def _build_candidate_feature_frame(*, quotes: pd.DataFrame, target_data_until: s
     )
     frame = pd.DataFrame(result.rows)
     if not frame.empty:
+        frame = _apply_phase9_universe_hard_gate(frame, listed=listed, target_data_until=target_data_until)
         frame["created_at"] = created_at
         frame["data_until"] = target_data_until
     return frame
+
+
+def _latest_listed_snapshot(listed: pd.DataFrame, *, target_data_until: str) -> pd.DataFrame:
+    if listed.empty:
+        return listed
+    date_col = _first_existing_column(listed, ("target_date", "Date", "date"))
+    if not date_col:
+        return listed.iloc[0:0].copy()
+    frame = listed[listed[date_col].astype(str) <= target_data_until].copy()
+    if frame.empty:
+        return frame
+    latest_date = str(frame[date_col].astype(str).max())
+    return frame[frame[date_col].astype(str) == latest_date].copy()
+
+
+def _apply_phase9_universe_hard_gate(
+    frame: pd.DataFrame,
+    *,
+    listed: pd.DataFrame,
+    target_data_until: str,
+) -> pd.DataFrame:
+    output = frame.copy()
+    listed_by_code = _listed_snapshot_by_code(listed)
+    is_current_listed: list[bool] = []
+    has_current_name: list[bool] = []
+    product_categories: list[str] = []
+    market_names: list[str] = []
+    is_allowed_product: list[bool] = []
+    is_fresh_price: list[bool] = []
+    reasons: list[str] = []
+    eligible: list[bool] = []
+
+    for row in output.to_dict(orient="records"):
+        code = _normalize_code(row.get("code") or row.get("Code"))
+        listed_row = listed_by_code.get(code)
+        current = listed_row is not None
+        name = str((listed_row or {}).get("CoName") or (listed_row or {}).get("CompanyName") or "").strip()
+        product_category = str((listed_row or {}).get("ProdCat") or "")
+        market_name = str((listed_row or {}).get("MktNm") or "")
+        allowed_product = product_category in ALLOWED_PHASE9_PRODUCT_CATEGORIES and market_name in ALLOWED_PHASE9_MARKETS
+        fresh_price = str(row.get("data_end_date") or "") == target_data_until
+        enough_lookback = bool(row.get("universe_eligible"))
+
+        row_reasons: list[str] = []
+        if not enough_lookback:
+            row_reasons.append("insufficient_lookback")
+        if not current:
+            row_reasons.append("not_current_listed")
+        if not name:
+            row_reasons.append("missing_name")
+        if not fresh_price:
+            row_reasons.append("stale_price")
+        if not allowed_product:
+            row_reasons.append("disallowed_product")
+
+        is_current_listed.append(current)
+        has_current_name.append(bool(name))
+        product_categories.append(product_category)
+        market_names.append(market_name)
+        is_allowed_product.append(allowed_product)
+        is_fresh_price.append(fresh_price)
+        reasons.append(",".join(dict.fromkeys(row_reasons)))
+        eligible.append(not row_reasons)
+
+    output["is_current_listed"] = is_current_listed
+    output["has_current_name"] = has_current_name
+    output["is_fresh_price"] = is_fresh_price
+    output["product_category"] = product_categories
+    output["market_name"] = market_names
+    output["is_allowed_product"] = is_allowed_product
+    output["universe_exclusion_reason"] = reasons
+    output["universe_eligible"] = eligible
+    output["excluded_reason"] = reasons
+    return output
+
+
+def _listed_snapshot_by_code(listed: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if listed.empty:
+        return {}
+    code_col = _first_existing_column(listed, ("code", "Code", "LocalCode"))
+    if not code_col:
+        return {}
+    frame = listed.copy()
+    date_col = _first_existing_column(frame, ("target_date", "Date", "date"))
+    if date_col:
+        frame = frame.sort_values([code_col, date_col])
+    return {
+        _normalize_code(row.get(code_col)): row
+        for row in frame.to_dict(orient="records")
+        if _normalize_code(row.get(code_col))
+    }
+
+
+def _first_existing_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str:
+    for column in candidates:
+        if column in frame.columns:
+            return column
+    return ""
+
+
+def _normalize_code(value: Any) -> str:
+    return str(value or "").strip().upper()
 
 
 def _build_opportunity_feature_input(candidate: pd.DataFrame) -> pd.DataFrame:

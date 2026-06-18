@@ -48,6 +48,7 @@ class PositionSnapshot:
     unrealized_pnl: Decimal = Decimal("0")
     holding_days: int = 0
     name: str = ""
+    last_valuation_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,7 @@ def load_ledger(path: Path | str) -> PaperTradingLedger:
                 market_value=_decimal(item.get("market_value")),
                 unrealized_pnl=_decimal(item.get("unrealized_pnl")),
                 holding_days=int(item.get("holding_days") or 0),
+                last_valuation_date=str(item.get("last_valuation_date") or ""),
             )
             for item in payload.get("positions", [])
             if isinstance(item, dict)

@@ -9,7 +9,7 @@ import pytest
 
 from ai_fund_lab_v2.paper_trading.ledger import PaperTradingLedger, PendingOrderState, PerformanceSnapshot, PositionSnapshot, load_ledger, write_ledger
 from ai_fund_lab_v2.paper_trading.run_lock import RunLockError, acquire_run_lock
-from ai_fund_lab_v2.paper_trading.unified_daily_runner import UNIFIED_DAILY_RUNNER_COMPLETED, run_unified_daily_paper_trading
+from ai_fund_lab_v2.paper_trading.unified_daily_runner import UNIFIED_DAILY_RUNNER_BLOCKED, UNIFIED_DAILY_RUNNER_COMPLETED, run_unified_daily_paper_trading
 
 
 def test_phase9u_dry_run_does_not_mutate_ledger(tmp_path: Path) -> None:
@@ -91,6 +91,40 @@ def test_phase9u_fill_step_runs_before_inference_step(tmp_path: Path) -> None:
 
     assert result.step_statuses["virtual_fill"] == "FIRST_VIRTUAL_FILL_DRY_RUN"
     assert keys.index("virtual_fill") < keys.index("daily_inference")
+
+
+def test_phase9u_allow_api_fetch_blocks_when_market_refresh_is_not_connected(tmp_path: Path) -> None:
+    ledger_path = _write_position_ledger(tmp_path)
+    before = Path(ledger_path).read_text(encoding="utf-8")
+    quotes_path = _write_quotes(tmp_path)
+
+    result = run_unified_daily_paper_trading(
+        run_date="2026-06-17",
+        ledger_path=ledger_path,
+        mode="paper-trading",
+        allow_api_fetch=True,
+        runtime_dir=tmp_path / ".runtime",
+        operation_root=tmp_path / ".runtime" / "daily_operation",
+        quotes_path=quotes_path,
+        reports_root=tmp_path / "reports",
+        phase_report_markdown_path=tmp_path / "phase9u.md",
+        phase_report_json_path=tmp_path / "phase9u.json",
+        skip_feature_refresh=True,
+        skip_inference=True,
+        skip_tracker_update=True,
+        skip_blog_report_v2=True,
+    )
+    latest = Path(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json").read_text(encoding="utf-8")
+    operation_log = json.loads(Path(result.operation_log_json_path).read_text(encoding="utf-8"))
+
+    assert result.status == UNIFIED_DAILY_RUNNER_BLOCKED
+    assert result.step_statuses["market_data_refresh"] == "MARKET_DATA_REFRESH_NOT_CONNECTED_BLOCKED"
+    assert result.step_statuses["ledger_valuation"] == "LEDGER_VALUATION_STALE_SOURCE"
+    assert result.step_statuses["valuation_context"]["quote_source_max_date"] == "2026-06-16"
+    assert result.step_statuses["valuation_context"]["stale_price_source"] is True
+    assert "market_data_refresh_not_connected_in_unified_runner" in result.blocked_reasons
+    assert latest == before
+    assert operation_log["step_statuses"]["valuation_context"]["market_data_refresh_status"] == "MARKET_DATA_REFRESH_NOT_CONNECTED_BLOCKED"
 
 
 def test_phase9u_blog_report_and_tracker_and_operation_log(tmp_path: Path) -> None:
