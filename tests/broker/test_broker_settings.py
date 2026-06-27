@@ -10,6 +10,8 @@ def test_broker_settings_loads_from_env_mapping() -> None:
             "TACHIBANA_API_BASE_URL": "https://demo.example/e_api_v4r9/",
             "TACHIBANA_API_ENV": "demo",
             "TACHIBANA_API_TIMEOUT_SECONDS": "12.5",
+            "TACHIBANA_API_RATE_LIMIT_PER_SECOND": "4",
+            "TACHIBANA_API_READONLY_SMOKE_ENABLED": "true",
         }
     )
 
@@ -17,6 +19,8 @@ def test_broker_settings_loads_from_env_mapping() -> None:
     assert settings.base_url == "https://demo.example/e_api_v4r9"
     assert settings.environment == "demo"
     assert settings.timeout_seconds == 12.5
+    assert settings.rate_limit_per_second == 4
+    assert settings.readonly_smoke_enabled is True
 
 
 def test_broker_settings_repr_does_not_leak_auth_id() -> None:
@@ -33,3 +37,22 @@ def test_missing_broker_auth_id_raises_clear_error_without_secret() -> None:
 
     with pytest.raises(BrokerConfigurationError, match="TACHIBANA_API_AUTH_ID is required"):
         settings.require_auth_id()
+
+
+def test_demo_only_guard_rejects_prod() -> None:
+    settings = load_broker_settings(
+        {
+            "TACHIBANA_API_ENV": "prod",
+            "TACHIBANA_API_BASE_URL": "https://kabuka.e-shiten.jp/e_api_v4r9",
+        }
+    )
+
+    with pytest.raises(BrokerConfigurationError, match="demo-only"):
+        settings.require_demo_environment()
+
+
+def test_demo_only_guard_rejects_non_demo_base_url() -> None:
+    settings = load_broker_settings({"TACHIBANA_API_ENV": "demo", "TACHIBANA_API_BASE_URL": "https://example.test"})
+
+    with pytest.raises(BrokerConfigurationError, match="demo base URL"):
+        settings.require_demo_environment()

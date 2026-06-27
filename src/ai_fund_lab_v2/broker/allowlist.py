@@ -10,16 +10,22 @@ READ_ONLY_CLMIDS: frozenset[str] = frozenset(
         "CLMShinyouTategyokuList",
         "CLMOrderList",
         "CLMOrderListDetail",
+        "CLMMfdsGetMarketPrice",
+        "CLMMfdsGetMarketPriceHistory",
     }
 )
 
-FORBIDDEN_ORDER_CLMIDS: frozenset[str] = frozenset(
+FORBIDDEN_CLMIDS: frozenset[str] = frozenset(
     {
         "CLMKabuNewOrder",
         "CLMKabuCorrectOrder",
         "CLMKabuCancelOrder",
+        "CLMKabuCancelOrderAll",
+        "CLMAuthCheckSecondPassword",
+        "CLMAuthStkLoginRequest",
     }
 )
+FORBIDDEN_ORDER_CLMIDS = FORBIDDEN_CLMIDS
 
 
 class BrokerAllowlistError(RuntimeError):
@@ -33,8 +39,8 @@ def is_read_only_clmid(clmid: str | None) -> bool:
 def ensure_read_only_clmid(clmid: str | None) -> str:
     if not clmid:
         raise BrokerAllowlistError("Broker request is missing sCLMID.")
-    if clmid in FORBIDDEN_ORDER_CLMIDS:
-        raise BrokerAllowlistError(f"Broker CLMID {clmid} is an order operation and is forbidden in Phase2-B2.")
+    if clmid in FORBIDDEN_CLMIDS:
+        raise BrokerAllowlistError(f"Broker CLMID {clmid} is forbidden in Phase10-C.")
     if clmid not in READ_ONLY_CLMIDS:
-        raise BrokerAllowlistError(f"Broker CLMID {clmid} is not in the Phase2 read-only allowlist.")
+        raise BrokerAllowlistError(f"Broker CLMID {clmid} is not in the Phase10 read-only allowlist.")
     return clmid

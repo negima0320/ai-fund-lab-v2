@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ai_fund_lab_v2.broker.diagnosis import is_success_result_code
 from ai_fund_lab_v2.broker.sanitizer import sanitize_mapping
 
 
@@ -31,7 +32,7 @@ class BrokerResponseEnvelope:
         return str(self.raw.get("sWarningText") or "")
 
     def is_success(self) -> bool:
-        return self.result_code in ("", "0")
+        return is_success_result_code(self.raw.get("sResultCode"))
 
     def safe_dict(self) -> dict[str, Any]:
         return sanitize_mapping(self.raw)

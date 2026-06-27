@@ -42,6 +42,9 @@ class BrokerBalanceSnapshot:
     buying_power: Decimal = Decimal("0")
     withdrawable_cash: Decimal = Decimal("0")
     total_assets: Decimal = Decimal("0")
+    margin_buying_power: Decimal = Decimal("0")
+    ipo_buying_power: Decimal = Decimal("0")
+    nisa_growth_capacity: Decimal = Decimal("0")
     raw_clmid: str = ""
     raw_method: str = ""
     raw_result_code: str = ""

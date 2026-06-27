@@ -14,6 +14,15 @@ SENSITIVE_KEY_PARTS = (
     "requesturl",
     "session_url",
     "sessionurl",
+    "surlrequest",
+    "surlmaster",
+    "surlprice",
+    "surlevent",
+    "surleventwebsocket",
+    "websocket_url",
+    "websocketurl",
+    "private_key",
+    "privatekey",
     "account_id",
     "accountid",
     "password",
@@ -49,6 +58,8 @@ def hash_account_id(value: str) -> str:
 def _sanitize_value(key: str, value: Any) -> Any:
     normalized_key = _normalize_key(key)
     if any(part in normalized_key for part in SENSITIVE_KEY_PARTS):
+        if isinstance(value, bool):
+            return value
         return REDACTION
     if isinstance(value, Mapping):
         return sanitize_mapping(value)
