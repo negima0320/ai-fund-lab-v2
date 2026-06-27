@@ -27,6 +27,7 @@ def test_missing_execution_date_quotes_returns_data_not_ready_and_keeps_ledger(t
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "report.md",
         json_report_path=tmp_path / "report.json",
+        public_summary_path=tmp_path / "public_summary.md",
     )
 
     assert result.status == DATA_NOT_READY
@@ -48,6 +49,7 @@ def test_dry_run_writes_candidate_outputs_without_latest_update(tmp_path: Path) 
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "report.md",
         json_report_path=tmp_path / "report.json",
+        public_summary_path=tmp_path / "public_summary.md",
     )
 
     assert result.status == FIRST_VIRTUAL_FILL_DRY_RUN
@@ -69,6 +71,7 @@ def test_execute_fill_updates_latest_ledger_cash_position_and_records_execution(
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "report.md",
         json_report_path=tmp_path / "report.json",
+        public_summary_path=tmp_path / "public_summary.md",
     )
     latest = load_ledger(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json")
 
@@ -103,6 +106,7 @@ def test_no_fill_reason_preserved_when_order_code_has_no_open_price(tmp_path: Pa
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "report.md",
         json_report_path=tmp_path / "report.json",
+        public_summary_path=tmp_path / "public_summary.md",
     )
     latest = load_ledger(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json")
 
@@ -129,4 +133,3 @@ def _write_quotes(tmp_path: Path, *, date: str = "2026-06-16") -> Path:
         ]
     ).to_parquet(path, index=False)
     return path
-

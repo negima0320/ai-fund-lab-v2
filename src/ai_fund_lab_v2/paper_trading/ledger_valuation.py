@@ -130,7 +130,7 @@ def update_ledger_valuation(
         quote_source_max_date=quote_source_max_date,
     )
     if not ledger.positions:
-        ledger_after = _ledger_with_positions(ledger, positions=())
+        ledger_after = _ledger_with_positions(ledger, positions=(), valuation_date=valuation_date)
         return _write_valuation_outputs(
             ledger_before=ledger,
             ledger_after=ledger_after,
@@ -193,7 +193,7 @@ def update_ledger_valuation(
             )
         )
     warnings = tuple(f"missing_close_price:{code}" for code in missing)
-    ledger_after = _ledger_with_positions(ledger, positions=tuple(positions))
+    ledger_after = _ledger_with_positions(ledger, positions=tuple(positions), valuation_date=valuation_date)
     return _write_valuation_outputs(
         ledger_before=ledger,
         ledger_after=ledger_after,
@@ -212,7 +212,7 @@ def update_ledger_valuation(
     )
 
 
-def _ledger_with_positions(ledger: PaperTradingLedger, *, positions: tuple[PositionSnapshot, ...]) -> PaperTradingLedger:
+def _ledger_with_positions(ledger: PaperTradingLedger, *, positions: tuple[PositionSnapshot, ...], valuation_date: str = "") -> PaperTradingLedger:
     realized = ledger.performance.realized_pnl if ledger.performance else Decimal("0")
     trade_count = ledger.performance.trade_count if ledger.performance else 0
     market_value = sum((position.market_value for position in positions), Decimal("0"))
@@ -243,6 +243,8 @@ def _ledger_with_positions(ledger: PaperTradingLedger, *, positions: tuple[Posit
             open_d_started=False,
             unlock_trade_called=False,
             virtual_fill_executed=ledger.metadata.virtual_fill_executed,
+            last_execution_date=ledger.metadata.last_execution_date,
+            last_valuation_date=valuation_date or ledger.metadata.last_valuation_date,
         ),
     )
 

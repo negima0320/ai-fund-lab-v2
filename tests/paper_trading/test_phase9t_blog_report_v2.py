@@ -39,6 +39,7 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     assert len(payload["candidate_top50"]) == 50
     assert len(payload["opportunity_top20"]) == 20
     assert len(payload["bought"]) == 5
+    assert len(payload["purchase_reason_details"]) == 5
     assert payload["candidate_top50"][0]["code"] == "1001"
     assert payload["opportunity_top20"][0]["code"] == "1001"
     assert payload["bought"][0]["code"] == "1001"
@@ -54,6 +55,8 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     assert payload["summary"]["current_asset"] == "993140.0"
     assert payload["summary"]["current_asset_display"] == "993,140円"
     assert payload["summary"]["pnl_rate_display"] == "-0.69%"
+    assert not markdown.startswith("# Phase9 Blog Report v4")
+    assert "## 今日のAI運用サマリー" not in markdown
     assert "|" not in markdown
     assert "```latex" not in markdown
     assert "```" not in markdown
@@ -63,7 +66,7 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     assert "- Opportunity Score:" not in markdown
     assert "Candidate AIの初期選定で上位に入りました。" not in markdown
     assert "公開用に0-100へ丸めた説明スコアです。" not in markdown
-    candidate_section = _section(markdown, "## Candidate Top50", "## 本日の購入候補 Top5")
+    candidate_section = _section(markdown, "## Candidate Top50", "## 翌営業日の購入予定候補 Top5")
     candidate_lines = [line for line in candidate_section.splitlines() if line and line[0].isdigit()]
     assert len(candidate_lines) == 50
     for row in payload["candidate_top50"]:
@@ -81,23 +84,41 @@ def test_phase9t_blog_report_v2_renders_required_sections(tmp_path: Path) -> Non
     assert "- 株式評価額: 709,810円" in markdown
     assert "- 現在資産: 993,140円" in markdown
     assert "- 損益: -6,860円" in markdown
-    assert "## 本日の購入候補 Top5" in markdown
-    assert "## 本日の購入銘柄" in markdown
+    assert "## 翌営業日の購入予定候補 Top5" in markdown
+    assert "本日終値データに基づく、次回約定候補です。" in markdown
+    assert "## なぜこの5銘柄が購入候補なのか" in markdown
+    assert len(payload["top5_reason_details"]) == 5
+    top5_reason_section = _section(markdown, "## なぜこの5銘柄が購入候補なのか", "## AIの総括")
+    assert "補完銘柄1001はCandidate 1位からOpportunity 1位まで残った注目候補です。" in top5_reason_section
+    assert "公開用AI信頼度は79です。" in top5_reason_section
+    assert "## 本日約定した銘柄" in markdown
+    assert "前営業日のAI判断に基づき、本日始値で仮想約定した銘柄です。" in markdown
+    assert "## なぜこの銘柄を選んだのか" in markdown
+    assert "補完銘柄1001はCandidate 1位、Opportunity 1位として残った銘柄です。" in markdown
+    assert "CAP5では1銘柄20%上限、5%の現金バッファ、100株単位の条件を確認し" in markdown
+    assert payload["ai_summary_deep_dive"]
+    ai_summary_section = _section(markdown, "## AIの総括", "## 注意書き")
+    assert "今回の選定は、短期から20日程度の値動きと出来高の増加を強く評価した" in ai_summary_section
+    assert "補完銘柄1001" in ai_summary_section
+    assert "10010" not in ai_summary_section
     assert "## 現在保有中の銘柄" in markdown
     assert "1. 1001 補完銘柄1001 / 100株 / 評価額 99,000円 / 損益 -1,000円" in markdown
     assert "1. 1001 補完銘柄1001 / 100株 / 約定価格 100円" in markdown
     assert "購入理由: AI評価上位かつ資金配分ルールを満たしたため。" in markdown
-    assert markdown.index("## 現在保有中の銘柄") < markdown.index("## 本日の購入銘柄")
-    assert markdown.index("## 本日の購入銘柄") < markdown.index("## 本日の売却銘柄")
+    assert markdown.index("## 現在保有中の銘柄") < markdown.index("## 本日約定した銘柄")
+    assert markdown.index("## 本日約定した銘柄") < markdown.index("## なぜこの銘柄を選んだのか")
+    assert markdown.index("## なぜこの銘柄を選んだのか") < markdown.index("## 本日の売却銘柄")
     assert markdown.index("## 本日の売却銘柄") < markdown.index("## Candidate Top50")
-    assert markdown.index("## Candidate Top50") < markdown.index("## 本日の購入候補 Top5")
+    assert markdown.index("## Candidate Top50") < markdown.index("## 翌営業日の購入予定候補 Top5")
     assert "本日は売却銘柄はありません。" in markdown
-    assert "## Data Quality" in markdown
-    assert "- missing_name_count: 0" in markdown
-    assert "- listed_info_unmatched_count: 0" in markdown
-    assert "- stale_price_count: 0" in markdown
-    assert "- disallowed_product_count: 0" in markdown
-    assert "- universe_hard_gate_violation_count: 0" in markdown
+    assert "## なぜこの銘柄を売却したのか" not in markdown
+    assert "公開ブログでは、読みやすさを優先して理由・補足の長文は省略しています。" not in markdown
+    assert "## Data Quality" not in markdown
+    assert "- missing_name_count: 0" not in markdown
+    assert "- listed_info_unmatched_count: 0" not in markdown
+    assert "- stale_price_count: 0" not in markdown
+    assert "- disallowed_product_count: 0" not in markdown
+    assert "- universe_hard_gate_violation_count: 0" not in markdown
     assert "score_all_same_flag" not in markdown
     assert "J-Quants listed_info" not in markdown
     assert "これは仮想運用です。" in markdown
@@ -137,9 +158,37 @@ def test_phase9t_blog_report_v2_missing_name_and_score_fallbacks(tmp_path: Path)
     assert payload["data_quality"]["score_missing_count"] > 0
     assert result.redaction_status == "PUBLIC_REPORT_READY"
     assert "|" not in markdown
-    assert "## Data Quality" in markdown
-    assert "- missing_name_count:" in markdown
+    assert "## Data Quality" not in markdown
+    assert "- missing_name_count:" not in markdown
     assert "## 注意書き" in markdown
+
+
+def test_phase9t_blog_report_v2_renders_sell_reason_details(tmp_path: Path) -> None:
+    inference_root = _write_inference_artifacts(tmp_path)
+    ledger_path = _write_ledger(tmp_path)
+    execution_path = _write_executions(tmp_path, include_sell=True)
+    listed_info_path = _write_listed_info(tmp_path)
+
+    result = write_blog_report_v2(
+        decision_for="2026-06-15",
+        execution_date="2026-06-16",
+        inference_root=inference_root,
+        ledger_path=ledger_path,
+        execution_record_path=execution_path,
+        listed_info_path=listed_info_path,
+        output_root=tmp_path / "public",
+    )
+    payload = json.loads(Path(result.json_path).read_text(encoding="utf-8"))
+    markdown = Path(result.markdown_path).read_text(encoding="utf-8")
+
+    assert result.status == BLOG_REPORT_V2_READY
+    assert len(payload["sold"]) == 1
+    assert len(payload["sell_reason_details"]) == 1
+    assert "## なぜこの銘柄を売却したのか" in markdown
+    sell_reason_section = _section(markdown, "## なぜこの銘柄を売却したのか", "## Candidate Top50")
+    assert "補完銘柄1006はPosition Managementの売却判断により仮想売却対象になりました。" in sell_reason_section
+    assert "実現損益は+12,000円" in sell_reason_section
+    assert "10060" not in sell_reason_section
 
 
 def _section(markdown: str, start: str, end: str) -> str:
@@ -213,12 +262,14 @@ def _write_ledger(tmp_path: Path) -> Path:
     return write_ledger(ledger, runtime_dir=tmp_path / ".runtime")
 
 
-def _write_executions(tmp_path: Path) -> Path:
+def _write_executions(tmp_path: Path, *, include_sell: bool = False) -> Path:
     path = tmp_path / "executions.json"
     records = [
         {"code": code, "side": "BUY", "status": "FILLED", "quantity": "100", "fill_price": str(price), "realized_pnl": "0"}
         for code, price in zip(("10010", "10020", "10030", "10040", "10050"), (100, 200, 300, 400, 500))
     ]
+    if include_sell:
+        records.append({"code": "10060", "side": "SELL", "status": "FILLED", "quantity": "100", "fill_price": "1120", "realized_pnl": "12000", "holding_days": "7", "sell_reason": "EXIT判定"})
     path.write_text(json.dumps({"records": records}), encoding="utf-8")
     return path
 

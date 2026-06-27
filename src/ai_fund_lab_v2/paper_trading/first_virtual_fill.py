@@ -26,7 +26,9 @@ class FirstVirtualFillRunResult:
     mode: str
     execution_date: str
     data_readiness: str
-    pending_orders_before: int
+    run_date: str = ""
+    fill_execution_date: str = ""
+    pending_orders_before: int = 0
     filled_order_count: int = 0
     no_fill_order_count: int = 0
     cash_before: str = "0"
@@ -59,6 +61,7 @@ def run_first_virtual_fill(
     ledger_path: Path | str,
     quotes_path: Path | str,
     execution_date: str,
+    run_date: str | None = None,
     mode: str = "dry-run",
     runtime_dir: Path | str = ".runtime",
     docs_report_path: Path | str = "docs/phase_reports/phase9p_first_virtual_fill.md",
@@ -67,6 +70,7 @@ def run_first_virtual_fill(
 ) -> FirstVirtualFillRunResult:
     if mode not in FILL_MODES:
         raise ValueError(f"Unsupported first virtual fill mode: {mode}")
+    run_date = run_date or execution_date
     ledger = load_ledger(ledger_path)
     pending = [order for order in ledger.pending_orders if order.status in {"APPROVED", "PENDING_VIRTUAL_FILL"}]
     cash_before = ledger.cash
@@ -77,6 +81,8 @@ def run_first_virtual_fill(
             status=DATA_NOT_READY,
             mode=mode,
             execution_date=execution_date,
+            run_date=run_date,
+            fill_execution_date=execution_date,
             data_readiness=readiness["status"],
             pending_orders_before=len(pending),
             cash_before=str(cash_before),
@@ -103,7 +109,7 @@ def run_first_virtual_fill(
         dry_run=True,
     )
     snapshot_dir = Path(runtime_dir) / "phase9" / "ledger_runs" / f"{execution_date}_first_virtual_fill"
-    paths = _write_phase9p_outputs(snapshot_dir=snapshot_dir, execution_date=execution_date, fill=fill, runtime_dir=Path(runtime_dir))
+    paths = _write_phase9p_outputs(snapshot_dir=snapshot_dir, execution_date=execution_date, run_date=run_date, fill=fill, runtime_dir=Path(runtime_dir))
     latest_updated = False
     if mode == "execute":
         write_ledger(fill.ledger_after, runtime_dir=runtime_dir)
@@ -112,6 +118,8 @@ def run_first_virtual_fill(
         status=FIRST_VIRTUAL_FILL_EXECUTED if mode == "execute" else FIRST_VIRTUAL_FILL_DRY_RUN,
         mode=mode,
         execution_date=execution_date,
+        run_date=run_date,
+        fill_execution_date=execution_date,
         data_readiness=readiness["status"],
         pending_orders_before=len(pending),
         filled_order_count=len(fill.executions),
@@ -182,7 +190,7 @@ def _read_quotes_frame(path: Path) -> pd.DataFrame:
     return pd.DataFrame(payload)
 
 
-def _write_phase9p_outputs(*, snapshot_dir: Path, execution_date: str, fill: VirtualFillResult, runtime_dir: Path) -> dict[str, str]:
+def _write_phase9p_outputs(*, snapshot_dir: Path, execution_date: str, run_date: str, fill: VirtualFillResult, runtime_dir: Path) -> dict[str, str]:
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     before_path = snapshot_dir / "ledger_before.json"
     after_path = snapshot_dir / "ledger_after.json"
@@ -198,6 +206,8 @@ def _write_phase9p_outputs(*, snapshot_dir: Path, execution_date: str, fill: Vir
     execution_path.write_text(json.dumps({"execution_date": execution_date, "records": execution_records}, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     manifest = {
         "execution_date": execution_date,
+        "fill_execution_date": execution_date,
+        "run_date": run_date,
         "fill_policy": "next_business_day_open_v1",
         "filled_order_count": len(fill.executions),
         "no_fill_order_count": len(fill.no_fill_orders),
@@ -249,7 +259,9 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- status: {payload['status']}",
         f"- mode: {payload['mode']}",
+        f"- run_date: {payload.get('run_date')}",
         f"- execution_date: {payload['execution_date']}",
+        f"- fill_execution_date: {payload.get('fill_execution_date')}",
         f"- data_readiness: {payload['data_readiness']}",
         f"- pending_orders_before: {payload['pending_orders_before']}",
         f"- filled_order_count: {payload['filled_order_count']}",

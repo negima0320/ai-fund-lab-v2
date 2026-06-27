@@ -37,6 +37,8 @@ class LedgerMetadata:
     open_d_started: bool = False
     unlock_trade_called: bool = False
     virtual_fill_executed: bool = False
+    last_execution_date: str = ""
+    last_valuation_date: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,7 @@ class PendingOrderState:
     planned_amount: Decimal = Decimal("0")
     virtual_order_date: str = ""
     virtual_execution_date: str = ""
+    decision_for: str = ""
     reason: str = ""
     review_status: str = ""
 
@@ -100,7 +103,11 @@ class PaperTradingLedger:
             object.__setattr__(self, "performance", calculate_performance_snapshot(self))
 
     def to_dict(self) -> dict[str, Any]:
-        return sanitize_mapping(_jsonable(asdict(self)))
+        payload = _jsonable(asdict(self))
+        summary = ledger_summary_metadata(self)
+        payload["summary"] = summary
+        payload.update(summary)
+        return sanitize_mapping(payload)
 
 
 def calculate_performance_snapshot(ledger: PaperTradingLedger) -> PerformanceSnapshot:
@@ -113,6 +120,26 @@ def calculate_performance_snapshot(ledger: PaperTradingLedger) -> PerformanceSna
         realized_pnl=Decimal("0"),
         unrealized_pnl=unrealized_pnl,
         trade_count=0,
+    )
+
+
+def ledger_summary_metadata(ledger: PaperTradingLedger) -> dict[str, Any]:
+    performance = ledger.performance or calculate_performance_snapshot(ledger)
+    position_valuation_dates = [position.last_valuation_date for position in ledger.positions if position.last_valuation_date]
+    last_valuation_date = ledger.metadata.last_valuation_date or (max(position_valuation_dates) if position_valuation_dates else "")
+    return _jsonable(
+        {
+            "trade_count": performance.trade_count,
+            "realized_pnl": performance.realized_pnl,
+            "unrealized_pnl": performance.unrealized_pnl,
+            "total_equity": performance.total_equity,
+            "cash": ledger.cash,
+            "market_value": performance.market_value,
+            "positions_count": len(ledger.positions),
+            "pending_orders_count": len(ledger.pending_orders),
+            "last_valuation_date": last_valuation_date,
+            "last_execution_date": ledger.metadata.last_execution_date,
+        }
     )
 
 
@@ -166,6 +193,7 @@ def load_ledger(path: Path | str) -> PaperTradingLedger:
                 planned_amount=_decimal(item.get("planned_amount")),
                 virtual_order_date=str(item.get("virtual_order_date") or ""),
                 virtual_execution_date=str(item.get("virtual_execution_date") or ""),
+                decision_for=str(item.get("decision_for") or ""),
                 reason=str(item.get("reason") or ""),
                 review_status=str(item.get("review_status") or ""),
             )
@@ -194,6 +222,8 @@ def load_ledger(path: Path | str) -> PaperTradingLedger:
             open_d_started=bool(metadata_payload.get("open_d_started", False)),
             unlock_trade_called=bool(metadata_payload.get("unlock_trade_called", False)),
             virtual_fill_executed=bool(metadata_payload.get("virtual_fill_executed", False)),
+            last_execution_date=str(metadata_payload.get("last_execution_date") or payload.get("last_execution_date") or ""),
+            last_valuation_date=str(metadata_payload.get("last_valuation_date") or payload.get("last_valuation_date") or ""),
         ),
     )
 

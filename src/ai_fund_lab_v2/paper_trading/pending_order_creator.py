@@ -9,11 +9,13 @@ from typing import Any
 from ai_fund_lab_v2.paper_trading.approval_mode import AUTO_APPROVAL_REVIEW_STATUS, AUTO_FOR_PAPER_TRADING
 from ai_fund_lab_v2.paper_trading.human_review_artifact import load_human_review
 from ai_fund_lab_v2.paper_trading.ledger import PaperTradingLedger, PendingOrderState, load_ledger, write_ledger
+from ai_fund_lab_v2.paper_trading.pending_order_dedup import pending_order_fingerprint, pending_order_legacy_fingerprint
 
 
 PENDING_ORDERS_CREATED = "PENDING_ORDERS_CREATED"
 PENDING_ORDERS_SKIPPED = "PENDING_ORDERS_SKIPPED"
 PENDING_ORDERS_BLOCKED = "PENDING_ORDERS_BLOCKED"
+PENDING_ORDERS_DEDUP_SKIPPED = "PENDING_ORDERS_DEDUP_SKIPPED"
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class PendingOrderCreationResult:
     review_status: str
     pending_order_created: bool
     pending_order_count: int
+    dedup_skipped_count: int = 0
     ledger_path: str = ""
     latest_path: str = ""
     warnings: tuple[str, ...] = ()
@@ -82,11 +85,24 @@ def create_pending_orders_from_approved_review(
     items = [dict(item) for item in order_plan.get("items", []) if isinstance(item, dict)]
     ledger = load_ledger(ledger_path)
     existing_order_ids = {order.order_id for order in ledger.pending_orders}
-    orders = tuple(
-        _pending_order_from_item(item, review=review, order_plan=order_plan)
-        for item in items
-        if _is_order_side(item) and str(item.get("order_id") or "") not in existing_order_ids
-    )
+    existing_fingerprints = {pending_order_fingerprint(order) for order in ledger.pending_orders}
+    existing_legacy_fingerprints = {pending_order_legacy_fingerprint(order) for order in ledger.pending_orders}
+    orders_list: list[PendingOrderState] = []
+    dedup_skipped = 0
+    for item in items:
+        if not _is_order_side(item):
+            continue
+        if str(item.get("order_id") or "") in existing_order_ids:
+            dedup_skipped += 1
+            continue
+        order = _pending_order_from_item(item, review=review, order_plan=order_plan)
+        if pending_order_fingerprint(order) in existing_fingerprints or pending_order_legacy_fingerprint(order) in existing_legacy_fingerprints:
+            dedup_skipped += 1
+            continue
+        orders_list.append(order)
+        existing_fingerprints.add(pending_order_fingerprint(order))
+        existing_legacy_fingerprints.add(pending_order_legacy_fingerprint(order))
+    orders = tuple(orders_list)
     updated = PaperTradingLedger(
         cash=ledger.cash,
         positions=ledger.positions,
@@ -95,14 +111,16 @@ def create_pending_orders_from_approved_review(
         metadata=ledger.metadata,
     )
     written_path = write_ledger(updated, runtime_dir=runtime_dir)
+    status = PENDING_ORDERS_CREATED if orders else (PENDING_ORDERS_DEDUP_SKIPPED if dedup_skipped else PENDING_ORDERS_SKIPPED)
     return PendingOrderCreationResult(
-        status=PENDING_ORDERS_CREATED,
+        status=status,
         review_status=review_status,
         pending_order_created=bool(orders),
         pending_order_count=len(orders),
+        dedup_skipped_count=dedup_skipped,
         ledger_path=str(written_path),
         latest_path=str(Path(runtime_dir) / "phase9" / "ledger" / "latest.json"),
-        warnings=() if len(orders) == len([item for item in items if _is_order_side(item)]) else ("duplicate_order_ids_skipped",),
+        warnings=() if dedup_skipped == 0 else (f"pending_order_dedup_skipped={dedup_skipped}",),
         prohibited_flags=prohibited_flags(),
     )
 
@@ -134,6 +152,7 @@ def _pending_order_from_item(item: dict[str, Any], *, review: dict[str, Any], or
         planned_amount=_decimal(item.get("planned_amount")),
         virtual_order_date=str(review.get("virtual_order_date") or order_plan.get("virtual_order_date") or ""),
         virtual_execution_date=str(review.get("virtual_execution_date") or order_plan.get("virtual_execution_date") or review.get("virtual_order_date") or ""),
+        decision_for=str(order_plan.get("decision_for") or review.get("decision_for") or ""),
         reason=str(item.get("reason") or item.get("short_reason") or ""),
         review_status=str(review.get("review_status") or ""),
     )

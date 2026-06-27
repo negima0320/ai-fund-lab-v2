@@ -21,6 +21,7 @@ def test_phase9s_daily_continuation_updates_valuation_and_reports_without_virtua
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "phase9s.md",
         json_report_path=tmp_path / "phase9s.json",
+        reports_root=tmp_path / "reports",
     )
     latest = load_ledger(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json")
 

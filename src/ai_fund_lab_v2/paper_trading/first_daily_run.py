@@ -40,6 +40,7 @@ class FirstDailyRunResult:
     review_status: str
     pending_order_created: bool
     pending_order_count: int
+    pending_order_dedup_skipped_count: int
     ledger_changed: bool
     manifest_path: str
     tracker_marker_path: str
@@ -97,6 +98,7 @@ def run_first_daily_paper_trading_run(
         review_status="pending",
         pending_order_created=False,
         pending_order_count=0,
+        dedup_skipped_count=0,
         ledger_path=str(ledger_file),
         latest_path=str(ledger_file),
         warnings=("review_only_no_pending_order",),
@@ -153,6 +155,7 @@ def run_first_daily_paper_trading_run(
         review_status=pending_result.review_status,
         pending_order_created=pending_result.pending_order_created,
         pending_order_count=pending_result.pending_order_count,
+        pending_order_dedup_skipped_count=pending_result.dedup_skipped_count,
         ledger_changed=before_hash != after_hash,
         manifest_path=str(manifest_path),
         tracker_marker_path=str(tracker_path),

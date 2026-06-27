@@ -66,6 +66,7 @@ def run_daily_continuation(
     business_day_index: int | None = None,
     docs_report_path: Path | str = "docs/phase_reports/phase9s_daily_operation_continuation.md",
     json_report_path: Path | str = "reports/phase_reports/phase9s_daily_operation_continuation.json",
+    reports_root: Path | str = "reports",
 ) -> DailyContinuationResult:
     if mode not in {"dry-run", "paper-trading", "report-only"}:
         raise ValueError(f"Unsupported Phase9-S continuation mode: {mode}")
@@ -92,6 +93,8 @@ def run_daily_continuation(
         ledger_before=ledger_before,
         ledger_after=ledger_after,
         valuation_result=valuation,
+        internal_root=Path(reports_root) / "phase9" / "daily",
+        public_root=Path(reports_root) / "public" / "phase9_daily",
         warnings=warnings,
     )
     tracker_status = ""

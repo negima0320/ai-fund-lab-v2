@@ -22,6 +22,7 @@ def test_phase9r_dry_run_no_latest_update(tmp_path: Path) -> None:
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "dry.md",
         json_report_path=tmp_path / "dry.json",
+        public_summary_path=tmp_path / "dry_public.md",
     )
 
     assert result.status == FIRST_VIRTUAL_FILL_DRY_RUN
@@ -42,6 +43,7 @@ def test_phase9r_execute_fills_pending_orders_and_updates_ledger(tmp_path: Path)
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "execute.md",
         json_report_path=tmp_path / "execute.json",
+        public_summary_path=tmp_path / "execute_public.md",
     )
     latest = load_ledger(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json")
 
@@ -86,6 +88,7 @@ def test_phase9r_insufficient_cash_preserves_no_fill(tmp_path: Path) -> None:
         runtime_dir=tmp_path / ".runtime",
         docs_report_path=tmp_path / "nofill.md",
         json_report_path=tmp_path / "nofill.json",
+        public_summary_path=tmp_path / "nofill_public.md",
     )
     latest = load_ledger(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json")
 
@@ -122,4 +125,3 @@ def _write_phase9r_quotes(tmp_path: Path) -> Path:
         ]
     ).to_parquet(path, index=False)
     return path
-

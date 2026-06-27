@@ -80,6 +80,20 @@ def write_blog_report_v2(
     sells = _sell_rows(executions, name_map=name_map)
     holdings = _holding_rows(ledger, name_map=name_map)
     not_bought = _not_bought_rows(opportunities=opportunities, buys=buys)
+    purchase_reason_details = _purchase_reason_details(
+        buys=buys,
+        candidate_source_rows=candidate_source_rows,
+        opportunity_source_rows=opportunity_source_rows,
+        allocation_rows=allocation_rows + order_rows,
+        name_map=name_map,
+    )
+    top5_reason_details = _top5_reason_details(
+        opportunities=opportunities[:5],
+        candidate_source_rows=candidate_source_rows,
+        opportunity_source_rows=opportunity_source_rows,
+        name_map=name_map,
+    )
+    sell_reason_details = _sell_reason_details(sells)
     summary = _asset_summary(
         ledger=ledger,
         decision_for=decision_for,
@@ -99,10 +113,18 @@ def write_blog_report_v2(
         "candidate_top50": candidates,
         "opportunity_top20": opportunities,
         "bought": buys,
+        "purchase_reason_details": purchase_reason_details,
         "sold": sells,
+        "sell_reason_details": sell_reason_details,
         "holdings": holdings,
         "not_bought_candidates": not_bought,
+        "top5_reason_details": top5_reason_details,
         "ai_summary": _ai_summary(summary=summary, candidate_count=len(candidates), opportunity_count=len(opportunities), buy_count=len(buys), sell_count=len(sells)),
+        "ai_summary_deep_dive": _ai_summary_deep_dive(
+            purchase_reason_details=purchase_reason_details,
+            not_bought=not_bought,
+            bought=buys,
+        ),
         "data_quality": data_quality,
         "disclaimer": list(DISCLAIMER_LINES),
     }
@@ -291,6 +313,289 @@ def _not_bought_rows(*, opportunities: list[dict[str, Any]], buys: list[dict[str
     return rows
 
 
+def _purchase_reason_details(
+    *,
+    buys: list[dict[str, Any]],
+    candidate_source_rows: list[dict[str, Any]],
+    opportunity_source_rows: list[dict[str, Any]],
+    allocation_rows: list[dict[str, Any]],
+    name_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    if not buys:
+        return []
+    candidate_by_code = {_display_code(_code(row)): row for row in candidate_source_rows}
+    opportunity_by_code = {_display_code(_code(row)): row for row in opportunity_source_rows}
+    allocation_by_code = {_display_code(_code(row)): row for row in allocation_rows}
+    candidate_features = _load_candidate_feature_frame(candidate_source_rows)
+    quotes = _load_quote_frame(candidate_source_rows)
+    details = []
+    for buy in buys:
+        code = str(buy.get("code") or "")
+        candidate = candidate_by_code.get(code, {})
+        opportunity = opportunity_by_code.get(code, {})
+        allocation = allocation_by_code.get(code, {})
+        feature_row = _feature_row(candidate_features, code)
+        quote_context = _quote_position_context(quotes, code)
+        paragraphs = _purchase_reason_paragraphs(
+            code=code,
+            name=str(buy.get("name") or _name_for(code, row=candidate or allocation, name_map=name_map)),
+            buy=buy,
+            candidate=candidate,
+            opportunity=opportunity,
+            allocation=allocation,
+            feature_row=feature_row,
+            quote_context=quote_context,
+        )
+        details.append(
+            {
+                "code": code,
+                "name": str(buy.get("name") or "名称未取得"),
+                "candidate_rank": _int_or_blank(candidate.get("rank")),
+                "opportunity_rank": _int_or_blank(opportunity.get("rank")),
+                "public_confidence_score": buy.get("public_confidence_score"),
+                "reason_paragraphs": paragraphs,
+            }
+        )
+    return details
+
+
+def _top5_reason_details(
+    *,
+    opportunities: list[dict[str, Any]],
+    candidate_source_rows: list[dict[str, Any]],
+    opportunity_source_rows: list[dict[str, Any]],
+    name_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    candidate_by_code = {_display_code(_code(row)): row for row in candidate_source_rows}
+    opportunity_by_code = {_display_code(_code(row)): row for row in opportunity_source_rows}
+    candidate_features = _load_candidate_feature_frame(candidate_source_rows)
+    quotes = _load_quote_frame(candidate_source_rows)
+    details = []
+    for opportunity in opportunities:
+        code = str(opportunity.get("code") or "")
+        candidate = candidate_by_code.get(code, {})
+        source = opportunity_by_code.get(code, {})
+        feature_row = _feature_row(candidate_features, code)
+        quote_context = _quote_position_context(quotes, code)
+        name = str(opportunity.get("name") or _name_for(code, row=source or candidate, name_map=name_map))
+        paragraphs = _top5_reason_paragraphs(
+            name=name,
+            candidate=candidate,
+            opportunity=source,
+            feature_row=feature_row,
+            quote_context=quote_context,
+        )
+        details.append(
+            {
+                "code": code,
+                "name": name,
+                "candidate_rank": _int_or_blank(candidate.get("rank")),
+                "opportunity_rank": _int_or_blank(source.get("rank") or opportunity.get("rank")),
+                "public_confidence_score": opportunity.get("public_confidence_score"),
+                "reason_paragraphs": paragraphs,
+            }
+        )
+    return details
+
+
+def _top5_reason_paragraphs(
+    *,
+    name: str,
+    candidate: dict[str, Any],
+    opportunity: dict[str, Any],
+    feature_row: dict[str, Any],
+    quote_context: dict[str, Any],
+) -> list[str]:
+    candidate_rank = _int_or_blank(candidate.get("rank"))
+    opportunity_rank = _int_or_blank(opportunity.get("rank"))
+    pieces = []
+    if candidate_rank and opportunity_rank:
+        pieces.append(f"{name}はCandidate {candidate_rank}位からOpportunity {opportunity_rank}位まで残った注目候補です。")
+    elif opportunity_rank:
+        pieces.append(f"{name}はOpportunity {opportunity_rank}位の注目候補です。")
+    else:
+        pieces.append(f"{name}はAIが注目候補として残した銘柄です。")
+    momentum = _momentum_sentence(feature_row)
+    if momentum:
+        pieces.append(momentum)
+    high_position = _high_position_sentence(quote_context)
+    if high_position:
+        pieces.append(high_position)
+    confidence = opportunity.get("public_confidence_score")
+    if confidence not in (None, "", "N/A"):
+        pieces.append(f"公開用AI信頼度は{confidence}です。これは勝率や上昇確率ではなく、候補としての説明用スコアです。")
+    return pieces
+
+
+def _sell_reason_details(sells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    details = []
+    for sell in sells:
+        name = str(sell.get("name") or "名称未取得")
+        pnl = Decimal(str(sell.get("realized_pnl") or "0"))
+        pnl_text = "利益確定" if pnl > 0 else "損失確定" if pnl < 0 else "損益ほぼ中立"
+        holding_days = str(sell.get("holding_days") or "").strip()
+        days_text = f"保有日数は{holding_days}日です。" if holding_days else "保有日数は記録から確認中です。"
+        reason = _public_reason(str(sell.get("sell_reason") or ""))
+        paragraphs = [
+            f"{name}はPosition Managementの売却判断により仮想売却対象になりました。",
+            f"売却結果は{pnl_text}で、実現損益は{_signed_yen(pnl)}です。{days_text}",
+            f"売却理由は「{reason}」として記録されています。急落回避、利益確定、または保有継続条件の未達がないかを次回レポートで確認します。",
+        ]
+        details.append(
+            {
+                "code": str(sell.get("code") or ""),
+                "name": name,
+                "reason_paragraphs": paragraphs,
+            }
+        )
+    return details
+
+
+def _purchase_reason_paragraphs(
+    *,
+    code: str,
+    name: str,
+    buy: dict[str, Any],
+    candidate: dict[str, Any],
+    opportunity: dict[str, Any],
+    allocation: dict[str, Any],
+    feature_row: dict[str, Any],
+    quote_context: dict[str, Any],
+) -> list[str]:
+    candidate_rank = _int_or_blank(candidate.get("rank"))
+    opportunity_rank = _int_or_blank(opportunity.get("rank"))
+    pieces = []
+    if candidate_rank and opportunity_rank:
+        pieces.append(f"{name}はCandidate {candidate_rank}位、Opportunity {opportunity_rank}位として残った銘柄です。")
+    elif candidate_rank:
+        pieces.append(f"{name}はCandidate {candidate_rank}位として残った銘柄です。")
+    else:
+        pieces.append(f"{name}はAI評価と資金配分条件を通過した銘柄です。")
+
+    momentum = _momentum_sentence(feature_row)
+    if momentum:
+        pieces.append(momentum)
+
+    high_position = _high_position_sentence(quote_context)
+    if high_position:
+        pieces.append(high_position)
+
+    quantity = _public_quantity(buy.get("quantity"))
+    amount = buy.get("amount_display") or _yen(buy.get("amount") or allocation.get("planned_amount") or "0")
+    confidence = buy.get("public_confidence_score")
+    confidence_text = "" if confidence in (None, "", "N/A") else f"公開用AI信頼度は{confidence}です。"
+    pieces.append(
+        f"CAP5では1銘柄20%上限、5%の現金バッファ、100株単位の条件を確認し、"
+        f"{quantity}株・{amount}の仮想購入対象になりました。{confidence_text}".strip()
+    )
+    return pieces
+
+
+def _momentum_sentence(row: dict[str, Any]) -> str:
+    if not row:
+        return ""
+    r5 = _decimal_or_none(row.get("price_momentum_return_5d"))
+    r20 = _decimal_or_none(row.get("price_momentum_return_20d"))
+    volume = _decimal_or_none(row.get("volume_momentum_ratio_5d"))
+    trend = _decimal_or_none(row.get("trend_close_over_ma_20d"))
+    liquidity = _decimal_or_none(row.get("liquidity_avg_volume_20d"))
+    fragments = []
+    if r5 is not None and r20 is not None:
+        fragments.append(f"直近5日で{_signed_percent(r5)}、20日で{_signed_percent(r20)}と短中期の値動きが強く")
+    elif r20 is not None:
+        fragments.append(f"20日で{_signed_percent(r20)}と値動きが強く")
+    if volume is not None:
+        fragments.append(f"出来高も平常比で約{_ratio(volume)}倍")
+    if trend is not None:
+        fragments.append(f"終値は20日平均線を{_signed_percent(trend)}上回っています")
+    if liquidity is not None:
+        fragments.append(f"20日平均出来高は約{_compact_number(liquidity)}株で売買も確認できます")
+    if not fragments:
+        return ""
+    if len(fragments) <= 3:
+        return "、".join(fragments) + "。"
+    return "、".join(fragments[:3]) + "。" + "、".join(fragments[3:]) + "。"
+
+
+def _high_position_sentence(context: dict[str, Any]) -> str:
+    if not context:
+        return ""
+    parts = []
+    for label, key in (("20日高値", "close_vs_20d_high"), ("60日高値", "close_vs_60d_high"), ("52週高値", "close_vs_252d_high")):
+        value = context.get(key)
+        if value is not None:
+            parts.append(f"{label}比{_plain_percent(Decimal(str(value)))}")
+    if not parts:
+        return ""
+    risk = ""
+    short = context.get("close_vs_20d_high")
+    if short is not None and Decimal(str(short)) >= Decimal("0.95"):
+        risk = "短期高値に近い位置なので、高値追いリスクもあります。"
+    return "購入時点の価格位置は" + "、".join(parts) + "です。" + risk
+
+
+def _load_candidate_feature_frame(candidate_source_rows: list[dict[str, Any]]) -> pd.DataFrame:
+    path = _source_ref_path(candidate_source_rows, "candidate_features")
+    if not path:
+        return pd.DataFrame()
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _load_quote_frame(candidate_source_rows: list[dict[str, Any]]) -> pd.DataFrame:
+    path = _source_ref_path(candidate_source_rows, "canonical_normalized_daily_quotes")
+    if not path:
+        return pd.DataFrame()
+    try:
+        frame = pd.read_parquet(path)
+    except Exception:
+        return pd.DataFrame()
+    if "date" not in frame.columns or "code" not in frame.columns:
+        return pd.DataFrame()
+    return frame
+
+
+def _source_ref_path(rows: list[dict[str, Any]], key: str) -> Path | None:
+    for row in rows:
+        refs = row.get("source_data_refs")
+        if isinstance(refs, dict) and refs.get(key):
+            path = Path(str(refs[key]))
+            if path.is_file():
+                return path
+    return None
+
+
+def _feature_row(frame: pd.DataFrame, display_code: str) -> dict[str, Any]:
+    if frame.empty or "code" not in frame.columns:
+        return {}
+    codes = set(_code_variants(_normalize_code(display_code)))
+    rows = frame[frame["code"].astype(str).isin(codes)]
+    if rows.empty:
+        return {}
+    return rows.iloc[-1].to_dict()
+
+
+def _quote_position_context(frame: pd.DataFrame, display_code: str) -> dict[str, Any]:
+    if frame.empty:
+        return {}
+    codes = set(_code_variants(_normalize_code(display_code)))
+    rows = frame[frame["code"].astype(str).isin(codes)].sort_values("date")
+    if rows.empty or "close" not in rows.columns or "high" not in rows.columns:
+        return {}
+    context: dict[str, Any] = {}
+    for days, key in ((20, "close_vs_20d_high"), (60, "close_vs_60d_high"), (252, "close_vs_252d_high")):
+        tail = rows.tail(days)
+        if tail.empty:
+            continue
+        close = _decimal_or_none(tail.iloc[-1].get("close"))
+        high = _decimal_or_none(tail["high"].max())
+        if close is not None and high and high > 0:
+            context[key] = str((close / high).quantize(Decimal("0.0001")))
+    return context
+
+
 def _asset_summary(*, ledger: PaperTradingLedger, decision_for: str, execution_date: str, performance_report_path: Path | None) -> dict[str, Any]:
     initial = ledger.metadata.initial_cash if ledger.metadata.initial_cash > 0 else Decimal("1000000")
     current = ledger.performance.total_equity
@@ -355,27 +660,49 @@ def _ai_summary(*, summary: dict[str, Any], candidate_count: int, opportunity_co
     )
 
 
+def _ai_summary_deep_dive(*, purchase_reason_details: list[dict[str, Any]], not_bought: list[dict[str, Any]], bought: list[dict[str, Any]]) -> list[str]:
+    if not bought:
+        return ["本日は新規購入がないため、保有銘柄の評価と次回判断を待つ日になりました。"]
+    names = [_public_text(row.get("name") or "名称未取得") for row in bought if row.get("name")]
+    high_risk_names = [
+        _public_text(detail.get("name") or "名称未取得")
+        for detail in purchase_reason_details
+        if any("高値追いリスク" in str(paragraph) for paragraph in detail.get("reason_paragraphs") or [])
+    ]
+    lower_confidence_names = [
+        _public_text(row.get("name") or "名称未取得")
+        for row in bought
+        if _score_value(row.get("public_confidence_score")) is not None and float(row.get("public_confidence_score")) <= 50
+    ]
+    skipped_names = [_public_text(row.get("name") or "名称未取得") for row in not_bought[:3]]
+    paragraphs = [
+        "今回の選定は、短期から20日程度の値動きと出来高の増加を強く評価した、ややモメンタム寄りの内容です。"
+    ]
+    if names:
+        paragraphs.append(f"購入対象は{_join_japanese(names)}で、いずれも上場状況・価格鮮度・100株単位の資金配分条件を通過しています。")
+    if high_risk_names:
+        paragraphs.append(f"一方で、{_join_japanese(high_risk_names)}は短期高値に近い位置にあり、高値追いになりやすい点は注意して見ます。")
+    if lower_confidence_names:
+        paragraphs.append(f"{_join_japanese(lower_confidence_names)}は購入対象には入りましたが、AI信頼度は中立寄りです。強い買いというより、資金制約の中で条件を満たした候補として扱います。")
+    if skipped_names:
+        paragraphs.append(f"また、{_join_japanese(skipped_names)}など、評価上位でも100株単位や1銘柄20%上限に合わず見送った候補があります。今回の結果はAI評価だけでなく、資金配分ルールの影響も受けています。")
+    paragraphs.append("明日は、購入後の初日リターンと出来高が続くかを確認し、急騰後の反落やギャップアップ後の失速がないかを重点的に見ます。")
+    return paragraphs
+
+
 def _render_markdown_v4(payload: dict[str, Any]) -> str:
     summary = payload["summary"]
     lines = [
-        "# Phase9 Blog Report v4",
-        "",
-        "## 今日のAI運用サマリー",
-        "",
-        f"- decision_for: {summary['decision_for']}",
-        f"- execution_date: {summary['execution_date']}",
-        f"- valuation_date: {summary['valuation_date'] or summary['execution_date']}",
-        f"- quote_source_max_date: {summary['quote_source_max_date'] or 'N/A'}",
-        f"- stale_price_source: {summary['stale_price_source']}",
-        f"- 初期資産: {summary['initial_asset_display']}",
-        f"- 現在資産: {summary['current_asset_display']}",
-        f"- 損益: {summary['pnl_display']}",
-        f"- 損益率: {summary['pnl_rate_display']}",
-        f"- cash: {summary['cash_display']}",
-        f"- market_value: {summary['market_value_display']}",
-        f"- positions count: {summary['positions_count']}",
-        f"- pending orders count: {summary['pending_orders_count']}",
-        "",
+        *(
+            [
+                "## DATA_NOT_READY / STALE_PRICE_SOURCE",
+                "",
+                "当日の評価に必要なJ-Quants終値がcanonical normalizedに反映されていないため、このレポートは通常の運用成績として扱いません。",
+                "",
+            ]
+            if summary["stale_price_source"]
+            else []
+        ),
         "## 資産状況",
         "",
         f"- 現金: {summary['cash_display']}",
@@ -400,7 +727,7 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
     else:
         lines += ["現在保有中の銘柄はありません。", ""]
 
-    lines += ["## 本日の購入銘柄", ""]
+    lines += ["## 本日約定した銘柄", "", "前営業日のAI判断に基づき、本日始値で仮想約定した銘柄です。", ""]
     if payload["bought"]:
         for index, row in enumerate(payload["bought"], start=1):
             lines.append(
@@ -408,6 +735,7 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
                 f"{_public_quantity(row['quantity'])}株 / 約定価格 {_price(row['fill_price'])}"
             )
         lines += ["", "購入理由: AI評価上位かつ資金配分ルールを満たしたため。", ""]
+        lines.extend(_render_purchase_reason_details(payload.get("purchase_reason_details") or []))
     else:
         lines += ["本日は購入銘柄はありません。", ""]
 
@@ -420,6 +748,7 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
                 f"損益 {_signed_yen(row['realized_pnl'])}"
             )
         lines.append("")
+        lines.extend(_render_reason_details("## なぜこの銘柄を売却したのか", payload.get("sell_reason_details") or []))
     else:
         lines += ["本日は売却銘柄はありません。", ""]
 
@@ -431,14 +760,15 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
         )
     lines.append("")
 
-    lines += ["## 本日の購入候補 Top5", ""]
+    lines += ["## 翌営業日の購入予定候補 Top5", "", "本日終値データに基づく、次回約定候補です。", ""]
     for row in payload["opportunity_top20"][:5]:
         lines.append(
             f"{row['rank']}. {_public_text(row['code'])} {_public_text(row['name'])} / "
             f"Opportunity Score {row['opportunity_score']} / AI信頼度 {row['public_confidence_score']}"
         )
+    lines.append("")
+    lines.extend(_render_reason_details("## なぜこの5銘柄が購入候補なのか", payload.get("top5_reason_details") or []))
     lines += [
-        "",
         "## AIの総括",
         "",
         f"本日はCandidate {len(payload['candidate_top50'])}銘柄からOpportunity上位{len(payload['opportunity_top20'])}銘柄へ絞り込みました。",
@@ -447,19 +777,7 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
         "",
         f"初日の終値評価では {summary['pnl_display']}（{summary['pnl_rate_display']}）となりました。",
         "",
-        "公開ブログでは、読みやすさを優先して理由・補足の長文は省略しています。",
-        "",
-        "## Data Quality",
-        "",
-        f"- missing_name_count: {payload['data_quality']['missing_name_count']}",
-        f"- score_missing_count: {payload['data_quality']['score_missing_count']}",
-        f"- score_saturation_count: {payload['data_quality']['score_saturation_count']}",
-        f"- score_saturation_flag: {payload['data_quality']['score_saturation_flag']}",
-        f"- listed_info_unmatched_count: {payload['data_quality']['listed_info_unmatched_count']}",
-        f"- stale_price_count: {payload['data_quality']['stale_price_count']}",
-        f"- disallowed_product_count: {payload['data_quality']['disallowed_product_count']}",
-        f"- universe_hard_gate_violation_count: {payload['data_quality']['universe_hard_gate_violation_count']}",
-        "",
+        *_paragraph_lines(payload.get("ai_summary_deep_dive") or []),
         "## 注意書き",
         "",
     ]
@@ -551,6 +869,7 @@ def _render_markdown_v3(payload: dict[str, Any]) -> str:
                 "",
             ]
         )
+        lines.extend(_render_purchase_reason_details(payload.get("purchase_reason_details") or []))
     else:
         lines += ["本日は購入銘柄はありません。", ""]
     lines += ["", "## 本日の売却銘柄", ""]
@@ -643,6 +962,7 @@ def _render_markdown_v3(payload: dict[str, Any]) -> str:
         "",
         f"初日の終値評価では {summary['pnl_display']}（{summary['pnl_rate_display']}）となりました。",
         "",
+        *_paragraph_lines(payload.get("ai_summary_deep_dive") or []),
         "引き続き保有銘柄の動向と次回AI判断を確認します。",
         "",
         "## Data Quality",
@@ -677,6 +997,44 @@ def _katex_array(*, headers: tuple[str, ...], rows: list[tuple[str, ...]], align
     lines.extend(" & ".join(row) + r" \\\\ \hline" for row in rows)
     lines += [r"\end{array}", "$$"]
     return "\n".join(lines)
+
+
+def _render_purchase_reason_details(details: list[dict[str, Any]]) -> list[str]:
+    return _render_reason_details("## なぜこの銘柄を選んだのか", details)
+
+
+def _render_reason_details(title: str, details: list[dict[str, Any]]) -> list[str]:
+    if not details:
+        return []
+    lines = [title, ""]
+    for detail in details:
+        lines.append(f"### {_public_text(detail.get('code'))} {_public_text(detail.get('name'))}")
+        lines.append("")
+        for paragraph in detail.get("reason_paragraphs") or []:
+            lines.append(_public_text(paragraph))
+            lines.append("")
+    return lines
+
+
+def _paragraph_lines(paragraphs: list[str]) -> list[str]:
+    lines: list[str] = []
+    for paragraph in paragraphs:
+        text = _public_text(paragraph)
+        if not text:
+            continue
+        lines.extend([text, ""])
+    return lines
+
+
+def _join_japanese(values: list[str]) -> str:
+    cleaned = [_public_text(value) for value in values if _public_text(value)]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return "と".join(cleaned)
+    return "、".join(cleaned[:-1]) + "、" + cleaned[-1]
 
 
 def _public_text(value: Any) -> str:
@@ -830,6 +1188,41 @@ def _display_score(value: Any, *, rank: int, same_score: bool) -> str:
     if same_score:
         return str(max(1, min(100, 101 - int(rank))))
     return str(max(0, min(100, int(round(numeric)))))
+
+
+def _int_or_blank(value: Any) -> int | str:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _signed_percent(value: Decimal) -> str:
+    numeric = (value * Decimal("100")).quantize(Decimal("0.1"))
+    sign = "+" if numeric > 0 else ""
+    return f"{sign}{numeric}%"
+
+
+def _plain_percent(value: Decimal) -> str:
+    return f"{(value * Decimal('100')).quantize(Decimal('0.1'))}%"
+
+
+def _ratio(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.01")))
+
+
+def _compact_number(value: Decimal) -> str:
+    numeric = int(value.quantize(Decimal("1")))
+    return f"{numeric:,}"
 
 
 def _score_value(value: Any) -> float | None:

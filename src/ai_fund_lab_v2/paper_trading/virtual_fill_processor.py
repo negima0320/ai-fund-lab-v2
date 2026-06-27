@@ -107,7 +107,11 @@ def process_virtual_fills(
     remaining_orders: list[PendingOrderState] = []
     filled_order_ids: set[str] = set()
 
-    orders = [order for order in ledger.pending_orders if order.status in {"APPROVED", "PENDING_VIRTUAL_FILL"}]
+    orders = [
+        order
+        for order in ledger.pending_orders
+        if order.status in {"APPROVED", "PENDING_VIRTUAL_FILL"} and _order_execution_date(order, fallback=execution_date) == execution_date
+    ]
     ordered = [order for order in orders if order.side.upper() == "SELL"]
     ordered += [order for order in orders if order.side.upper() == "BUY" and order.dependency_order_id]
     ordered += [order for order in orders if order.side.upper() == "BUY" and not order.dependency_order_id]
@@ -131,7 +135,8 @@ def process_virtual_fills(
         else:
             no_fills.append(record)
             remaining_orders.append(updated_order)
-    untouched = [order for order in ledger.pending_orders if order.status != "APPROVED"]
+    selected_order_ids = {order.order_id for order in orders}
+    untouched = [order for order in ledger.pending_orders if order.order_id not in selected_order_ids]
     market_value = sum((position.market_value for position in positions.values()), Decimal("0"))
     unrealized = sum((position.unrealized_pnl for position in positions.values()), Decimal("0"))
     ledger_after = PaperTradingLedger(
@@ -146,7 +151,23 @@ def process_virtual_fills(
             unrealized_pnl=unrealized,
             trade_count=trade_count,
         ),
-        metadata=LedgerMetadata(),
+        metadata=LedgerMetadata(
+            ledger_id=ledger.metadata.ledger_id,
+            as_of=utc_now_iso(),
+            schema_version=ledger.metadata.schema_version,
+            source=ledger.metadata.source,
+            phase=ledger.metadata.phase,
+            created_at=ledger.metadata.created_at,
+            start_date=ledger.metadata.start_date,
+            currency=ledger.metadata.currency,
+            initial_cash=ledger.metadata.initial_cash,
+            broker_order_api_called=False,
+            open_d_started=False,
+            unlock_trade_called=False,
+            virtual_fill_executed=ledger.metadata.virtual_fill_executed or bool(executions),
+            last_execution_date=execution_date if executions else ledger.metadata.last_execution_date,
+            last_valuation_date=ledger.metadata.last_valuation_date,
+        ),
     )
     paths = _write_outputs(
         ledger_before=ledger,
@@ -275,6 +296,10 @@ def _precheck_order(
         if current is None or current.quantity < order.quantity:
             return "SELL_QUANTITY_INSUFFICIENT"
     return ""
+
+
+def _order_execution_date(order: PendingOrderState, *, fallback: str) -> str:
+    return order.virtual_execution_date or fallback
 
 
 def _execution_record(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -93,10 +94,27 @@ def test_phase9u_fill_step_runs_before_inference_step(tmp_path: Path) -> None:
     assert keys.index("virtual_fill") < keys.index("daily_inference")
 
 
-def test_phase9u_allow_api_fetch_blocks_when_market_refresh_is_not_connected(tmp_path: Path) -> None:
+def test_phase9u_allow_api_fetch_blocks_when_market_refresh_data_not_ready(tmp_path: Path) -> None:
     ledger_path = _write_position_ledger(tmp_path)
     before = Path(ledger_path).read_text(encoding="utf-8")
     quotes_path = _write_quotes(tmp_path)
+    normalized_path = tmp_path / ".runtime" / "raw_normalized" / "data.parquet"
+    normalized_path.parent.mkdir(parents=True)
+    pd.DataFrame([{"date": "2026-06-16", "code": "10010", "open": 1000, "close": 990}]).to_parquet(normalized_path, index=False)
+
+    def fake_refresh(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            status="PARTIAL_AVAILABLE",
+            requested_from_date=kwargs["from_date"],
+            requested_to_date=kwargs["to_date"],
+            data_until="2026-06-16",
+            latest_successful_daily_quotes_date="2026-06-16",
+            latest_normalized_daily_quotes_date="2026-06-16",
+            jquants_api_fetch_executed=True,
+            warnings=(),
+            blocked_reasons=(),
+            endpoints=(SimpleNamespace(endpoint="daily_quotes", normalized_path=str(normalized_path)),),
+        )
 
     result = run_unified_daily_paper_trading(
         run_date="2026-06-17",
@@ -113,18 +131,19 @@ def test_phase9u_allow_api_fetch_blocks_when_market_refresh_is_not_connected(tmp
         skip_inference=True,
         skip_tracker_update=True,
         skip_blog_report_v2=True,
+        market_data_refresh_runner=fake_refresh,
     )
     latest = Path(tmp_path / ".runtime" / "phase9" / "ledger" / "latest.json").read_text(encoding="utf-8")
     operation_log = json.loads(Path(result.operation_log_json_path).read_text(encoding="utf-8"))
 
     assert result.status == UNIFIED_DAILY_RUNNER_BLOCKED
-    assert result.step_statuses["market_data_refresh"] == "MARKET_DATA_REFRESH_NOT_CONNECTED_BLOCKED"
+    assert result.step_statuses["market_data_refresh"] == "PARTIAL_AVAILABLE"
     assert result.step_statuses["ledger_valuation"] == "LEDGER_VALUATION_STALE_SOURCE"
     assert result.step_statuses["valuation_context"]["quote_source_max_date"] == "2026-06-16"
     assert result.step_statuses["valuation_context"]["stale_price_source"] is True
-    assert "market_data_refresh_not_connected_in_unified_runner" in result.blocked_reasons
+    assert "market_data_refresh_data_until_before_target:2026-06-16<target:2026-06-17" in result.blocked_reasons
     assert latest == before
-    assert operation_log["step_statuses"]["valuation_context"]["market_data_refresh_status"] == "MARKET_DATA_REFRESH_NOT_CONNECTED_BLOCKED"
+    assert operation_log["step_statuses"]["valuation_context"]["market_data_refresh_status"] == "PARTIAL_AVAILABLE"
 
 
 def test_phase9u_blog_report_and_tracker_and_operation_log(tmp_path: Path) -> None:
