@@ -11,6 +11,7 @@ import pandas as pd
 from ai_fund_lab_v2.broker.models import utc_now_iso
 from ai_fund_lab_v2.paper_trading.ledger import PaperTradingLedger, load_ledger
 from ai_fund_lab_v2.paper_trading.reporting.redaction_checker import check_public_report_redaction
+from ai_fund_lab_v2.safety_phase11.public_report_section import render_safety_market_review_section
 
 
 BLOG_REPORT_V2_READY = "BLOG_REPORT_V2_READY"
@@ -58,6 +59,7 @@ def write_blog_report_v2(
     performance_report_path: Path | str | None = None,
     listed_info_path: Path | str = ".runtime/data/raw/jquants/listed_issues/data.parquet",
     auto_approval_path: Path | str | None = None,
+    safety_review: dict[str, Any] | None = None,
     output_root: Path | str = "reports/public/phase9_daily",
     report_version: str = "v4",
 ) -> BlogReportV2Result:
@@ -126,6 +128,7 @@ def write_blog_report_v2(
             bought=buys,
         ),
         "data_quality": data_quality,
+        "safety_review": safety_review or {},
         "disclaimer": list(DISCLAIMER_LINES),
     }
     markdown = _render_markdown_v4(payload) if report_version == "v4" else _render_markdown_v3(payload)
@@ -778,6 +781,8 @@ def _render_markdown_v4(payload: dict[str, Any]) -> str:
         f"初日の終値評価では {summary['pnl_display']}（{summary['pnl_rate_display']}）となりました。",
         "",
         *_paragraph_lines(payload.get("ai_summary_deep_dive") or []),
+        render_safety_market_review_section(payload.get("safety_review") or {}),
+        "",
         "## 注意書き",
         "",
     ]
@@ -964,6 +969,8 @@ def _render_markdown_v3(payload: dict[str, Any]) -> str:
         "",
         *_paragraph_lines(payload.get("ai_summary_deep_dive") or []),
         "引き続き保有銘柄の動向と次回AI判断を確認します。",
+        "",
+        render_safety_market_review_section(payload.get("safety_review") or {}),
         "",
         "## Data Quality",
         "",

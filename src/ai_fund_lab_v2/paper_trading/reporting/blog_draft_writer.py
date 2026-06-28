@@ -7,6 +7,7 @@ from ai_fund_lab_v2.paper_trading.reporting.public_daily_report_writer import DI
 from ai_fund_lab_v2.paper_trading.reporting.public_confidence_mapper import map_candidate_public_confidence
 from ai_fund_lab_v2.paper_trading.reporting.redaction_checker import assert_public_report_ready
 from ai_fund_lab_v2.paper_trading.run_manifest import DailyRunManifest
+from ai_fund_lab_v2.safety_phase11.public_report_section import render_safety_market_review_section
 
 
 def write_blog_draft(
@@ -46,6 +47,8 @@ def render_blog_draft_markdown(*, manifest: DailyRunManifest, result: DailyRunRe
         "",
         "本日はAI判断の読みやすさ、Safety状態、Human Reviewの運用確認を中心に見ています。",
         "",
+        render_safety_market_review_section(result.safety_state),
+        "",
         "## 翌営業日の注目点",
         "",
         f"- 仮想約定予定日: {manifest.virtual_execution_date}",
@@ -71,4 +74,3 @@ def _notable_symbols(result: DailyRunResult) -> str:
         name = f" {candidate.issue_name}" if candidate.issue_name else ""
         lines.append(f"- {candidate.issue_code}{name}: AI信頼度 {confidence.public_confidence_score}/100 ({confidence.public_confidence_label})")
     return "\n".join(lines)
-

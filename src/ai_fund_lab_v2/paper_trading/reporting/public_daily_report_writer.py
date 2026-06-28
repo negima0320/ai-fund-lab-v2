@@ -7,6 +7,7 @@ from ai_fund_lab_v2.paper_trading.daily_run_result import DailyCandidate, DailyR
 from ai_fund_lab_v2.paper_trading.reporting.public_confidence_mapper import map_candidate_public_confidence
 from ai_fund_lab_v2.paper_trading.reporting.redaction_checker import assert_public_report_ready
 from ai_fund_lab_v2.paper_trading.run_manifest import DailyRunManifest
+from ai_fund_lab_v2.safety_phase11.public_report_section import render_safety_market_review_section
 
 
 DISCLAIMER = "本レポートは仮想運用の検証記録であり、投資助言ではありません。投資判断は自己責任でお願いします。"
@@ -58,6 +59,8 @@ def render_public_daily_report_markdown(*, manifest: DailyRunManifest, result: D
         "## 本日の仮想約定",
         "",
         _public_execution_summary(result),
+        "",
+        render_safety_market_review_section(result.safety_state),
         "",
         "## 注意書き",
         "",
