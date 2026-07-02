@@ -575,3 +575,39 @@ vNext初期版では、
 ```
 
 を採用する。
+
+---
+
+# 15. Phase13検討事項: Portfolio Rotationとの責務境界
+
+Phase13では、Portfolio Rotation AI / Position Management v2の設計検討を行う。
+
+Capital Allocation Engineは引き続き、
+
+```text
+いくら買うか
+
+何銘柄持つか
+
+資金制約をどう満たすか
+```
+
+を扱う。
+
+Portfolio Rotationの検討対象は、
+
+```text
+どの保有を残すか
+
+どの保有をROTATE候補にするか
+
+どの新規候補へ資金を入れ替えるべきか
+```
+
+である。
+
+Phase13では、この境界を設計レビューで確定する。
+
+現時点ではCapital Allocation EngineにRotation判断を吸収すると決めない。
+
+また、Backtest結果、Broker Snapshot、Paper Ledger、Safety Result、Audit Result、cash、portfolio value、PnL、selected / bought / affordable dataをAI学習に使うことは禁止する。

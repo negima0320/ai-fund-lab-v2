@@ -103,6 +103,18 @@ class TachibanaSecretLoader:
             failure_classification="" if nonempty else "SECOND_PASSWORD_FILE_EMPTY",
         )
 
+    def load_second_password_value_for_demo_order_only(self) -> str:
+        status = self.classify_second_password_file()
+        if not status.present or self.settings.second_password_file is None:
+            raise BrokerConfigurationError(status.failure_classification or "SECOND_PASSWORD_FILE_NOT_READY")
+        try:
+            value = self.settings.second_password_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise BrokerConfigurationError("TACHIBANA_API_SECOND_PASSWORD_FILE is not readable.") from exc
+        if not value:
+            raise BrokerConfigurationError("TACHIBANA_API_SECOND_PASSWORD_FILE is empty.")
+        return value
+
     def _resolve_auth_id_file(self) -> Path | None:
         if self.settings.auth_id_file is not None:
             return self.settings.auth_id_file

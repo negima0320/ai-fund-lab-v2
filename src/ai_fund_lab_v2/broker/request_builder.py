@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from ai_fund_lab_v2.broker.allowlist import ensure_read_only_clmid
+from ai_fund_lab_v2.broker.request_sequence import RequestSequenceManager
 from ai_fund_lab_v2.broker.settings import BrokerSettings
 
 
@@ -20,6 +21,11 @@ class BrokerSessionContext:
 class TachibanaRequestBuilder:
     settings: BrokerSettings
     sequence_no: int = 0
+    sequence_manager: RequestSequenceManager | None = None
+
+    def __post_init__(self) -> None:
+        if self.sequence_manager is None:
+            object.__setattr__(self, "sequence_manager", RequestSequenceManager(self.sequence_no))
 
     def __repr__(self) -> str:
         return f"TachibanaRequestBuilder(settings={self.settings!r})"
@@ -80,7 +86,9 @@ class TachibanaRequestBuilder:
         return self.build("CLMMfdsGetMarketPriceHistory", sIssueCode=issue_code)
 
     def _next_no(self) -> int:
-        value = self.sequence_no + 1
+        if self.sequence_manager is None:
+            object.__setattr__(self, "sequence_manager", RequestSequenceManager(self.sequence_no))
+        value = self.sequence_manager.next_no()
         object.__setattr__(self, "sequence_no", value)
         return value
 

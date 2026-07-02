@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from ai_fund_lab_v2.broker.request_builder import _tachibana_datetime
+from ai_fund_lab_v2.broker.request_sequence import RequestSequenceManager
 from ai_fund_lab_v2.broker.tachibana_codec import TachibanaV4R9Codec
 from ai_fund_lab_v2.runtime.order_command import OrderCommand, OrderSide, OrderType, PriceType
 
@@ -90,6 +91,11 @@ class TachibanaCashStockOrderRequest:
 class TachibanaCashStockOrderRequestBuilder:
     sequence_no: int = 0
     codec: TachibanaV4R9Codec | None = None
+    sequence_manager: RequestSequenceManager | None = None
+
+    def __post_init__(self) -> None:
+        if self.sequence_manager is None:
+            object.__setattr__(self, "sequence_manager", RequestSequenceManager(self.sequence_no))
 
     def build(self, request: TachibanaCashStockOrderRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -113,6 +119,18 @@ class TachibanaCashStockOrderRequestBuilder:
         }
         # sSecondPassword is intentionally omitted in Phase10-S. Only presence
         # is carried through the authorization layer, never the secret value.
+        return payload
+
+    def build_final_payload_with_second_password(
+        self,
+        request: TachibanaCashStockOrderRequest,
+        *,
+        second_password_value: str,
+    ) -> dict[str, Any]:
+        if not second_password_value:
+            raise TachibanaOrderRequestError("second password is required for final demo order payload.")
+        payload = self.build(request)
+        payload["sSecondPassword"] = second_password_value
         return payload
 
     def build_encoded_mock(self, request: TachibanaCashStockOrderRequest) -> dict[str, Any]:
@@ -149,7 +167,9 @@ class TachibanaCashStockOrderRequestBuilder:
         }
 
     def _next_no(self) -> int:
-        value = self.sequence_no + 1
+        if self.sequence_manager is None:
+            object.__setattr__(self, "sequence_manager", RequestSequenceManager(self.sequence_no))
+        value = self.sequence_manager.next_no()
         object.__setattr__(self, "sequence_no", value)
         return value
 
@@ -179,6 +199,17 @@ class RedactedOrderSubmitResult:
     broker_order_id_hash: str = ""
     p_errno: str | None = None
     p_err: str | None = None
+    p_err_classification: str = ""
+    result_code_present: bool = False
+    result_code_value: str = ""
+    result_code_zero: bool = False
+    warning_code_present: bool = False
+    warning_code_value: str = ""
+    warning_code_zero: bool = False
+    order_number_present: bool = False
+    business_classification: str = ""
+    accepted_with_warning: bool = False
+    eigyou_day_present: bool = False
     raw_order_id_saved: bool = False
     raw_response_saved: bool = False
 
@@ -187,24 +218,76 @@ class RedactedOrderSubmitResult:
             raise TachibanaOrderRequestError("broker_order_id_hash must be sha256-prefixed or omitted.")
         if self.raw_order_id_saved or self.raw_response_saved:
             raise TachibanaOrderRequestError("raw order id and raw response must not be saved.")
+        if self.order_number_present and not self.broker_order_id_hash:
+            raise TachibanaOrderRequestError("broker order id must be hashed when present.")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def normalize_redacted_order_submit_result(raw: dict[str, Any]) -> RedactedOrderSubmitResult:
-    order_id = str(raw.get("sOrderNumber") or raw.get("sOrderOrderNumber") or raw.get("order_number") or "")
-    result_code = str(raw.get("sResultCode") or raw.get("p_errno") or "")
+    order_id = str(
+        raw.get("sOrderNumber")
+        or raw.get("sOrderOrderNumber")
+        or raw.get("sOrderUketsukeNumber")
+        or raw.get("sOrderID")
+        or raw.get("order_number")
+        or raw.get("order_id")
+        or ""
+    )
+    p_errno = str(raw.get("p_errno") or "")
+    result_code_present = "sResultCode" in raw
+    result_code = str(raw.get("sResultCode") or "")
+    warning_code_present = "sWarningCode" in raw
+    warning_code = str(raw.get("sWarningCode") or "")
     p_err = raw.get("p_err")
-    accepted = result_code in {"", "0"} and bool(order_id or raw.get("accepted"))
+    protocol_error = bool(p_errno and p_errno != "0")
+    result_success = result_code_present and result_code == "0"
+    warning_success = (not warning_code_present) or warning_code in {"", "0"}
+    accepted = not protocol_error and result_success and bool(order_id)
+    accepted_with_warning = accepted and not warning_success
+    if protocol_error:
+        status = "REJECTED_OR_UNKNOWN"
+        business_classification = "PROTOCOL_ERROR"
+    elif result_code_present and result_code != "0":
+        status = "REJECTED_OR_UNKNOWN"
+        business_classification = "BUSINESS_REJECT"
+    elif accepted_with_warning:
+        status = "ACCEPTED_WITH_WARNING_REVIEW"
+        business_classification = "BUSINESS_WARNING"
+    elif accepted:
+        status = "ACCEPTED"
+        business_classification = "ACCEPTED"
+    else:
+        status = "REJECTED_OR_UNKNOWN"
+        business_classification = "UNKNOWN_NO_ORDER_NUMBER"
     return RedactedOrderSubmitResult(
-        status="ACCEPTED" if accepted else "REJECTED_OR_UNKNOWN",
+        status=status,
         accepted=accepted,
         rejected=not accepted,
         reason="normalized_redacted_order_submit_result",
         broker_order_id_hash=_hash_order_id(order_id),
-        p_errno=str(raw["p_errno"]) if "p_errno" in raw else None,
-        p_err=str(p_err) if p_err is not None else None,
+        p_errno=p_errno if "p_errno" in raw else None,
+        p_err=None,
+        p_err_classification=_classify_redacted_order_error(
+            str(p_err or ""),
+            protocol_error=protocol_error,
+            result_code_present=result_code_present,
+            result_code=result_code,
+            warning_code_present=warning_code_present,
+            warning_code=warning_code,
+            order_number_present=bool(order_id),
+        ),
+        result_code_present=result_code_present,
+        result_code_value=result_code,
+        result_code_zero=result_code_present and result_code == "0",
+        warning_code_present=warning_code_present,
+        warning_code_value=warning_code,
+        warning_code_zero=warning_code_present and warning_code == "0",
+        order_number_present=bool(order_id),
+        business_classification=business_classification,
+        accepted_with_warning=accepted_with_warning,
+        eigyou_day_present=bool(raw.get("sEigyouDay")),
         raw_order_id_saved=False,
         raw_response_saved=False,
     )
@@ -215,3 +298,31 @@ def _hash_order_id(value: str) -> str:
     if not normalized:
         return ""
     return f"sha256:{sha256(normalized.encode('utf-8')).hexdigest()}"
+
+
+def _classify_redacted_order_error(
+    text: str,
+    *,
+    protocol_error: bool = False,
+    result_code_present: bool = False,
+    result_code: str = "",
+    warning_code_present: bool = False,
+    warning_code: str = "",
+    order_number_present: bool = False,
+) -> str:
+    if protocol_error:
+        return "PROTOCOL_ERROR"
+    if result_code_present and result_code != "0":
+        return "BUSINESS_REJECT"
+    if warning_code_present and warning_code not in {"", "0"} and order_number_present:
+        return "BUSINESS_WARNING_REVIEW"
+    if result_code_present and result_code == "0" and not order_number_present:
+        return "ORDER_NUMBER_MISSING_AFTER_SUCCESS_RESULT"
+    lowered = text.lower()
+    if "p_no" in lowered or "前要求" in text:
+        return "SESSION_SEQUENCE_OR_AUTH_ERROR"
+    if "second" in lowered or "暗証" in text:
+        return "SECOND_PASSWORD_FIELD_OR_VALUE_ERROR"
+    if "引数" in text:
+        return "BROKER_ARGUMENT_ERROR"
+    return "BROKER_REJECTED_OR_UNKNOWN"

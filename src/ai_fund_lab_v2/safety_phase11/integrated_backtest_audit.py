@@ -10,6 +10,7 @@ from typing import Any
 from ai_fund_lab_v2.paper_trading.daily_inference_runner import _build_allocation_rows, _build_order_plan
 from ai_fund_lab_v2.paper_trading.ledger import LedgerMetadata, PaperTradingLedger, PendingOrderState, PerformanceSnapshot, PositionSnapshot
 from ai_fund_lab_v2.paper_trading.virtual_fill_processor import process_virtual_fills
+from ai_fund_lab_v2.operations.exit_adapter import generate_sell_items_from_positions
 from ai_fund_lab_v2.safety_phase11.emergency_stop import EmergencyStopEvaluator
 from ai_fund_lab_v2.safety_phase11.event_writer import _phase11_sanitize, _write_json
 from ai_fund_lab_v2.safety_phase11.hourly_monitor import HourlyMonitorInput, HourlyPositionMonitor
@@ -101,6 +102,7 @@ class IntegratedBacktestAuditConfig:
     audit_profile: str = AUDIT_PROFILE_NORMAL_MARKET
     max_emergency_stop_day_ratio: Decimal = Decimal("0.05")
     safety_enabled: bool = True
+    exit_strategy: str = "fallback"
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class AuditTrade:
     notional: Decimal
     reason: str
     order_id: str = ""
+    realized_pnl: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -526,6 +529,7 @@ def _run_mainline_paper_adapter(config: IntegratedBacktestAuditConfig) -> Integr
         day_text = day.isoformat()
         state_residency[state.value] += 1
         quote_rows = _adapter_quote_rows(adapter, day_text)
+        ledger_before_fill = ledger
         fill = process_virtual_fills(
             ledger=ledger,
             quote_rows=quote_rows,
@@ -546,8 +550,9 @@ def _run_mainline_paper_adapter(config: IntegratedBacktestAuditConfig) -> Integr
                     quantity=int(execution.quantity),
                     price=execution.fill_price,
                     notional=notional,
-                    reason="PHASE9_PROCESS_VIRTUAL_FILLS",
+                    reason=_execution_reason_from_pending(ledger_before_fill, execution.order_id) or "PHASE9_PROCESS_VIRTUAL_FILLS",
                     order_id=execution.order_id,
+                    realized_pnl=execution.realized_pnl,
                 )
             )
             if execution.side.upper() == "BUY":
@@ -862,6 +867,12 @@ def _order_decision_payload(
             },
             "human_review_required": bool(policy["human_review_required"]),
             "blocked_reason": blocked_reason,
+            "exit_source": str(plan.get("exit_source") or ("fallback" if str(plan.get("side") or "").upper() == "SELL" else "")),
+            "sell_reason": str(plan.get("sell_reason") or plan.get("reason") or ""),
+            "position_id": str(plan.get("position_id") or ""),
+            "lot_reference": str(plan.get("lot_reference") or ""),
+            "sell_intent": str(plan.get("sell_intent") or ("FULL_CLOSE" if str(plan.get("side") or "").upper() == "SELL" else "")),
+            "expected_notional": str(plan.get("expected_notional") or plan.get("notional") or ""),
             "auto_sell_executed": False,
             "auto_recovery_executed": False,
             "live_order_executed": False,
@@ -939,7 +950,7 @@ def _load_mainline_adapter_context(config: IntegratedBacktestAuditConfig, days: 
         "order_plan_source": "fallback",
         "fill_source": "mainline_virtual_fill",
         "ledger_source": "PaperTradingLedger",
-        "exit_source": "fallback",
+        "exit_source": config.exit_strategy,
         "metrics_source": "mainline_ledger_plus_realized_trade_metrics",
         "price_source": "fallback",
     }
@@ -1111,6 +1122,8 @@ def _adapter_exit_orders(
     index: int,
     price_map: dict[str, Decimal],
 ) -> list[dict[str, Any]]:
+    if config.exit_strategy == "phase12_operations_exit_adapter":
+        return _phase12_exit_adapter_orders(config=config, ledger=ledger, day_text=day_text, price_map=price_map)
     orders: list[dict[str, Any]] = []
     for position in ledger.positions:
         latest = price_map.get(position.code)
@@ -1139,6 +1152,76 @@ def _adapter_exit_orders(
     return orders[:5]
 
 
+def _phase12_exit_adapter_orders(
+    *,
+    config: IntegratedBacktestAuditConfig,
+    ledger: PaperTradingLedger,
+    day_text: str,
+    price_map: dict[str, Decimal],
+) -> list[dict[str, Any]]:
+    positions: list[dict[str, Any]] = []
+    for position in ledger.positions:
+        latest = price_map.get(position.code)
+        if not latest or latest <= 0:
+            continue
+        ret = latest / position.average_cost - Decimal("1") if position.average_cost else Decimal("0")
+        action = ""
+        reason = ""
+        if position.holding_days >= config.max_holding_days:
+            action = "EXIT"
+            reason = "pm_max_holding_days_exit"
+        elif ret <= Decimal("-0.08"):
+            action = "EXIT"
+            reason = "pm_loss_cut_exit"
+        elif ret >= config.profit_take_pct:
+            action = "REDUCE"
+            reason = "pm_profit_protection_reduce"
+        positions.append(
+            {
+                "issue_code": position.code,
+                "position_id": f"phase12_position_{position.code}",
+                "lot_reference": f"phase12_lot_{position.code}",
+                "quantity": str(position.quantity),
+                "lot_size": str(LOT_SIZE),
+                "entry_price": str(position.average_cost),
+                "current_price": str(latest),
+                "unrealized_return": str(ret),
+                "exit_action": action,
+                "exit_reason": reason,
+                "sell_reason": reason,
+                "exit_source": "phase12_operations_exit_adapter",
+            }
+        )
+    result = generate_sell_items_from_positions(
+        positions,
+        trade_date=day_text,
+        exit_source="phase12_operations_exit_adapter",
+    )
+    if result.status != "PASS":
+        return []
+    orders: list[dict[str, Any]] = []
+    for item in result.sell_items:
+        orders.append(
+            {
+                "order_id": f"phase12_exit_adapter_{day_text}_{item['issue_code']}_SELL",
+                "issue_code": str(item["issue_code"]),
+                "side": "SELL",
+                "quantity": str(item["quantity"]),
+                "notional": str(item["expected_notional"]),
+                "priority_score": "0",
+                "reason": f"phase12_operations_exit_adapter:{item['sell_reason']}:{item['sell_intent']}",
+                "exit_source": str(item["exit_source"]),
+                "exit_reason": str(item["exit_reason"]),
+                "sell_reason": str(item["sell_reason"]),
+                "position_id": str(item["position_id"]),
+                "lot_reference": str(item["lot_reference"]),
+                "sell_intent": str(item["sell_intent"]),
+                "expected_notional": str(item["expected_notional"]),
+            }
+        )
+    return orders[:5]
+
+
 def _pending_order_from_adapter_plan(
     plan: dict[str, Any],
     order_date: str,
@@ -1159,6 +1242,13 @@ def _pending_order_from_adapter_plan(
         reason=str(plan.get("reason") or "PHASE11Z_MAINLINE_ADAPTER"),
         review_status=f"safety_pre_order_{review_class.lower()}",
     )
+
+
+def _execution_reason_from_pending(ledger: PaperTradingLedger, order_id: str) -> str:
+    for order in ledger.pending_orders:
+        if order.order_id == order_id:
+            return str(order.reason or "")
+    return ""
 
 
 def _next_execution_date(days: list[date], index: int) -> str:
@@ -1511,7 +1601,7 @@ def _realized_trade_metrics(trades: list[AuditTrade]) -> dict[str, Any]:
         buy = lot.pop(0) if lot else None
         if buy is None:
             continue
-        pnl = trade.notional - buy.notional
+        pnl = trade.realized_pnl if trade.realized_pnl != 0 else trade.notional - buy.notional
         holding_days = (date.fromisoformat(trade.business_date) - date.fromisoformat(buy.business_date)).days
         closed.append({"pnl": pnl, "holding_days": holding_days})
 
@@ -2149,6 +2239,7 @@ def _trade_payload(trade: AuditTrade) -> dict[str, Any]:
     payload = asdict(trade)
     payload["price"] = str(trade.price)
     payload["notional"] = str(trade.notional)
+    payload["realized_pnl"] = str(trade.realized_pnl)
     return _phase11_sanitize(payload)
 
 

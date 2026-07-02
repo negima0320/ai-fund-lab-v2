@@ -7,8 +7,9 @@ from typing import Literal
 from typing import Any, Protocol
 from urllib import error, request
 
-from ai_fund_lab_v2.broker.allowlist import ensure_read_only_clmid
+from ai_fund_lab_v2.broker.allowlist import ensure_demo_order_clmid, ensure_read_only_clmid
 from ai_fund_lab_v2.broker.sanitizer import sanitize_mapping, sanitize_text
+from ai_fund_lab_v2.broker.settings import DEMO_BASE_URL, BrokerSettings
 from ai_fund_lab_v2.broker.tachibana_codec import TachibanaCodec
 
 
@@ -104,6 +105,73 @@ class HttpPostBrokerTransport:
                 "body_values_saved": False,
             }
         )
+
+    def _serialize_body(self, encoded_payload: dict[str, Any]) -> tuple[bytes, str]:
+        text = json.dumps(encoded_payload, ensure_ascii=False)
+        if self.body_mode == "json_body":
+            return text.encode("utf-8"), "application/json; charset=utf-8"
+        if self.body_mode == "form_urlencoded_json_string":
+            return text.encode("utf-8"), "application/x-www-form-urlencoded; charset=UTF-8"
+        if self.body_mode == "text_plain_json":
+            return text.encode("utf-8"), "text/plain; charset=utf-8"
+        raise BrokerTransportError("Unsupported Tachibana POST body mode.")
+
+
+@dataclass
+class DemoOrderBrokerTransport:
+    endpoint_url: str
+    settings: BrokerSettings
+    demo_order_wire_execution: bool
+    production_order_allowed: bool = False
+    timeout_seconds: float = 30.0
+    rate_limit_per_second: float = 5.0
+    user_agent: str = "ai-fund-lab-v2-tachibana-demo-order/phase12o"
+    rate_limiter: RateLimiter | None = None
+    codec: TachibanaCodec | None = None
+    body_mode: TransportBodyMode = "json_body"
+
+    def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ensure_demo_order_clmid(
+            str(payload.get("sCLMID") or ""),
+            environment=self.settings.environment,
+            base_url=self.settings.base_url,
+            demo_base_url=DEMO_BASE_URL,
+            demo_order_wire_execution=self.demo_order_wire_execution,
+            production_order_allowed=self.production_order_allowed,
+        )
+        if self.rate_limiter is None:
+            self.rate_limiter = RateLimiter(self.rate_limit_per_second)
+        self.rate_limiter.wait()
+        encoded_payload = self._encode_order_payload(payload)
+        body, content_type = self._serialize_body(encoded_payload)
+        req = request.Request(
+            self.endpoint_url,
+            data=body,
+            headers={
+                "Content-Type": content_type,
+                "Accept": "application/json",
+                "User-Agent": self.user_agent,
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+                raw_text = _decode_response_bytes(response.read())
+        except (error.URLError, TimeoutError, OSError) as exc:
+            raise BrokerTransportError(f"Demo broker order POST failed: {sanitize_text(str(exc))}") from exc
+        try:
+            decoded = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise BrokerTransportError(f"Demo broker order POST returned invalid JSON: {sanitize_text(raw_text)}") from exc
+        if not isinstance(decoded, dict):
+            raise BrokerTransportError("Demo broker order POST returned non-object JSON.")
+        decoded_payload = dict(decoded)
+        if self.codec is not None:
+            decoded_payload = self.codec.decode_response(decoded_payload)
+        return decoded_payload
+
+    def _encode_order_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.codec.encode_request(payload) if self.codec is not None else dict(payload)
 
     def _serialize_body(self, encoded_payload: dict[str, Any]) -> tuple[bytes, str]:
         text = json.dumps(encoded_payload, ensure_ascii=False)

@@ -927,13 +927,14 @@ Phase12以降の実運用準備に進める状態
 
 # 15. Phase12
 
-## Live Trading Readiness / Small Live Test
+## Demo Full Operation Validation / Live Trading Readiness
 
 目的
 
 ```text
 Phase10のBroker接続とPhase11のSafety Layerを前提に、
-実売買へ進むための最終準備と少額検証を行う
+Production Runtimeと同じ運用フローをDemo環境で検証し、
+30営業日安定運用できることを確認する
 ```
 
 ---
@@ -954,9 +955,144 @@ no-live-order audit PASS
 安全性確認
 ```
 
+Phase12-H時点の重要な評価結果。
+
+```text
+SELL統合後 1年:
+annualized_return 17.6736%
+max_drawdown -24.7342%
+
+SELL統合後 5年:
+annualized_return 51.2017%
+max_drawdown -21.5802%
+
+1年:
+72.588% -> 17.6736%
+大幅悪化
+
+5年:
+31.2197% -> 51.2017%
+改善
+
+SELL後20営業日で+5%超:
+60件
+
+SELL後20営業日で-5%超下落:
+143件
+
+推定回避損失:
+約1,146,749円
+
+判定:
+SELL_INTEGRATION_NEEDS_CALIBRATION_BEFORE_PRODUCTION_REVENUE_CLAIM
+```
+
+Phase12は継続する。
+
+```text
+Demo Read-only
+
+Demo Order Wire設計/承認
+
+30営業日Demo運用
+
+Production注文禁止
+```
+
+は止めない。
+
 ---
 
-# 16. フェーズ進行ルール
+# 16. Phase13
+
+## Portfolio Rotation AI / Position Management v2 Design
+
+目的
+
+```text
+保有銘柄と新規候補を同じ期待値軸で比較し、
+より高期待値の銘柄へ資金を入れ替えるべきか判断する
+```
+
+Phase13は、以下をまだ決め打ちしない設計検討フェーズである。
+
+```text
+新AIを作る
+
+Position Management AIを拡張する
+
+Capital Allocation Engineに吸収する
+```
+
+問い
+
+```text
+この保有銘柄は、今も資金を置く価値があるか？
+
+新規候補へ乗り換えるべきか？
+
+保有継続・売却・縮小・入替のどれが期待値最大か？
+```
+
+想定スコープ
+
+```text
+保有銘柄スコアリング
+
+新規候補スコアリング
+
+期待値差分比較
+
+Rotation候補生成
+
+売却理由としてROTATEを追加
+
+Portfolio level constraintとの統合
+
+Capital Allocationとの責務分離
+
+Backtestによる効果検証
+```
+
+禁止
+
+```text
+AI再学習を即実行
+
+Backtest結果を学習に混ぜる
+
+Broker Snapshot / Paper Ledger / PnL / cash / portfolio state / Safety result / Audit result をAI学習に使う
+
+LLM判断AI化
+
+信用取引
+
+レバレッジ
+
+Production発注
+```
+
+成功条件
+
+```text
+直近1年の劣化改善
+
+5年年率50%以上維持または改善
+
+最大DD改善または悪化抑制
+
+早売り件数削減
+
+損失回避効果維持
+
+資金回転率改善
+
+SELL理由別の説明性向上
+```
+
+---
+
+# 17. フェーズ進行ルール
 
 次へ進める条件。
 

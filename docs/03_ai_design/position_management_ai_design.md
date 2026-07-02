@@ -671,3 +671,41 @@ Position Management AIは、
 利益を最大化するのではなく、
 
 トレンドを最大限活用することを目的とする。
+
+---
+
+# 17. Phase13検討事項: Portfolio Rotation / Position Management v2
+
+Phase12-Hで、SELL統合は5年では年率50%を超えた一方、直近1年では大幅に悪化し、早売りリスクも確認された。
+
+このためPhase13では、Position Management AIの隣接領域として以下を検討する。
+
+```text
+保有銘柄単体の健康診断
+
+vs
+
+保有銘柄と新規候補の期待値比較
+```
+
+現時点では、Position Management AIを拡張するとは決めない。
+
+Phase13では、以下のいずれが適切かを設計レビューで判断する。
+
+```text
+Portfolio Rotation AIとして分離
+
+Position Management AI v2として拡張
+
+Capital Allocation側の入力として扱う
+```
+
+新しいSELL理由候補として、以下を検討する。
+
+```text
+ROTATE
+```
+
+`ROTATE`は、保有銘柄が完全に悪いわけではないが、新規候補の期待値が十分に高いため、資金入替を検討する状態である。
+
+この検討は資料上のロードマップ追加であり、AI再学習、Backtest再実行、Runtime変更、Broker接続、注文送信は行わない。
