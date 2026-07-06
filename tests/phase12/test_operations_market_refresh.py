@@ -45,6 +45,36 @@ def test_daily_plan_generates_configured_buy_count_without_implicit_one_item_cap
     assert payload["operations_runtime_config"]["max_buy_orders_per_day"] == 5
 
 
+def test_daily_plan_prices_and_filters_buy_candidates_within_dynamic_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("TACHIBANA_API_ENV", "demo")
+    _write_candidate_fixture(
+        tmp_path,
+        trade_date="2026-06-29",
+        row_count=10,
+        closes={
+            "10000": 9000,
+            "10010": 4000,
+            "10020": 3000,
+            "10030": 800,
+            "10040": 400,
+            "10050": 300,
+            "10060": 800,
+        },
+    )
+
+    result = run_daily_plan(trade_date="2026-06-29", root=tmp_path)
+
+    assert result["status"] == "PASS"
+    payload = __import__("json").loads((tmp_path / "order_plan" / "2026-06-29" / "order_plan.json").read_text())
+    buy_items = [item for item in payload["items"] if item["side"] == "BUY"]
+    assert [item["issue_code"] for item in buy_items] == ["10010", "10020", "10030", "10040", "10050"]
+    assert [item["expected_notional"] for item in buy_items] == ["400000", "300000", "80000", "40000", "30000"]
+    assert sum(int(item["expected_notional"]) for item in buy_items) <= 850000
+    assert payload["daily_plan_budget"]["approval_max_notional"] == "850000"
+    assert payload["daily_plan_budget"]["excluded_buy_items"][0]["issue_code"] == "10000"
+    assert payload["daily_plan_budget"]["excluded_buy_items"][0]["reason"] == "daily_plan_budget_insufficient"
+
+
 def test_feature_buy_candidate_count_is_not_environment_specific(tmp_path):
     _write_candidate_fixture(tmp_path, trade_date="2026-06-29", row_count=10)
 
@@ -56,23 +86,38 @@ def test_feature_buy_candidate_count_is_not_environment_specific(tmp_path):
     assert demo_like["max_buy_orders_per_day"] == production_like["max_buy_orders_per_day"] == 5
 
 
-def _write_candidate_fixture(tmp_path, *, trade_date: str, row_count: int) -> None:
+def _write_candidate_fixture(tmp_path, *, trade_date: str, row_count: int, closes: dict[str, int] | None = None) -> None:
     candidate_path = tmp_path / "feature_artifacts" / trade_date / "candidate_features.parquet"
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    closes = closes or {}
     rows = []
+    quote_rows = []
     for index in range(row_count):
+        code = f"100{index}0"
         rows.append(
             {
                 "target_date": trade_date,
                 "as_of_date": trade_date,
-                "code": f"100{index}0",
+                "code": code,
                 "universe_eligible": True,
                 "price_momentum_return_20d": 1.0 - index / 100,
                 "price_momentum_return_5d": 0.5 - index / 100,
                 "liquidity_avg_volume_20d": 1000000 - index,
             }
         )
+        quote_rows.append(
+            {
+                "target_date": trade_date,
+                "Date": trade_date,
+                "code": code,
+                "Code": code,
+                "Close": closes.get(code, 1000),
+            }
+        )
     pd.DataFrame(rows).to_parquet(candidate_path, index=False)
+    normalized_path = tmp_path / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    normalized_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(quote_rows).to_parquet(normalized_path, index=False)
     latest_path = tmp_path / "feature_refresh" / trade_date / "latest_features.json"
     write_json(
         latest_path,

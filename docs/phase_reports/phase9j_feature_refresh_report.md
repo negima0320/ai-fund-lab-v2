@@ -1,27 +1,27 @@
 # Phase9-J Feature Refresh Report
 
-- status: FEATURES_READY
-- target_data_until: 2026-06-26
+- status: FEATURE_REFRESH_REQUIRED
+- target_data_until: 2026-07-02
 - dry_run: False
 - execute: True
-- manifest_path: `.runtime/phase9/feature_refresh/2026-06-26/feature_refresh_manifest.json`
+- manifest_path: `.runtime/phase9/feature_refresh/2026-07-02/feature_refresh_manifest.json`
 
 ## Artifacts
 
 | AI | status | rows | max_date | schema_hash | artifact |
 | --- | --- | ---: | --- | --- | --- |
-| candidate | FEATURES_READY | 4991 | 2026-06-26 | `1ede9c508b3a16cb` | `.runtime/phase9/features/2026-06-26/candidate_features.parquet` |
-| opportunity | FEATURES_READY | 4991 | 2026-06-26 | `944e345929c4d2c9` | `.runtime/phase9/features/2026-06-26/opportunity_feature_input.parquet` |
-| position | FEATURES_READY | 0 | 2026-06-26 | `3ddf67ff43f207fb` | `.runtime/phase9/features/2026-06-26/position_feature_input.parquet` |
-| capital | FEATURES_READY | 1 | 2026-06-26 | `d66489c1ef814918` | `.runtime/phase9/features/2026-06-26/capital_policy_input.parquet` |
+| candidate | FEATURE_REFRESH_REQUIRED | 0 |  | `` | `` |
+| opportunity | FEATURE_REFRESH_REQUIRED | 0 |  | `` | `` |
+| position | FEATURE_REFRESH_REQUIRED | 0 |  | `` | `` |
+| capital | FEATURE_REFRESH_REQUIRED | 0 |  | `` | `` |
 
 ## Blocked Reasons
 
-- none
+- normalized_daily_quotes_before_target_data_until
 
 ## Warnings
 
-- position_feature_empty_no_current_positions
+- none
 
 ## Safety Flags
 

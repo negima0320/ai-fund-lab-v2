@@ -131,9 +131,16 @@ def run_operations_market_refresh(
     }
 
 
-def load_feature_buy_candidates(*, root: Path, trade_date: str, max_items: int = DEFAULT_MAX_BUY_ORDERS_PER_DAY) -> dict[str, Any]:
+def load_feature_buy_candidates(
+    *,
+    root: Path,
+    trade_date: str,
+    max_items: int = DEFAULT_MAX_BUY_ORDERS_PER_DAY,
+    candidate_pool_size: int | None = None,
+) -> dict[str, Any]:
     paths = OperationPaths(root)
     max_items = max(0, int(max_items))
+    pool_limit = max_items if candidate_pool_size is None else max(max_items, int(candidate_pool_size))
     marker_path = paths.dated("feature_refresh", trade_date, "latest_features.json")
     if not marker_path.exists():
         return {"status": "NO_FEATURE_MARKER", "buy_items": [], "reason": "feature_marker_missing"}
@@ -185,7 +192,7 @@ def load_feature_buy_candidates(*, root: Path, trade_date: str, max_items: int =
     if sort_cols:
         frame = frame.sort_values(sort_cols, ascending=[False] * len(sort_cols))
     items = []
-    for index, row in enumerate(frame.head(max_items).to_dict(orient="records"), start=1):
+    for index, row in enumerate(frame.head(pool_limit).to_dict(orient="records"), start=1):
         code = str(row.get("code") or row.get("issue_code") or "")
         if not code:
             continue
@@ -219,6 +226,7 @@ def load_feature_buy_candidates(*, root: Path, trade_date: str, max_items: int =
         "candidate_count": universe_rows_after_gate,
         "selected_buy_count": len(items),
         "max_buy_orders_per_day": max_items,
+        "candidate_pool_size": pool_limit,
         "max_positions": DEFAULT_MAX_POSITIONS,
         "max_items_source": "operations_runtime_config",
     }

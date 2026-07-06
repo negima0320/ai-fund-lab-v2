@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ai_fund_lab_v2.operations.operations as operations_module
 from ai_fund_lab_v2.operations.io import write_json
 from ai_fund_lab_v2.operations.operations import run_fill_monitor, run_reconcile, run_safety_monitor
 
@@ -85,6 +86,52 @@ def test_fill_safety_reconcile_handle_explained_blocked_item_without_emergency_s
     assert safety["status"] == "PASS"
     assert safety["safety_state"] == "ALLOW"
     assert reconcile["status"] != "SYSTEM_EMERGENCY_STOP"
+
+
+def test_fill_monitor_reviews_submitted_orders_when_broker_readonly_refresh_still_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TACHIBANA_API_ENV", "demo")
+    trade_date = "2026-07-03"
+    write_json(
+        tmp_path / "submitted_orders" / trade_date / "submitted_orders.json",
+        {
+            "status": "PASS",
+            "production_order_submitted": False,
+            "submitted_orders": [
+                {
+                    "item_id": "buy_1",
+                    "status": "ORDER_ACCEPTED",
+                    "broker_status": "ACCEPTED",
+                    "side": "BUY",
+                    "issue_code": "42650",
+                    "quantity": "100",
+                    "broker_order_api_called": True,
+                    "demo_order_submitted": True,
+                    "production_order_submitted": False,
+                }
+            ],
+        },
+    )
+
+    def fake_refresh(*, trade_date, root, run_enabled=False, include_quotes=False):
+        return {
+            "status": "BLOCK",
+            "api_called": True,
+            "artifacts_written": False,
+            "blocked_reasons": ["broker_snapshot_not_written"],
+        }
+
+    monkeypatch.setattr(operations_module, "refresh_demo_broker_readonly_artifacts", fake_refresh)
+
+    result = run_fill_monitor(trade_date=trade_date, root=tmp_path)
+
+    assert result["status"] == "REVIEW_REQUIRED"
+    assert result["classification"] == "REVIEW_REQUIRED"
+    assert result["review_reasons"] == ["broker_readonly_artifact_missing_or_incomplete"]
+    assert result["broker_readonly_refresh"]["status"] == "BLOCK"
+    assert result["broker_readonly_artifact_bundle"]["status"] == "REVIEW_REQUIRED"
+    assert "broker_orders" in result["broker_readonly_artifact_bundle"]["missing"]
+    assert result["fill_events"][0]["lifecycle"] == "ACCEPTED"
+    assert result["fill_events"][0]["requires_human_review"] is False
 
 
 def test_reconcile_passes_previous_day_plan_partial_submit_with_explained_blocked_item(tmp_path, monkeypatch):

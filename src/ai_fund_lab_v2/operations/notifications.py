@@ -91,7 +91,16 @@ def run_operation_notifications(
         "artifact_type": "notification_result",
         "business_date": trade_date,
         "status": status,
+        "created_at": _utc_now_iso(),
+        "invocation": _invocation_metadata(),
         "notification_result_classification": status,
+        "send_success_semantics": "HTTP request completed without local exception; downstream device delivery is not confirmed.",
+        "delivery_confirmation": False,
+        "report_source": {
+            "daily_report_refs_path": str(report_refs.get("daily_report_refs_path") or ""),
+            "public_report": str((report_refs.get("paths") or {}).get("public_report") or ""),
+            "blog_draft": str((report_refs.get("paths") or {}).get("blog_draft") or ""),
+        },
         "line": line.to_dict(),
         "discord": discord.to_dict(),
         "line_config_present": line.config_present,
@@ -107,6 +116,22 @@ def run_operation_notifications(
     output = OperationPaths(root).dated("notifications", trade_date, "notification_result.json")
     write_json(output, payload)
     return {**payload, "notification_result_path": str(output)}
+
+
+def _invocation_metadata() -> dict[str, Any]:
+    service = str(os.environ.get("XPC_SERVICE_NAME") or "")
+    return {
+        "source": "launchd" if service.startswith("com.aifundlab.operations.") else "manual",
+        "xpc_service_name": service,
+        "launchd_job_label": service if service.startswith("com.aifundlab.operations.") else "",
+        "pid": os.getpid(),
+    }
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def load_notification_env(dotenv_path: str | Path = ".env") -> dict[str, str]:
@@ -162,7 +187,7 @@ def send_line_operation_notification(
             dry_run=dry_run,
         )
     if dry_run:
-        return NotificationSendResult(provider="line", config_present=True, send_attempted=True, send_executed=True, status="PASS", dry_run=True)
+        return NotificationSendResult(provider="line", config_present=True, send_attempted=True, send_executed=False, status="PASS", dry_run=True)
     payload = {"to": to_id, "messages": [{"type": "text", "text": message}]}
     try:
         post = transport or _post_json
@@ -198,7 +223,7 @@ def send_discord_operation_notification(
             dry_run=dry_run,
         )
     if dry_run:
-        return NotificationSendResult(provider="discord", config_present=True, send_attempted=True, send_executed=True, status="PASS", dry_run=True)
+        return NotificationSendResult(provider="discord", config_present=True, send_attempted=True, send_executed=False, status="PASS", dry_run=True)
     try:
         post = transport or _post_json
         post(webhook_url, {"Content-Type": "application/json", "User-Agent": "AI-Fund-Lab/operations-notifier"}, {"content": content[:DISCORD_LIMIT]})

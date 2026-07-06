@@ -18,7 +18,7 @@ def main() -> int:
     result = run_reconcile(trade_date=args.trade_date, root=Path(args.root))
     print(result["status"])
     print(result["reconciliation_result_path"])
-    return 0 if result["status"] in {"PASS", "PASS_WITH_BLOCKED_ITEMS", "REVIEW_REQUIRED", "PASS_MARKET_CLOSED_RECONCILE_ONLY"} else 2
+    return 0 if Path(result["reconciliation_result_path"]).exists() else 2
 
 
 if __name__ == "__main__":

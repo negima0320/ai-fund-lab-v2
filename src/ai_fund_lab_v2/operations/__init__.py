@@ -21,6 +21,7 @@ from ai_fund_lab_v2.operations.operations import (
     run_market_refresh,
     run_preflight,
     run_reconcile,
+    run_submit_operation,
 )
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "run_market_refresh",
     "run_preflight",
     "run_reconcile",
+    "run_submit_operation",
     "validate_demo_environment",
     "validate_runtime_environment",
     "write_json",

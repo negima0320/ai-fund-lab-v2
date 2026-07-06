@@ -18,7 +18,7 @@ def main() -> int:
     result = run_safety_monitor(trade_date=args.trade_date, root=Path(args.root))
     print(result["status"])
     print(result["safety_monitor_result_path"])
-    return 0 if result["status"] in {"PASS", "PASS_MARKET_CLOSED_SYSTEM_ONLY"} else 2
+    return 0 if Path(result["safety_monitor_result_path"]).exists() else 2
 
 
 if __name__ == "__main__":

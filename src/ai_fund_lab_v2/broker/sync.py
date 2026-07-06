@@ -125,7 +125,7 @@ def _default_fixture_responses() -> dict[str, dict[str, Any]]:
                     "sOrderNo": "MOCK-ORDER-001",
                     "sIssueCode": "7203",
                     "sIssueName": "TOYOTA",
-                    "sBaibaiKubun": "1",
+                    "sBaibaiKubun": "3",
                     "sOrderPriceKubun": "limit",
                     "sOrderSuryou": "100",
                     "sYakujouSuryou": "0",

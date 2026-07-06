@@ -39,6 +39,8 @@ from ai_fund_lab_v2.broker import (
     sanitize_mapping,
 )
 from ai_fund_lab_v2.broker.response import BrokerResponseEnvelope
+from ai_fund_lab_v2.broker.models import BrokerBalanceSnapshot
+from ai_fund_lab_v2.broker.session import TachibanaSession
 from ai_fund_lab_v2.broker.tachibana_account_smoke import _response_summary
 from ai_fund_lab_v2.broker.tachibana_account_smoke import classify_revealed_account_error
 from ai_fund_lab_v2.broker.tachibana_account_smoke import classify_account_balance_issue
@@ -47,6 +49,7 @@ from ai_fund_lab_v2.broker.tachibana_account_smoke import classify_transport_com
 from ai_fund_lab_v2.broker.tachibana_account_smoke import diagnose_account_balance_keys
 from ai_fund_lab_v2.broker.tachibana_account_smoke import diagnose_account_request_shape
 from ai_fund_lab_v2.broker.tachibana_account_smoke import reveal_protocol_error
+import ai_fund_lab_v2.broker.tachibana_broker_snapshot as broker_snapshot_module
 from ai_fund_lab_v2.broker.tachibana_broker_snapshot import _redaction_status, _write_json_atomic
 from ai_fund_lab_v2.broker.tachibana_executions_history_smoke import _execution_dict
 from ai_fund_lab_v2.broker.tachibana_orders_smoke import _order_dict
@@ -691,6 +694,390 @@ def test_tachibana_broker_snapshot_demo_only_guard_does_not_write_snapshot(tmp_p
     assert payload["snapshot_written"] is False
 
 
+def test_tachibana_broker_snapshot_retries_login_session_failure_then_writes_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key_file = tmp_path / "dummy.der"
+    key_file.write_bytes(b"dummy")
+    settings = BrokerSettings(
+        auth_id="dummy_auth",
+        private_key_file=key_file,
+        private_key_format="der",
+        readonly_smoke_enabled=True,
+    )
+    calls = {"login": 0}
+    sleeps: list[float] = []
+
+    def fake_login(self, *, decrypt_url):
+        calls["login"] += 1
+        if calls["login"] < 3:
+            raise BrokerConfigurationError("Tachibana login URL decrypt returned an invalid URL.")
+        return TachibanaSession(
+            request_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/request/",
+            master_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/master/",
+            price_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/price/",
+            event_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/event/",
+            websocket_url="",
+            login_at=datetime.now(timezone.utc),
+            environment="demo",
+        )
+
+    ok_response = BrokerResponseEnvelope({"sResultCode": "0"})
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "login", fake_login)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_account_summary", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_buying_power", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_cash_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_margin_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_orders", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "logout", lambda self, session, transport=None: ok_response)
+    monkeypatch.setattr(broker_snapshot_module, "normalize_balance_summary", lambda response: BrokerBalanceSnapshot(source="broker_api", total_assets="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_buying_power", lambda response: BrokerBalanceSnapshot(source="broker_api", buying_power="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_cash_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_margin_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_order_list", lambda response: [])
+
+    snapshot_path = tmp_path / "snapshot.json"
+    result = run_tachibana_broker_snapshot(
+        reports_dir=tmp_path / "reports",
+        snapshot_path=snapshot_path,
+        run_enabled=True,
+        settings=settings,
+        include_quotes=False,
+        login_retry_backoff_seconds=0,
+        sleep_func=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert result.status == "PASS_WITH_WARNINGS"
+    assert calls["login"] == 3
+    assert sleeps == [0, 0]
+    assert snapshot_path.exists()
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["health"]["login"]["retry_attempts"] == 3
+    assert report["snapshot_written"] is True
+
+
+def test_tachibana_broker_snapshot_retries_readonly_fetch_then_writes_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key_file = tmp_path / "dummy.der"
+    key_file.write_bytes(b"dummy")
+    settings = BrokerSettings(
+        auth_id="dummy_auth",
+        private_key_file=key_file,
+        private_key_format="der",
+        readonly_smoke_enabled=True,
+    )
+    calls = {"orders": 0}
+
+    def fake_login(self, *, decrypt_url):
+        return TachibanaSession(
+            request_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/request/",
+            master_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/master/",
+            price_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/price/",
+            event_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/event/",
+            websocket_url="",
+            login_at=datetime.now(timezone.utc),
+            environment="demo",
+        )
+
+    def fake_get_orders(self):
+        calls["orders"] += 1
+        if calls["orders"] == 1:
+            raise TimeoutError("timed out")
+        return BrokerResponseEnvelope({"sResultCode": "0"})
+
+    ok_response = BrokerResponseEnvelope({"sResultCode": "0"})
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "login", fake_login)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_account_summary", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_buying_power", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_cash_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_margin_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_orders", fake_get_orders)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "logout", lambda self, session, transport=None: ok_response)
+    monkeypatch.setattr(broker_snapshot_module, "normalize_balance_summary", lambda response: BrokerBalanceSnapshot(source="broker_api", total_assets="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_buying_power", lambda response: BrokerBalanceSnapshot(source="broker_api", buying_power="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_cash_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_margin_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_order_list", lambda response: [])
+
+    snapshot_path = tmp_path / "snapshot.json"
+    result = run_tachibana_broker_snapshot(
+        reports_dir=tmp_path / "reports",
+        snapshot_path=snapshot_path,
+        run_enabled=True,
+        settings=settings,
+        include_quotes=False,
+        sleep_func=lambda seconds: None,
+    )
+
+    assert result.status == "PASS_WITH_WARNINGS"
+    assert calls["orders"] == 2
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["health"]["orders"]["retry_attempts"] == 2
+    assert report["health"]["orders"]["attempts"][0]["classification"] == "FAILED_BROKER_READONLY_FETCH"
+    assert snapshot_path.exists()
+
+
+def test_positions_api_safe_diagnosis_saves_only_key_names_and_match_rates() -> None:
+    diagnosis = broker_snapshot_module.build_positions_api_safe_diagnosis(
+        {
+            "sCLMID": "CLMGenbutuKabuList",
+            "sResultCode": "0",
+            "aGenbutuKabuList": [
+                {
+                    "sIssueCode": "7203",
+                    "sQuantity": "100",
+                    "sMarketValue": "250000",
+                    "sAveragePrice": "2000",
+                    "sCustomerId": "customer-secret",
+                },
+                {
+                    "sOtherField": "raw-value",
+                },
+            ],
+        },
+        {
+            "sCLMID": "CLMShinyouTategyokuList",
+            "sResultCode": "0",
+            "aShinyouTategyokuList": [
+                {
+                    "sIssueCode": "6758",
+                    "sTategyokuSuryou": "10",
+                    "sHyokaGaku": "12000",
+                    "sGenzaichi": "1200",
+                    "sToken": "session-token",
+                }
+            ],
+        },
+    )
+
+    assert diagnosis["cash"]["top_level_keys"] == ["aGenbutuKabuList", "sCLMID", "sResultCode"]
+    assert diagnosis["cash"]["list_key_hits"] == [{"key": "aGenbutuKabuList", "row_count": 2}]
+    assert diagnosis["cash"]["row_count"] == 2
+    assert "sIssueCode" in diagnosis["cash"]["row_key_names"]
+    assert diagnosis["cash"]["candidate_key_presence"]["issue_code"] == ["sIssueCode"]
+    assert diagnosis["cash"]["candidate_key_match_rate"]["issue_code"] == "1/2"
+    assert diagnosis["cash"]["candidate_key_match_rate"]["quantity"] == "1/2"
+    assert diagnosis["margin"]["candidate_key_match_rate"]["market_value"] == "1/1"
+    assert diagnosis["combined"]["candidate_key_match_rate"] == {
+        "issue_code": "2/3",
+        "quantity": "2/3",
+        "market_value": "2/3",
+        "price": "2/3",
+    }
+    serialized = json.dumps(diagnosis, ensure_ascii=False)
+    assert "7203" not in serialized
+    assert "6758" not in serialized
+    assert "100" not in serialized
+    assert "250000" not in serialized
+    assert "customer-secret" not in serialized
+    assert "session-token" not in serialized
+    assert diagnosis["raw_response_saved"] is False
+    assert diagnosis["raw_values_saved"] is False
+    assert diagnosis["secret_saved"] is False
+
+
+def test_tachibana_broker_snapshot_writes_positions_safe_diagnosis_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key_file = tmp_path / "dummy.der"
+    key_file.write_bytes(b"dummy")
+    settings = BrokerSettings(
+        auth_id="dummy_auth",
+        private_key_file=key_file,
+        private_key_format="der",
+        readonly_smoke_enabled=True,
+    )
+
+    def fake_login(self, *, decrypt_url):
+        return TachibanaSession(
+            request_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/request/",
+            master_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/master/",
+            price_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/price/",
+            event_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/event/",
+            websocket_url="",
+            login_at=datetime.now(timezone.utc),
+            environment="demo",
+        )
+
+    ok_response = BrokerResponseEnvelope({"sResultCode": "0"})
+    cash_response = BrokerResponseEnvelope(
+        {
+            "sResultCode": "0",
+            "aGenbutuKabuList": [
+                {"sIssueCode": "7203", "sQuantity": "100", "sHyokaGaku": "250000", "sCustomerId": "customer-secret"}
+            ],
+        }
+    )
+    margin_response = BrokerResponseEnvelope({"sResultCode": "0", "aShinyouTategyokuList": []})
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "login", fake_login)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_account_summary", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_buying_power", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_cash_positions", lambda self: cash_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_margin_positions", lambda self: margin_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_orders", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "logout", lambda self, session, transport=None: ok_response)
+    monkeypatch.setattr(broker_snapshot_module, "normalize_balance_summary", lambda response: BrokerBalanceSnapshot(source="broker_api", total_assets="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_buying_power", lambda response: BrokerBalanceSnapshot(source="broker_api", buying_power="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_cash_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_margin_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_order_list", lambda response: [])
+
+    snapshot_path = tmp_path / "snapshot.json"
+    result = run_tachibana_broker_snapshot(
+        reports_dir=tmp_path / "reports",
+        snapshot_path=snapshot_path,
+        run_enabled=True,
+        settings=settings,
+        include_quotes=False,
+        sleep_func=lambda seconds: None,
+    )
+
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    diagnosis_path = Path(report["positions_safe_diagnosis_path"])
+    diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
+    assert diagnosis_path.name == "positions_safe_diagnosis.json"
+    assert diagnosis["cash"]["candidate_key_match_rate"]["issue_code"] == "1/1"
+    assert diagnosis["cash"]["candidate_key_match_rate"]["quantity"] == "1/1"
+    assert diagnosis["combined"]["candidate_key_match_rate"]["market_value"] == "1/1"
+    assert report["health"]["positions"]["candidate_key_match_rate"]["issue_code"] == "1/1"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["positions_api_safe_diagnosis_path"] == str(diagnosis_path)
+    serialized = json.dumps(diagnosis, ensure_ascii=False)
+    assert "7203" not in serialized
+    assert "100" not in serialized
+    assert "250000" not in serialized
+    assert "customer-secret" not in serialized
+    assert diagnosis["raw_response_saved"] is False
+    assert diagnosis["raw_values_saved"] is False
+    assert diagnosis["secret_saved"] is False
+
+
+def test_tachibana_broker_snapshot_attempts_order_detail_for_all_orders_and_continues_after_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key_file = tmp_path / "dummy.der"
+    key_file.write_bytes(b"dummy")
+    settings = BrokerSettings(
+        auth_id="dummy_auth",
+        private_key_file=key_file,
+        private_key_format="der",
+        readonly_smoke_enabled=True,
+    )
+    detail_calls: list[str] = []
+
+    def fake_login(self, *, decrypt_url):
+        return TachibanaSession(
+            request_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/request/",
+            master_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/master/",
+            price_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/price/",
+            event_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9/event/",
+            websocket_url="",
+            login_at=datetime.now(timezone.utc),
+            environment="demo",
+        )
+
+    def fake_get_orders(self):
+        return BrokerResponseEnvelope(
+            {
+                "sResultCode": "0",
+                "orders": [
+                    {"sOrderNumber": "ORDER-1", "sOrderIssueCode": "7203", "sOrderBaibaiKubun": "3", "sOrderOrderSuryou": "100"},
+                    {"sOrderNumber": "ORDER-2", "sOrderIssueCode": "6758", "sOrderBaibaiKubun": "3", "sOrderOrderSuryou": "100"},
+                ],
+            }
+        )
+
+    def fake_get_executions_history(self, order_id):
+        detail_calls.append(order_id)
+        if order_id == "ORDER-1":
+            raise TimeoutError("timed out")
+        return BrokerResponseEnvelope(
+            {
+                "sResultCode": "0",
+                "aYakuzyouSikkouList": [
+                    {
+                        "sOrderNumber": order_id,
+                        "sIssueCode": "6758",
+                        "sOrderBaibaiKubun": "3",
+                        "sYakuzyouSuryou": "100",
+                        "sYakuzyouPrice": "1000",
+                    }
+                ],
+            }
+        )
+
+    ok_response = BrokerResponseEnvelope({"sResultCode": "0"})
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "login", fake_login)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_account_summary", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_buying_power", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_cash_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_margin_positions", lambda self: ok_response)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_orders", fake_get_orders)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "get_executions_history", fake_get_executions_history)
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "logout", lambda self, session, transport=None: ok_response)
+    monkeypatch.setattr(broker_snapshot_module, "normalize_balance_summary", lambda response: BrokerBalanceSnapshot(source="broker_api", total_assets="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_buying_power", lambda response: BrokerBalanceSnapshot(source="broker_api", buying_power="1000000"))
+    monkeypatch.setattr(broker_snapshot_module, "normalize_cash_positions", lambda response: [])
+    monkeypatch.setattr(broker_snapshot_module, "normalize_margin_positions", lambda response: [])
+
+    snapshot_path = tmp_path / "snapshot.json"
+    result = run_tachibana_broker_snapshot(
+        reports_dir=tmp_path / "reports",
+        snapshot_path=snapshot_path,
+        run_enabled=True,
+        settings=settings,
+        include_quotes=False,
+        sleep_func=lambda seconds: None,
+    )
+
+    assert result.status == "FAILED_BROKER_READONLY_FETCH"
+    assert detail_calls.count("ORDER-1") == 3
+    assert detail_calls.count("ORDER-2") == 1
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert len(snapshot["executions"]) == 1
+    assert snapshot["health"]["executions"]["detail_attempted_count"] == 2
+    assert snapshot["health"]["executions"]["detail_failure_count"] == 1
+    assert snapshot["health"]["executions"]["failures"][0]["order_id_hash"]
+    assert "ORDER-1" not in json.dumps(snapshot)
+
+
+def test_tachibana_broker_snapshot_login_session_retry_failure_safe_diagnosis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    key_file = tmp_path / "dummy.der"
+    key_file.write_bytes(b"dummy")
+    settings = BrokerSettings(
+        auth_id="dummy_auth",
+        private_key_file=key_file,
+        private_key_format="der",
+        readonly_smoke_enabled=True,
+    )
+    calls = {"login": 0}
+
+    def fake_login(self, *, decrypt_url):
+        calls["login"] += 1
+        raise BrokerConfigurationError("Tachibana login URL decrypt returned an invalid URL.")
+
+    monkeypatch.setattr(broker_snapshot_module.TachibanaReadOnlyClient, "login", fake_login)
+    snapshot_path = tmp_path / "snapshot.json"
+
+    result = run_tachibana_broker_snapshot(
+        reports_dir=tmp_path / "reports",
+        snapshot_path=snapshot_path,
+        run_enabled=True,
+        settings=settings,
+        include_quotes=False,
+        login_retry_backoff_seconds=0,
+        sleep_func=lambda seconds: None,
+    )
+
+    assert result.status == "FAILED_LOGIN_SESSION"
+    assert calls["login"] == 3
+    assert snapshot_path.exists() is False
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["failure_classification"] == "login_session_error"
+    assert report["safe_diagnosis"]["failure_stage"] == "session_url_decrypt"
+    assert report["safe_diagnosis"]["retry_attempts"] == 3
+    assert report["safe_diagnosis"]["final_failure_classification"] == "FAILED_LOGIN_SESSION"
+    serialized = json.dumps(report, ensure_ascii=False).lower()
+    assert "dummy_auth" not in serialized
+    assert "raw_request_payload" not in serialized
+    assert "raw_response_payload" not in serialized
+    assert "sresultcode" not in serialized
+    assert "surlrequest" not in serialized
+
+
 def test_tachibana_broker_snapshot_redaction_status_schema() -> None:
     status = _redaction_status()
 
@@ -806,7 +1193,7 @@ def test_order_normalizers_hash_order_number_and_keep_sanitized_fields() -> None
                         "sOrderNumber": "ORDER-SECRET-001",
                         "sOrderIssueCode": "7203",
                         "sIssueName": "TOYOTA",
-                        "sOrderBaibaiKubun": "1",
+                        "sOrderBaibaiKubun": "3",
                         "sOrderOrderSuryou": "100",
                         "sOrderOrderPrice": "2500",
                         "sOrderStatus": "accepted",

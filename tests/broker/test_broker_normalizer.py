@@ -145,7 +145,7 @@ def test_mock_response_normalizes_to_orders() -> None:
                     "sOrderNo": "ORD-001",
                     "sIssueCode": "7203",
                     "sIssueName": "TOYOTA",
-                    "sBaibaiKubun": "1",
+                    "sBaibaiKubun": "3",
                     "sOrderPriceKubun": "limit",
                     "sOrderSuryou": "100",
                     "sYakujouSuryou": "40",
@@ -165,6 +165,9 @@ def test_mock_response_normalizes_to_orders() -> None:
     assert snapshots[0].order_id == "ORD-001"
     assert snapshots[0].side == "buy"
     assert snapshots[0].remaining_quantity == Decimal("60")
+
+    sell = normalize_order_list(BrokerResponseEnvelope({"orders": [{"sBaibaiKubun": "1"}]}))
+    assert sell[0].side == "sell"
 
 
 def test_mock_response_normalizes_order_detail_executions() -> None:

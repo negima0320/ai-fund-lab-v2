@@ -46,6 +46,8 @@ def write_broker_readonly_artifacts_from_snapshot(
 ) -> dict[str, Any]:
     paths = OperationPaths(root)
     env = str(snapshot.get("environment") or "UNKNOWN")
+    source_classification = _broker_snapshot_source_classification(snapshot)
+    mock_source_detected = source_classification == "MOCK"
     raw_positions = snapshot.get("positions") or []
     positions = [
         item
@@ -54,6 +56,19 @@ def write_broker_readonly_artifacts_from_snapshot(
     ]
     orders = [_normalize_order(row) for row in snapshot.get("orders") or []]
     executions = [_normalize_execution(row) for row in snapshot.get("executions") or []]
+    positions_safe_diagnosis = _positions_safe_diagnosis(raw_positions, positions)
+    fallback_executions = []
+    executions_health_status = ((snapshot.get("health") or {}).get("executions") or {}).get("status", "UNKNOWN")
+    if not executions and orders:
+        fallback_executions = [_fallback_execution_from_order(order, index=index, executions_health_status=executions_health_status) for index, order in enumerate(orders, start=1) if _order_status_indicates_filled(order)]
+        executions = fallback_executions
+    executions_classification = (
+        "SKIPPED_NO_ORDERS"
+        if not orders and not executions
+        else "ORDER_STATUS_FILLED_FALLBACK_REVIEW"
+        if fallback_executions
+        else "AVAILABLE"
+    )
     buying_power = _normalize_buying_power(snapshot.get("buying_power") or snapshot.get("account_summary") or {})
     account_summary = _normalize_account_summary(snapshot.get("account_summary") or {})
     quotes = [_normalize_quote(row) for row in snapshot.get("quotes") or []]
@@ -79,10 +94,15 @@ def write_broker_readonly_artifacts_from_snapshot(
         "executions_count": len(executions),
         "orders_status": (health.get("orders") or {}).get("status", "UNKNOWN"),
         "executions_status": (health.get("executions") or {}).get("status", "UNKNOWN"),
+        "executions_classification": executions_classification,
+        "positions_safe_diagnosis": positions_safe_diagnosis,
         "buying_power_available": bool(buying_power.get("buying_power")),
         "raw_response_saved": False,
         "secret_saved": False,
         "source": "operations_broker_readonly_artifact_writer",
+        "upstream_source": snapshot.get("source", ""),
+        "source_classification": source_classification,
+        "mock_source_detected": mock_source_detected,
     }
     snapshot_out = {
         "artifact_type": "broker_snapshot",
@@ -94,6 +114,8 @@ def write_broker_readonly_artifacts_from_snapshot(
         "counts": counts,
         "health": health,
         "summary": summary,
+        "positions_safe_diagnosis": positions_safe_diagnosis,
+        "executions_classification": executions_classification,
         "source_counts": {
             "positions": len(raw_positions),
             "orders": len(snapshot.get("orders") or []),
@@ -110,15 +132,26 @@ def write_broker_readonly_artifacts_from_snapshot(
         "raw_response_saved": False,
         "secret_saved": False,
         "report_path": str(report_path),
+        "upstream_source": snapshot.get("source", ""),
+        "source_classification": source_classification,
+        "mock_source_detected": mock_source_detected,
     }
     artifacts = {
         "broker_snapshot": snapshot_out,
-        "broker_positions": {"artifact_type": "broker_positions", "business_date": trade_date, "positions": positions, "raw_response_saved": False, "secret_saved": False},
+        "broker_positions": {
+            "artifact_type": "broker_positions",
+            "business_date": trade_date,
+            "positions": positions,
+            "positions_safe_diagnosis": positions_safe_diagnosis,
+            "raw_response_saved": False,
+            "secret_saved": False,
+        },
         "positions": {
             "artifact_type": "positions",
             "business_date": trade_date,
             "exit_source": "broker_readonly",
             "positions": positions,
+            "positions_safe_diagnosis": positions_safe_diagnosis,
             "raw_response_saved": False,
             "secret_saved": False,
         },
@@ -127,7 +160,9 @@ def write_broker_readonly_artifacts_from_snapshot(
             "artifact_type": "broker_executions",
             "business_date": trade_date,
             "executions": executions,
-            "classification": "SKIPPED_NO_ORDERS" if not orders and not executions else "AVAILABLE",
+            "classification": executions_classification,
+            "review_required": bool(fallback_executions),
+            "fallback_execution_count": len(fallback_executions),
             "raw_response_saved": False,
             "secret_saved": False,
         },
@@ -161,17 +196,22 @@ def write_broker_readonly_artifacts_from_snapshot(
     }
     for key, path in output_paths.items():
         write_json(path, artifacts[key])
+    status = "REVIEW_REQUIRED" if mock_source_detected else "PASS"
+    blocked_reasons = ["broker_readonly_snapshot_source_mock"] if mock_source_detected else []
     return {
-        "status": "PASS",
+        "status": status,
         "api_called": bool(report_path),
         "artifacts_written": True,
         "counts": counts,
+        "source_classification": source_classification,
+        "mock_source_detected": mock_source_detected,
         "buying_power_available": bool(buying_power.get("buying_power")),
         "executions_classification": artifacts["broker_executions"]["classification"],
+        "positions_safe_diagnosis": positions_safe_diagnosis,
         "paths": {key: str(path) for key, path in output_paths.items()},
         "raw_response_saved": False,
         "secret_saved": False,
-        "blocked_reasons": [],
+        "blocked_reasons": blocked_reasons,
     }
 
 
@@ -189,18 +229,55 @@ def load_broker_artifact_bundle(*, trade_date: str, root: Path) -> dict[str, Any
     }
     artifacts = {key: read_json(path) for key, path in refs.items() if path.exists()}
     missing = [key for key, path in refs.items() if not path.exists() and key != "broker_quotes"]
+    mock_source_detected = any(_artifact_contains_mock_source(item) for item in artifacts.values())
+    broker_executions = artifacts.get("broker_executions") or {}
+    fallback_execution_count = int(broker_executions.get("fallback_execution_count") or 0)
+    executions_classification = str(broker_executions.get("classification") or "")
+    status = "PASS" if not missing and not mock_source_detected else "REVIEW_REQUIRED"
+    review_reasons = []
+    if missing:
+        review_reasons.append("broker_readonly_artifact_missing_or_incomplete")
+    if mock_source_detected:
+        review_reasons.append("broker_readonly_snapshot_source_mock")
     return {
-        "status": "PASS" if not missing else "REVIEW_REQUIRED",
+        "status": status,
         "missing": missing,
+        "review_reasons": review_reasons,
+        "source_classification": "MOCK" if mock_source_detected else ("MISSING" if missing else "BROKER_API_OR_SANITIZED_BROKER"),
+        "mock_source_detected": mock_source_detected,
         "paths": {key: str(path) for key, path in refs.items()},
         "artifacts": artifacts,
         "positions_count": len((artifacts.get("broker_positions") or {}).get("positions") or []),
         "orders_count": len((artifacts.get("broker_orders") or {}).get("orders") or []),
         "executions_count": len((artifacts.get("broker_executions") or {}).get("executions") or []),
+        "broker_executions_classification": executions_classification,
+        "fallback_execution_count": fallback_execution_count,
+        "order_status_filled_fallback_review": executions_classification == "ORDER_STATUS_FILLED_FALLBACK_REVIEW" or fallback_execution_count > 0,
+        "positions_safe_diagnosis": (artifacts.get("broker_positions") or {}).get("positions_safe_diagnosis") or (artifacts.get("broker_snapshot") or {}).get("positions_safe_diagnosis") or {},
         "buying_power_available": bool((artifacts.get("broker_buying_power") or {}).get("buying_power")),
         "raw_response_saved": any((item or {}).get("raw_response_saved") is True for item in artifacts.values()),
         "secret_saved": any((item or {}).get("secret_saved") is True for item in artifacts.values()),
     }
+
+
+def _broker_snapshot_source_classification(snapshot: dict[str, Any]) -> str:
+    if _artifact_contains_mock_source(snapshot):
+        return "MOCK"
+    if snapshot.get("session_status") or snapshot.get("generated_at"):
+        return "BROKER_API_OR_SANITIZED_BROKER"
+    return "UNKNOWN"
+
+
+def _artifact_contains_mock_source(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() == "source" and str(item).strip().lower() == "mock":
+                return True
+            if _artifact_contains_mock_source(item):
+                return True
+    if isinstance(value, list):
+        return any(_artifact_contains_mock_source(item) for item in value)
+    return False
 
 
 def _normalize_position(row: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -234,10 +311,13 @@ def _normalize_position(row: dict[str, Any], *, index: int) -> dict[str, Any]:
 
 def _normalize_order(row: dict[str, Any]) -> dict[str, Any]:
     order_id = str(row.get("order_id") or "")
+    issue_code = str(row.get("issue_code") or row.get("code") or "")
     return {
         "broker_order_id_hash": stable_hash({"order_id": order_id}) if order_id else "",
-        "issue_code": str(row.get("issue_code") or ""),
-        "side": str(row.get("side") or "").upper(),
+        "issue_code": issue_code,
+        "code": issue_code,
+        "broker_issue_code": issue_code,
+        "side": _normalize_tachibana_side(row.get("side")),
         "quantity": str(row.get("quantity") or "0"),
         "executed_quantity": str(row.get("executed_quantity") or "0"),
         "remaining_quantity": str(row.get("remaining_quantity") or "0"),
@@ -255,14 +335,79 @@ def _normalize_execution(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "broker_execution_id_hash": stable_hash({"execution_id": execution_id}) if execution_id else "",
         "broker_order_id_hash": stable_hash({"order_id": order_id}) if order_id else "",
-        "issue_code": str(row.get("issue_code") or ""),
-        "side": str(row.get("side") or "").upper(),
+        "issue_code": str(row.get("issue_code") or row.get("code") or ""),
+        "code": str(row.get("issue_code") or row.get("code") or ""),
+        "side": _normalize_tachibana_side(row.get("side")),
         "quantity": str(row.get("quantity") or "0"),
         "price": str(row.get("price") or "0"),
         "executed_at": str(row.get("executed_at") or ""),
         "raw_response_saved": False,
         "secret_saved": False,
     }
+
+
+def _fallback_execution_from_order(order: dict[str, Any], *, index: int, executions_health_status: str) -> dict[str, Any]:
+    issue_code = str(order.get("issue_code") or order.get("code") or "")
+    return {
+        "broker_execution_id_hash": stable_hash({"fallback": "broker_orders", "issue_code": issue_code, "index": index}),
+        "broker_order_id_hash": str(order.get("broker_order_id_hash") or ""),
+        "issue_code": issue_code,
+        "code": issue_code,
+        "side": _normalize_tachibana_side(order.get("side")),
+        "quantity": str(order.get("executed_quantity") or order.get("quantity") or "0"),
+        "price": str(order.get("price") or "0"),
+        "executed_at": str(order.get("order_datetime") or ""),
+        "source": "broker_orders_fallback",
+        "classification": "ORDER_STATUS_FILLED_FALLBACK_REVIEW",
+        "review_required": True,
+        "broker_executions_api_failed": executions_health_status == "FAIL",
+        "order_status": str(order.get("status") or ""),
+        "executed_quantity": str(order.get("executed_quantity") or "0"),
+        "remaining_quantity": str(order.get("remaining_quantity") or "0"),
+        "raw_response_saved": False,
+        "secret_saved": False,
+        "raw_broker_order_id_saved": False,
+    }
+
+
+def _order_status_indicates_filled(order: dict[str, Any]) -> bool:
+    executed = _decimal(order.get("executed_quantity"))
+    remaining = _decimal(order.get("remaining_quantity"))
+    status = str(order.get("status") or "").upper()
+    return executed > 0 and remaining == 0 and status in {"全部約定", "FILLED", "DONE", "約定済"}
+
+
+def _normalize_tachibana_side(value: Any) -> str:
+    text = str(value or "").upper()
+    return {"3": "BUY", "1": "SELL", "BUY": "BUY", "SELL": "SELL", "買": "BUY", "売": "SELL"}.get(text, text)
+
+
+def _positions_safe_diagnosis(raw_positions: list[dict[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:
+    issue_keys = ("issue_code", "code", "sIssueCode", "sMeigaraCode")
+    quantity_keys = ("quantity", "available_quantity", "sQuantity", "sZanKabuSuu", "sSuryou", "sTategyokuSuryou")
+    return {
+        "positions_source_count": len(raw_positions),
+        "positions_valid_count": len(positions),
+        "candidate_key_presence": {
+            "issue_code_keys_present": _present_keys(raw_positions, issue_keys),
+            "quantity_keys_present": _present_keys(raw_positions, quantity_keys),
+        },
+        "all_rows_empty_or_zero": bool(raw_positions) and all(
+            not str(row.get("issue_code") or row.get("code") or "").strip() and _decimal(row.get("quantity")) <= 0
+            for row in raw_positions
+        ),
+        "raw_response_saved": False,
+        "secret_saved": False,
+        "account_identifier_saved": False,
+    }
+
+
+def _present_keys(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[str]:
+    present = []
+    for key in keys:
+        if any(key in row for row in rows):
+            present.append(key)
+    return present
 
 
 def _normalize_buying_power(row: dict[str, Any]) -> dict[str, str]:

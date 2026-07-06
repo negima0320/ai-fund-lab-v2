@@ -86,7 +86,7 @@ def test_sell_approval_scope_and_submit_position_guard(tmp_path, monkeypatch):
     run_market_refresh(trade_date=TRADE_DATE, root=tmp_path)
     run_daily_plan(trade_date=TRADE_DATE, root=tmp_path)
 
-    run_approval_prepare(trade_date=TRADE_DATE, root=tmp_path, approve=True, approver_label="operator", max_notional=Decimal("120000"))
+    run_approval_prepare(trade_date=TRADE_DATE, root=tmp_path, approve=True, approver_label="operator")
     approval = read_json(tmp_path / "approval_artifact" / TRADE_DATE / "approval_artifact.json")
 
     assert approval["status"] == "APPROVED"
@@ -127,7 +127,7 @@ def test_sell_dry_run_fill_reconcile_and_report_summary(tmp_path, monkeypatch):
     _write_exit_position(tmp_path)
     run_market_refresh(trade_date=TRADE_DATE, root=tmp_path)
     run_daily_plan(trade_date=TRADE_DATE, root=tmp_path)
-    run_approval_prepare(trade_date=TRADE_DATE, root=tmp_path, approve=True, approver_label="operator", max_notional=Decimal("120000"))
+    run_approval_prepare(trade_date=TRADE_DATE, root=tmp_path, approve=True, approver_label="operator")
 
     submit = run_demo_submit(trade_date=TRADE_DATE, root=tmp_path)
     fill = run_fill_monitor(trade_date=TRADE_DATE, root=tmp_path)

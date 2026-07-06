@@ -43,6 +43,11 @@ from ai_fund_lab_v2.operations.market_refresh import (
     run_operations_market_refresh,
 )
 from ai_fund_lab_v2.operations.notifications import run_operation_notifications
+from ai_fund_lab_v2.operations.pending_order_plan import (
+    link_approval_to_pending_order_plan,
+    load_pending_order_plan_for_submit,
+    promote_order_plan_to_pending_if_allowed,
+)
 from ai_fund_lab_v2.paper_trading.reporting.blog_report_v2_writer import _render_markdown_v4 as render_phase9_blog_report_v4
 from ai_fund_lab_v2.runtime import (
     BusinessDayGuard,
@@ -53,6 +58,7 @@ from ai_fund_lab_v2.runtime import (
     OrderSide,
     OrderType,
     PriceType,
+    ProductionOrderExecutor,
     RuntimeMode,
 )
 
@@ -532,6 +538,7 @@ def run_daily_plan(
             root=paths.root,
             trade_date=trade_date,
             max_items=int(operations_config["max_buy_orders_per_day"]),
+            candidate_pool_size=int(operations_config["max_buy_orders_per_day"]) * 20,
         )
         if plan_items is None
         else {"status": "EXTERNAL_PLAN_ITEMS", "buy_items": [], "reason": ""}
@@ -539,6 +546,14 @@ def run_daily_plan(
     feature_candidate_audit = {key: value for key, value in feature_buy.items() if key != "buy_items"}
     combined_items = list(plan_items or []) + list(feature_buy.get("buy_items", [])) + list(exit_result.get("sell_items", []))
     normalized_items = [_normalize_plan_item(item, index) for index, item in enumerate(combined_items, start=1)] if status == "PASS" else []
+    daily_plan_budget = _daily_plan_budget_filter(
+        paths=paths,
+        trade_date=trade_date,
+        env=env,
+        operations_config=operations_config,
+        items=normalized_items,
+    )
+    normalized_items = daily_plan_budget["items"] if status == "PASS" else []
     order_plan = {
         "artifact_type": "order_plan",
         "plan_id": plan_id,
@@ -555,6 +570,7 @@ def run_daily_plan(
         "exit_adapter": {key: value for key, value in exit_result.items() if key != "sell_items"},
         "feature_buy_adapter": {key: value for key, value in feature_buy.items() if key != "buy_items"},
         "feature_candidate_audit": feature_candidate_audit,
+        "daily_plan_budget": {key: value for key, value in daily_plan_budget.items() if key != "items"},
         "market_calendar": market_calendar,
         "operations_runtime_config": operations_config,
         "market_closed": False,
@@ -566,10 +582,28 @@ def run_daily_plan(
     }
     output = paths.dated("order_plan", trade_date, "order_plan.json")
     write_json(output, order_plan)
+    pending_promotion = promote_order_plan_to_pending_if_allowed(
+        root=paths.root,
+        order_plan=order_plan,
+        order_plan_path=output,
+        market_calendar=market_calendar,
+        promotion_source=(_operation_invocation_metadata().get("source") or "manual"),
+    ) if status == "PASS" else {
+        "status": "SKIPPED",
+        "promoted": False,
+        "blocked_reason": f"order_plan_status_{status.lower()}",
+        "pending_order_plan_path": str(paths.root / "pending_order_plan" / "pending_order_plan.json"),
+        "history_path": "",
+        "intended_submit_date": str(market_calendar.get("next_business_day") or ""),
+        "target_session_date": str(market_calendar.get("next_business_day") or ""),
+        "pending_plan_id": "",
+        "submit_source_of_truth": "pending_order_plan",
+    }
     payload = _base_payload("daily_plan", env, trade_date, status)
     payload.update(
         {
             "order_plan_path": str(output),
+            "pending_order_plan_promotion": pending_promotion,
             "market_calendar": market_calendar,
             "operations_runtime_config": operations_config,
             "market_closed": False,
@@ -581,6 +615,7 @@ def run_daily_plan(
             "broker_order_api_called": False,
             "exit_adapter": {key: value for key, value in exit_result.items() if key != "sell_items"},
             "feature_buy_adapter": {key: value for key, value in feature_buy.items() if key != "buy_items"},
+            "daily_plan_budget": {key: value for key, value in daily_plan_budget.items() if key != "items"},
             "feature_candidate_audit_path": str(paths.dated("feature_candidate_audit", trade_date, "feature_candidate_audit.json")),
         }
     )
@@ -658,6 +693,9 @@ def run_approval_prepare(
     sell_scope = [_approval_sell_scope(item) for item in order_plan.get("items", []) if str(item.get("side")).upper() == "SELL"]
     approval_blocks = _validate_sell_approval_scope(sell_scope) if approve or auto_demo_approval else []
     approval_blocks.extend(approval_budget["approval_blocks"])
+    manual_override_used = approval_budget["approval_max_notional_source"] == "manual_override"
+    if auto_demo_approval and manual_override_used:
+        approval_blocks.append("manual_override_not_allowed_in_auto_runtime")
     if auto_demo_approval:
         approval_blocks.extend(_validate_auto_demo_approval(order_plan=order_plan, safety_result=safety_result, broker_snapshot=broker_snapshot, env=env, max_notional=approval_max_notional))
     effective_approve = approve or auto_demo_approval
@@ -733,29 +771,47 @@ def run_approval_prepare(
     write_json(paths.dated("approval_request", trade_date, "approval_request.json"), request)
     output = paths.dated("approval_artifact", trade_date, "approval_artifact.json")
     write_json(output, approval)
+    pending_approval_linkage = link_approval_to_pending_order_plan(
+        root=paths.root,
+        order_plan=order_plan,
+        order_plan_path=paths.dated("order_plan", trade_date, "order_plan.json"),
+        approval=approval,
+        approval_path=output,
+    )
     status = "PASS" if runtime["status"] == "PASS" else "BLOCK"
     payload = _base_payload("approval_prepare", env, trade_date, status)
-    payload.update({"market_calendar": market_calendar, "market_closed": False, "approval_request_path": str(paths.dated("approval_request", trade_date, "approval_request.json")), "approval_artifact_path": str(output), "approved": effective_approve and not approval_blocks, "auto_demo_approval": auto_demo_approval, "approval_blocks": approval_blocks, "approval_max_notional": _decimal_text(approval_max_notional), "approval_max_notional_source": approval_budget["approval_max_notional_source"], "approval_max_notional_inputs": approval_budget["approval_max_notional_inputs"]})
+    payload.update({"market_calendar": market_calendar, "market_closed": False, "approval_request_path": str(paths.dated("approval_request", trade_date, "approval_request.json")), "approval_artifact_path": str(output), "approved": effective_approve and not approval_blocks, "auto_demo_approval": auto_demo_approval, "approval_blocks": approval_blocks, "approval_max_notional": _decimal_text(approval_max_notional), "approval_max_notional_source": approval_budget["approval_max_notional_source"], "approval_max_notional_inputs": approval_budget["approval_max_notional_inputs"], "pending_order_plan_approval_linkage": pending_approval_linkage})
     _write_daily_manifest(paths, trade_date, env=env, overrides={"approval_status": approval["status"], "market_calendar": market_calendar})
     return payload
 
 
-def run_demo_submit(
+def run_submit_operation(
     *,
     trade_date: str,
     root: Path = DEFAULT_OPERATION_ROOT,
-    execute_demo_order: bool = False,
+    execute_order: bool = False,
+    execute_demo_order: bool | None = None,
     second_password_present: bool = False,
 ) -> dict[str, Any]:
+    if execute_demo_order is None:
+        execute_demo_order = execute_order
     paths = OperationPaths(root)
     runtime = _resolve_runtime_environment()
     env = runtime["environment"]
-    env_guard = validate_demo_environment(env, base_url=runtime["base_url"], production_order_allowed=False)
+    env_guard = validate_runtime_environment(env, base_url=runtime["base_url"], production_order_allowed=False)
+    runtime_mode = RuntimeMode.PRODUCTION if env == "production" else RuntimeMode.DEMO
+    executor_kind = "ProductionOrderExecutor" if runtime_mode is RuntimeMode.PRODUCTION else "DemoOrderExecutor"
+    adapter_kind = "PRODUCTION_BLOCKED_PHASE12_5" if runtime_mode is RuntimeMode.PRODUCTION else "TachibanaDemoOrderAdapter"
     market_calendar = _market_calendar(paths, trade_date)
     if market_calendar["market_closed"]:
-        payload = _base_payload("demo_submit", env, trade_date, "SKIPPED_MARKET_CLOSED")
+        payload = _base_payload("submit_operation", env, trade_date, "SKIPPED_MARKET_CLOSED")
         payload.update(
             {
+                "runtime_submit_entry": "run_submit_operation",
+                "legacy_entry_compatible": True,
+                "runtime_mode": env,
+                "executor_kind": executor_kind,
+                "adapter_kind": adapter_kind,
                 "market_calendar": market_calendar,
                 "market_closed": True,
                 "skip_reason": "MARKET_CLOSED",
@@ -777,9 +833,11 @@ def run_demo_submit(
         write_json(output, payload)
         _write_daily_manifest(paths, trade_date, env=env, overrides={"submit_status": "SKIPPED_MARKET_CLOSED", "market_calendar": market_calendar})
         return {**payload, "submitted_orders_path": str(output)}
-    order_plan_date = _resolve_submit_order_plan_date(paths, trade_date, env=env, market_calendar=market_calendar)
-    order_plan = _load_or_empty(paths.dated("order_plan", order_plan_date, "order_plan.json"), default=_empty_order_plan(order_plan_date, env))
-    approval = _load_or_empty(paths.dated("approval_artifact", order_plan_date, "approval_artifact.json"), default={})
+    pending_submit = load_pending_order_plan_for_submit(root=paths.root, submit_run_date=trade_date)
+    pending_metadata = pending_submit["metadata"]
+    order_plan_date = str(pending_metadata.get("plan_created_date") or trade_date)
+    order_plan = pending_submit.get("order_plan") or _empty_order_plan(order_plan_date, env)
+    approval = pending_submit.get("approval") or {}
     safety = _load_or_empty(paths.dated("safety_result", trade_date, "safety_result.json"), default=_default_safety_result(trade_date))
     broker = _load_or_empty(paths.dated("broker_snapshot_summary", trade_date, "broker_snapshot_summary.json"), default=_default_broker_snapshot_summary(trade_date, env))
     broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
@@ -795,17 +853,32 @@ def run_demo_submit(
     projected_buying_power_usage = Decimal("0")
     projected_exposure = Decimal(str(broker.get("current_exposure", "0")))
     broker_buying_power = Decimal(str(broker.get("buying_power") or "0"))
+    pending_block_reasons = list(pending_submit.get("block_reasons") or [])
+    pending_review_reasons = list(pending_submit.get("review_reasons") or [])
+    blocks.extend(pending_block_reasons)
     if runtime["status"] != "PASS":
         blocks.extend(runtime["reasons"])
     if not env_guard["allowed"]:
         blocks.extend(env_guard["reasons"])
-    if not approval or not approval.get("demo_order_allowed"):
-        blocks.append("approval_missing_or_not_demo_allowed")
-    if approval.get("production_order_allowed"):
-        blocks.append("production_order_allowed_true")
+    if env == "production":
+        blocks.append("production_order_disabled_phase12_5")
+    approval_manual_override = approval.get("approval_max_notional_source") == "manual_override"
+    if pending_submit.get("status") == "PASS":
+        if approval_manual_override:
+            blocks.append("manual_override_approval_not_allowed_for_runtime_submit")
+        if not approval:
+            blocks.append("approval_missing")
+            if env == "demo":
+                blocks.append("approval_missing_or_not_demo_allowed")
+        elif env == "demo" and not approval.get("demo_order_allowed"):
+            blocks.append("approval_missing_or_not_demo_allowed")
+        elif env == "production" and not approval.get("production_order_allowed"):
+            blocks.append("production_order_disabled_phase12_5")
+        if approval.get("production_order_allowed"):
+            blocks.append("production_order_allowed_true")
     if safety.get("status") in {"BLOCK", "SYSTEM_EMERGENCY_STOP"}:
         blocks.append(f"safety_{safety.get('status')}")
-    approved_ids = set(approval.get("approved_item_ids", []))
+    approved_ids = set(approval.get("approved_item_ids", [])) if pending_submit.get("status") == "PASS" else set()
     for item in order_plan.get("items", []):
         if item.get("item_id") not in approved_ids:
             continue
@@ -815,6 +888,8 @@ def run_demo_submit(
         if normalization_result:
             normalized_item.update(normalization_result)
         item_blocks = _validate_item_for_submit(normalized_item, require_wire_ready=execute_demo_order)
+        if blocks and runtime_mode is RuntimeMode.DEMO:
+            item_blocks.extend(blocks)
         if execute_demo_order and normalization_result.get("normalization_status") != "PASS":
             item_blocks.append("broker_issue_code_normalization_failed")
         if execute_demo_order and _has_active_same_side_broker_order(broker_orders, broker_issue_code=str(normalized_item.get("broker_issue_code") or ""), side=str(normalized_item.get("side") or ""), quantity=str(normalized_item.get("quantity") or "")):
@@ -857,26 +932,54 @@ def run_demo_submit(
         demo_order_submitted = False
         broker_order_api_called = False
         if execute_demo_order:
-            second_password_status = TachibanaSecretLoader(load_broker_settings()).classify_second_password_file()
-            command = _command_from_item(normalized_item, trade_date, approval["approval_id"], live_order_allowed=True)
+            command = _command_from_item(normalized_item, trade_date, approval["approval_id"], live_order_allowed=True, environment=runtime_mode)
             item_run_id = command.runtime_id
             scope = OrderApprovalScope(
                 approval_id=approval["approval_id"],
-                environment=RuntimeMode.DEMO,
+                environment=runtime_mode,
                 issue_code=command.issue_code,
                 side=command.side,
                 quantity=command.quantity,
                 max_notional=Decimal(str(approval.get("max_notional") or normalized_item.get("estimated_value") or "0")),
                 expires_at=datetime.fromisoformat(approval["approval_expires_at"]),
             )
-            authorization = OrderApprovalGate().authorize(command, scope, second_password_present=second_password_present or second_password_status.present)
-            executor_result = DemoOrderExecutor().submit(command, authorization=authorization, dry_run=True)
-            if executor_result.status.value == "DRY_RUN_READY":
+            if runtime_mode is RuntimeMode.DEMO:
+                second_password_status = TachibanaSecretLoader(load_broker_settings()).classify_second_password_file()
+                authorization = OrderApprovalGate().authorize(command, scope, second_password_present=second_password_present or second_password_status.present)
+                executor_result = DemoOrderExecutor().submit(command, authorization=authorization, dry_run=True)
+            else:
+                executor_result = ProductionOrderExecutor().submit(command)
+            if runtime_mode is RuntimeMode.DEMO and executor_result.status.value == "DRY_RUN_READY":
                 adapter_result = TachibanaDemoOrderAdapter().submit_cash_stock_order(command).to_dict()
                 wire_result = adapter_result
                 broker_order_api_called = bool(adapter_result.get("broker_order_api_called"))
                 demo_order_submitted = bool(adapter_result.get("demo_order_executed"))
                 response = adapter_result.get("response") or {}
+                submit_classification = str(adapter_result.get("submit_classification") or "")
+                if submit_classification == "POST_SEND_UNKNOWN":
+                    confirmation = _confirm_post_send_unknown_order_via_readonly(
+                        paths=paths,
+                        trade_date=trade_date,
+                        item=normalized_item,
+                    )
+                    adapter_result["broker_readonly_confirmation_attempted"] = True
+                    adapter_result["broker_readonly_confirmation_status"] = confirmation["status"]
+                    adapter_result["broker_readonly_confirmation"] = confirmation
+                    wire_result = adapter_result
+                    if confirmation["status"] == "CONFIRMED":
+                        response = {
+                            **response,
+                            "accepted": True,
+                            "status": "ORDER_ACCEPTED",
+                            "broker_order_id_hash": confirmation.get("broker_order_id_hash", ""),
+                        }
+                        adapter_result["submit_classification"] = "ACCEPTED"
+                        adapter_result["classification_source"] = "broker_readonly_order_confirmation"
+                        demo_order_submitted = True
+                    else:
+                        response = {**response, "accepted": False, "status": "REVIEW_REQUIRED"}
+                        adapter_result["submit_classification"] = "REVIEW_REQUIRED"
+                        adapter_result["classification_source"] = "broker_readonly_order_confirmation"
                 result_status = "ORDER_ACCEPTED" if response.get("accepted") else str(response.get("status") or adapter_result.get("status") or "REJECTED")
                 broker_order_id_hash = str(response.get("broker_order_id_hash") or "")
             else:
@@ -910,6 +1013,7 @@ def run_demo_submit(
                 "broker_order_api_called": broker_order_api_called,
                 "broker_order_id_hash": broker_order_id_hash,
                 "wire_execution_result": wire_result,
+                **_submit_state_machine_fields(wire_result, result_status),
                 "approval_budget": {
                     "approval_max_notional": str(approval_max),
                     "remaining_before_item": str(remaining_approval_budget),
@@ -926,36 +1030,59 @@ def run_demo_submit(
     hard_blocking_statuses = {"BLOCKED", "BLOCKED_NO_APPROVAL", "BLOCKED_LIVE_ORDER_DISABLED", "BLOCKED_APPROVAL_SCOPE_MISMATCH", "BLOCKED_SECOND_PASSWORD_MISSING", "BLOCKED_PRODUCTION_PROHIBITED", "BLOCKED_EXECUTOR_STUB"}
     blocked_items = [row for row in submitted if str(row.get("status") or "").upper() == "BLOCKED_ITEM"]
     accepted_rows = [row for row in submitted if _submitted_row_is_success(row)]
+    review_required_rows = [row for row in submitted if row.get("submit_classification") == "REVIEW_REQUIRED" or str(row.get("status") or "").upper() == "REVIEW_REQUIRED"]
     hard_blocked = any(str(row.get("status") or "").upper() in hard_blocking_statuses for row in submitted)
     hard_item_blocked = any(_is_hard_submit_item_block(row) for row in blocked_items)
     if blocks or hard_blocked or (hard_item_blocked and not accepted_rows):
         overall = "BLOCK"
+    elif pending_submit.get("status") == "REVIEW_REQUIRED":
+        overall = "REVIEW_REQUIRED"
+    elif review_required_rows:
+        overall = "REVIEW_REQUIRED"
     elif blocked_items and accepted_rows:
         overall = "PARTIAL_PASS_WITH_ITEM_BLOCKS"
     elif blocked_items:
         overall = "REVIEW_REQUIRED_ITEM_BLOCKS"
     else:
         overall = "PASS"
-    payload = _base_payload("demo_submit", env, trade_date, overall)
+    payload = _base_payload("submit_operation", env, trade_date, overall)
     payload.update(
         {
+            "runtime_submit_entry": "run_submit_operation",
+            "legacy_entry_compatible": True,
+            "runtime_mode": env,
+            "executor_kind": executor_kind,
+            "adapter_kind": adapter_kind,
+            "production_equivalent_runtime": True,
+            "production_order_disabled_phase12_5": True,
+            "approval_manual_override_detected": approval_manual_override,
             "blocks": blocks,
             "market_calendar": market_calendar,
             "market_closed": False,
             "submit_run_date": trade_date,
             "order_plan_source_date": order_plan_date,
             "approval_source_date": order_plan_date,
-            "order_plan_path": str(paths.dated("order_plan", order_plan_date, "order_plan.json")),
-            "approval_artifact_path": str(paths.dated("approval_artifact", order_plan_date, "approval_artifact.json")),
-            "uses_previous_business_day_order_plan": order_plan_date != trade_date,
+            "order_plan_path": (pending_metadata.get("source_order_plan") or {}).get("path", ""),
+            "approval_artifact_path": (pending_metadata.get("approval") or {}).get("path", ""),
+            "uses_previous_business_day_order_plan": False,
+            "uses_pending_order_plan": True,
+            "pending_order_plan_submit_guard": {
+                "status": pending_submit.get("status", ""),
+                "classification": pending_submit.get("classification", ""),
+                "block_reasons": pending_block_reasons,
+                "review_reasons": pending_review_reasons,
+            },
+            **pending_metadata,
             "submit_allowed": overall in {"PASS", "PARTIAL_PASS_WITH_ITEM_BLOCKS"},
             "submitted_orders": submitted,
             "blocked_items": blocked_items,
             "blocked_item_count": len(blocked_items),
+            "review_required_items": review_required_rows,
+            "review_required_item_count": len(review_required_rows),
             "accepted_order_count": len(accepted_rows),
             "partial_success": bool(blocked_items and accepted_rows),
             "partial_submit_review_required": bool(blocked_items),
-            "review_required_reasons": sorted({reason for row in blocked_items for reason in row.get("block_reasons", [])}),
+            "review_required_reasons": sorted({reason for row in blocked_items for reason in row.get("block_reasons", [])} | set(pending_review_reasons)),
             "retry_parent": retry_parent,
             "persistent_demo_ledger_before": demo_ledger_state_before,
             "demo_order_submitted": any(row.get("demo_order_submitted") is True for row in submitted),
@@ -974,6 +1101,21 @@ def run_demo_submit(
         write_json(output, payload)
     _write_daily_manifest(paths, trade_date, env=env, overrides={"submit_status": overall, "market_calendar": market_calendar})
     return {**payload, "submitted_orders_path": str(output)}
+
+
+def run_demo_submit(
+    *,
+    trade_date: str,
+    root: Path = DEFAULT_OPERATION_ROOT,
+    execute_demo_order: bool = False,
+    second_password_present: bool = False,
+) -> dict[str, Any]:
+    return run_submit_operation(
+        trade_date=trade_date,
+        root=root,
+        execute_demo_order=execute_demo_order,
+        second_password_present=second_password_present,
+    )
 
 
 def run_demo_matched_opposite_order_fill_test(
@@ -1098,6 +1240,36 @@ def run_demo_matched_opposite_order_fill_test(
             broker_order_api_called = bool(adapter_result.get("broker_order_api_called"))
             demo_order_executed = bool(adapter_result.get("demo_order_executed"))
             response = adapter_result.get("response") or {}
+            submit_classification = str(adapter_result.get("submit_classification") or "")
+            if submit_classification == "POST_SEND_UNKNOWN":
+                confirmation = _confirm_post_send_unknown_order_via_readonly(
+                    paths=paths,
+                    trade_date=trade_date,
+                    item={
+                        "broker_issue_code": broker_issue_code,
+                        "issue_code": broker_issue_code,
+                        "side": "SELL",
+                        "quantity": "100",
+                    },
+                )
+                adapter_result["broker_readonly_confirmation_attempted"] = True
+                adapter_result["broker_readonly_confirmation_status"] = confirmation["status"]
+                adapter_result["broker_readonly_confirmation"] = confirmation
+                wire_result = adapter_result
+                if confirmation["status"] == "CONFIRMED":
+                    response = {
+                        **response,
+                        "accepted": True,
+                        "status": "SELL_ORDER_ACCEPTED",
+                        "broker_order_id_hash": confirmation.get("broker_order_id_hash", ""),
+                    }
+                    adapter_result["submit_classification"] = "ACCEPTED"
+                    adapter_result["classification_source"] = "broker_readonly_order_confirmation"
+                    demo_order_executed = True
+                else:
+                    response = {**response, "accepted": False, "status": "REVIEW_REQUIRED"}
+                    adapter_result["submit_classification"] = "REVIEW_REQUIRED"
+                    adapter_result["classification_source"] = "broker_readonly_order_confirmation"
             result_status = "SELL_ORDER_ACCEPTED" if response.get("accepted") else str(response.get("status") or adapter_result.get("status") or "REJECTED")
             broker_order_id_hash = str(response.get("broker_order_id_hash") or "")
         else:
@@ -1137,6 +1309,7 @@ def run_demo_matched_opposite_order_fill_test(
         "broker_order_api_called": broker_order_api_called,
         "broker_order_id_hash": broker_order_id_hash,
         "wire_execution_result": wire_result,
+        **_submit_state_machine_fields(wire_result, result_status),
         "code_normalization": _code_normalization_summary(normalization),
         "raw_request_saved": False,
         "raw_response_saved": False,
@@ -1360,12 +1533,18 @@ def run_fill_monitor(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT) ->
     market_calendar = _market_calendar(paths, trade_date)
     submitted = _load_or_empty(paths.dated("submitted_orders", trade_date, "submitted_orders.json"), default={"submitted_orders": []})
     broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
+    submitted_rows = submitted.get("submitted_orders", []) if isinstance(submitted.get("submitted_orders"), list) else []
+    submitted_has_live_orders = any(_classify_operation_fill_state(row) in {"ACCEPTED", "WAITING_FILL", "PARTIALLY_FILLED", "FILLED"} for row in submitted_rows)
+    broker_refresh = {"status": "NOT_REQUESTED", "api_called": False, "reason": "broker_readonly_artifacts_available_or_no_live_submitted_orders"}
+    if env == "demo" and submitted_has_live_orders and broker_bundle.get("status") != "PASS":
+        broker_refresh = refresh_demo_broker_readonly_artifacts(trade_date=trade_date, root=paths.root, run_enabled=True)
+        broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
     broker_orders = (broker_bundle.get("artifacts", {}).get("broker_orders") or {}).get("orders") or []
     broker_executions = (broker_bundle.get("artifacts", {}).get("broker_executions") or {}).get("executions") or []
     broker_positions = (broker_bundle.get("artifacts", {}).get("broker_positions") or {}).get("positions") or []
     broker_buying_power = broker_bundle.get("artifacts", {}).get("broker_buying_power") or {}
     events = []
-    for row in submitted.get("submitted_orders", []):
+    for row in submitted_rows:
         lifecycle = _classify_operation_fill_state(row)
         if lifecycle == "BLOCKED_ITEM":
             events.append(
@@ -1445,7 +1624,17 @@ def run_fill_monitor(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT) ->
         )
     events.extend(_demo_special_fill_events(paths, trade_date))
     unknown = any(event.get("lifecycle") == "UNKNOWN_STATUS" for event in events)
-    status = "BLOCK" if runtime["status"] != "PASS" or unknown else ("PASS_MARKET_CLOSED_MONITOR_ONLY" if market_calendar["market_closed"] else "PASS")
+    broker_missing_after_refresh = (
+        submitted_has_live_orders
+        and broker_bundle.get("status") != "PASS"
+        and any(item in set(broker_bundle.get("missing") or []) for item in {"broker_orders", "broker_executions", "broker_positions"})
+    )
+    if runtime["status"] != "PASS" or unknown:
+        status = "BLOCK"
+    elif broker_missing_after_refresh:
+        status = "REVIEW_REQUIRED"
+    else:
+        status = "PASS_MARKET_CLOSED_MONITOR_ONLY" if market_calendar["market_closed"] else "PASS"
     payload = _base_payload("fill_monitor", env, trade_date, status)
     payload.update(
         {
@@ -1458,9 +1647,11 @@ def run_fill_monitor(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT) ->
                 for key, value in broker_bundle.items()
                 if key != "artifacts"
             },
+            "broker_readonly_refresh": broker_refresh,
             "broker_orders_count": len(broker_orders),
             "broker_executions_count": len(broker_executions),
-            "classification": "SKIPPED_NO_ORDERS" if not broker_orders and not broker_executions and not events else "AVAILABLE",
+            "classification": "REVIEW_REQUIRED" if broker_missing_after_refresh else ("SKIPPED_NO_ORDERS" if not broker_orders and not broker_executions and not events else "AVAILABLE"),
+            "review_reasons": ["broker_readonly_artifact_missing_or_incomplete"] if broker_missing_after_refresh else [],
             "state_catalog": [
                 "SUBMITTED",
                 "ACCEPTED",
@@ -1650,6 +1841,8 @@ def run_reconcile(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT) -> di
         status = "REVIEW_REQUIRED"
     elif market_calendar["market_closed"]:
         status = "PASS_MARKET_CLOSED_RECONCILE_ONLY"
+    elif submit_reconciliation.get("order_status_filled_fallback_review") is True:
+        status = "REVIEW_REQUIRED"
     elif not missing and submit_reconciliation.get("partial_submit_with_explained_blocked_items"):
         status = "PASS_WITH_BLOCKED_ITEMS"
     elif demo_special.get("demo_special_fill_simulation_used") is True:
@@ -1754,6 +1947,7 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
     )
     report_refs = {
         "status": flow_guard["report_status"],
+        "environment": env,
         "operation_day_type": flow_guard["operation_day_type"],
         "report_mode": flow_guard["report_mode"],
         "notification_mode": flow_guard["notification_mode"],
@@ -1762,6 +1956,7 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
         "artifact_date_consistency": flow_guard["artifact_date_consistency"],
         "artifact_date_consistency_pass": flow_guard["artifact_date_consistency_pass"],
         "source_of_truth_consistency_pass": flow_guard["source_of_truth_consistency_pass"],
+        "source_of_truth_consistency": flow_guard.get("source_of_truth_consistency", {}),
         "normal_report_allowed": flow_guard["normal_report_allowed"],
         "candidate_top50_allowed": flow_guard["candidate_top50_allowed"],
         "next_day_candidates_allowed": flow_guard["next_day_candidates_allowed"],
@@ -1773,6 +1968,7 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
         "discord_send_executed": False,
         "notification_status": "NOT_REQUESTED",
         "notification_result_path": "",
+        "daily_report_refs_path": str(paths.dated("daily_report_refs", trade_date, "daily_report_refs.json")),
         "send_notifications_requested": send_notifications,
         "market_calendar": market_calendar,
         "market_status": "CLOSED" if market_calendar["market_closed"] else "OPEN",
@@ -1839,6 +2035,7 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
         "production_equivalence_checklist": production_equivalence_checklist,
     }
     report_model = _build_daily_report_model(paths, trade_date, report_refs, order_plan=order_plan)
+    report_refs.update(_daily_report_sot_refs(report_model))
     if send_notifications:
         notification_result = run_operation_notifications(trade_date=trade_date, root=paths.root, report_refs={**report_refs, "notification_summary_text": report_model["notification_summary_text"]})
         report_refs.update(
@@ -1850,6 +2047,9 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
                 "notification_result": {
                     "line": notification_result.get("line", {}),
                     "discord": notification_result.get("discord", {}),
+                    "send_success_semantics": notification_result.get("send_success_semantics", ""),
+                    "delivery_confirmation": notification_result.get("delivery_confirmation", False),
+                    "report_source": notification_result.get("report_source", {}),
                     "secret_saved": False,
                     "raw_request_saved": False,
                     "raw_response_saved": False,
@@ -1857,6 +2057,7 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
             }
         )
         report_model = _build_daily_report_model(paths, trade_date, report_refs, order_plan=order_plan)
+        report_refs.update(_daily_report_sot_refs(report_model))
     for label, path_text in report_refs["paths"].items():
         path = Path(path_text)
         if path.suffix == ".json":
@@ -1893,6 +2094,24 @@ def run_daily_report(*, trade_date: str, root: Path = DEFAULT_OPERATION_ROOT, se
     return {**manifest, "daily_report_refs_path": str(output)}
 
 
+def _daily_report_sot_refs(report_model: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "submitted_order_count": report_model.get("submitted_order_count", 0),
+        "submitted_orders_source": (report_model.get("submit_sot") or {}).get("artifact", ""),
+        "submitted_orders_source_of_truth": "submitted_orders",
+        "next_order_plan_count": report_model.get("next_order_plan_count", 0),
+        "next_order_plan_source": (report_model.get("next_order_plan_sot") or {}).get("artifact", ""),
+        "next_order_plan_source_of_truth": "order_plan",
+        "report_sot_policy": {
+            "today_submit_result": "submitted_orders/YYYY-MM-DD/submitted_orders.json",
+            "today_order_confirmation": "broker_orders / fill_events / reconciliation_result",
+            "next_order_candidates": "order_plan/YYYY-MM-DD/order_plan.json",
+            "order_plan_used_as_today_submit_result": False,
+            "stale_ignored_submit_with_artifact_is_displayed_as_today_result": True,
+        },
+    }
+
+
 def _build_daily_report_model(paths: OperationPaths, trade_date: str, report_refs: dict[str, Any], *, order_plan: dict[str, Any]) -> dict[str, Any]:
     approval = _load_or_empty(paths.dated("approval_artifact", trade_date, "approval_artifact.json"), default={})
     submitted = _load_or_empty(paths.dated("submitted_orders", trade_date, "submitted_orders.json"), default={"submitted_orders": []})
@@ -1912,17 +2131,36 @@ def _build_daily_report_model(paths: OperationPaths, trade_date: str, report_ref
     submitted_rows = submitted.get("submitted_orders", []) if isinstance(submitted.get("submitted_orders"), list) else []
     fill_rows = fill_events.get("fill_events", []) if isinstance(fill_events.get("fill_events"), list) else []
     broker_order_rows = broker_orders_artifact.get("orders", []) if isinstance(broker_orders_artifact.get("orders"), list) else []
-    if not items and submitted_rows:
-        items = [_item_from_submitted_row(row) for row in submitted_rows]
+    plan_item_by_id = {str(item.get("item_id") or ""): item for item in items if isinstance(item, dict)}
+    submitted_items = [_submitted_item_with_plan_display_fallback(row, plan_item_by_id.get(str(row.get("item_id") or ""))) for row in submitted_rows]
     buy_rows = [_report_order_row(item, names, submitted_rows, fill_rows, candidate_by_code, broker_order_rows=broker_order_rows) for item in items if str(item.get("side", "")).upper() == "BUY"]
     sell_rows = [_report_order_row(item, names, submitted_rows, fill_rows, candidate_by_code, broker_order_rows=broker_order_rows) for item in items if str(item.get("side", "")).upper() == "SELL"]
+    submitted_buy_rows = [
+        _report_order_row(item, names, submitted_rows, fill_rows, candidate_by_code, broker_order_rows=broker_order_rows)
+        for item in submitted_items
+        if str(item.get("side", "")).upper() == "BUY"
+    ]
+    submitted_sell_rows = [
+        _report_order_row(item, names, submitted_rows, fill_rows, candidate_by_code, broker_order_rows=broker_order_rows)
+        for item in submitted_items
+        if str(item.get("side", "")).upper() == "SELL"
+    ]
+    submitted_order_rows = submitted_buy_rows + submitted_sell_rows
     statuses = report_refs.get("current_operation_statuses") or report_refs.get("operation_statuses") or {}
     broker = report_refs.get("broker_readonly_status") or {}
     ledger_status = report_refs.get("ledger_status") or ledger_summary or {}
     demo_special = report_refs.get("demo_special_fill_simulation") or {}
     parity = report_refs.get("demo_production_parity_audit") or {}
     title = f"AI Fund Lab Demo Operations Daily Report - {trade_date}"
-    key_message = _daily_key_message(report_refs, buy_rows=buy_rows, sell_rows=sell_rows, safety=safety, reconcile=reconcile, audit=audit)
+    key_message = _daily_key_message(
+        report_refs,
+        buy_rows=buy_rows,
+        sell_rows=sell_rows,
+        submitted_order_rows=submitted_order_rows,
+        safety=safety,
+        reconcile=reconcile,
+        audit=audit,
+    )
     operation_day_type = str(report_refs.get("operation_day_type") or NORMAL_OPERATION_DAY)
     notification_mode = str(report_refs.get("notification_mode") or "NORMAL_OPERATION_SUMMARY")
     notification_summary_text = _daily_notification_summary_text(
@@ -1937,10 +2175,11 @@ def _build_daily_report_model(paths: OperationPaths, trade_date: str, report_ref
         audit=audit,
         buy_rows=buy_rows,
         sell_rows=sell_rows,
+        submitted_order_rows=submitted_order_rows,
     )
     report_positions = _report_positions(paths, trade_date, names)
     if str(report_refs.get("environment", "demo")).lower() == "demo" and not report_positions:
-        report_positions = _synthetic_demo_positions_from_filled_orders(buy_rows, sell_rows)
+        report_positions = _synthetic_demo_positions_from_filled_orders(submitted_buy_rows, submitted_sell_rows)
     return {
         "title": title,
         "business_date": trade_date,
@@ -1965,11 +2204,36 @@ def _build_daily_report_model(paths: OperationPaths, trade_date: str, report_ref
         "statuses": statuses,
         "buy_rows": buy_rows,
         "sell_rows": sell_rows,
+        "submitted_buy_rows": submitted_buy_rows,
+        "submitted_sell_rows": submitted_sell_rows,
+        "submitted_order_rows": submitted_order_rows,
+        "submitted_order_count": len(submitted_order_rows),
+        "next_buy_rows": buy_rows,
+        "next_sell_rows": sell_rows,
+        "next_order_plan_count": len(buy_rows) + len(sell_rows),
+        "submit_sot": {
+            "artifact": f"submitted_orders/{trade_date}/submitted_orders.json",
+            "count": len(submitted_order_rows),
+            "status": submitted.get("status", "MISSING"),
+            "order_plan_source_date": submitted.get("order_plan_source_date", ""),
+            "approval_source_date": submitted.get("approval_source_date", ""),
+        },
+        "next_order_plan_sot": {
+            "artifact": f"order_plan/{trade_date}/order_plan.json",
+            "count": len(buy_rows) + len(sell_rows),
+            "buy_item_count": order_plan.get("buy_item_count", len(buy_rows)),
+            "sell_item_count": order_plan.get("sell_item_count", len(sell_rows)),
+            "business_date": order_plan.get("business_date", trade_date),
+        },
         "broker": {
             "status": broker.get("status", "UNKNOWN"),
             "orders_count": broker.get("orders_count", 0),
             "executions_count": broker.get("executions_count", 0),
+            "broker_executions_classification": broker.get("broker_executions_classification", ""),
+            "order_status_filled_fallback_review": broker.get("order_status_filled_fallback_review", False),
+            "fallback_execution_count": broker.get("fallback_execution_count", 0),
             "positions_count": broker.get("positions_count", 0),
+            "positions_safe_diagnosis": broker.get("positions_safe_diagnosis", {}),
             "buying_power_available": broker.get("buying_power_available", False),
             "raw_response_saved": broker.get("raw_response_saved", False),
             "secret_saved": broker.get("secret_saved", False),
@@ -2073,16 +2337,21 @@ def _daily_notification_summary_text(
     audit: dict[str, Any],
     buy_rows: list[dict[str, Any]],
     sell_rows: list[dict[str, Any]],
+    submitted_order_rows: list[dict[str, Any]] | None = None,
 ) -> str:
+    submitted_order_rows = submitted_order_rows or []
     if operation_day_type not in NORMAL_REPORT_ALLOWED_DAY_TYPES:
         guard = report_refs.get("report_prerequisite_guard") or {}
         reasons = guard.get("reasons") or []
+        next_count = len(buy_rows) + len(sell_rows)
         return "\n".join(
             [
                 title,
                 f"Operation Day Type: {operation_day_type}",
                 f"Notification Mode: {notification_mode}",
                 f"Status: {key_message}",
+                f"Submit SoT: submitted_orders, submitted_count={len(submitted_order_rows)}",
+                f"Next Plan SoT: order_plan, next_candidate_count={next_count}",
                 f"Reason: {', '.join(str(item) for item in reasons[:5]) if reasons else '特記事項なし'}",
                 f"Submit: {statuses.get('submit', 'UNKNOWN')}, Safety: {safety.get('safety_state', statuses.get('safety_monitor', 'UNKNOWN'))}, Reconcile: {reconcile.get('classification', statuses.get('reconcile', 'UNKNOWN'))}, Audit: {audit.get('status', statuses.get('operation_audit', 'UNKNOWN'))}",
                 f"Report: {(report_refs.get('paths') or {}).get('public_report', '')}",
@@ -2101,6 +2370,7 @@ def _daily_notification_summary_text(
             f"Submit: {statuses.get('submit', 'UNKNOWN')}, Safety: {safety.get('safety_state', statuses.get('safety_monitor', 'UNKNOWN'))}, Reconcile: {reconcile.get('classification', statuses.get('reconcile', 'UNKNOWN'))}, Audit: {audit.get('status', statuses.get('operation_audit', 'UNKNOWN'))}",
             f"Report: {(report_refs.get('paths') or {}).get('public_report', '')}",
             f"Notification: {report_refs.get('notification_status', 'NOT_REQUESTED')}",
+            "Notification delivery: HTTP send result only; downstream device arrival is not confirmed",
             f"Production order: {'YES' if report_refs.get('production_order_submitted') else 'no'}",
         ]
     )
@@ -2178,12 +2448,17 @@ def _render_non_normal_operation_report(model: dict[str, Any]) -> str:
                 f"- {model.get('business_date', '')}のPlan / Approvalは明朝Submit用に再生成済みです。",
             ]
         )
-    submitted_rows = [row for row in model.get("buy_rows", []) + model.get("sell_rows", []) if str(row.get("status") or "").upper() not in {"", "PLANNED", "BLOCKED_ITEM"}]
-    blocked_rows = [row for row in model.get("buy_rows", []) + model.get("sell_rows", []) if str(row.get("status") or "").upper() == "BLOCKED_ITEM"]
+    submitted_rows = [
+        row
+        for row in model.get("submitted_order_rows", [])
+        if str(row.get("status") or "").upper() not in {"", "PLANNED", "BLOCKED_ITEM"}
+    ]
+    blocked_rows = [row for row in model.get("submitted_order_rows", []) if str(row.get("status") or "").upper() == "BLOCKED_ITEM"]
     if submitted_rows or blocked_rows:
         lines.extend(["", "## 本日Submit結果", ""])
         if submitted_rows:
             lines.append(f"Brokerへ送信済みの注文は{len(submitted_rows)}件です。")
+            lines.append(f"- Source of Truth: {(model.get('submit_sot') or {}).get('artifact', 'submitted_orders/YYYY-MM-DD/submitted_orders.json')}")
             for row in submitted_rows:
                 lines.append(f"- {row.get('broker_issue_code') or row.get('internal_code')} {row.get('name') or ''} / {row.get('side')} / {row.get('quantity')}株 / status {row.get('status')}")
         else:
@@ -2194,6 +2469,29 @@ def _render_non_normal_operation_report(model: dict[str, Any]) -> str:
             for row in blocked_rows:
                 reasons = ", ".join(str(reason) for reason in row.get("block_reasons", [])) or str(row.get("block_reason") or "")
                 lines.append(f"- {row.get('broker_issue_code') or row.get('internal_code')} {row.get('name') or ''} / {row.get('side')} / {row.get('quantity')}株 / 理由: {reasons}")
+    next_rows = model.get("buy_rows", []) + model.get("sell_rows", [])
+    if next_rows:
+        lines.extend(["", "## 次回注文候補", ""])
+        lines.append(f"次回用Order Planの候補は{len(next_rows)}件です。これは本日Submit結果ではありません。")
+        lines.append(f"- Source of Truth: {(model.get('next_order_plan_sot') or {}).get('artifact', 'order_plan/YYYY-MM-DD/order_plan.json')}")
+        for row in next_rows:
+            lines.append(f"- {row.get('broker_issue_code') or row.get('internal_code')} {row.get('name') or ''} / {row.get('side')} / {row.get('quantity')}株 / status {row.get('status')}")
+    broker = model.get("broker") or {}
+    fill = model.get("fill") or {}
+    if broker or fill:
+        broker_orders_count = int(broker.get("orders_count") or fill.get("broker_orders_count") or 0)
+        broker_executions_count = int(broker.get("executions_count") or fill.get("broker_executions_count") or 0)
+        broker_positions_count = int(broker.get("positions_count") or 0)
+        lines.extend(["", "## Broker確認", ""])
+        lines.append(f"- Broker Orders: {broker_orders_count}件")
+        lines.append(f"- Broker Executions: {broker_executions_count}件")
+        lines.append(f"- Broker Positions: {broker_positions_count}件")
+        if broker_orders_count and broker_executions_count == 0:
+            lines.append("- Broker Orders上は注文確認がありますが、Broker Executions API由来の確定約定は未確認です。")
+        if broker_positions_count == 0:
+            lines.append("- Broker Positionsは0件または未反映です。現在保有は確定扱いにしません。")
+        if broker.get("order_status_filled_fallback_review") or broker.get("fallback_execution_count"):
+            lines.append("- broker_orders fallbackを含むため、判定はREVIEW_REQUIREDのままです。")
     lines.extend(
         [
             "",
@@ -2276,11 +2574,19 @@ def _render_daily_notification_payload(label: str, model: dict[str, Any], report
         "report_path": report_path,
         "buy_candidates": model["buy_rows"] if model.get("next_day_candidates_allowed", True) else [],
         "sell_candidates": model["sell_rows"] if model.get("next_day_candidates_allowed", True) else [],
+        "submitted_orders": model.get("submitted_order_rows", []),
+        "submitted_order_count": model.get("submitted_order_count", 0),
+        "submitted_orders_source": (model.get("submit_sot") or {}).get("artifact", ""),
+        "next_order_candidates": model.get("buy_rows", []) + model.get("sell_rows", []),
+        "next_order_plan_count": model.get("next_order_plan_count", 0),
+        "next_order_plan_source": (model.get("next_order_plan_sot") or {}).get("artifact", ""),
         "send_executed": report_refs["line_send_executed"] or report_refs["discord_send_executed"],
         "line_send_executed": report_refs["line_send_executed"],
         "discord_send_executed": report_refs["discord_send_executed"],
         "notification_status": report_refs["notification_status"],
         "notification_result_path": report_refs["notification_result_path"],
+        "send_success_semantics": (report_refs.get("notification_result") or {}).get("send_success_semantics", "HTTP send result only; downstream device delivery is not confirmed."),
+        "delivery_confirmation": (report_refs.get("notification_result") or {}).get("delivery_confirmation", False),
         "regenerated": report_refs.get("regenerated", False),
         "regenerated_reason": report_refs.get("regenerated_reason", ""),
         "secret_saved": False,
@@ -2297,6 +2603,8 @@ def _notification_sections_for_model(model: dict[str, Any], report_path: str) ->
             {"heading": "Operation Day Type", "text": str(model.get("operation_day_type", "UNKNOWN"))},
             {"heading": "Mode", "text": str(model.get("notification_mode", "UNKNOWN"))},
             {"heading": "Status", "text": str(model.get("key_message", ""))},
+            {"heading": "本日Submit結果", "text": f"submitted_orders基準 {model.get('submitted_order_count', 0)}件"},
+            {"heading": "次回注文候補", "text": f"order_plan基準 {model.get('next_order_plan_count', 0)}件"},
             {"heading": "Reason", "text": " / ".join(str(item) for item in reasons[:5]) if reasons else "特記事項なし"},
             {"heading": "Safety", "text": f"{model['safety']['status']} / {model['safety']['state']}"},
             {"heading": "Reconcile", "text": f"{model['reconcile']['status']} / {model['reconcile']['classification']}"},
@@ -2780,9 +3088,16 @@ def _report_order_row(
         side=str(item.get("side", "")),
         quantity=str(item.get("quantity", "")),
     )
-    if broker_fill:
+    fill_status = str(fill.get("lifecycle") or "NOT_FILLED")
+    definitive_fill_event = fill_status.upper() in {"FILLED", "SIMULATED_FILLED"}
+    if broker_fill and not definitive_fill_event:
         limit_price = str(broker_fill.get("price") or limit_price)
         expected_notional = _decimal_text(_phase9_decimal(broker_fill.get("executed_quantity")) * _phase9_decimal(broker_fill.get("price")))
+    status_text = str(submitted.get("status") or fill_status or "PLANNED")
+    if broker_fill and not definitive_fill_event:
+        status_text = "BROKER_ORDER_CONFIRMED"
+        fill_status = "BROKER_ORDER_FALLBACK"
+    report_fill = fill_status.upper() in {"FILLED", "SIMULATED_FILLED"}
     metrics = candidate.get("metrics") or _empty_candidate_metrics()
     candidate_rank = candidate.get("candidate_rank")
     opportunity_rank = candidate.get("opportunity_rank")
@@ -2796,14 +3111,15 @@ def _report_order_row(
         "quantity": str(item.get("quantity", "")),
         "limit_price": "submit時に正規化" if limit_price in {"", "0", "0.0"} else limit_price,
         "expected_notional": "submit時に正規化" if expected_notional in {"", "0", "0.0"} else expected_notional,
-        "status": "FILLED" if broker_fill else str(submitted.get("status") or fill.get("lifecycle") or "PLANNED"),
-        "fill_status": "FILLED" if broker_fill else str(fill.get("lifecycle") or "NOT_FILLED"),
+        "status": status_text,
+        "fill_status": fill_status,
+        "source_of_truth_note": "broker_orders fallback; broker_executions is required for definitive fill" if broker_fill else "",
         "block_reason": submitted.get("block_reason", ""),
         "block_reasons": submitted.get("block_reasons") or submitted.get("reasons") or [],
         "blocking_stage": submitted.get("blocking_stage", ""),
-        "filled_quantity": str(broker_fill.get("executed_quantity") or "") if broker_fill else "",
-        "filled_price": str(broker_fill.get("price") or "") if broker_fill else "",
-        "filled_notional": expected_notional if broker_fill else "",
+        "filled_quantity": str(item.get("quantity", "")) if report_fill else "",
+        "filled_price": limit_price if report_fill else "",
+        "filled_notional": expected_notional if report_fill else "",
         "sell_reason": str(item.get("sell_reason") or ""),
         "exit_source": str(item.get("exit_source") or ""),
         "candidate_rank": candidate_rank,
@@ -2832,6 +3148,15 @@ def _item_from_submitted_row(row: dict[str, Any]) -> dict[str, Any]:
         "sell_reason": row.get("sell_reason", ""),
         "sell_intent": row.get("sell_intent", ""),
     }
+
+
+def _submitted_item_with_plan_display_fallback(row: dict[str, Any], plan_item: dict[str, Any] | None) -> dict[str, Any]:
+    item = _item_from_submitted_row(row)
+    plan_item = plan_item or {}
+    for key in ("issue_code", "code", "side", "quantity", "limit_price", "expected_notional", "estimated_value", "position_id", "exit_source", "sell_reason", "sell_intent"):
+        if item.get(key) in {None, ""} and plan_item.get(key) not in {None, ""}:
+            item[key] = plan_item.get(key)
+    return item
 
 
 def _matched_filled_broker_order(broker_orders: list[dict[str, Any]], *, broker_issue_code: str, side: str, quantity: str) -> dict[str, Any] | None:
@@ -3033,12 +3358,25 @@ def _number_text(value: Any) -> str:
         return "今回のartifactでは未取得"
 
 
-def _daily_key_message(report_refs: dict[str, Any], *, buy_rows: list[dict[str, Any]], sell_rows: list[dict[str, Any]], safety: dict[str, Any], reconcile: dict[str, Any], audit: dict[str, Any]) -> str:
+def _daily_key_message(
+    report_refs: dict[str, Any],
+    *,
+    buy_rows: list[dict[str, Any]],
+    sell_rows: list[dict[str, Any]],
+    submitted_order_rows: list[dict[str, Any]] | None = None,
+    safety: dict[str, Any],
+    reconcile: dict[str, Any],
+    audit: dict[str, Any],
+) -> str:
     if report_refs.get("market_status") == "CLOSED":
         return "本日は市場休場日のため、AI判断と注文処理は安全にスキップしました。"
     safety_state = safety.get("safety_state", "UNKNOWN")
     reconcile_status = reconcile.get("classification", reconcile.get("status", "UNKNOWN"))
     audit_status = audit.get("status", "UNKNOWN")
+    submitted_order_rows = submitted_order_rows or []
+    if report_refs.get("operation_day_type") not in NORMAL_REPORT_ALLOWED_DAY_TYPES:
+        next_count = len(buy_rows) + len(sell_rows)
+        return f"本日Submit実績はsubmitted_orders基準で{submitted_order_rows and len(submitted_order_rows) or 0}件、次回Order Plan候補は{next_count}件です。Safetyは{safety_state}、Reconcileは{reconcile_status}、Auditは{audit_status}です。"
     return f"本日はBUY候補{len(buy_rows)}件、SELL候補{len(sell_rows)}件を確認しました。Safetyは{safety_state}、Reconcileは{reconcile_status}、Auditは{audit_status}です。"
 
 
@@ -3437,6 +3775,7 @@ def _blocked_submit_item(
         "broker_order_api_called": False,
         "demo_order_submitted": False,
         "production_order_submitted": False,
+        **_submit_state_machine_fields({}, "BLOCKED_ITEM"),
         "raw_request_saved": False,
         "raw_response_saved": False,
         "secret_saved": False,
@@ -3465,6 +3804,85 @@ def _retry_parent_from_submit(previous_submit: dict[str, Any]) -> dict[str, Any]
         "raw_response_saved": False,
         "secret_saved": False,
     }
+
+
+def _submit_state_machine_fields(wire_result: dict[str, Any], status: str) -> dict[str, Any]:
+    response = wire_result.get("response") if isinstance(wire_result.get("response"), dict) else {}
+    classification = str(wire_result.get("submit_classification") or "")
+    if not classification:
+        upper_status = str(status or "").upper()
+        if upper_status in {"ORDER_ACCEPTED", "SELL_ORDER_ACCEPTED", "ACCEPTED"}:
+            classification = "ACCEPTED"
+        elif upper_status in {"REVIEW_REQUIRED"}:
+            classification = "REVIEW_REQUIRED"
+        elif upper_status in {"REJECTED", "REJECTED_OR_UNKNOWN", "BROKER_REJECTED"}:
+            classification = "BROKER_REJECTED"
+        else:
+            classification = "PRE_SEND_FAILURE"
+    return {
+        "retry_attempts": int(wire_result.get("retry_attempts") or 1),
+        "attempts": wire_result.get("attempts") if isinstance(wire_result.get("attempts"), list) else [],
+        "submit_classification": classification,
+        "classification_source": str(wire_result.get("classification_source") or ("broker_order_api_response" if classification == "ACCEPTED" and response else "runtime_submit_state_machine")),
+        "post_send_unknown": bool(wire_result.get("post_send_unknown")) or classification == "POST_SEND_UNKNOWN",
+        "broker_readonly_confirmation_attempted": bool(wire_result.get("broker_readonly_confirmation_attempted")),
+        "broker_readonly_confirmation_status": str(wire_result.get("broker_readonly_confirmation_status") or "NOT_REQUIRED"),
+        "raw_broker_order_id_saved": False,
+        "raw_request_saved": False,
+        "raw_response_saved": False,
+        "secret_saved": False,
+    }
+
+
+def _confirm_post_send_unknown_order_via_readonly(*, paths: OperationPaths, trade_date: str, item: dict[str, Any]) -> dict[str, Any]:
+    refresh = refresh_demo_broker_readonly_artifacts(trade_date=trade_date, root=paths.root, run_enabled=True)
+    bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
+    if bundle.get("status") != "PASS":
+        return {
+            "status": "NOT_CONFIRMED",
+            "reason": "broker_readonly_confirmation_failed",
+            "refresh": refresh,
+            "broker_readonly_artifact_bundle": {key: value for key, value in bundle.items() if key != "artifacts"},
+            "raw_request_saved": False,
+            "raw_response_saved": False,
+            "secret_saved": False,
+        }
+    broker_issue_code = str(item.get("broker_issue_code") or item.get("issue_code") or "")
+    side = str(item.get("side") or "").upper()
+    quantity = str(item.get("quantity") or "")
+    broker_orders = (bundle.get("artifacts", {}).get("broker_orders") or {}).get("orders") or []
+    for order in broker_orders:
+        if not _broker_order_matches_submit_item(order, broker_issue_code=broker_issue_code, side=side, quantity=quantity):
+            continue
+        return {
+            "status": "CONFIRMED",
+            "reason": "broker_readonly_order_confirmation",
+            "broker_order_id_hash": str(order.get("broker_order_id_hash") or ""),
+            "refresh": refresh,
+            "raw_request_saved": False,
+            "raw_response_saved": False,
+            "secret_saved": False,
+        }
+    return {
+        "status": "NOT_CONFIRMED",
+        "reason": "order_submit_result_unknown_and_broker_confirmation_missing",
+        "refresh": refresh,
+        "raw_request_saved": False,
+        "raw_response_saved": False,
+        "secret_saved": False,
+    }
+
+
+def _broker_order_matches_submit_item(order: dict[str, Any], *, broker_issue_code: str, side: str, quantity: str) -> bool:
+    broker_side = "3" if side == "BUY" else "1" if side == "SELL" else side
+    if str(order.get("issue_code") or "") != broker_issue_code:
+        return False
+    if str(order.get("side") or "").upper() not in {side, broker_side}:
+        return False
+    if quantity and str(order.get("quantity") or "") != quantity:
+        return False
+    status = str(order.get("status") or "").upper()
+    return status not in {"REJECTED", "CANCELED", "CANCELLED", "取消", "失効", "EXPIRED"}
 
 
 def _remaining_quantity(row: dict[str, Any], lifecycle: str) -> str:
@@ -3536,6 +3954,12 @@ def _operation_flow_integrity_guard(
     source_aware_submit = bool(submitted.get("order_plan_source_date") or submitted.get("approval_source_date"))
     source_order_plan_path = paths.dated("order_plan", order_plan_source_date, "order_plan.json")
     source_order_plan = read_json(source_order_plan_path) if source_aware_submit and source_order_plan_path.exists() else order_plan
+    sot_guard = _source_of_truth_consistency_guard(
+        paths,
+        trade_date,
+        order_plan_source_date=order_plan_source_date,
+        approval_source_date=approval_source_date,
+    )
     required_statuses = {
         "market_refresh": current_status_refs.get("market_refresh", "MISSING"),
         "daily_plan": _artifact_status(paths.dated("daily_plan", daily_plan_source_date, "daily_plan_result.json")) if source_aware_submit else current_status_refs.get("daily_plan", "MISSING"),
@@ -3575,6 +3999,8 @@ def _operation_flow_integrity_guard(
         reasons.append("artifact_date_consistency_review")
     if current_status_refs.get("operation_audit") == "BLOCKING_GAP":
         reasons.append("operation_audit_blocking_gap")
+    if sot_guard["status"] != "PASS":
+        reasons.extend(f"source_of_truth:{reason}" for reason in sot_guard["reasons"])
     if market_closed and not confirmed_closed:
         reasons.append(f"market_closed_reason_not_confirmed:{closed_reason or 'MISSING'}")
     if market_closed and confirmed_closed:
@@ -3584,7 +4010,7 @@ def _operation_flow_integrity_guard(
         if "recovery_day_detected" not in reasons:
             reasons.append("recovery_day_detected")
     elif reasons:
-        day_type = INCOMPLETE_OPERATION_DAY
+        day_type = REVIEW_REQUIRED_DAY if all(str(reason).startswith("source_of_truth:") for reason in reasons) else INCOMPLETE_OPERATION_DAY
     elif any(status == "REVIEW_REQUIRED" for status in required_statuses.values()):
         day_type = REVIEW_REQUIRED_DAY
         reasons.append("non_blocking_review_required")
@@ -3600,7 +4026,8 @@ def _operation_flow_integrity_guard(
         "report_prerequisite_pass": normal_report_allowed or day_type == MARKET_CLOSED_DAY,
         "artifact_date_consistency": date_consistency,
         "artifact_date_consistency_pass": date_consistency["pass"],
-        "source_of_truth_consistency_pass": True,
+        "source_of_truth_consistency_pass": sot_guard["status"] == "PASS",
+        "source_of_truth_consistency": sot_guard,
         "normal_report_allowed": normal_report_allowed,
         "candidate_top50_allowed": normal_report_allowed,
         "next_day_candidates_allowed": normal_report_allowed,
@@ -3617,6 +4044,55 @@ def _operation_flow_integrity_guard(
             "order_plan_source_date": order_plan_source_date,
             "approval_source_date": approval_source_date,
         },
+    }
+
+
+def _source_of_truth_consistency_guard(
+    paths: OperationPaths,
+    trade_date: str,
+    *,
+    order_plan_source_date: str,
+    approval_source_date: str,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    approval = _load_or_empty(paths.dated("approval_artifact", approval_source_date, "approval_artifact.json"), default={})
+    submitted = _load_or_empty(paths.dated("submitted_orders", trade_date, "submitted_orders.json"), default={})
+    reconcile = _load_or_empty(paths.dated("reconciliation_result", trade_date, "reconciliation_result.json"), default={})
+    broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
+    fill_events = _load_or_empty(paths.dated("fill_events", trade_date, "fill_events.json"), default={})
+    if approval.get("approval_max_notional_source") == "manual_override":
+        reasons.append("approval_manual_override_detected")
+    if broker_bundle.get("mock_source_detected") is True:
+        reasons.append("broker_readonly_snapshot_source_mock")
+    submit_approval_source_date = str(submitted.get("approval_source_date") or approval_source_date)
+    submit_order_plan_source_date = str(submitted.get("order_plan_source_date") or order_plan_source_date)
+    if submit_approval_source_date != approval_source_date:
+        reasons.append(f"submit_approval_source_date_mismatch:{submit_approval_source_date}:{approval_source_date}")
+    if submit_order_plan_source_date != order_plan_source_date:
+        reasons.append(f"submit_order_plan_source_date_mismatch:{submit_order_plan_source_date}:{order_plan_source_date}")
+    submit_reconciliation = reconcile.get("submit_reconciliation") or {}
+    if submit_reconciliation.get("broker_orders_used_as_execution_fallback") is True:
+        reasons.append("broker_orders_used_as_execution_fallback_requires_report_label")
+    broker_executions_count = int(submit_reconciliation.get("broker_executions_count") or broker_bundle.get("executions_count") or 0)
+    accepted_fill_events = [
+        event
+        for event in fill_events.get("fill_events", [])
+        if str(event.get("lifecycle") or "").upper() == "ACCEPTED"
+    ]
+    if accepted_fill_events and broker_executions_count == 0:
+        reasons.append("fill_events_accepted_without_broker_executions")
+    return {
+        "status": "PASS" if not reasons else "REVIEW_REQUIRED",
+        "reasons": reasons,
+        "approval_source_date": approval_source_date,
+        "order_plan_source_date": order_plan_source_date,
+        "submit_approval_source_date": submit_approval_source_date,
+        "submit_order_plan_source_date": submit_order_plan_source_date,
+        "broker_source_classification": broker_bundle.get("source_classification", "UNKNOWN"),
+        "mock_source_detected": broker_bundle.get("mock_source_detected") is True,
+        "broker_orders_used_as_execution_fallback": submit_reconciliation.get("broker_orders_used_as_execution_fallback") is True,
+        "broker_executions_count": broker_executions_count,
+        "accepted_fill_event_count": len(accepted_fill_events),
     }
 
 
@@ -3765,8 +4241,15 @@ def _submit_reconciliation_summary(submitted: dict[str, Any], *, broker_bundle: 
     blocked_rows = [row for row in submitted_rows if str(row.get("status") or "").upper() == "BLOCKED_ITEM"]
     explained_blocked_rows = [row for row in blocked_rows if row.get("block_reason") or row.get("block_reasons")]
     broker_orders = (broker_bundle.get("artifacts", {}).get("broker_orders") or {}).get("orders") or []
+    broker_executions_artifact = (broker_bundle.get("artifacts", {}).get("broker_executions") or {})
+    broker_executions = broker_executions_artifact.get("executions") or []
     broker_executions_count = int(broker_bundle.get("executions_count", 0) or 0)
     broker_positions_count = int(broker_bundle.get("positions_count", 0) or 0)
+    fallback_execution_count = sum(1 for row in broker_executions if row.get("source") == "broker_orders_fallback" or row.get("review_required") is True)
+    fallback_execution_review_required = (
+        broker_executions_artifact.get("classification") == "ORDER_STATUS_FILLED_FALLBACK_REVIEW"
+        or fallback_execution_count > 0
+    )
     broker_order_issue_codes = {str(order.get("issue_code") or "") for order in broker_orders}
     accepted_broker_codes = {
         str((row.get("normalized_order") or {}).get("broker_issue_code") or (row.get("code_normalization") or {}).get("broker_issue_code") or row.get("broker_issue_code") or "")
@@ -3796,9 +4279,18 @@ def _submit_reconciliation_summary(submitted: dict[str, Any], *, broker_bundle: 
         "blocked_item_fill_event_count": blocked_event_count,
         "all_blocked_items_explained": len(blocked_rows) == len(explained_blocked_rows),
         "partial_submit_with_explained_blocked_items": bool(accepted_rows and blocked_rows and len(blocked_rows) == len(explained_blocked_rows) and broker_orders_cover_accepted),
-        "broker_orders_used_as_execution_fallback": broker_executions_count == 0 and broker_orders_executed_quantity_available,
+        "broker_orders_used_as_execution_fallback": (broker_executions_count == 0 and broker_orders_executed_quantity_available) or fallback_execution_review_required,
+        "order_status_filled_fallback_review": fallback_execution_review_required,
+        "fallback_execution_count": fallback_execution_count,
+        "broker_executions_classification": broker_executions_artifact.get("classification", ""),
         "demo_empty_executions_positions_explained": demo_empty_executions_positions_explained,
-        "classification": "MATCHED_WITH_EXPLAINED_BLOCKED_ITEMS" if accepted_rows and blocked_rows and len(blocked_rows) == len(explained_blocked_rows) and broker_orders_cover_accepted else "REVIEW_REQUIRED",
+        "classification": (
+            "REVIEW_REQUIRED"
+            if fallback_execution_review_required
+            else "MATCHED_WITH_EXPLAINED_BLOCKED_ITEMS"
+            if accepted_rows and blocked_rows and len(blocked_rows) == len(explained_blocked_rows) and broker_orders_cover_accepted
+            else "REVIEW_REQUIRED"
+        ),
     }
 
 
@@ -3872,6 +4364,7 @@ def _demo_production_parity_audit(paths: OperationPaths, trade_date: str, *, env
     reconcile = _load_or_empty(paths.dated("reconciliation_result", trade_date, "reconciliation_result.json"), default={})
     report = _load_or_empty(paths.dated("daily_report_refs", trade_date, "daily_report_refs.json"), default={})
     notification = _load_or_empty(paths.dated("notifications", trade_date, "notification_result.json"), default={})
+    broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
     demo_special = _load_demo_special_fill_summary(paths, trade_date)
     unexpected: list[str] = []
     if env == "demo" and report.get("send_notifications_requested") is True and report.get("notification_status") in {"NOT_REQUESTED", "SKIPPED_BY_DEMO"}:
@@ -3880,6 +4373,16 @@ def _demo_production_parity_audit(paths: OperationPaths, trade_date: str, *, env
         unexpected.append("daily_report_blocked")
     if str(daily_plan.get("candidate_count_environment_specific", "")).lower() == "true":
         unexpected.append("demo_candidate_count_environment_specific")
+    if approval.get("approval_max_notional_source") == "manual_override":
+        unexpected.append("approval_manual_override_detected")
+    if broker_bundle.get("mock_source_detected") is True:
+        unexpected.append("broker_readonly_snapshot_source_mock")
+    if report.get("send_notifications_requested") is True and not notification:
+        unexpected.append("notification_result_missing_for_requested_send")
+    if notification and notification.get("business_date") != trade_date:
+        unexpected.append("notification_business_date_mismatch")
+    if notification and report and notification.get("business_date") != report.get("business_date"):
+        unexpected.append("notification_report_business_date_mismatch")
     for name, payload in {
         "approval": approval,
         "submit": submitted,
@@ -3900,10 +4403,14 @@ def _demo_production_parity_audit(paths: OperationPaths, trade_date: str, *, env
         "unexpected_differences": unexpected,
         "notification_parity": {
             "notification_result_present": bool(notification),
+            "notification_business_date": notification.get("business_date", ""),
+            "report_business_date": report.get("business_date", ""),
             "line_send_attempted": (notification.get("line") or {}).get("send_attempted", False),
             "discord_send_attempted": (notification.get("discord") or {}).get("send_attempted", False),
             "demo_notification_disabled": report.get("notification_status") in {"NOT_REQUESTED", "SKIPPED_BY_DEMO"},
             "send_notifications_requested": report.get("send_notifications_requested") is True,
+            "send_success_semantics": notification.get("send_success_semantics", ""),
+            "delivery_confirmation": notification.get("delivery_confirmation", False),
         },
         "daily_report_parity": {
             "daily_report_refs_present": bool(report),
@@ -3976,6 +4483,9 @@ def _resolve_runtime_environment() -> dict[str, Any]:
         reasons.append("TACHIBANA_API_ENV_invalid")
     if env != normalize_runtime_environment(settings.environment):
         reasons.append("broker_settings_environment_mismatch")
+    env_guard = validate_runtime_environment(env, base_url=settings.base_url, production_order_allowed=False)
+    if not env_guard["allowed"]:
+        reasons.extend(env_guard["reasons"])
     status = "PASS" if not reasons else "BLOCK"
     return {
         "status": status,
@@ -3991,6 +4501,7 @@ def _base_payload(kind: str, env: str, trade_date: str, status: str) -> dict[str
     return {
         "artifact_type": kind,
         "created_at": utc_now_iso(),
+        "invocation": _operation_invocation_metadata(),
         "environment": env,
         "business_date": trade_date,
         "status": status,
@@ -4001,6 +4512,16 @@ def _base_payload(kind: str, env: str, trade_date: str, status: str) -> dict[str
         "backtest_run": False,
         "raw_response_saved": False,
         "secret_saved": False,
+    }
+
+
+def _operation_invocation_metadata() -> dict[str, Any]:
+    service = str(os.environ.get("XPC_SERVICE_NAME") or "")
+    return {
+        "source": "launchd" if service.startswith("com.aifundlab.operations.") else "manual",
+        "xpc_service_name": service,
+        "launchd_job_label": service if service.startswith("com.aifundlab.operations.") else "",
+        "pid": os.getpid(),
     }
 
 
@@ -4048,6 +4569,79 @@ def _resolve_submit_order_plan_date(paths: OperationPaths, trade_date: str, *, e
 
 def _load_or_empty(path: Path, *, default: dict[str, Any]) -> dict[str, Any]:
     return read_json(path) if path.exists() else default
+
+
+def _daily_plan_budget_filter(
+    *,
+    paths: OperationPaths,
+    trade_date: str,
+    env: str,
+    operations_config: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    broker_snapshot = _load_or_empty(
+        paths.dated("broker_snapshot_summary", trade_date, "broker_snapshot_summary.json"),
+        default=_default_broker_snapshot_summary(trade_date, env),
+    )
+    broker_bundle = load_broker_artifact_bundle(trade_date=trade_date, root=paths.root)
+    budget = _resolve_approval_max_notional(
+        paths=paths,
+        trade_date=trade_date,
+        env=env,
+        order_plan={"operations_runtime_config": operations_config, "items": items},
+        broker_snapshot=broker_snapshot,
+        broker_bundle=broker_bundle,
+        manual_override=None,
+    )
+    approval_max = Decimal(str(budget["approval_max_notional"]))
+    remaining = approval_max
+    selected: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    selected_buy_count = 0
+    max_buy_orders = int(operations_config.get("max_buy_orders_per_day") or DEFAULT_MAX_BUY_ORDERS_PER_DAY)
+    for item in items:
+        if str(item.get("side") or "").upper() != "BUY":
+            selected.append(item)
+            continue
+        normalized = _normalize_item_for_demo_wire(item, paths=paths, trade_date=trade_date)
+        notional = Decimal(str(normalized.get("estimated_value") or normalized.get("expected_notional") or "0"))
+        reason = ""
+        if selected_buy_count >= max_buy_orders:
+            reason = "max_buy_orders_per_day_reached"
+        elif notional <= 0:
+            reason = str(normalized.get("normalization_error") or "expected_notional_not_positive")
+        elif notional > remaining:
+            reason = "daily_plan_budget_insufficient"
+        if reason:
+            excluded.append(
+                {
+                    "item_id": item.get("item_id", ""),
+                    "issue_code": item.get("issue_code") or item.get("code") or "",
+                    "reason": reason,
+                    "expected_notional": _decimal_text(notional),
+                    "remaining_budget_before_item": _decimal_text(remaining),
+                }
+            )
+            continue
+        selected.append(normalized)
+        selected_buy_count += 1
+        remaining -= notional
+    selected_buy_notional = approval_max - remaining
+    return {
+        "items": selected,
+        "status": "PASS",
+        "policy": "daily_plan_budget_greedy_rank_order_no_submit_reselection",
+        "price_source": "jquants_latest_close",
+        "approval_max_notional": _decimal_text(approval_max),
+        "approval_max_notional_source": budget["approval_max_notional_source"],
+        "approval_max_notional_inputs": budget["approval_max_notional_inputs"],
+        "selected_buy_notional": _decimal_text(selected_buy_notional),
+        "remaining_budget": _decimal_text(remaining),
+        "max_buy_orders_per_day": max_buy_orders,
+        "selected_buy_count": selected_buy_count,
+        "excluded_buy_count": len(excluded),
+        "excluded_buy_items": excluded,
+    }
 
 
 def _normalize_plan_item(item: dict[str, Any], index: int) -> dict[str, Any]:
@@ -4662,14 +5256,21 @@ def _load_demo_special_fill_summary(paths: OperationPaths, trade_date: str) -> d
     }
 
 
-def _command_from_item(item: dict[str, Any], trade_date: str, approval_id: str, *, live_order_allowed: bool) -> OrderCommand:
+def _command_from_item(
+    item: dict[str, Any],
+    trade_date: str,
+    approval_id: str,
+    *,
+    live_order_allowed: bool,
+    environment: RuntimeMode = RuntimeMode.DEMO,
+) -> OrderCommand:
     side = OrderSide.BUY if item.get("side") == "BUY" else OrderSide.SELL
     price_type = PriceType.LIMIT if item.get("price_type") == "LIMIT" else PriceType.MARKET
     broker_issue_code = str(item.get("broker_issue_code") or item.get("issue_code") or "")
     return OrderCommand(
         runtime_id=f"operation_{trade_date}_{approval_id}_{item.get('item_id')}",
-        environment=RuntimeMode.DEMO,
-        paper_test_id="operation_demo",
+        environment=environment,
+        paper_test_id="operation_runtime_submit",
         issue_code=broker_issue_code,
         side=side,
         quantity=Decimal(str(item.get("quantity"))),

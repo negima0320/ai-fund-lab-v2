@@ -108,7 +108,7 @@ def _write_minimal_operation_artifacts(root: Path) -> None:
             ],
         },
     )
-    write_json(paths.dated("fill_events", TRADE_DATE, "fill_events.json"), {"status": "PASS", "fill_events": [{"item_id": "buy_1", "side": "BUY", "lifecycle": "ACCEPTED"}]})
+    write_json(paths.dated("fill_events", TRADE_DATE, "fill_events.json"), {"status": "PASS", "fill_events": [{"item_id": "buy_1", "side": "BUY", "lifecycle": "FILLED"}]})
     write_json(paths.dated("safety_monitor", TRADE_DATE, "safety_monitor_result.json"), {"status": "PASS", "safety_state": "ALLOW", "system_faults": []})
     write_json(paths.dated("reconciliation_result", TRADE_DATE, "reconciliation_result.json"), {"status": "PASS", "classification": "PASS", "missing": []})
     write_json(paths.dir("audit_result") / "audit_result.json", {"status": "PASS", "leakage_audit": {"status": "PASS"}, "no_production_order_audit": True, "demo_production_parity_audit": {"status": "PASS", "unexpected_differences": []}})
@@ -134,6 +134,23 @@ def _write_minimal_operation_artifacts(root: Path) -> None:
         },
     )
     write_json(paths.dated("broker_positions", TRADE_DATE, "positions.json"), {"positions": [], "raw_response_saved": False, "secret_saved": False})
+    write_json(
+        paths.dated("broker_executions", TRADE_DATE, "executions.json"),
+        {
+            "executions": [
+                {
+                    "issue_code": "4265",
+                    "side": "BUY",
+                    "quantity": "100",
+                    "price": "430",
+                    "raw_response_saved": False,
+                    "secret_saved": False,
+                }
+            ],
+            "raw_response_saved": False,
+            "secret_saved": False,
+        },
+    )
     write_json(
         paths.dated("ledger", TRADE_DATE, "ledger_summary.json"),
         {"status": "PASS", "buying_power_available": True, "positions_count": 0, "market_value_estimate": "0", "total_equity_estimate": "20000000"},

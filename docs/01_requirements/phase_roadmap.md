@@ -1005,89 +1005,219 @@ Production注文禁止
 
 # 16. Phase13
 
-## Portfolio Rotation AI / Position Management v2 Design
+## Runtime Architecture v2 Rebuild
 
 目的
 
 ```text
-保有銘柄と新規候補を同じ期待値軸で比較し、
-より高期待値の銘柄へ資金を入れ替えるべきか判断する
+Phase12.5で発覚したRuntime状態管理の混線を解消する。
+
+AIの銘柄選定、購入判断、Safety投資判断は原則変更しない。
+
+Current State / History / Derived を分離し、
+Persistent Ledgerを本線Current Stateとして接続し、
+Pending PlanをSubmit唯一のSource of Truthとして完成させる。
 ```
 
-Phase13は、以下をまだ決め打ちしない設計検討フェーズである。
+Phase12.5最終判定。
 
 ```text
-新AIを作る
-
-Position Management AIを拡張する
-
-Capital Allocation Engineに吸収する
+REVIEW_REQUIRED / CLOSED_FOR_REDESIGN
 ```
 
-問い
+Phase13で扱う主問題。
 
 ```text
-この保有銘柄は、今も資金を置く価値があるか？
+AI層ではなくRuntime層の問題。
 
-新規候補へ乗り換えるべきか？
+order_plan/YYYY-MM-DD が履歴とSubmit対象を兼ねていた。
 
-保有継続・売却・縮小・入替のどれが期待値最大か？
+approval_artifact/YYYY-MM-DD が証跡とCurrent判定を兼ねていた。
+
+約定、現在保有、現金、買付余力が永続Current Stateとして確立されていない。
+
+demo_ledger と persistent_ledger の責務が重複している。
+
+Report / Notification が本日Submit実績と次回Planを混同した。
+
+launchd通し運用テストを再開するには、RuntimeのSoT固定が必要。
 ```
 
-想定スコープ
+Phase13の必須項目。
 
 ```text
-保有銘柄スコアリング
+Current State / History / Derived の定義固定
 
-新規候補スコアリング
+Runtimeでは日付を実行対象の主キーにしない
 
-期待値差分比較
+日付はHistory / Evidenceの属性として扱う
 
-Rotation候補生成
+Submit対象は pending_order_plan/pending_order_plan.json のみ
 
-売却理由としてROTATEを追加
+order_plan/YYYY-MM-DD は History / Evidence 扱い
 
-Portfolio level constraintとの統合
+approval_artifact/YYYY-MM-DD は History / Evidence 扱い
 
-Capital Allocationとの責務分離
+Pending Plan Phase D
+  SUBMITTED
+  CONSUMED
+  EXPIRED
+  stale SUBMITTING
+  consume/archive
+  再Submit禁止
 
-Backtestによる効果検証
+Persistent Ledger本線接続
+
+orders / executions / positions / cash / events の永続化
+
+Daily Planの保有、SELL候補、max_positions判定を
+persistent_ledger/state.json へ寄せる
+
+Approvalのcurrent exposure、cash、buying power判定を
+persistent_ledger/current state へ寄せる
+
+Report / Notification の現在資産、保有、現金表示を
+persistent_ledger へ寄せる
+
+Reconcile / Audit のCurrent State参照を明示する
+
+demo_ledger を legacy 化する
+
+Broker Orders fallback はDemo限定、review_required付きにする
+
+ProductionではBroker Orders fallbackによる保有確定を禁止する
+
+Broker Positions / Broker Executions が正規SoTである方針を維持する
+
+launchd再開前にAcceptance Testを必須にする
+
+通し運用テストはPhase13完了後に行う
+
+Production注文は禁止を継続する
 ```
 
-禁止
+Current State固定path。
 
 ```text
-AI再学習を即実行
+pending_order_plan/current
 
-Backtest結果を学習に混ぜる
+persistent_ledger/state
 
-Broker Snapshot / Paper Ledger / PnL / cash / portfolio state / Safety result / Audit result をAI学習に使う
-
-LLM判断AI化
-
-信用取引
-
-レバレッジ
-
-Production発注
+runtime_state/current
 ```
 
-成功条件
+History保存方針。
 
 ```text
-直近1年の劣化改善
+Historyは日付、run_id、plan_idで保存する
 
-5年年率50%以上維持または改善
+通常RuntimeはHistoryから実行対象を自動選択しない
 
-最大DD改善または悪化抑制
+Historyは証跡、監査、再生成、hash検証のために読む
 
-早売り件数削減
+HistoryからCurrent Stateへの昇格は明示条件を満たす場合だけ行う
+```
 
-損失回避効果維持
+再実行方針。
 
-資金回転率改善
+```text
+Submit / Broker order は二重実行防止を最優先する
 
-SELL理由別の説明性向上
+Submit済み、送信中、結果不明の pending_plan_id は再Submit禁止
+
+POST_SEND_UNKNOWN は再送しない
+
+POST_SEND_UNKNOWN は Broker ReadOnly 確認へ進める
+
+Market Refresh は冪等再実行可能にする
+
+Feature Refresh は冪等再実行可能にする
+
+Report は冪等再実行可能にする
+
+Audit は冪等再実行可能にする
+
+Daily Plan は再実行可能にする
+
+ただし Daily Plan の pending昇格は明示条件を満たす場合のみ
+
+Approval は同一 plan hash に対してのみ再実行可能にする
+
+Notification は delivery ledger で二重送信を防ぐ
+```
+
+再実行設計の目的。
+
+```text
+運用中にエラーが起きても、
+Submit / Broker order 以外は安全にリカバリできるRuntimeにする。
+
+Submit / Broker order はリカバリより二重発注防止を優先する。
+```
+
+Phase13でやらないこと。
+
+```text
+AI銘柄選定モデルの変更
+
+Candidate AIの再設計
+
+Opportunity AIの再設計
+
+Safety投資判断ロジックの変更
+
+AI再学習
+
+フルバックテスト
+
+Production注文
+
+launchd自動運用再開
+```
+
+ただし、Runtime接続確認に必要な軽量テストは許可する。
+
+Acceptance Criteria。
+
+```text
+Current State / History / Derived の分類表が確定している
+
+Submitがpending_order_plan以外をSubmit対象にしない
+
+Pending Planのconsume lifecycleが実装されている
+
+persistent_ledger/state.json が現在保有、現金、買付余力の参照元になっている
+
+Daily Plan / Approval / Report / Notification / Reconcile / Audit が
+Current State参照元を明示している
+
+demo_ledger が本線SoTではなくlegacy artifact扱いになっている
+
+Broker Positions / Executions pipelineの診断が完了している
+
+Demo fallback projectionを使う場合は必ずreview_requiredを残す
+
+Productionではfallback projectionをCurrent State確定に使わない
+
+Report / Notification が本日Submit実績、約定確認、現在保有、次回Planを混同しない
+
+launchd再開前Acceptance TestがPASSする
+```
+
+Phase13へ持ち越す既知課題。
+
+```text
+Replacement Policy / Portfolio Rotation AI は未実装。
+
+ただし、これはRuntime Architecture v2のCurrent Stateが確定してから扱う。
+
+保有銘柄と新規候補のスコア比較、
+Replacement edge margin、
+minimum holding days、
+turnover上限、
+max_positions厳格制御、
+SELL_FIRST_BUY_AFTER_FILL方針は、
+Runtime SoT確定後の設計課題とする。
 ```
 
 ---

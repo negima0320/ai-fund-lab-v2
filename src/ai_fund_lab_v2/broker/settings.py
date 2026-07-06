@@ -17,6 +17,13 @@ PROD_BASE_URL = "https://kabuka.e-shiten.jp/e_api_v4r9"
 DEFAULT_LOCAL_CONFIG_PATH = Path.home() / ".config" / "aifundlab" / "tachibana" / "demo"
 
 
+def normalize_broker_environment(environment: str | None) -> str:
+    normalized = (environment or "").strip().lower()
+    if normalized == "prod":
+        return "production"
+    return normalized
+
+
 @dataclass(frozen=True)
 class BrokerSettings:
     auth_id: str | None = field(default=None, repr=False)
@@ -83,8 +90,8 @@ def load_broker_settings(env: Mapping[str, str] | None = None) -> BrokerSettings
     if env is None:
         load_dotenv_file()
     values = os.environ if env is None else env
-    environment = values.get("TACHIBANA_API_ENV", "demo").strip().lower()
-    default_base_url = PROD_BASE_URL if environment == "prod" else DEMO_BASE_URL
+    environment = normalize_broker_environment(values.get("TACHIBANA_API_ENV", "demo"))
+    default_base_url = PROD_BASE_URL if environment == "production" else DEMO_BASE_URL
     local_config_path = _optional_path(values.get("TACHIBANA_API_LOCAL_CONFIG_PATH")) or DEFAULT_LOCAL_CONFIG_PATH
     return BrokerSettings(
         auth_id=_blank_to_none(values.get("TACHIBANA_API_AUTH_ID")),

@@ -41,12 +41,13 @@ def test_auto_demo_approval_is_demo_only_and_records_source(tmp_path, monkeypatc
     result = run_approval_prepare(trade_date="2026-06-29", root=tmp_path, auto_demo_approval=True, max_notional=Decimal("120000"))
     artifact = read_json(tmp_path / "approval_artifact" / "2026-06-29" / "approval_artifact.json")
 
-    assert result["approved"] is True
+    assert result["approved"] is False
     assert artifact["approval_source"] == "demo_auto_approval"
     assert artifact["manual_approval_required"] is False
-    assert artifact["demo_order_allowed"] is True
+    assert artifact["demo_order_allowed"] is False
     assert artifact["production_order_allowed"] is False
     assert artifact["approval_max_notional_source"] == "manual_override"
+    assert "manual_override_not_allowed_in_auto_runtime" in artifact["approval_blocks"]
 
 
 def test_auto_demo_approval_defaults_to_dynamic_demo_evaluation_equity(tmp_path, monkeypatch):
@@ -176,8 +177,9 @@ def test_auto_demo_approval_can_approve_multiple_buy_items_within_total_budget(t
     result = run_approval_prepare(trade_date="2026-06-29", root=tmp_path, auto_demo_approval=True, max_notional=Decimal("250000"))
     artifact = read_json(tmp_path / "approval_artifact" / "2026-06-29" / "approval_artifact.json")
 
-    assert result["approved"] is True
-    assert artifact["approved_item_ids"] == ["buy_1", "buy_2"]
+    assert result["approved"] is False
+    assert artifact["approved_item_ids"] == []
+    assert "manual_override_not_allowed_in_auto_runtime" in artifact["approval_blocks"]
 
 
 def test_auto_demo_approval_blocks_multiple_buy_items_over_total_budget(tmp_path, monkeypatch):

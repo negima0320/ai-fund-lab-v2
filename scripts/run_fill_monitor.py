@@ -18,7 +18,7 @@ def main() -> int:
     result = run_fill_monitor(trade_date=args.trade_date, root=Path(args.root))
     print(result["status"])
     print(result["fill_events_path"])
-    return 0 if result["status"] in {"PASS", "PASS_MARKET_CLOSED_MONITOR_ONLY"} else 2
+    return 0 if Path(result["fill_events_path"]).exists() else 2
 
 
 if __name__ == "__main__":

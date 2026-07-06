@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from ai_fund_lab_v2.broker.settings import DEMO_BASE_URL, PROD_BASE_URL
+from ai_fund_lab_v2.broker.settings import DEMO_BASE_URL, PROD_BASE_URL, normalize_broker_environment
 
 FORBIDDEN_AI_FEATURE_SOURCES = {
     "broker_snapshot",
@@ -50,10 +50,7 @@ class MaxExposureDecision:
 
 
 def normalize_runtime_environment(env: str | None) -> str:
-    normalized = (env or "").strip().lower()
-    if normalized == "prod":
-        return "production"
-    return normalized
+    return normalize_broker_environment(env)
 
 
 def validate_runtime_environment(

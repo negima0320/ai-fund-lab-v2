@@ -216,7 +216,7 @@ def _warnings(envelope: BrokerResponseEnvelope) -> tuple[str, ...]:
 
 def _normalize_side(value: Any) -> str:
     text = str(value or "")
-    return {"1": "buy", "2": "sell", "買": "buy", "売": "sell"}.get(text, text)
+    return {"1": "sell", "3": "buy", "買": "buy", "売": "sell", "BUY": "buy", "SELL": "sell"}.get(text.upper(), text)
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:
