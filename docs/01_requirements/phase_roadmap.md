@@ -1007,6 +1007,12 @@ Production注文禁止
 
 ## Runtime Architecture v2 Rebuild
 
+Status:
+
+```text
+COMPLETE_WITH_HANDOFF
+```
+
 目的
 
 ```text
@@ -1218,6 +1224,93 @@ turnover上限、
 max_positions厳格制御、
 SELL_FIRST_BUY_AFTER_FILL方針は、
 Runtime SoT確定後の設計課題とする。
+```
+
+---
+
+# 16.1 Phase14
+
+## Runtime v2 Operation Integration / Broker ReadOnly Rehearsal
+
+Status:
+
+```text
+READY_TO_START
+```
+
+目的
+
+```text
+Phase13で完成したRuntime Architecture v2とRuntime v2 skeletonを、
+実運用統合へ進める。
+
+最初はBroker ReadOnly adapter contractと実ReadOnlyデータでのManual Rehearsalを行う。
+```
+
+推奨開始点。
+
+```text
+Phase14-A: Runtime v2 Production/Demo Integration Plan
+
+または
+
+Phase14-A: Runtime v2 Broker ReadOnly Manual Rehearsal
+```
+
+推奨順序。
+
+```text
+Phase14-A:
+Broker ReadOnly adapter contract / real readonly rehearsal
+
+Phase14-B:
+Runtime v2 manual operation rehearsal with real readonly data
+
+Phase14-C:
+Submit Runtime design / approval gate
+
+Phase14-D:
+Notification Send design / delivery ledger integration
+
+Phase14-E:
+launchd Runtime v2 re-enable plan
+
+Phase14-F:
+Production readiness audit
+```
+
+Phase14開始時点で継続禁止。
+
+```text
+Production注文
+
+自動Submit
+
+Broker API Write
+
+Notification send
+
+launchd自動運用
+
+Backtest実行
+
+Simulation実行
+```
+
+Phase14でProduction注文を許可済みとして扱わない。Production注文、Broker API Write、Notification send、launchd再開、plist新規作成は、それぞれ明示フェーズとAcceptanceを経てから扱う。
+
+Phase13-Z2 handoff note。
+
+```text
+Phase13 Runtime Architecture v2 Rebuild は COMPLETE_WITH_HANDOFF。
+
+Runtime v2 skeleton と Acceptance Dry Run は完了済み。
+
+Phase14 は既存定義どおり Runtime v2 Operation Integration / Broker ReadOnly Rehearsal として開始する。
+
+新しいPhase14は作成しない。
+
+Phase14最初の作業は Broker ReadOnly実統合、Runtime v2実データManual Rehearsal、Production Readiness、Submit Runtime接続判断、Notification Send判断、launchd再開条件整理とする。
 ```
 
 ---
