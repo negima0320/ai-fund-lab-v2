@@ -22,8 +22,8 @@ def pending_order_plan_to_payload(plan: PendingOrderPlan) -> dict[str, Any]:
 def write_pending_order_plan(path: Path, plan: PendingOrderPlan) -> Path:
     if path is None:
         raise ValueError("path is required")
-    if _is_production_runtime_path(path):
-        raise ValueError("Phase13-P writer does not write production runtime paths")
+    if _is_mode_rooted_runtime_path(path):
+        raise ValueError("Current writer does not write mode-rooted runtime paths")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(pending_order_plan_to_payload(plan), sort_keys=True),
@@ -32,7 +32,12 @@ def write_pending_order_plan(path: Path, plan: PendingOrderPlan) -> Path:
     return path
 
 
-def _is_production_runtime_path(path: Path) -> bool:
+def _is_mode_rooted_runtime_path(path: Path) -> bool:
     parts = path.parts
-    return ".runtime" in parts and "production" in parts
-
+    runtime_modes = {"production", "demo", "simulation", "backtest"}
+    return any(
+        part == ".runtime"
+        and index + 1 < len(parts)
+        and parts[index + 1] in runtime_modes
+        for index, part in enumerate(parts)
+    )

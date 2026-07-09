@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
 from ai_fund_lab_v2.runtime_v2.planning.models import (
     CapitalAllocationSignal,
@@ -69,8 +70,14 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
     blocked = False
     review_required = False
     reasons: list[str] = []
+    estimated_amount = allocation.allocated_amount if allocation else 0.0
+    estimated_price = _estimated_price(allocation)
+    quantity = _round_lot_quantity(estimated_amount, estimated_price)
 
     if signal.side == "BUY":
+        if allocation is None or allocation.price_required and allocation.estimated_price <= 0:
+            blocked = True
+            reasons.append("reliable price source missing")
         if input.asset_state.cash_unknown:
             blocked = True
             reasons.append("cash unknown")
@@ -81,6 +88,20 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
             if allocation.cash_required > input.asset_state.buying_power:
                 blocked = True
                 reasons.append("cash_required exceeds buying_power")
+    if signal.side == "SELL":
+        if allocation is None or allocation.price_required and allocation.estimated_price <= 0:
+            blocked = True
+            reasons.append("current position valuation missing")
+        position_quantity = _current_position_quantity(input.asset_state, signal.symbol)
+        if position_quantity <= 0:
+            blocked = True
+            reasons.append("sell source current position missing")
+        if quantity <= 0:
+            blocked = True
+            reasons.append("sell quantity missing")
+        if quantity > position_quantity:
+            blocked = True
+            reasons.append("sell quantity exceeds current position")
     if input.asset_state.current_positions_unknown:
         review_required = True
         reasons.append("positions unknown")
@@ -92,9 +113,6 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
             review_required = True
             reasons.append(safety.reason or "safety review required")
 
-    estimated_amount = allocation.allocated_amount if allocation else 0.0
-    estimated_price = 0.0
-    quantity = 0.0
     status = (
         PlanningDecisionStatus.BLOCKED
         if blocked
@@ -116,6 +134,10 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
         review_required=review_required,
         blocked=blocked,
         reason="; ".join(reasons),
+        price_source=allocation.price_source if allocation else "",
+        price_as_of=allocation.price_as_of if allocation else "",
+        price_confidence=allocation.price_confidence if allocation else "",
+        price_required=allocation.price_required if allocation else True,
     )
 
 
@@ -181,6 +203,30 @@ def _find_safety(
     )
 
 
+def _estimated_price(allocation: CapitalAllocationSignal | None) -> float:
+    if allocation is None:
+        return 0.0
+    return allocation.estimated_price if allocation.estimated_price > 0 else 0.0
+
+
+def _current_position_quantity(asset_state, symbol: str) -> float:
+    positions = asset_state.positions or ()
+    normalized_symbol = str(symbol).strip()
+    return float(
+        sum(
+            float(position.quantity)
+            for position in positions
+            if str(position.symbol).strip() == normalized_symbol and float(position.quantity) > 0
+        )
+    )
+
+
+def _round_lot_quantity(amount: float, price: float) -> float:
+    if amount <= 0 or price <= 0:
+        return 0.0
+    return float(math.floor((amount / price) / 100.0) * 100)
+
+
 def _status_for_items(
     items: tuple[OrderPlanItem, ...],
     blocked: bool,
@@ -198,4 +244,3 @@ def _status_for_items(
 def _plan_id(environment: str, business_date: str, signals) -> str:
     raw = "|".join((environment, business_date, *(signal.signal_id for signal in signals)))
     return "order-plan-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-

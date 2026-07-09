@@ -18,7 +18,7 @@ def test_reader_does_not_look_into_order_plan_date_directory(tmp_path):
     )
 
     assert result.classification == "MISSING"
-    assert result.path == tmp_path / ".runtime/demo/runtime_state/current_state.json"
+    assert result.path == tmp_path / ".runtime/runtime_state/current_state.json"
 
 
 def test_reader_does_not_look_into_approval_artifact_date_directory(tmp_path):
@@ -75,7 +75,7 @@ def test_reader_uses_current_path_when_it_exists_even_if_history_exists(tmp_path
         {**_runtime_state_payload(), "state": "HISTORY_SHOULD_NOT_WIN"},
     )
     _write_json(
-        tmp_path / ".runtime/demo/runtime_state/current_state.json",
+        tmp_path / ".runtime/runtime_state/current_state.json",
         _runtime_state_payload(),
     )
 

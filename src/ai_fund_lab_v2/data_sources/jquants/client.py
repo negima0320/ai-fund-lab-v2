@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -30,7 +31,11 @@ PAGINATION_KEY = "pagination_key"
 
 
 class JQuantsClientError(RuntimeError):
-    """Raised when a J-Quants API request fails."""
+    """Raised when a J-Quants API request fails with secret-safe diagnostics."""
+
+    def __init__(self, message: str, *, diagnostic: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic or {}
 
 
 @dataclass
@@ -212,7 +217,8 @@ class JQuantsClient:
 
     def get(self, endpoint: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         api_key = self.settings.require_api_key()
-        url = self._build_url(endpoint, params or {})
+        safe_params = params or {}
+        url = self._build_url(endpoint, safe_params)
         request = urllib.request.Request(url, headers={"x-api-key": api_key})
         attempt = 1
         while True:
@@ -229,7 +235,10 @@ class JQuantsClient:
                     self.sleep(decision.wait_seconds)
                     attempt += 1
                     continue
-                raise JQuantsClientError(self._safe_error_message(endpoint, exc.code)) from exc
+                raise JQuantsClientError(
+                    self._safe_error_message(endpoint, exc.code),
+                    diagnostic=self._http_error_diagnostic(endpoint, safe_params, exc.code),
+                ) from exc
             except urllib.error.URLError as exc:
                 self._record_request()
                 self._log_request_failure(endpoint, "url_error", "url_error")
@@ -238,7 +247,10 @@ class JQuantsClient:
                     self.sleep(decision.wait_seconds)
                     attempt += 1
                     continue
-                raise JQuantsClientError(self._safe_error_message(endpoint, "url_error")) from exc
+                raise JQuantsClientError(
+                    self._safe_error_message(endpoint, "url_error"),
+                    diagnostic=self._url_error_diagnostic(endpoint, safe_params, exc),
+                ) from exc
             except (TimeoutError, socket.timeout) as exc:
                 self._record_request()
                 self._log_request_failure(endpoint, "timeout", "timeout")
@@ -247,7 +259,10 @@ class JQuantsClient:
                     self.sleep(decision.wait_seconds)
                     attempt += 1
                     continue
-                raise JQuantsClientError(self._safe_error_message(endpoint, "timeout")) from exc
+                raise JQuantsClientError(
+                    self._safe_error_message(endpoint, "timeout"),
+                    diagnostic=self._timeout_diagnostic(endpoint, safe_params),
+                ) from exc
 
     def save_token_cache(self, payload: dict[str, Any]) -> Path:
         """Persist non-source-controlled auth cache for future auth extensions."""
@@ -317,3 +332,72 @@ class JQuantsClient:
             status,
             error_type,
         )
+
+    def _base_diagnostic(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        return {
+            "endpoint": endpoint,
+            "date": params.get("date") or "",
+            "from_date": params.get("from") or "",
+            "to_date": params.get("to") or "",
+            "error_class": "UNKNOWN_API_ERROR",
+            "network_error_type": "",
+            "http_status": "",
+            "url_host": urllib.parse.urlparse(self.settings.base_url).hostname or "",
+        }
+
+    def _http_error_diagnostic(self, endpoint: str, params: dict[str, str], status: int) -> dict[str, Any]:
+        diagnostic = self._base_diagnostic(endpoint, params)
+        diagnostic["http_status"] = status
+        if status in (401, 403):
+            diagnostic["error_class"] = "API_AUTH_ERROR"
+        elif status == 400:
+            diagnostic["error_class"] = "API_PARAM_ERROR"
+        elif status == 429:
+            diagnostic["error_class"] = "API_RATE_LIMIT"
+        elif 500 <= status <= 599:
+            diagnostic["error_class"] = "API_SERVER_ERROR"
+        else:
+            diagnostic["error_class"] = "UNKNOWN_API_ERROR"
+        return diagnostic
+
+    def _url_error_diagnostic(
+        self,
+        endpoint: str,
+        params: dict[str, str],
+        exc: urllib.error.URLError,
+    ) -> dict[str, Any]:
+        diagnostic = self._base_diagnostic(endpoint, params)
+        diagnostic["error_class"] = "API_NETWORK_ERROR"
+        diagnostic["network_error_type"] = _classify_url_error_reason(getattr(exc, "reason", exc))
+        return diagnostic
+
+    def _timeout_diagnostic(self, endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+        diagnostic = self._base_diagnostic(endpoint, params)
+        diagnostic["error_class"] = "API_NETWORK_ERROR"
+        diagnostic["network_error_type"] = "timeout"
+        return diagnostic
+
+
+def _classify_url_error_reason(reason: Any) -> str:
+    if isinstance(reason, socket.gaierror):
+        return "dns"
+    if isinstance(reason, ssl.SSLError):
+        return "ssl"
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(reason, ConnectionRefusedError):
+        return "connection_refused"
+    if isinstance(reason, OSError):
+        message = str(reason).lower()
+        if "timed out" in message:
+            return "timeout"
+        if "name or service" in message or "nodename" in message or "temporary failure in name resolution" in message:
+            return "dns"
+        if "refused" in message:
+            return "connection_refused"
+        if "network is unreachable" in message:
+            return "network_unreachable"
+        if "no route" in message:
+            return "network_unreachable"
+        return reason.__class__.__name__
+    return type(reason).__name__ if reason is not None else "url_error"

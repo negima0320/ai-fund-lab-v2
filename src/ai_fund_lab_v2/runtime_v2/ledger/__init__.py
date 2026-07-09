@@ -12,6 +12,10 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import (
     LedgerOrderRecord,
     LedgerPositionRecord,
 )
+from ai_fund_lab_v2.runtime_v2.ledger.writer import (
+    ledger_record_to_payload,
+    write_ledger_records,
+)
 
 __all__ = [
     "LedgerCashRecord",
@@ -22,5 +26,6 @@ __all__ = [
     "append_record",
     "compute_dedup_key",
     "is_duplicate_record",
+    "ledger_record_to_payload",
+    "write_ledger_records",
 ]
-

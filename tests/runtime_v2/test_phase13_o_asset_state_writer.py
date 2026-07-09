@@ -13,7 +13,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerCashRecord
 
 def test_asset_state_payload_can_be_written_to_state_json(tmp_path):
     state = _confirmed_empty_state()
-    path = tmp_path / ".runtime/demo/persistent_ledger/state.json"
+    path = tmp_path / ".runtime/persistent_ledger/state.json"
 
     written = write_current_asset_state(path, state)
 
@@ -27,10 +27,10 @@ def test_writer_requires_explicit_path():
         write_current_asset_state(None, _confirmed_empty_state())
 
 
-def test_writer_rejects_production_runtime_path(tmp_path):
+def test_writer_rejects_mode_rooted_runtime_path(tmp_path):
     path = tmp_path / ".runtime/production/persistent_ledger/state.json"
 
-    with pytest.raises(ValueError, match="production runtime paths"):
+    with pytest.raises(ValueError, match="mode-rooted runtime paths"):
         write_current_asset_state(path, _confirmed_empty_state())
 
 
@@ -47,7 +47,7 @@ def test_asset_state_payload_matches_current_state_contract():
 
 def test_current_state_reader_can_read_written_asset_state(tmp_path):
     state = _confirmed_empty_state()
-    path = tmp_path / ".runtime/demo/persistent_ledger/state.json"
+    path = tmp_path / ".runtime/persistent_ledger/state.json"
     write_current_asset_state(path, state)
 
     result = read_current_state(
@@ -93,4 +93,3 @@ def _confirmed_empty_state():
         source="broker_cash",
         as_of="2026-07-07T00:00:00Z",
     )
-

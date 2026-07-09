@@ -18,7 +18,7 @@ def test_atomic_current_update_order_is_represented_by_writer_roles():
     assert CURRENT_STATE_CONTRACTS["persistent_ledger_positions"].writer_components == (
         "Ledger Runtime",
     )
-    assert CURRENT_STATE_CONTRACTS["persistent_ledger_cash_history"].writer_components == (
+    assert CURRENT_STATE_CONTRACTS["persistent_ledger_cash"].writer_components == (
         "Ledger Runtime",
     )
     assert CURRENT_STATE_CONTRACTS["persistent_ledger_state"].writer_components == (

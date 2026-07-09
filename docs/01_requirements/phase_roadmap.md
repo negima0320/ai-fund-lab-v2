@@ -1235,8 +1235,10 @@ Runtime SoT確定後の設計課題とする。
 Status:
 
 ```text
-READY_TO_START
+REVIEW_REQUIRED / CLOSED_FOR_PHASE15_RUNTIME_REVIEW
 ```
+
+Phase14はComplete扱いにしない。
 
 目的
 
@@ -1312,6 +1314,138 @@ Phase14 は既存定義どおり Runtime v2 Operation Integration / Broker ReadO
 
 Phase14最初の作業は Broker ReadOnly実統合、Runtime v2実データManual Rehearsal、Production Readiness、Submit Runtime接続判断、Notification Send判断、launchd再開条件整理とする。
 ```
+
+Phase14終了時点の扱い。
+
+```text
+Runtime v2 Demo Operation Rehearsal はBUY経路を大きく前進させた。
+
+Market Refresh、Morning、Pending、Submit、Broker Accepted、Execution、
+Current Projection、Report、Notification Payload、SELL Planning CLI connection
+までは到達した。
+
+ただし、Submit Guard / max_order_amount=100000 の設計契約違反疑い、
+Capital Allocation契約との不整合、BUY/SELL notional guard契約未確定、
+SELL liquidation未完、Blog未確認、Notification実送信未確認、
+Regression設計不備が残った。
+
+したがってPhase14は完了ではなく、
+REVIEW_REQUIRED / CLOSED_FOR_PHASE15_RUNTIME_REVIEW
+として閉じる。
+```
+
+---
+
+# 16.2 Phase15
+
+## Runtime Contract Full Re-Review
+
+Status:
+
+```text
+READY_TO_START
+```
+
+最重要目的。
+
+```text
+Runtimeを安心して任せられる状態にする。
+
+ChatGPTレビュー品質を改善し、
+設計契約・実装・Runtime証拠を一致させる。
+```
+
+目的。
+
+```text
+Runtime設計契約の全面レビュー
+
+実装契約との照合
+
+CLI通常経路レビュー
+
+Current / Broker / Report / Notification整合確認
+
+Regression Review
+
+Capital Deployment Contract Review
+
+Submit Guard Contract Review
+
+SELL Contract Review
+
+Runtime Acceptance再定義
+```
+
+開始条件。
+
+```text
+Phase14 Postmortem完了
+
+Runtime Architecture v2 更新済み
+
+Regression観点更新済み
+
+既存PASS判定を信用しない
+```
+
+PASS判定基準。
+
+```text
+以下が一致して初めてPASSとする。
+
+設計契約
+
+実装
+
+CLI通常経路
+
+Runtime Manifest
+
+Current SoT
+
+Broker ReadOnly
+
+Report
+
+Notification
+
+Regression
+```
+
+Phase15レビュー規則。
+
+```text
+Runtime Evidence First Rule:
+推測でPASS / FAIL / 原因を断定しない。
+確認可能なRuntime artifact、Broker状態、Current SoT、manifest、ledger、reportを優先する。
+
+Evidence Request Rule:
+証拠不足の場合は、Operatorへ必要最小限の確認コマンドを1〜2個ずつ提示する。
+大量のコマンドを一度に要求しない。
+
+No Guess Rule:
+Runtime状態を推測しない。
+取得した証拠だけでレビューする。
+```
+
+完了条件。
+
+```text
+BUY Runtime Complete
+
+SELL Runtime Complete
+
+Blog Runtime Complete
+
+Notification Runtime Complete
+
+Capital Deployment Contract Complete
+
+Runtime Full Acceptance PASS
+```
+
+Phase15でProduction注文を許可済みとして扱わない。Production注文、Broker API Write、Notification real send、launchd自動運用は、それぞれ明示フェーズとAcceptanceを経てから扱う。
 
 ---
 

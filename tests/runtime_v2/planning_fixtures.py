@@ -60,6 +60,11 @@ def make_allocation(symbol="7203", cash_required=50000.0) -> CapitalAllocationSi
         max_amount=cash_required,
         cash_required=cash_required,
         reason="allocation fixture",
+        estimated_price=2500.0,
+        price_source="fixture_close",
+        price_as_of="2026-07-07",
+        price_confidence="fixture",
+        price_required=True,
     )
 
 
@@ -111,4 +116,3 @@ def make_position(symbol="7203") -> CurrentAssetPosition:
         source="broker_positions",
         as_of="2026-07-07",
     )
-

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from enum import Enum
 from hashlib import sha256
@@ -9,7 +9,10 @@ from typing import Any
 from ai_fund_lab_v2.broker.request_builder import _tachibana_datetime
 from ai_fund_lab_v2.broker.request_sequence import RequestSequenceManager
 from ai_fund_lab_v2.broker.tachibana_codec import TachibanaV4R9Codec
-from ai_fund_lab_v2.runtime.order_command import OrderCommand, OrderSide, OrderType, PriceType
+from ai_fund_lab_v2.broker.issue_code_normalizer import (
+    BrokerIssueCodeNormalizationError,
+    normalize_broker_issue_code,
+)
 
 
 class TachibanaOrderRequestError(ValueError):
@@ -31,9 +34,9 @@ class TachibanaAccountType(str, Enum):
 @dataclass(frozen=True)
 class TachibanaCashStockOrderRequest:
     issue_code: str
-    side: OrderSide
+    side: Any
     quantity: Decimal
-    order_price_type: PriceType
+    order_price_type: Any
     order_price: Decimal = Decimal("0")
     market_code: str = TachibanaMarketCode.TSE.value
     cash_margin_type: str = TachibanaCashMarginType.CASH.value
@@ -48,42 +51,76 @@ class TachibanaCashStockOrderRequest:
     second_password_required: bool = True
     second_password_present: bool = False
     production_allowed: bool = False
+    internal_issue_code: str = ""
+    issue_code_normalization: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.issue_code:
             raise TachibanaOrderRequestError("issue_code is required.")
         if self.quantity <= Decimal("0"):
             raise TachibanaOrderRequestError("quantity must be positive.")
-        if self.order_price_type is PriceType.MARKET and self.order_price != Decimal("0"):
+        if _enum_value(self.order_price_type) == "MARKET" and self.order_price != Decimal("0"):
             raise TachibanaOrderRequestError("market order price must be zero.")
-        if self.order_price_type is PriceType.LIMIT and self.order_price <= Decimal("0"):
+        if _enum_value(self.order_price_type) == "LIMIT" and self.order_price <= Decimal("0"):
             raise TachibanaOrderRequestError("limit order price must be positive.")
         if self.production_allowed:
             raise TachibanaOrderRequestError("production order request generation is prohibited in Phase10-S.")
 
     @classmethod
-    def from_order_command(cls, command: OrderCommand, *, second_password_present: bool = False) -> "TachibanaCashStockOrderRequest":
-        if command.order_type is not OrderType.CASH_EQUITY:
+    def from_order_command(cls, command: Any, *, second_password_present: bool = False) -> "TachibanaCashStockOrderRequest":
+        if _enum_value(command.order_type) != "CASH_EQUITY":
             raise TachibanaOrderRequestError("Phase10-S supports cash equity order shape only.")
-        price = Decimal("0") if command.price_type is PriceType.MARKET else command.limit_price
+        price = Decimal("0") if _enum_value(command.price_type) == "MARKET" else Decimal(str(command.limit_price))
         return cls(
             issue_code=command.issue_code,
             side=command.side,
-            quantity=command.quantity,
+            quantity=Decimal(str(command.quantity)),
             order_price_type=command.price_type,
             order_price=price,
             second_password_present=second_password_present,
         )
 
+    @classmethod
+    def from_runtime_v2_submit_command(cls, command: Any, *, second_password_present: bool = False) -> "TachibanaCashStockOrderRequest":
+        if command.order_type != "MARKET" and command.order_type != "LIMIT":
+            raise TachibanaOrderRequestError("Runtime v2 submit supports MARKET or LIMIT order_type.")
+        price_type = command.price_type or ("MARKET" if command.order_type == "MARKET" else "LIMIT")
+        price = Decimal("0") if price_type == "MARKET" else Decimal(str(command.limit_price))
+        try:
+            normalized = normalize_broker_issue_code(command.symbol, listed_info=command.listed_info)
+        except BrokerIssueCodeNormalizationError as exc:
+            raise TachibanaOrderRequestError(f"broker issue code normalization failed: {exc}") from exc
+        return cls(
+            issue_code=normalized.broker_issue_code,
+            side=command.side,
+            quantity=Decimal(str(command.quantity)),
+            order_price_type=price_type,
+            order_price=price,
+            second_password_present=second_password_present,
+            internal_issue_code=normalized.internal_code,
+            issue_code_normalization={
+                "original_symbol": normalized.internal_code,
+                "broker_issue_code": normalized.broker_issue_code,
+                "broker_market_code": normalized.broker_market_code,
+                "normalization_rule": normalized.normalization_rule,
+                "normalization_status": normalized.normalization_status,
+                "market": normalized.market,
+                "product_category": normalized.product_category,
+                "security_type": normalized.security_type,
+            },
+        )
+
     def safe_metadata(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["side"] = self.side.value
+        payload["side"] = _enum_value(self.side)
         payload["quantity"] = str(self.quantity)
         payload["order_price"] = str(self.order_price)
-        payload["order_price_type"] = self.order_price_type.value
+        payload["order_price_type"] = _enum_value(self.order_price_type)
         payload["second_password_value_saved"] = False
         payload["raw_order_request_saved"] = False
         payload["broker_api_called"] = False
+        payload["internal_issue_code"] = self.internal_issue_code
+        payload["issue_code_normalization"] = dict(self.issue_code_normalization)
         return payload
 
 
@@ -147,6 +184,9 @@ class TachibanaCashStockOrderRequestBuilder:
             "raw_payload_saved": False,
             "broker_api_called": False,
             "dry_run": dry_run,
+            "issue_code": request.issue_code,
+            "internal_issue_code": request.internal_issue_code,
+            "issue_code_normalization": dict(request.issue_code_normalization),
         }
 
     def build_safe_summary(self, request: TachibanaCashStockOrderRequest) -> dict[str, Any]:
@@ -155,9 +195,11 @@ class TachibanaCashStockOrderRequestBuilder:
             "sCLMID": payload["sCLMID"],
             "p_no": payload["p_no"],
             "issue_code": request.issue_code,
-            "side": request.side.value,
+            "internal_issue_code": request.internal_issue_code,
+            "issue_code_normalization": dict(request.issue_code_normalization),
+            "side": _enum_value(request.side),
             "quantity": _format_decimal(request.quantity),
-            "order_price_type": request.order_price_type.value,
+            "order_price_type": _enum_value(request.order_price_type),
             "order_price": _format_decimal(request.order_price),
             "second_password_required": request.second_password_required,
             "second_password_present": request.second_password_present,
@@ -174,10 +216,11 @@ class TachibanaCashStockOrderRequestBuilder:
         return value
 
 
-def _tachibana_side(side: OrderSide) -> str:
-    if side is OrderSide.SELL:
+def _tachibana_side(side: Any) -> str:
+    normalized = _enum_value(side)
+    if normalized == "SELL":
         return "1"
-    if side is OrderSide.BUY:
+    if normalized == "BUY":
         return "3"
     raise TachibanaOrderRequestError(f"Unsupported order side: {side!r}")
 
@@ -187,6 +230,10 @@ def _format_decimal(value: Decimal) -> str:
     if normalized == normalized.to_integral():
         return str(normalized.quantize(Decimal("1")))
     return format(normalized, "f")
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
 
 
 @dataclass(frozen=True)

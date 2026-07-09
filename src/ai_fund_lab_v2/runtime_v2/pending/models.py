@@ -62,6 +62,11 @@ class PendingOrderItem:
     estimated_amount: float
     approved: bool
     state: str
+    listed_info: dict[str, Any] | None = None
+    price_source: str = ""
+    price_as_of: str = ""
+    price_confidence: str = ""
+    price_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,7 @@ class PendingOrderPlan:
     raw_request_saved: bool = False
     raw_response_saved: bool = False
     secret_saved: bool = False
+    feature_date_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -96,4 +102,3 @@ class PendingOrderPlanReadResult:
     payload: Mapping[str, Any] | None
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
-

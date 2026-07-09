@@ -94,6 +94,8 @@ def run_operations_market_refresh(
     blocked: list[str] = []
     if market_detail.status not in market_ok_statuses:
         market_blocks = [reason for reason in market_detail.blocked_reasons if reason != "data_until_before_decision_for"]
+        if market_blocks and "data_until_before_decision_for" in market_detail.blocked_reasons:
+            market_blocks.append("DATA_FRESHNESS_BLOCKED")
         if market_blocks:
             blocked.extend(market_blocks)
         elif market_detail.status not in {"PARTIAL", "PARTIAL_AVAILABLE", "MARKET_DATA_READY_FOR_LATEST_AVAILABLE"}:
@@ -292,7 +294,19 @@ def _latest_available_market_date(payload: dict[str, Any], *, fallback: str) -> 
 def _feature_freshness_status(*, decision_for: str, latest_available_market_date: str, market_status: str) -> str:
     if not latest_available_market_date:
         return "FEATURE_MISSING"
-    if market_status in {"FETCH_FAILED", "FAILED", "BLOCKED", "API_PARAM_ERROR"}:
+    if market_status in {
+        "FETCH_FAILED",
+        "FAILED",
+        "BLOCKED",
+        "API_PARAM_ERROR",
+        "API_AUTH_ERROR",
+        "API_NETWORK_ERROR",
+        "API_RATE_LIMIT",
+        "API_SERVER_ERROR",
+        "MARKET_DATA_NOT_YET_AVAILABLE",
+        "DATA_FRESHNESS_BLOCKED",
+        "UNKNOWN_API_ERROR",
+    }:
         return "MARKET_DATA_NOT_YET_AVAILABLE"
     if latest_available_market_date > decision_for:
         return "FEATURE_STALE"

@@ -9,7 +9,7 @@ EXPECTED_SINGLE_WRITERS = {
     "persistent_ledger_orders": "Ledger Runtime",
     "persistent_ledger_executions": "Ledger Runtime",
     "persistent_ledger_positions": "Ledger Runtime",
-    "persistent_ledger_cash_history": "Ledger Runtime",
+    "persistent_ledger_cash": "Ledger Runtime",
     "persistent_ledger_events": "Ledger Runtime",
     "persistent_ledger_state": "Asset Runtime",
     "notification_delivery_ledger": "Notification Runtime",
@@ -49,7 +49,7 @@ def test_ledger_runtime_is_append_only_writer():
         "persistent_ledger_orders",
         "persistent_ledger_executions",
         "persistent_ledger_positions",
-        "persistent_ledger_cash_history",
+        "persistent_ledger_cash",
         "persistent_ledger_events",
     )
 
@@ -58,4 +58,3 @@ def test_ledger_runtime_is_append_only_writer():
         assert contract.writer_components == ("Ledger Runtime",)
         assert contract.append_only is True
         assert contract.snapshot is False
-

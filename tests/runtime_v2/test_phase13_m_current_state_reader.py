@@ -36,7 +36,7 @@ def test_missing_persistent_ledger_state_is_not_confirmed_empty(tmp_path):
 
 
 def test_json_current_file_can_be_read(tmp_path):
-    path = tmp_path / ".runtime/demo/runtime_state/current_state.json"
+    path = tmp_path / ".runtime/runtime_state/current_state.json"
     _write_json(
         path,
         {
@@ -63,7 +63,7 @@ def test_json_current_file_can_be_read(tmp_path):
 
 
 def test_jsonl_current_file_can_be_read(tmp_path):
-    path = tmp_path / ".runtime/demo/persistent_ledger/orders.jsonl"
+    path = tmp_path / ".runtime/persistent_ledger/orders.jsonl"
     _write_text(
         path,
         json.dumps(
@@ -92,7 +92,7 @@ def test_jsonl_current_file_can_be_read(tmp_path):
 
 
 def test_invalid_json_returns_invalid(tmp_path):
-    path = tmp_path / ".runtime/demo/runtime_state/current_state.json"
+    path = tmp_path / ".runtime/runtime_state/current_state.json"
     _write_text(path, "{ invalid json")
 
     result = read_current_state(
@@ -108,7 +108,7 @@ def test_invalid_json_returns_invalid(tmp_path):
 
 
 def test_invalid_jsonl_returns_invalid(tmp_path):
-    path = tmp_path / ".runtime/demo/persistent_ledger/orders.jsonl"
+    path = tmp_path / ".runtime/persistent_ledger/orders.jsonl"
     _write_text(path, "{ invalid jsonl\n")
 
     result = read_current_state(
@@ -157,4 +157,3 @@ def _write_json(path: Path, payload):
 def _write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-

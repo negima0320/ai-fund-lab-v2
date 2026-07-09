@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from ai_fund_lab_v2.runtime_v2.audit.checks import (
+    audit_notification_delivery,
     audit_notification_payload,
     audit_report,
     audit_runtime_state_boundaries,
@@ -23,12 +24,18 @@ def run_audit(
     business_date: str,
     report=None,
     notification_payload=None,
+    delivery_queue=(),
+    delivery_results=(),
     reconciliation_result=None,
     asset_state=None,
 ) -> AuditResult:
     findings: tuple[AuditFinding, ...] = (
         *audit_report(report),
         *audit_notification_payload(notification_payload),
+        *audit_notification_delivery(
+            delivery_queue=delivery_queue,
+            delivery_results=delivery_results,
+        ),
         *audit_runtime_state_boundaries(
             reconciliation_result=reconciliation_result,
             asset_state=asset_state,

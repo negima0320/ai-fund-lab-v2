@@ -78,10 +78,10 @@ def build_runtime_report(input: ReportBuildInput) -> ReportArtifact:
         _section(
             "review_required_summary",
             "Review Required",
-            f"review_events={len(input.review_events)}",
+            _review_events_summary(input.review_events),
             ("persistent_ledger/events.jsonl",),
-            bool(input.review_events),
-            "REVIEW_REQUIRED" if input.review_events else "INFO",
+            _review_events_require_review(input.review_events),
+            "REVIEW_REQUIRED" if _review_events_require_review(input.review_events) else "INFO",
         ),
     )
     review_required = any(section.review_required for section in sections)
@@ -156,6 +156,25 @@ def _asset_summary(asset_state) -> str:
     )
 
 
+def _review_events_summary(events) -> str:
+    if not events:
+        return "review_events=0"
+    labels = tuple(
+        str(
+            getattr(event, "event_type", None)
+            or getattr(event, "event_id", None)
+            or getattr(event, "message", None)
+            or event
+        )
+        for event in events
+    )
+    return f"review_events={len(events)} labels={','.join(labels)}"
+
+
+def _review_events_require_review(events) -> bool:
+    return any(str(getattr(event, "severity", "REVIEW_REQUIRED")).upper() != "INFO" for event in events)
+
+
 def _review(value) -> bool:
     return bool(getattr(value, "review_required", False))
 
@@ -173,4 +192,3 @@ def _severity(value) -> str:
 def _report_id(input: ReportBuildInput) -> str:
     raw = "|".join((input.mode, input.environment, input.business_date, input.target_session_date))
     return "report-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-

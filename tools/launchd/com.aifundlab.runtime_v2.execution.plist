@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aifundlab.runtime_v2.execution</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-m</string>
+    <string>ai_fund_lab_v2.runtime_v2.cli.run_daily_operation</string>
+    <string>--mode</string>
+    <string>demo</string>
+    <string>--job</string>
+    <string>execution</string>
+    <string>--submit-enabled</string>
+    <string>false</string>
+    <string>--notification-mode</string>
+    <string>payload-only</string>
+    <string>--stop-on-review-required</string>
+    <string>--stop-on-blocked</string>
+    <string>--runtime-root</string>
+    <string>.runtime</string>
+    <string>--reports-root</string>
+    <string>reports/runtime_v2</string>
+    <string>--public-reports-root</string>
+    <string>reports/public/runtime_v2</string>
+    <string>--manifest-root</string>
+    <string>.runtime/runtime_state/run_manifest</string>
+    <string>--log-root</string>
+    <string>.runtime/runtime_state/logs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>/Users/negishi/work/ai-fund-lab-v2/src</string>
+    <key>TACHIBANA_API_ENV</key>
+    <string>demo</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/negishi/work/ai-fund-lab-v2</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/tmp/aifundlab.runtime_v2.execution.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/aifundlab.runtime_v2.execution.err.log</string>
+</dict>
+</plist>

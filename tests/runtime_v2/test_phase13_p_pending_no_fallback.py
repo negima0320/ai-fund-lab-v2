@@ -12,7 +12,7 @@ def test_reader_does_not_read_order_plan_date_directory(tmp_path):
     result = read_pending_order_plan(mode="demo", environment="demo", base_dir=tmp_path)
 
     assert result.classification == "MISSING"
-    assert result.path == tmp_path / ".runtime/demo/pending_order_plan/pending_order_plan.json"
+    assert result.path == tmp_path / ".runtime/pending_order_plan/pending_order_plan.json"
 
 
 def test_reader_does_not_read_approval_artifact_date_directory(tmp_path):
@@ -32,7 +32,7 @@ def test_reader_uses_current_pending_path_when_history_exists(tmp_path):
         make_pending_plan(pending_plan_id="history-plan"),
     )
     write_pending_order_plan(
-        tmp_path / ".runtime/demo/pending_order_plan/pending_order_plan.json",
+        tmp_path / ".runtime/pending_order_plan/pending_order_plan.json",
         make_pending_plan(pending_plan_id="current-plan"),
     )
 
@@ -40,4 +40,3 @@ def test_reader_uses_current_pending_path_when_history_exists(tmp_path):
 
     assert result.classification == "VALID"
     assert result.plan.pending_plan_id == "current-plan"
-

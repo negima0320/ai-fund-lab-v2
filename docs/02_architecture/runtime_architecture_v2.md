@@ -8,6 +8,10 @@ Runtime Architecture v2 は、AI Fund Lab v2 の日次運用を安全に制御�
 
 Runtime は AI の投資判断ロジックではない。Runtime は、AI と周辺システムが出した判断、計画、承認、Broker 状態を、現在状態と照合しながら、正しい順序で、二重実行なく運用する制御層である。
 
+Runtime は年 50% 運用目標を直接達成する AI ではない。年 50% 目標に向けた銘柄選定、優先順位付け、資金配分、リスクテイク方針は Candidate AI、Opportunity AI、Position Management AI、Capital Allocation、Risk Policy / Safety の責務である。
+
+ただし Runtime は、Capital Allocation / Risk Policy が設計上許容した攻めた資金配分を、Runtime 内の隠れ固定値で阻害してはならない。Runtime の責務は、明示された資金投入方針、Safety 条件、Broker 制約、承認状態に従って、資金を安全かつ設計どおり市場へ投入し、約定後の Current を正しく更新することである。
+
 中心原則は次の通り。
 
 - Runtime は運用を制御する。AI 判断そのものは制御層に混ぜない。
@@ -20,6 +24,7 @@ Runtime は AI の投資判断ロジックではない。Runtime は、AI と周
 - Runtime Architecture v2 は既存 Runtime の改善ではなく、Runtime 制御の再設計である。
 - 注文、約定、保有、資産を別概念として扱う。
 - Runtime は銘柄数の固定上限を持たず、資金・買付余力・Broker 制約・Safety 制約・重複注文防止を制御する。
+- Runtime は保有銘柄数、注文金額上限、現金バッファ、投資率を暗黙値として持たない。これらは Capital Deployment Contract / Risk Policy として明示される。
 - Report 作成は Runtime の正式な説明責務であり、Report は Current State から生成される Derived artifact として扱う。
 
 ## 2. なぜ Phase13 で Runtime を作り直すのか
@@ -88,6 +93,39 @@ AI Fund Lab v2 の各 AI / システムは、以下の問いに答える。
 Runtime は、これらの判断を生成するのではなく、判断結果を運用可能な順序と状態遷移に載せる。
 
 Runtime は銘柄数の固定上限を持たない。購入候補の幅は Candidate AI / Opportunity AI / Position Management AI / Capital Allocation / Safety の判断に委ねる。Capital Allocation が結果として 5 銘柄、10 銘柄、20 銘柄などに絞ることはあり得るが、それは Runtime の固定ルールではない。
+
+### 3.1 Capital Deployment Contract
+
+Runtime v2 は、資金をどれだけ市場へ投入するかを隠れ固定値で決めない。資金投入方針は Capital Allocation / Risk Policy / Safety の明示 contract として扱う。
+
+Capital Deployment Contract は、少なくとも以下を定義する。
+
+| 項目 | 意味 | Runtime の扱い |
+| --- | --- | --- |
+| 目標投資率 | 評価資産のうち市場へ投入する目標比率 | Runtime は暗黙値を持たず、明示 policy を読む |
+| 現金バッファ | 最低限残す現金または買付余力 | Submit Guard は明示 policy に基づいて確認する |
+| 最大 1 銘柄比率 | 1 銘柄へ投入可能な最大比率 | Capital Allocation の出力と Submit Guard の確認条件を一致させる |
+| 最大保有銘柄数 | 保有銘柄数の上限 | Runtime 固定値ではなく Risk Policy として明示する |
+| 最小注文金額 | 注文を出す最低 notional | 小さすぎる注文を止める場合は manifest に理由を出す |
+| 最大注文金額 | 注文を出す最大 notional | hidden default 禁止。BUY / SELL 別に意味を定義する |
+| BUY notional guard | 新規 exposure を増やす注文の金額 guard | Capital Allocation、cash、buying_power、exposure、price、lot size と整合させる |
+| SELL liquidation guard | Runtime-owned exposure を減らす注文の guard | Current quantity、Broker available quantity、対象銘柄、明示 liquidation policy を確認する |
+| Safety 停止条件 | REVIEW_REQUIRED / BLOCKED / HALT 条件 | Runtime は Safety 結果を上書きせず、状態遷移へ反映する |
+
+これらの policy は、Runtime の暗黙値、旧 Runtime 由来の固定値、fixture 値、テスト用 default として扱ってはならない。Runtime は active Capital Deployment Policy を manifest / report / audit に出力し、Operator が「なぜその注文金額・保有銘柄数・現金バッファになったか」を確認できるようにする。
+
+最大保有銘柄数を設ける場合も、Runtime は `max_positions=5` のような旧 Runtime 思想を暗黙に復活させない。`max_positions` は Risk Policy / Capital Deployment Contract の一部として明示し、以下を manifest に出す。
+
+```text
+active_max_positions
+max_positions_source
+current_position_count
+planned_position_count
+max_positions_decision
+max_positions_reason
+```
+
+Runtime が年 50% 目標を直接保証することはないが、明示された Capital Deployment Contract に基づく資金投入を、Runtime 内の未定義 guard で過度に保守化してはならない。
 
 ## 4. Runtime の責務
 
@@ -419,7 +457,7 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 入力: submitted orders、broker executions、broker positions、broker cash / buying power、fill events、manual migration、review events。
 - 出力: updated Persistent Ledger、ledger append result、dedup result。
 - 読む Current State: `persistent_ledger/*.jsonl`、`persistent_ledger/state.json`。
-- 書く Current State: `persistent_ledger/orders.jsonl`、`persistent_ledger/executions.jsonl`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash_history.jsonl`、`persistent_ledger/events.jsonl`、`persistent_ledger/state.json`。
+- 書く Current State: `persistent_ledger/orders.jsonl`、`persistent_ledger/executions.jsonl`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash.jsonl`、`persistent_ledger/events.jsonl`、`persistent_ledger/state.json`。
 - History / Evidence: ledger update manifest、migration event。
 - Derived output: ledger summary for report。
 - 再実行可否: 条件付き。dedup key で二重反映を防止する。
@@ -433,7 +471,7 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 役割: 現在保有、現金、買付余力、総資産を Current Asset State として整理する。
 - 入力: `persistent_ledger/state.json`、broker positions、broker cash / buying power、executions、cash history。
 - 出力: current positions、cash、buying power、total equity、market value、unrealized pnl、asset source summary、review_required flags。
-- 読む Current State: `persistent_ledger/state.json`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash_history.jsonl`、`persistent_ledger/executions.jsonl`。
+- 読む Current State: `persistent_ledger/state.json`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash.jsonl`、`persistent_ledger/executions.jsonl`。
 - 書く Current State: `persistent_ledger/state.json`、必要に応じて `runtime_state/current_state.json` の asset readiness。
 - History / Evidence: asset state calculation manifest。
 - Derived output: asset summary for report。
@@ -460,7 +498,7 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 #### Report Runtime
 
 - 役割: Runtime の判断、実行、約定、保有、現金、資産、Safety、Review Required を人間に説明する Report を生成する。
-- 入力: `persistent_ledger/state.json`、`pending_order_plan/pending_order_plan.json`、`persistent_ledger/orders.jsonl`、`persistent_ledger/executions.jsonl`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash_history.jsonl`、`persistent_ledger/events.jsonl`、History / Evidence links、reconciliation_result。
+- 入力: `persistent_ledger/state.json`、`pending_order_plan/pending_order_plan.json`、`persistent_ledger/orders.jsonl`、`persistent_ledger/executions.jsonl`、`persistent_ledger/positions.jsonl`、`persistent_ledger/cash.jsonl`、`persistent_ledger/events.jsonl`、History / Evidence links、reconciliation_result。
 - 出力: `reports/YYYY-MM-DD/public_report.md`、`reports/YYYY-MM-DD/internal_report.md`、`reports/YYYY-MM-DD/safety_report.md`、`daily_report_refs/YYYY-MM-DD/daily_report_refs.json`、notification payload、blog draft、LINE payload、Discord payload。
 - 読む Current State: Persistent Ledger、Pending Order Plan、Runtime state。
 - 書く Current State: なし。
@@ -623,7 +661,7 @@ persistent_ledger/executions.jsonl
 ↓
 persistent_ledger/positions.jsonl
 ↓
-persistent_ledger/cash_history.jsonl
+persistent_ledger/cash.jsonl
 ↓
 persistent_ledger/state.json
 ↓
@@ -665,7 +703,7 @@ persistent_ledger/state.json
 persistent_ledger/orders.jsonl
 persistent_ledger/executions.jsonl
 persistent_ledger/positions.jsonl
-persistent_ledger/cash_history.jsonl
+persistent_ledger/cash.jsonl
 persistent_ledger/events.jsonl
 runtime_state/current_state.json
 notification_delivery/delivery_ledger.jsonl
@@ -769,7 +807,7 @@ Phase13-F に defer する詳細:
 | 注文履歴 | `persistent_ledger/orders.jsonl` | 送信済み注文、Broker order 状態、重複検知 |
 | 約定履歴 | `persistent_ledger/executions.jsonl` | 約定反映、現金・保有更新の根拠 |
 | 保有履歴 | `persistent_ledger/positions.jsonl` | 保有状態の履歴と source 管理 |
-| 現金履歴 | `persistent_ledger/cash_history.jsonl` | 現金、買付余力、資産評価の履歴 |
+| 現金履歴 | `persistent_ledger/cash.jsonl` | 現金、買付余力、資産評価の履歴 |
 | Runtime events | `persistent_ledger/events.jsonl` | REVIEW_REQUIRED、POST_SEND_UNKNOWN、migration、fallback など |
 | Runtime current state | `runtime_state/current_state.json` | Runtime State Machine の現在状態 |
 | Notification delivery ledger | `notification_delivery/delivery_ledger.jsonl` | Notification Send の二重送信防止 |
@@ -810,7 +848,7 @@ Runtime v2 の Current Object は Single Writer Rule に従う。各 Current は
 | `persistent_ledger/orders.jsonl` | Ledger Runtime | Reconciliation Runtime, Report Builder, Audit Runtime | Reconcile, Report, Audit |
 | `persistent_ledger/executions.jsonl` | Ledger Runtime | Reconciliation Runtime, Report Builder, Audit Runtime | Reconcile, Report, Audit |
 | `persistent_ledger/positions.jsonl` | Ledger Runtime | Current State Reader, Report Builder, Audit Runtime | Reconcile, Report, Audit |
-| `persistent_ledger/cash_history.jsonl` | Ledger Runtime | Current State Reader, Report Builder, Audit Runtime | Reconcile, Report, Audit |
+| `persistent_ledger/cash.jsonl` | Ledger Runtime | Current State Reader, Report Builder, Audit Runtime | Reconcile, Report, Audit |
 | `persistent_ledger/events.jsonl` | Ledger Runtime | Report Builder, Audit Runtime | Reconcile, Report, Audit |
 | `persistent_ledger/state.json` | Asset Runtime | Current State Reader, Pending Runtime, Approval Runtime, Submit Runtime, Report Builder | Reconcile, Report, Audit, Broker ReadOnly |
 | `notification_delivery/delivery_ledger.jsonl` | Notification Runtime | Notification Runtime, Report Builder, Audit Runtime | Report, Audit, Reconcile |
@@ -996,6 +1034,98 @@ production_equivalent=false
 
 Production では Broker Orders fallback を現在保有確定に使わない。
 
+### 12.2 Phase14 追補: Submit Guard / Capital Allocation / SELL Liquidation Contract
+
+Phase14-E51 から E54 で、通常 Submit path に残っていた hidden fixed cap が SELL liquidation を BLOCK し、Capital Allocation 契約との不整合が判明した。これを Runtime Architecture v2 の設計契約として以下に追補する。
+
+#### Submit Guard は Capital Allocation を隠れ固定値で上書きしない
+
+Submit Guard は非冪等な Broker Write の直前に安全性を確認する責務を持つが、Planning / Capital Allocation が作った注文意図を、設計書にない固定値で静かに上書きしてはならない。
+
+特に、`max_order_amount=100000` のような注文金額 guard は以下を満たす場合のみ使用できる。
+
+- 設計契約上の意味が明文化されている。
+- BUY / SELL のどちらに適用されるかが明文化されている。
+- 値の取得元、初期値、runtime mode 差分、manual review 条件が明文化されている。
+- Submit manifest / report / audit に active policy として出力される。
+- 通常 CLI submit path の regression test で検証される。
+
+これらを満たさない金額 cap は hidden cap とみなし、Runtime v2 の正規 Submit Guard として使ってはならない。
+
+Submit Guard は `active_amount_policy` として、実際に使用した注文金額 policy を manifest / report に出力する。出力されない amount policy は Runtime v2 の有効な guard として扱わない。
+
+#### BUY notional guard と SELL liquidation guard を同一扱いにしない
+
+BUY は新規 exposure を増やす処理である。BUY guard は少なくとも以下を確認する。
+
+- Capital Allocation が意図した注文金額。
+- Current cash / buying_power。
+- max exposure / max position weight / Safety 制約。
+- price source、lot size、Broker 制約。
+
+SELL liquidation は Runtime-owned exposure を減らす処理である。SELL guard は少なくとも以下を確認する。
+
+- SELL source が Current SoT の Runtime-owned position であること。
+- 売却数量が Current quantity 以下であること。
+- 売却数量が Broker available quantity 以下であること。
+- Broker-only position を売却対象にしていないこと。
+- 価格、数量、単位、Broker issue code が Submit boundary で正規化されていること。
+
+BUY と SELL に同一 notional guard を適用する場合は、その設計根拠、適用条件、例外、manual review 条件、manifest fields、regression tests を本設計書または後続 contract に明記しなければならない。明記されていない場合、BUY notional guard を SELL liquidation にそのまま適用してはならない。
+
+SELL liquidation を止める条件は、原則として以下に限定する。
+
+- Current quantity を超過している。
+- Broker available quantity が不足している。
+- SELL source が Runtime-owned Current position ではない。
+- Broker-only / Demo対象外 / 対象外銘柄を売ろうとしている。
+- 明示された SELL liquidation policy に違反している。
+- Safety / Operation Guard が REVIEW_REQUIRED、BLOCKED、HALT を返している。
+
+SELL liquidation は exposure を減らす処理であるため、BUY 用の注文金額上限だけを理由に機械的に止めてはならない。高額 SELL を止める場合は、SELL liquidation policy として明示し、manual review、分割売却、数量縮小、BLOCK のどれにするかを設計上定義する。
+
+#### SELL liquidation source
+
+SELL liquidation の唯一の source は `persistent_ledger/state.json` にある Runtime-owned Current position である。
+
+以下は SELL source ではない。
+
+- Broker ReadOnly にだけ存在する position。
+- Demo Broker の日次 reset や外部操作で見える position。
+- `broker_positions`、`broker_orders`、report、audit、phase artifact から推測した position。
+- Runtime-owned であることを ledger / current で確認できない position。
+
+Broker-only position は Reconcile / Review evidence であり、Runtime v2 が自動売却してはならない。
+
+#### Submit Guard active policy manifest
+
+Submit Runtime は、Submit preflight の結果だけでなく、実際に使った guard policy を manifest / audit に secret-safe に出力する。
+
+最低限、以下を記録する。
+
+```text
+guard_policy_version
+active_amount_policy
+side
+estimated_amount
+capital_allocation_amount
+max_buy_order_amount
+max_sell_liquidation_amount
+target_investment_ratio
+cash_buffer
+max_position_weight
+max_positions
+notional_guard_source
+quantity_guard_source
+current_position_source
+broker_available_quantity_checked
+guard_decision
+guard_reason
+manual_review_required
+```
+
+未定義の policy で BLOCK した場合は `REVIEW_REQUIRED` または `BLOCKED` として止め、Operator がどの契約により止まったか判断できるようにする。
+
 ## 13. 約定監視設計
 
 約定監視は Broker ReadOnly を使って行う。
@@ -1030,7 +1160,7 @@ persistent_ledger/state.json
 persistent_ledger/orders.jsonl
 persistent_ledger/executions.jsonl
 persistent_ledger/positions.jsonl
-persistent_ledger/cash_history.jsonl
+persistent_ledger/cash.jsonl
 persistent_ledger/events.jsonl
 persistent_ledger/migrations.jsonl
 ```
@@ -1154,7 +1284,7 @@ pending_order_plan/pending_order_plan.json
 persistent_ledger/orders.jsonl
 persistent_ledger/executions.jsonl
 persistent_ledger/positions.jsonl
-persistent_ledger/cash_history.jsonl
+persistent_ledger/cash.jsonl
 persistent_ledger/events.jsonl
 History / Evidence artifact links
 ```
@@ -1495,6 +1625,14 @@ Runtime Architecture v2 の受け入れ基準は、Architecture Acceptance Crite
 - Runtime が銘柄数の固定上限を持たないことが明記されている。
 - 5 銘柄固定などの旧 Runtime 制御を継承しないことが明記されている。
 - Runtime が制御するのは銘柄数ではなく、資金・買付余力・Broker 制約・Safety 制約・重複注文防止であることが明記されている。
+- Runtime は年 50% 運用目標を直接達成する AI ではないが、Capital Allocation / Risk Policy が決めた資金配分を隠れ固定値で阻害しないことが明記されている。
+- Capital Deployment Contract として、目標投資率、現金バッファ、最大 1 銘柄比率、最大保有銘柄数、最小注文金額、最大注文金額、BUY/SELL 別 notional guard、Safety 停止条件を明示 policy として扱うことが定義されている。
+- Runtime が `max_positions` を隠れ固定値として持たず、設定する場合は Capital Deployment Contract / Risk Policy として manifest に出力することが明記されている。
+- Submit Guard が Capital Allocation を hidden fixed cap で上書きしてはならないことが明記されている。
+- `max_order_amount` のような注文金額 guard は設計契約、manifest、test で明示されなければならないことが明記されている。
+- BUY notional guard と SELL liquidation guard を同一扱いにしないこと、統一する場合は設計根拠を明記することが定義されている。
+- SELL liquidation の source は Runtime-owned Current position のみであり、Broker-only position を売却対象にしないことが明記されている。
+- Submit Guard の active policy を manifest / audit に出力することが明記されている。
 - Demo / Production を保存先ではなく metadata で分けることが明文化されている。
 - Broker Orders fallback が Demo 限定であり、Production の現在保有確定に使わないことが明文化されている。
 - `demo_ledger/` の legacy 化方針が明文化されている。
@@ -1520,6 +1658,31 @@ Phase13-F 以降では、以下の実装・テスト基準を満たす必要が�
 - Production `broker_orders` fallback prohibition test
 - Demo `broker_orders` fallback review flag test
 - Legacy runtime not used as v2 source test
+- BUY over 100,000 JPY amount policy test through the regular CLI submit path
+- SELL liquidation over 100,000 JPY amount policy test through the regular CLI submit path
+- Capital Allocation -> Pending -> Submit Guard contract alignment test
+- Capital Deployment Contract -> Capital Allocation -> Pending -> Submit Guard alignment test
+- `max_positions` policy manifest and enforcement test
+- CLI regular submit path amount policy test
+- Submit Guard active policy manifest test
+- Broker-only position is never selected as SELL source test
+- Runtime-owned Current position is the only SELL liquidation source test
+
+`tests pass` は必要条件であり、単独の Acceptance 条件ではない。Runtime v2 の実装受け入れには、以下を同時に満たす必要がある。
+
+- 設計契約に一致している。
+- Input / Output / Consumer の schema、単位、意味が一致している。
+- 通常 CLI path で検証されている。
+- Manifest / Current / Ledger / Report / Audit に証跡が残っている。
+- fake adapter や test-only path の結果を Runtime 本線成功として扱っていない。
+
+Review level は以下を明示する。
+
+| Level | 名称 | 意味 | 制限 |
+| --- | --- | --- | --- |
+| Level 1 | Component PASS | Component 単体の Input / Output / Consumer が合う | fake / fixture 使用可。本番 Runtime 成功とは呼ばない |
+| Level 2 | Flow PASS | BUY / SELL / Notification など Flow 単位で通常 Runtime 経路を確認する | fake adapter 不可。必要に応じ Demo Broker ReadOnly / Submit 証跡を要求する |
+| Level 3 | Full Runtime PASS | Market Refresh / Morning / Submit / Execution / Current / Report / Notification まで通常 Runtime で通す | 運用開始前や重大契約変更後に要求する |
 
 ## 23. 禁止事項
 
@@ -1545,6 +1708,10 @@ Runtime 実装フェーズに進む場合でも、以下は禁止する。
 
 - 既存 Runtime 制御フローを v2 の正規フローとして継承する。
 - 既存コードを Current State の決定方法、Submit 対象の選び方、約定後の保有確定方法、Report / Audit の Current 判定方法の根拠にする。
+- 既存 Runtime / 旧処理 / 既存 helper を、設計契約と Input / Output / Consumer を確認せずに無批判に流用する。
+- 旧処理を参考にしたにもかかわらず、どの契約を継承しないかを明記しない。
+- 旧 Runtime の安全 guard、注文金額 cap、保有銘柄数 cap、銘柄フィルタ、停止条件を、Runtime v2 の設計契約レビューなしに持ち込む。
+- test-only module、phase-only branch、demo-only branch、Runtime bypass を Runtime v2 の正規成功証跡として扱う。
 - Phase13 用の一時保存場所を Runtime Current として使う。
 - `YYYY-MM-DD` ディレクトリを Runtime Current として使う。
 - Phase 番号を Runtime 実行時 SoT として扱う。
@@ -1558,5 +1725,11 @@ Runtime 実装フェーズに進む場合でも、以下は禁止する。
 - `submitted_orders` または `broker_orders` を現在保有の SoT として扱う。
 - Production で Broker Orders fallback を現在保有確定に使う。
 - 5 銘柄固定などの旧 Runtime 銘柄数制御を基本要件として継承する。
+- `max_positions`、目標投資率、現金バッファ、最大 1 銘柄比率、最小注文金額、最大注文金額を Runtime の暗黙値として扱う。
+- Capital Allocation の意図を、設計契約にない hidden fixed cap で Submit 直前に上書きする。
+- BUY notional guard を、設計根拠なしに SELL liquidation guard として流用する。
+- SELL liquidation を BUY の注文金額上限だけで機械的に止める。
+- Broker-only position を Runtime-owned SELL liquidation の対象にする。
+- `tests pass`、manifest 生成、Broker Accepted、Report 生成のいずれか単独を Runtime v2 Acceptance として扱う。
 - `POST_SEND_UNKNOWN` を自動再送で解決する。
 - raw request、raw response、secret、session、URL、口座識別子を保存する。

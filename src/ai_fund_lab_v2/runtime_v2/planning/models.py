@@ -35,6 +35,11 @@ class CapitalAllocationSignal:
     max_amount: float
     cash_required: float
     reason: str
+    estimated_price: float = 0.0
+    price_source: str = ""
+    price_as_of: str = ""
+    price_confidence: str = ""
+    price_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,10 @@ class OrderPlanItem:
     review_required: bool
     blocked: bool
     reason: str
+    price_source: str = ""
+    price_as_of: str = ""
+    price_confidence: str = ""
+    price_required: bool = True
 
 
 @dataclass(frozen=True)
@@ -116,4 +125,3 @@ class PlanningResult:
     blocked: bool
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
-

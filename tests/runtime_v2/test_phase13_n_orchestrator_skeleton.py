@@ -45,7 +45,7 @@ def test_run_preflight_returns_runtime_run_result_for_missing_current(tmp_path):
 
 def test_valid_minimal_current_state_causes_current_state_loaded(tmp_path):
     _write_json(
-        tmp_path / ".runtime/demo/persistent_ledger/state.json",
+        tmp_path / ".runtime/persistent_ledger/state.json",
         {
             "schema_version": "1",
             "asset_state_id": "asset-1",
@@ -80,7 +80,7 @@ def test_valid_minimal_current_state_causes_current_state_loaded(tmp_path):
 
 def test_unknown_current_state_causes_review_required(tmp_path):
     _write_json(
-        tmp_path / ".runtime/demo/persistent_ledger/state.json",
+        tmp_path / ".runtime/persistent_ledger/state.json",
         {
             "schema_version": "1",
             "asset_state_id": "asset-unknown",
@@ -107,7 +107,7 @@ def test_unknown_current_state_causes_review_required(tmp_path):
 
 
 def test_invalid_current_state_causes_review_required(tmp_path):
-    path = tmp_path / ".runtime/demo/persistent_ledger/state.json"
+    path = tmp_path / ".runtime/persistent_ledger/state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ invalid json", encoding="utf-8")
     request = RuntimeRunRequest(
@@ -126,4 +126,3 @@ def test_invalid_current_state_causes_review_required(tmp_path):
 def _write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
-

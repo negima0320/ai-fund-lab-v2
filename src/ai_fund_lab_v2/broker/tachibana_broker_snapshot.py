@@ -378,10 +378,10 @@ def _readonly_fetch_with_retry(func: Callable[[], Any], *, sleep_func: Callable[
 
 
 POSITION_CANDIDATE_KEYS: dict[str, tuple[str, ...]] = {
-    "issue_code": ("issue_code", "sIssueCode", "sMeigaraCode", "sCode"),
-    "quantity": ("quantity", "sQuantity", "sZanKabuSuu", "sSuryou", "sTategyokuSuryou"),
-    "market_value": ("market_value", "sMarketValue", "sHyokaGaku", "sHyoukaGaku"),
-    "price": ("price", "average_price", "market_price", "sPrice", "sAveragePrice", "sBokaTanka", "sHeikinTanka", "sMarketPrice", "sGenzaine", "sGenzaichi"),
+    "issue_code": ("issue_code", "sIssueCode", "sOrderIssueCode", "sMeigaraCode", "sCode", "860"),
+    "quantity": ("quantity", "sQuantity", "sZanKabuSuu", "sOrderOrderSuryou", "sOrderSuryou", "sSuryou", "sTategyokuSuryou", "864"),
+    "market_value": ("market_value", "sMarketValue", "sHyokaGaku", "sHyoukaGaku", "858"),
+    "price": ("price", "average_price", "market_price", "sPrice", "sAveragePrice", "sBokaTanka", "sHeikinTanka", "sMarketPrice", "sGenzaine", "sGenzaichi", "855", "859"),
 }
 
 CASH_POSITION_LIST_KEYS = ("positions", "aGenbutuKabuList", "aCLMGenbutuKabuList")

@@ -158,6 +158,11 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 estimated_amount=float(item["estimated_amount"]),
                 approved=bool(item["approved"]),
                 state=str(item["state"]),
+                listed_info=dict(item["listed_info"]) if item.get("listed_info") is not None else None,
+                price_source=str(item.get("price_source") or ""),
+                price_as_of=str(item.get("price_as_of") or ""),
+                price_confidence=str(item.get("price_confidence") or ""),
+                price_required=bool(item.get("price_required", True)),
             )
             for item in payload["items"]
         ),
@@ -177,5 +182,5 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
         raw_request_saved=bool(payload["raw_request_saved"]),
         raw_response_saved=bool(payload["raw_response_saved"]),
         secret_saved=bool(payload["secret_saved"]),
+        feature_date_contract=dict(payload["feature_date_contract"]) if payload.get("feature_date_contract") else None,
     )
-

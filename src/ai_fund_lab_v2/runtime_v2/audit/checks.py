@@ -31,6 +31,53 @@ def audit_notification_payload(payload) -> tuple[AuditFinding, ...]:
     return tuple(findings)
 
 
+def audit_notification_delivery(
+    *,
+    delivery_queue=(),
+    delivery_results=(),
+) -> tuple[AuditFinding, ...]:
+    findings: list[AuditFinding] = []
+    for entry in delivery_queue or ():
+        if getattr(entry, "not_current_state", False) is not True:
+            findings.append(
+                _finding(
+                    "NOTIFICATION_QUEUE_MARKED_CURRENT_STATE",
+                    AuditSeverity.HALT,
+                    "notification_delivery_queue",
+                    getattr(entry, "queue_id", ""),
+                )
+            )
+        if getattr(entry, "not_submit_source", False) is not True:
+            findings.append(
+                _finding(
+                    "NOTIFICATION_QUEUE_MARKED_SUBMIT_SOURCE",
+                    AuditSeverity.HALT,
+                    "notification_delivery_queue",
+                    getattr(entry, "queue_id", ""),
+                )
+            )
+    for result in delivery_results or ():
+        if bool(getattr(result, "sent", False)):
+            findings.append(
+                _finding(
+                    "NOTIFICATION_DELIVERY_SENT_IN_COMPONENT_REVIEW",
+                    AuditSeverity.HALT,
+                    "notification_delivery_result",
+                    getattr(result, "result_id", ""),
+                )
+            )
+        if getattr(result, "not_submit_source", False) is not True:
+            findings.append(
+                _finding(
+                    "NOTIFICATION_RESULT_MARKED_SUBMIT_SOURCE",
+                    AuditSeverity.HALT,
+                    "notification_delivery_result",
+                    getattr(result, "result_id", ""),
+                )
+            )
+    return tuple(findings)
+
+
 def audit_runtime_state_boundaries(
     *,
     reconciliation_result=None,
@@ -61,4 +108,3 @@ def _finding(
         review_required=severity in {AuditSeverity.REVIEW_REQUIRED, AuditSeverity.BLOCKED, AuditSeverity.HALT},
         created_at="",
     )
-

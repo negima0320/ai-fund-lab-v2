@@ -11,7 +11,7 @@ EXPECTED_CURRENT_OBJECTS = {
     "persistent_ledger_orders",
     "persistent_ledger_executions",
     "persistent_ledger_positions",
-    "persistent_ledger_cash_history",
+    "persistent_ledger_cash",
     "persistent_ledger_events",
     "notification_delivery_ledger",
 }
@@ -54,4 +54,3 @@ def test_validate_required_fields_catches_missing_required_fields():
     assert "missing required field: state" in result.errors
     assert "missing required field: updated_at" in result.errors
     assert result.state == "INVALID"
-

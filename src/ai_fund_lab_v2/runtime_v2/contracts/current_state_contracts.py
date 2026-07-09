@@ -138,9 +138,9 @@ CURRENT_STATE_CONTRACTS: dict[str, CurrentStateContract] = {
         writer_components=("Ledger Runtime",),
         reader_components=("Current State Reader", "Report Builder", "Audit Runtime"),
     ),
-    "persistent_ledger_cash_history": CurrentStateContract(
-        name="persistent_ledger_cash_history",
-        path_object_type="persistent_ledger_cash_history",
+    "persistent_ledger_cash": CurrentStateContract(
+        name="persistent_ledger_cash",
+        path_object_type="persistent_ledger_cash",
         file_kind="jsonl",
         required_fields=(
             "schema_version",

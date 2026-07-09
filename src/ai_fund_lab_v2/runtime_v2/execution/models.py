@@ -10,6 +10,7 @@ class FillClassificationType(str, Enum):
     NO_FILL = "NO_FILL"
     PARTIAL_FILL = "PARTIAL_FILL"
     FULL_FILL = "FULL_FILL"
+    ORDER_LIST_DERIVED_FULL_FILL = "ORDER_LIST_DERIVED_FULL_FILL"
     UNKNOWN_FILL = "UNKNOWN_FILL"
     ORDER_CANCELLED = "ORDER_CANCELLED"
     ORDER_EXPIRED = "ORDER_EXPIRED"
@@ -33,3 +34,14 @@ class FillClassification:
     production_equivalent: bool
     source: str
     as_of: str
+
+
+@dataclass(frozen=True)
+class OrderListPositionCashEvidencePolicyResult:
+    classification: FillClassification
+    execution_equivalent: bool
+    detail_optional_missing: bool
+    ledger_execution_allowed: bool
+    asset_reflection_allowed: bool
+    evidence_sources: tuple[str, ...]
+    reason: str

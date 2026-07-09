@@ -32,6 +32,13 @@ STATUS_PARTIAL = "PARTIAL"
 STATUS_PARTIAL_AVAILABLE = "PARTIAL_AVAILABLE"
 STATUS_MARKET_DATA_READY_FOR_LATEST_AVAILABLE = "MARKET_DATA_READY_FOR_LATEST_AVAILABLE"
 STATUS_API_PARAM_ERROR = "API_PARAM_ERROR"
+STATUS_API_AUTH_ERROR = "API_AUTH_ERROR"
+STATUS_API_NETWORK_ERROR = "API_NETWORK_ERROR"
+STATUS_API_RATE_LIMIT = "API_RATE_LIMIT"
+STATUS_API_SERVER_ERROR = "API_SERVER_ERROR"
+STATUS_MARKET_DATA_NOT_YET_AVAILABLE = "MARKET_DATA_NOT_YET_AVAILABLE"
+STATUS_DATA_FRESHNESS_BLOCKED = "DATA_FRESHNESS_BLOCKED"
+STATUS_UNKNOWN_API_ERROR = "UNKNOWN_API_ERROR"
 STATUS_FETCH_FAILED = "FETCH_FAILED"
 STATUS_BLOCKED = "BLOCKED"
 STATUS_FAILED = "FAILED"
@@ -97,6 +104,9 @@ class MarketDataRefreshResult:
     readiness_result: dict[str, Any]
     warnings: tuple[str, ...] = ()
     blocked_reasons: tuple[str, ...] = ()
+    api_error_classification: str = ""
+    api_error_diagnostics: tuple[dict[str, Any], ...] = ()
+    next_action: str = ""
     jquants_api_fetch_executed: bool = False
     feature_generation_executed: bool = False
     model_retraining_executed: bool = False
@@ -116,6 +126,7 @@ class MarketDataRefreshResult:
         payload["endpoints"] = [endpoint.to_dict() for endpoint in self.endpoints]
         payload["warnings"] = list(self.warnings)
         payload["blocked_reasons"] = list(self.blocked_reasons)
+        payload["api_error_diagnostics"] = [dict(item) for item in self.api_error_diagnostics]
         return payload
 
 
@@ -241,6 +252,9 @@ def run_market_data_refresh(
         readiness_result=readiness,
         warnings=tuple(warnings),
         blocked_reasons=tuple(blocked),
+        api_error_classification=str(date_state.get("api_error_classification") or _classify_blocked_reasons(blocked)),
+        api_error_diagnostics=tuple(date_state.get("api_error_diagnostics") or ()),
+        next_action=_next_action(str(date_state.get("api_error_classification") or _classify_blocked_reasons(blocked)), blocked),
         jquants_api_fetch_executed=api_executed,
     )
     _write_outputs(result=result, manifest_path=manifest_path, markdown_path=md_path, json_path=json_path)
@@ -261,7 +275,12 @@ def _execute_refresh(
     warnings: list[str] = []
     blocked: list[str] = []
     any_failed = False
-    date_state: dict[str, Any] = {"unavailable_dates": [], "not_yet_available_dates": [], "failed_dates": []}
+    date_state: dict[str, Any] = {
+        "unavailable_dates": [],
+        "not_yet_available_dates": [],
+        "failed_dates": [],
+        "api_error_diagnostics": [],
+    }
     try:
         if fetch_mode == "per-date":
             daily_records, date_state = _fetch_daily_quotes_per_date(
@@ -280,6 +299,12 @@ def _execute_refresh(
     except Exception as exc:
         fetched = {}
         any_failed = True
+        diagnostic = _safe_exception_diagnostic(exc)
+        if diagnostic:
+            date_state.setdefault("api_error_diagnostics", []).append(diagnostic)
+        classification = _classify_exception(exc)
+        date_state["api_error_classification"] = classification
+        blocked.append(classification)
         blocked.append(f"api_fetch_failed:{type(exc).__name__}")
 
     for endpoint in ENDPOINTS:
@@ -334,7 +359,14 @@ def _execute_refresh(
     readiness = _readiness(raw_root=raw_root, normalized_root=normalized_root, decision_for=to_date)
     if readiness.get("status") != "READY":
         blocked.extend(str(item) for item in readiness.get("blocked_reasons", []))
+    classification = str(date_state.get("api_error_classification") or "")
+    if classification:
+        blocked.append(classification)
+    if "data_until_before_decision_for" in blocked:
+        blocked.append(STATUS_DATA_FRESHNESS_BLOCKED)
+    blocked = list(dict.fromkeys(blocked))
     status = _refresh_status(fetch_mode=fetch_mode, blocked=blocked, warnings=warnings, date_state=date_state, readiness=readiness)
+    date_state["api_error_classification"] = date_state.get("api_error_classification") or _classify_blocked_reasons(blocked)
     return summaries, readiness, status, warnings, blocked, date_state
 
 
@@ -350,12 +382,17 @@ def _fetch_daily_quotes_per_date(
     unavailable: list[str] = []
     not_yet_available: list[str] = []
     failed: list[str] = []
+    diagnostics: list[dict[str, Any]] = []
     target_dates = _business_dates(from_date, to_date, calendar_records=calendar_records)
     for target_date in target_dates:
         try:
             fetch_for_date = getattr(fetcher, "fetch_daily_quotes_for_date", None)
             daily = fetch_for_date(target_date=target_date) if fetch_for_date else fetcher.fetch_daily_quotes(from_date=target_date, to_date=target_date)
         except Exception as exc:
+            diagnostic = _safe_exception_diagnostic(exc)
+            if diagnostic:
+                diagnostic = {**diagnostic, "date": diagnostic.get("date") or target_date}
+                diagnostics.append(diagnostic)
             if target_date == to_date:
                 not_yet_available.append(target_date)
             else:
@@ -376,6 +413,8 @@ def _fetch_daily_quotes_per_date(
         "unavailable_dates": unavailable,
         "not_yet_available_dates": not_yet_available,
         "failed_dates": failed,
+        "api_error_diagnostics": diagnostics,
+        "api_error_classification": _dominant_api_error_classification(diagnostics),
     }
 
 
@@ -412,9 +451,19 @@ def _refresh_status(
     successful = date_state.get("successful_dates") or []
     failed = date_state.get("failed_dates") or []
     not_yet = date_state.get("not_yet_available_dates") or []
+    classification = str(date_state.get("api_error_classification") or "")
     if not successful and (failed or not_yet or blocked):
-        if failed and all("JQuantsClientError" in item for item in failed):
-            return STATUS_API_PARAM_ERROR
+        if classification in {
+            STATUS_API_PARAM_ERROR,
+            STATUS_API_AUTH_ERROR,
+            STATUS_API_NETWORK_ERROR,
+            STATUS_API_RATE_LIMIT,
+            STATUS_API_SERVER_ERROR,
+            STATUS_UNKNOWN_API_ERROR,
+        }:
+            return classification
+        if not_yet and not failed:
+            return STATUS_MARKET_DATA_NOT_YET_AVAILABLE
         return STATUS_FETCH_FAILED
     if readiness.get("status") == "READY" and not failed:
         if not_yet:
@@ -450,8 +499,10 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"- dry_run: {payload['dry_run']}",
         f"- allow_api_fetch: {payload['allow_api_fetch']}",
         f"- fetch_mode: {payload.get('fetch_mode', 'range')}",
-        f"- data_until: {payload.get('data_until', '')}",
-        "",
+            f"- data_until: {payload.get('data_until', '')}",
+            f"- api_error_classification: {payload.get('api_error_classification', '')}",
+            f"- next_action: {payload.get('next_action', '')}",
+            "",
         "## Endpoints",
         "",
         "| endpoint | status | existing_latest | fetched_rows | rows | max_date | raw_path | normalized_path |",
@@ -495,6 +546,19 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     if payload.get("blocked_reasons"):
         lines.extend(["", "## Blocked Reasons", ""])
         lines.extend(f"- {reason}" for reason in payload["blocked_reasons"])
+    if payload.get("api_error_diagnostics"):
+        lines.extend(["", "## API Error Diagnostics", ""])
+        for diagnostic in payload["api_error_diagnostics"]:
+            lines.append(
+                "- endpoint={endpoint} date={date} error_class={error_class} network_error_type={network_error_type} http_status={http_status} url_host={url_host}".format(
+                    endpoint=diagnostic.get("endpoint", ""),
+                    date=diagnostic.get("date", ""),
+                    error_class=diagnostic.get("error_class", ""),
+                    network_error_type=diagnostic.get("network_error_type", ""),
+                    http_status=diagnostic.get("http_status", ""),
+                    url_host=diagnostic.get("url_host", ""),
+                )
+            )
     if payload.get("warnings"):
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {warning}" for warning in payload["warnings"])
@@ -651,3 +715,88 @@ def _sanitize(payload: Any) -> Any:
     if isinstance(payload, tuple):
         return [_sanitize(item) for item in payload]
     return payload
+
+
+def _safe_exception_diagnostic(exc: Exception) -> dict[str, Any]:
+    diagnostic = getattr(exc, "diagnostic", None)
+    if not isinstance(diagnostic, dict):
+        return {}
+    allowed = {
+        "endpoint",
+        "date",
+        "from_date",
+        "to_date",
+        "error_class",
+        "network_error_type",
+        "http_status",
+        "url_host",
+    }
+    return {key: diagnostic.get(key, "") for key in sorted(allowed)}
+
+
+def _classify_exception(exc: Exception) -> str:
+    diagnostic = _safe_exception_diagnostic(exc)
+    classification = str(diagnostic.get("error_class") or "")
+    if classification:
+        return classification
+    name = type(exc).__name__
+    if name == "JQuantsClientError":
+        return STATUS_UNKNOWN_API_ERROR
+    return STATUS_FETCH_FAILED
+
+
+def _dominant_api_error_classification(diagnostics: list[dict[str, Any]]) -> str:
+    classifications = [str(item.get("error_class") or "") for item in diagnostics if item.get("error_class")]
+    if not classifications:
+        return ""
+    priority = [
+        STATUS_API_AUTH_ERROR,
+        STATUS_API_NETWORK_ERROR,
+        STATUS_API_RATE_LIMIT,
+        STATUS_API_PARAM_ERROR,
+        STATUS_API_SERVER_ERROR,
+        STATUS_UNKNOWN_API_ERROR,
+    ]
+    for item in priority:
+        if item in classifications:
+            return item
+    return classifications[0]
+
+
+def _classify_blocked_reasons(blocked: list[str]) -> str:
+    for classification in (
+        STATUS_API_AUTH_ERROR,
+        STATUS_API_NETWORK_ERROR,
+        STATUS_API_RATE_LIMIT,
+        STATUS_API_PARAM_ERROR,
+        STATUS_API_SERVER_ERROR,
+        STATUS_DATA_FRESHNESS_BLOCKED,
+        STATUS_UNKNOWN_API_ERROR,
+    ):
+        if classification in blocked:
+            return classification
+    if any("api_fetch_failed" in item for item in blocked):
+        return STATUS_UNKNOWN_API_ERROR
+    if "data_until_before_decision_for" in blocked:
+        return STATUS_DATA_FRESHNESS_BLOCKED
+    return ""
+
+
+def _next_action(classification: str, blocked: list[str]) -> str:
+    if classification == STATUS_API_NETWORK_ERROR:
+        return "check_network_connectivity"
+    if classification == STATUS_API_AUTH_ERROR:
+        return "refresh_token"
+    if classification == STATUS_API_RATE_LIMIT:
+        return "retry_later"
+    if classification == STATUS_API_PARAM_ERROR:
+        return "review_api_parameters"
+    if classification == STATUS_API_SERVER_ERROR:
+        return "check_api_status"
+    if classification == STATUS_DATA_FRESHNESS_BLOCKED or "data_until_before_decision_for" in blocked:
+        return "retry_later"
+    if classification == STATUS_MARKET_DATA_NOT_YET_AVAILABLE:
+        return "retry_later"
+    if classification == STATUS_UNKNOWN_API_ERROR:
+        return "check_api_status"
+    return ""

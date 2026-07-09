@@ -19,7 +19,12 @@ class CurrentStateClassification(str, Enum):
 
 
 _ALLOWED_CONFIRMED_EMPTY_SOURCES = frozenset(
-    {"broker_positions", "broker_cash", "manual_migration"}
+    {
+        "broker_positions",
+        "broker_cash",
+        "manual_migration",
+        "phase14e8_demo_operation_initial_state",
+    }
 )
 _DIVERGENCE_EVENT_TYPES = frozenset(
     {"POST_SEND_UNKNOWN", "BROKER_DIVERGENCE", "LEDGER_DIVERGENCE"}
@@ -237,7 +242,10 @@ def _payload_review_required(payload: object) -> bool:
     def record_review_required(item: Mapping[str, Any]) -> bool:
         if item.get("review_required") is True:
             return True
-        if item.get("production_equivalent") is False:
+        if (
+            item.get("production_equivalent") is False
+            and item.get("source") != "phase14e8_demo_operation_initial_state"
+        ):
             return True
         if item.get("source") == "broker_orders_fallback":
             return True

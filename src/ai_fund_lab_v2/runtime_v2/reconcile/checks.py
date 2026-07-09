@@ -125,6 +125,11 @@ def check_broker_executions_vs_ledger_executions(
     broker_executions: Sequence[BrokerExecutionSnapshot],
     ledger_executions: Sequence[LedgerExecutionRecord],
 ) -> tuple[ReconciliationFinding, ...]:
+    equivalent_by_order = {
+        execution.order_id: execution
+        for execution in ledger_executions
+        if getattr(execution, "execution_evidence_type", "") == "execution_equivalent"
+    }
     broker_by_ref = {execution.execution_ref_hash: execution for execution in broker_executions}
     ledger_by_ref = {execution.execution_id: execution for execution in ledger_executions}
     findings: list[ReconciliationFinding] = []
@@ -145,8 +150,12 @@ def check_broker_executions_vs_ledger_executions(
         if ledger_execution.price != broker_execution.price:
             findings.append(_review("EXECUTION_PRICE_MISMATCH", "ledger_execution", ledger_execution.record_id, str(ledger_execution.price), str(broker_execution.price), ledger_execution.created_at))
     for ledger_execution in ledger_executions:
+        if getattr(ledger_execution, "execution_evidence_type", "") == "execution_equivalent":
+            continue
         if ledger_execution.execution_id not in broker_by_ref:
             findings.append(_review("LEDGER_EXECUTION_MISSING_BROKER_EVIDENCE", "ledger_execution", ledger_execution.record_id, "broker execution evidence", "none", ledger_execution.created_at))
+    if not broker_executions and equivalent_by_order:
+        return tuple(findings)
     return tuple(findings)
 
 

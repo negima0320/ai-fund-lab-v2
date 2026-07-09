@@ -10,7 +10,7 @@ from tests.runtime_v2.pending_fixtures import make_pending_plan
 
 
 def test_writer_writes_explicit_path(tmp_path):
-    path = tmp_path / ".runtime/demo/pending_order_plan/pending_order_plan.json"
+    path = tmp_path / ".runtime/pending_order_plan/pending_order_plan.json"
     plan = make_pending_plan()
 
     written = write_pending_order_plan(path, plan)
@@ -28,7 +28,7 @@ def test_writer_keeps_raw_flags_false():
 
 
 def test_reader_reads_fixed_pending_order_plan_path(tmp_path):
-    path = tmp_path / ".runtime/demo/pending_order_plan/pending_order_plan.json"
+    path = tmp_path / ".runtime/pending_order_plan/pending_order_plan.json"
     plan = make_pending_plan()
     write_pending_order_plan(path, plan)
 
@@ -57,4 +57,3 @@ def test_missing_returns_missing(tmp_path):
 def test_reader_does_not_use_default_production_fallback(tmp_path):
     with pytest.raises(TypeError):
         read_pending_order_plan(environment="demo", base_dir=tmp_path)
-

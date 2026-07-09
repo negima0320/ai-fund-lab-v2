@@ -15,7 +15,7 @@ CURRENT_OBJECT_PATHS = {
     "persistent_ledger_orders": Path("persistent_ledger/orders.jsonl"),
     "persistent_ledger_executions": Path("persistent_ledger/executions.jsonl"),
     "persistent_ledger_positions": Path("persistent_ledger/positions.jsonl"),
-    "persistent_ledger_cash_history": Path("persistent_ledger/cash_history.jsonl"),
+    "persistent_ledger_cash": Path("persistent_ledger/cash.jsonl"),
     "persistent_ledger_events": Path("persistent_ledger/events.jsonl"),
     "notification_delivery_ledger": Path("notification_delivery/delivery_ledger.jsonl"),
 }
@@ -27,9 +27,9 @@ _BUSINESS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 def resolve_current_path(mode: str, environment: str, object_type: str) -> Path:
     """Resolve a Runtime v2 current artifact path.
 
-    The environment is validated even though the current storage root is keyed
-    by mode. This keeps call sites explicit and prevents implicit production
-    fallback.
+    Mode and environment are validated for explicit runtime intent, but Current
+    storage is intentionally not rooted by mode. Demo/production differences
+    are handled by runtime mode, broker adapter, and config, not by Current path.
     """
 
     _validate_mode(mode)
@@ -39,7 +39,7 @@ def resolve_current_path(mode: str, environment: str, object_type: str) -> Path:
         relative_path = CURRENT_OBJECT_PATHS[object_type]
     except KeyError as exc:
         raise ValueError(f"unsupported current object_type: {object_type}") from exc
-    return _runtime_root(mode) / relative_path
+    return Path(".runtime") / relative_path
 
 
 def resolve_history_path(
