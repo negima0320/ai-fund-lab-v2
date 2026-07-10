@@ -17,7 +17,6 @@ def test_phase14d3_pure_submit_path_accepts_runtime_v2_command_without_legacy_ru
         base_url_is_demo=True,
         base_url_is_production=False,
         live_order_allowed=True,
-        max_order_amount=50000,
     )
 
     assert preflight.allowed is True

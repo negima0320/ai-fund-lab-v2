@@ -34,6 +34,21 @@ class NotificationPayload:
     execution_equivalent_count: int = 0
     warnings: tuple[str, ...] = ()
     severity: str = "INFO"
+    runtime_state: str = ""
+    reason_summary: str = ""
+    policy_summary: str = ""
+    safety_summary: str = ""
+    guard_summary: str = ""
+    buy_ai_summary: str = ""
+    selected_candidates: int = 0
+    selected_top_rank: int | None = None
+    position_management_summary: str = ""
+    next_operator_action: str = ""
+    non_trading_day_demo_override: bool = False
+    production_equivalent: bool = True
+    acceptance_scope: str = "regular_runtime"
+    notification_delivery_status: str = "PAYLOAD_ONLY"
+    notification_sent: bool = False
     derived: bool = True
     not_current_state: bool = True
 

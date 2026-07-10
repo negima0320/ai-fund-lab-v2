@@ -37,6 +37,7 @@ class RuntimeV2SubmitPreflightResult:
     review_required: bool
     reason: str
     command: RuntimeV2SubmitCommand | None = None
+    guard_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

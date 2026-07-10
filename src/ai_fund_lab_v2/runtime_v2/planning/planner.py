@@ -13,7 +13,6 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     PlanningDecisionStatus,
     PlanningInput,
     PlanningResult,
-    SafetySignal,
 )
 
 
@@ -39,11 +38,16 @@ def build_order_plan(input: PlanningInput) -> PlanningResult:
         source_allocation_ids=tuple(
             allocation.allocation_id for allocation in input.capital_allocations
         ),
-        source_safety_ids=tuple(signal.safety_id for signal in input.safety_signals),
+        safety_decision_id=input.runtime_safety.safety_decision_id,
+        safety_policy_version=input.runtime_safety.safety_policy_version,
+        safety_source=input.runtime_safety.safety_source,
+        safety_decision=input.runtime_safety.safety_decision,
+        safety_reason=input.runtime_safety.safety_reason,
         asset_state_id=input.asset_state.asset_state_id,
         created_at=input.business_date,
         review_required=review_required,
         blocked=blocked,
+        policy_context=_policy_context(input.capital_allocations),
     )
     daily_plan = DailyPlan(
         daily_plan_id=f"daily-{order_plan.order_plan_id}",
@@ -66,7 +70,7 @@ def build_order_plan(input: PlanningInput) -> PlanningResult:
 
 def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
     allocation = _find_allocation(input.capital_allocations, signal.symbol, signal.side)
-    safety = _find_safety(input.safety_signals, signal.symbol, signal.side)
+    safety = input.runtime_safety
     blocked = False
     review_required = False
     reasons: list[str] = []
@@ -105,13 +109,21 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
     if input.asset_state.current_positions_unknown:
         review_required = True
         reasons.append("positions unknown")
-    if safety:
-        if safety.blocked or not safety.allowed:
-            blocked = True
-            reasons.append(safety.reason or "safety blocked")
-        if safety.review_required:
-            review_required = True
-            reasons.append(safety.reason or "safety review required")
+    if safety.halt_runtime or safety.emergency_stop or safety.safety_decision == "HALT":
+        blocked = True
+        reasons.append(safety.safety_reason or "runtime safety halted")
+    if safety.safety_decision == "BLOCKED":
+        blocked = True
+        reasons.append(safety.safety_reason or "runtime safety blocked")
+    if safety.review_required or safety.safety_decision == "REVIEW_REQUIRED":
+        review_required = True
+        reasons.append(safety.safety_reason or "runtime safety review required")
+    if signal.side == "BUY" and safety.block_buy:
+        review_required = True
+        reasons.append(safety.safety_reason or "runtime safety blocks BUY")
+    if signal.side == "SELL" and safety.block_sell:
+        review_required = True
+        reasons.append(safety.safety_reason or "runtime safety blocks SELL")
 
     status = (
         PlanningDecisionStatus.BLOCKED
@@ -129,7 +141,11 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
         estimated_amount=estimated_amount,
         source_signal_id=signal.signal_id,
         allocation_id=allocation.allocation_id if allocation else "",
-        safety_id=safety.safety_id if safety else "",
+        safety_decision_id=safety.safety_decision_id,
+        safety_policy_version=safety.safety_policy_version,
+        safety_source=safety.safety_source,
+        safety_decision=safety.safety_decision,
+        safety_reason=safety.safety_reason,
         status=status,
         review_required=review_required,
         blocked=blocked,
@@ -138,6 +154,22 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
         price_as_of=allocation.price_as_of if allocation else "",
         price_confidence=allocation.price_confidence if allocation else "",
         price_required=allocation.price_required if allocation else True,
+        capital_allocation_amount=estimated_amount,
+        policy_version=allocation.policy_version if allocation else "",
+        policy_source=allocation.policy_source if allocation else "",
+        evaluation_capital=_policy_value(allocation, "evaluation_capital"),
+        target_investment_ratio=_policy_value(allocation, "target_investment_ratio"),
+        cash_buffer=_policy_value(allocation, "cash_buffer"),
+        max_exposure=_policy_value(allocation, "max_exposure"),
+        max_position_weight=_policy_value(allocation, "max_position_weight"),
+        max_positions=_policy_value(allocation, "max_positions"),
+        max_buy_order_amount=_policy_value(allocation, "max_buy_order_amount"),
+        max_sell_liquidation_amount=_policy_value(allocation, "max_sell_liquidation_amount"),
+        min_order_amount=_policy_value(allocation, "min_order_amount"),
+        buy_notional_policy=str(_policy_value(allocation, "buy_notional_policy") or ""),
+        sell_liquidation_policy=str(_policy_value(allocation, "sell_liquidation_policy") or ""),
+        manual_review_threshold=_policy_value(allocation, "manual_review_threshold"),
+        sizing_policy_reason=allocation.sizing_policy_reason if allocation else "",
     )
 
 
@@ -155,11 +187,16 @@ def _blocked_result(input: PlanningInput, reason: str) -> PlanningResult:
         source_allocation_ids=tuple(
             allocation.allocation_id for allocation in input.capital_allocations
         ),
-        source_safety_ids=tuple(signal.safety_id for signal in input.safety_signals),
+        safety_decision_id=input.runtime_safety.safety_decision_id,
+        safety_policy_version=input.runtime_safety.safety_policy_version,
+        safety_source=input.runtime_safety.safety_source,
+        safety_decision=input.runtime_safety.safety_decision,
+        safety_reason=input.runtime_safety.safety_reason,
         asset_state_id="UNKNOWN",
         created_at=input.business_date,
         review_required=True,
         blocked=True,
+        policy_context=_policy_context(input.capital_allocations),
     )
     daily_plan = DailyPlan(
         daily_plan_id=f"daily-{order_plan_id}",
@@ -192,15 +229,17 @@ def _find_allocation(
     )
 
 
-def _find_safety(
-    safety_signals: tuple[SafetySignal, ...],
-    symbol: str,
-    side: str,
-) -> SafetySignal | None:
-    return next(
-        (item for item in safety_signals if item.symbol == symbol and item.side == side),
-        None,
-    )
+def _policy_context(allocations: tuple[CapitalAllocationSignal, ...]) -> dict | None:
+    for allocation in allocations:
+        if allocation.policy_context:
+            return dict(allocation.policy_context)
+    return None
+
+
+def _policy_value(allocation: CapitalAllocationSignal | None, key: str):
+    if allocation is None or not allocation.policy_context:
+        return None
+    return allocation.policy_context.get(key)
 
 
 def _estimated_price(allocation: CapitalAllocationSignal | None) -> float:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetState
 
@@ -40,17 +41,28 @@ class CapitalAllocationSignal:
     price_as_of: str = ""
     price_confidence: str = ""
     price_required: bool = True
+    policy_version: str = ""
+    policy_source: str = ""
+    sizing_policy_reason: str = ""
+    policy_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
-class SafetySignal:
-    safety_id: str
-    symbol: str
-    side: str
-    allowed: bool
+class RuntimeSafetyContext:
+    safety_decision_id: str
+    safety_policy_version: str
+    safety_source: str
+    safety_decision: str
+    safety_reason: str
     review_required: bool
-    blocked: bool
-    reason: str
+    block_buy: bool
+    block_sell: bool
+    block_submit: bool
+    halt_runtime: bool
+    emergency_stop: bool
+    generated_at: str
+    expires_at: str
+    source: str = "runtime_safety"
 
 
 @dataclass(frozen=True)
@@ -62,7 +74,7 @@ class PlanningInput:
     asset_state: CurrentAssetState | None
     ai_signals: tuple[AIPlanningSignal, ...]
     capital_allocations: tuple[CapitalAllocationSignal, ...]
-    safety_signals: tuple[SafetySignal, ...]
+    runtime_safety: RuntimeSafetyContext
 
 
 @dataclass(frozen=True)
@@ -75,7 +87,11 @@ class OrderPlanItem:
     estimated_amount: float
     source_signal_id: str
     allocation_id: str
-    safety_id: str
+    safety_decision_id: str
+    safety_policy_version: str
+    safety_source: str
+    safety_decision: str
+    safety_reason: str
     status: PlanningDecisionStatus
     review_required: bool
     blocked: bool
@@ -84,6 +100,22 @@ class OrderPlanItem:
     price_as_of: str = ""
     price_confidence: str = ""
     price_required: bool = True
+    capital_allocation_amount: float = 0.0
+    policy_version: str = ""
+    policy_source: str = ""
+    evaluation_capital: float | None = None
+    target_investment_ratio: float | None = None
+    cash_buffer: float | None = None
+    max_exposure: float | None = None
+    max_position_weight: float | None = None
+    max_positions: int | None = None
+    max_buy_order_amount: float | None = None
+    max_sell_liquidation_amount: float | None = None
+    min_order_amount: float | None = None
+    buy_notional_policy: str = ""
+    sell_liquidation_policy: str = ""
+    manual_review_threshold: dict[str, Any] | None = None
+    sizing_policy_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -97,11 +129,16 @@ class OrderPlan:
     items: tuple[OrderPlanItem, ...]
     source_ai_signal_ids: tuple[str, ...]
     source_allocation_ids: tuple[str, ...]
-    source_safety_ids: tuple[str, ...]
+    safety_decision_id: str
+    safety_policy_version: str
+    safety_source: str
+    safety_decision: str
+    safety_reason: str
     asset_state_id: str
     created_at: str
     review_required: bool
     blocked: bool
+    policy_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

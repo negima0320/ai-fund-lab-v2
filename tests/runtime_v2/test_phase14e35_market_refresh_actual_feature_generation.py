@@ -20,11 +20,7 @@ def test_phase14e35_market_refresh_pipeline_requires_actual_feature_artifacts(tm
     def fake_operations_market_refresh(**kwargs):
         feature_dir = Path(kwargs["root"]) / "feature_artifacts" / kwargs["trade_date"]
         feature_dir.mkdir(parents=True, exist_ok=True)
-        for name in ARTIFACTS:
-            pd.DataFrame([{"target_date": kwargs["trade_date"], "code": "72030"}]).to_parquet(
-                feature_dir / name,
-                index=False,
-            )
+        _write_consumer_ready_feature_artifacts(feature_dir, kwargs["trade_date"])
         return {
             "status": "PASS",
             "blocked_reasons": [],
@@ -177,6 +173,37 @@ def _write_fixed_current(root: Path) -> Path:
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_consumer_ready_feature_artifacts(feature_dir: Path, feature_date: str) -> None:
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    row = {
+        "target_date": feature_date,
+        "code": "72030",
+        "liquidity_avg_volume_20d": 1_000_000.0,
+        "missing_flags_insufficient_history": False,
+        "missing_flags_price": False,
+        "missing_flags_volume": False,
+        "price_momentum_return_20d": 0.2,
+        "price_momentum_return_5d": 0.05,
+        "price_momentum_return_60d": 0.3,
+        "trend_close_over_ma_20d": 1.02,
+        "trend_ma_20_60_ratio": 1.01,
+        "trend_ma_5_20_ratio": 1.03,
+        "volatility_return_std_20d": 0.02,
+        "volume_momentum_ratio_1d_20d": 1.1,
+        "volume_momentum_ratio_5d": 1.2,
+    }
+    pd.DataFrame([row]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
+    pd.DataFrame([row]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    pd.DataFrame(columns=["target_date", "code", "no_position_reason"]).to_parquet(
+        feature_dir / "position_feature_input.parquet",
+        index=False,
+    )
+    pd.DataFrame([{"target_date": feature_date, "code": "__POLICY_INPUT__"}]).to_parquet(
+        feature_dir / "capital_policy_input.parquet",
+        index=False,
+    )
 
 
 def _write_json(path: Path, value):

@@ -1,0 +1,19 @@
+{
+  "policy_version": "capital_deployment_v1",
+  "policy_source": "configs/runtime_v2/capital_deployment_demo.json",
+  "evaluation_capital": 1000000,
+  "target_investment_ratio": 0.85,
+  "cash_buffer": 0.05,
+  "max_exposure": 850000,
+  "max_position_weight": 0.2,
+  "max_positions": 5,
+  "min_order_amount": 0,
+  "max_buy_order_amount": null,
+  "max_sell_liquidation_amount": null,
+  "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+  "sell_liquidation_policy": "current_owned_available_quantity_policy",
+  "manual_review_threshold": {
+    "buy_amount": null,
+    "sell_liquidation_amount": null
+  }
+}

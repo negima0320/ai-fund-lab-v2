@@ -9,7 +9,7 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     PlanningDecisionStatus,
     PlanningInput,
     PlanningResult,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 from ai_fund_lab_v2.runtime_v2.planning.order_plan_builder import (
     order_plan_to_pending_items,
@@ -26,9 +26,8 @@ __all__ = [
     "PlanningDecisionStatus",
     "PlanningInput",
     "PlanningResult",
-    "SafetySignal",
+    "RuntimeSafetyContext",
     "build_order_plan",
     "order_plan_to_pending_items",
     "promote_order_plan_result_to_pending",
 ]
-

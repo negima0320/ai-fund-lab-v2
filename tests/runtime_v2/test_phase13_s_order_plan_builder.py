@@ -5,7 +5,7 @@ from tests.runtime_v2.planning_fixtures import (
     make_allocation,
     make_asset_state,
     make_planning_input,
-    make_safety,
+    make_runtime_safety,
 )
 
 
@@ -51,7 +51,7 @@ def test_buying_power_unknown_blocks_buy_item():
 
 def test_safety_blocked_item_is_blocked():
     result = build_order_plan(
-        make_planning_input(safety_signals=(make_safety(allowed=False, blocked=True),))
+        make_planning_input(runtime_safety=make_runtime_safety(decision="BLOCKED"))
     )
 
     assert result.order_plan.items[0].blocked is True
@@ -59,7 +59,7 @@ def test_safety_blocked_item_is_blocked():
 
 def test_safety_review_required_item_is_review_required():
     result = build_order_plan(
-        make_planning_input(safety_signals=(make_safety(review_required=True),))
+        make_planning_input(runtime_safety=make_runtime_safety(decision="REVIEW_REQUIRED", review_required=True))
     )
 
     assert result.order_plan.items[0].review_required is True
@@ -81,13 +81,11 @@ def test_cash_required_above_buying_power_blocks_item():
 def test_runtime_does_not_truncate_to_five_symbols():
     signals = tuple(make_ai_signal(symbol=f"7{i:03d}", rank=i) for i in range(1, 7))
     allocations = tuple(make_allocation(symbol=signal.symbol) for signal in signals)
-    safety = tuple(make_safety(symbol=signal.symbol) for signal in signals)
 
     result = build_order_plan(
         make_planning_input(
             ai_signals=signals,
             capital_allocations=allocations,
-            safety_signals=safety,
         )
     )
 
@@ -95,4 +93,3 @@ def test_runtime_does_not_truncate_to_five_symbols():
     assert [item.source_signal_id for item in result.order_plan.items] == [
         signal.signal_id for signal in signals
     ]
-

@@ -26,6 +26,11 @@ class ApprovalRequest:
     created_at: str
     expires_at: str
     review_required: bool
+    policy_version: str = ""
+    policy_source: str = ""
+    pending_policy_hash: str = ""
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,4 +57,8 @@ class ApprovalArtifact:
     expires_at: str
     review_required: bool
     reason: str
-
+    policy_version: str = ""
+    policy_source: str = ""
+    pending_policy_hash: str = ""
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""

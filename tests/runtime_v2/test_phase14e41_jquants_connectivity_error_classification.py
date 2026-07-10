@@ -173,14 +173,32 @@ def test_phase14e41_network_error_stale_carryover_blocks(tmp_path, monkeypatch):
 def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
     feature_dir = root / feature_date
     feature_dir.mkdir(parents=True, exist_ok=True)
-    for name in ARTIFACTS:
-        pd.DataFrame(
-            [
-                {
-                    "target_date": feature_date,
-                    "as_of_date": feature_date,
-                    "code": "72030",
-                    "latest_close": 1000.0,
-                }
-            ]
-        ).to_parquet(feature_dir / name, index=False)
+    row = {
+        "target_date": feature_date,
+        "as_of_date": feature_date,
+        "code": "72030",
+        "liquidity_avg_volume_20d": 1_000_000.0,
+        "missing_flags_insufficient_history": False,
+        "missing_flags_price": False,
+        "missing_flags_volume": False,
+        "price_momentum_return_20d": 0.2,
+        "price_momentum_return_5d": 0.05,
+        "price_momentum_return_60d": 0.3,
+        "trend_close_over_ma_20d": 1.02,
+        "trend_ma_20_60_ratio": 1.01,
+        "trend_ma_5_20_ratio": 1.03,
+        "volatility_return_std_20d": 0.02,
+        "volume_momentum_ratio_1d_20d": 1.1,
+        "volume_momentum_ratio_5d": 1.2,
+        "latest_close": 1000.0,
+    }
+    pd.DataFrame([row]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
+    pd.DataFrame([row]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    pd.DataFrame(columns=["target_date", "code", "no_position_reason"]).to_parquet(
+        feature_dir / "position_feature_input.parquet",
+        index=False,
+    )
+    pd.DataFrame([{"target_date": feature_date, "code": "__POLICY_INPUT__"}]).to_parquet(
+        feature_dir / "capital_policy_input.parquet",
+        index=False,
+    )

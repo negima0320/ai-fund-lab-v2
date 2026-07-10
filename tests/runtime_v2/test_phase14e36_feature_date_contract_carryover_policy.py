@@ -1,6 +1,8 @@
 import json
+import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
@@ -14,6 +16,18 @@ ARTIFACTS = (
     "position_feature_input.parquet",
     "capital_policy_input.parquet",
 )
+
+
+class CandidateFixtureModel:
+    def predict_proba(self, matrix):
+        values = np.asarray(matrix, dtype=float)[:, 0]
+        scores = np.clip(values, 0.0, 1.0)
+        return np.column_stack([1.0 - scores, scores])
+
+
+class OpportunityFixtureModel:
+    def predict(self, matrix):
+        return np.asarray(matrix, dtype=float)[:, 0]
 
 
 def test_phase14e36_market_refresh_emits_explicit_carryover_contract(tmp_path, monkeypatch):
@@ -61,6 +75,7 @@ def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         feature_date="2026-07-07",
     )
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
     _write_json(
         tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-08.json",
         {
@@ -109,6 +124,12 @@ def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            "--candidate-model-path",
+            str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
+            "--opportunity-model-path",
+            str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
         ]
     )
 
@@ -143,6 +164,7 @@ def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         feature_date="2026-07-06",
     )
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
     _write_json(
         tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-08.json",
         {
@@ -188,6 +210,12 @@ def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            "--candidate-model-path",
+            str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
+            "--opportunity-model-path",
+            str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
         ]
     )
 
@@ -247,6 +275,7 @@ def _write_fixed_current(root: Path) -> Path:
     _write_json(root / "runtime_state" / "current_state.json", {"state": "CURRENT_STATE_LOADED"})
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
+    _write_safety_decision(root)
     return root
 
 
@@ -261,21 +290,25 @@ def _write_feature_inputs(root: Path, *, feature_date: str, candidate_codes=("72
             "universe_eligible": True,
             "price_momentum_return_20d": 0.9 - index * 0.1,
             "price_momentum_return_5d": 0.5 - index * 0.05,
+            "trend_close_over_ma_20d": 0.20,
+            "missing_flags_insufficient_history": False,
+            "missing_flags_price": False,
+            "missing_flags_volume": False,
+            "price_momentum_return_60d": 0.6 - index * 0.1,
+            "trend_ma_20_60_ratio": 1.01,
+            "trend_ma_5_20_ratio": 1.02,
+            "volatility_return_std_20d": 0.02,
+            "volume_momentum_ratio_1d_20d": 1.2,
             "liquidity_avg_volume_20d": 1_000_000 - index,
+            "volume_momentum_ratio_5d": 1.1,
             "data_until": feature_date,
         }
         for index, code in enumerate(candidate_codes)
     ]
     candidate = pd.DataFrame(rows)
     candidate.to_parquet(feature_dir / "candidate_features.parquet", index=False)
-    candidate.rename(
-        columns={
-            "price_momentum_return_20d": "feature__price_momentum_return_20d",
-            "price_momentum_return_5d": "feature__price_momentum_return_5d",
-            "liquidity_avg_volume_20d": "feature__liquidity_avg_volume_20d",
-        }
-    ).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
-    pd.DataFrame(columns=["target_date", "code", "data_until"]).to_parquet(
+    candidate.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    pd.DataFrame(columns=["target_date", "code", "data_until", "no_position_reason"]).to_parquet(
         feature_dir / "position_feature_input.parquet",
         index=False,
     )
@@ -294,12 +327,93 @@ def _write_feature_inputs(root: Path, *, feature_date: str, candidate_codes=("72
     return root
 
 
+def _write_policy(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "policy_version": "capital_deployment_v1",
+            "policy_source": str(path),
+            "evaluation_capital": 1_000_000,
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+            "max_position_weight": 0.2,
+            "max_positions": 5,
+            "min_order_amount": 0,
+            "max_buy_order_amount": None,
+            "max_sell_liquidation_amount": None,
+            "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+            "sell_liquidation_policy": "current_owned_available_quantity_policy",
+            "manual_review_threshold": {
+                "buy_amount": None,
+                "sell_liquidation_amount": None,
+            },
+        },
+    )
+    return path
+
+
 def _write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_candidate_model(path: Path) -> Path:
+    _write_pickle(
+        path,
+        {
+            "model": CandidateFixtureModel(),
+            "feature_columns": ["feature__price_momentum_return_20d"],
+            "model_version": "candidate_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
+def _write_opportunity_model(path: Path) -> Path:
+    _write_pickle(
+        path,
+        {
+            "model": OpportunityFixtureModel(),
+            "feature_columns": ["feature__candidate_score"],
+            "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
+            "model_version": "opportunity_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
+def _write_pickle(path: Path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        pickle.dump(payload, handle)
+
+
+def _write_safety_decision(root: Path) -> Path:
+    path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
+    _write_json(
+        path,
+        {
+            "safety_decision_id": "safety-phase14e36-allow",
+            "safety_policy_version": "safety_operation_guard_v1",
+            "safety_source": str(path),
+            "business_date": "2026-07-09",
+            "runtime_mode": "demo",
+            "decision": "ALLOW",
+            "reason": "phase14e36 fixture safety allow",
+            "review_required": False,
+            "block_buy": False,
+            "block_sell": False,
+            "block_submit": False,
+            "halt_runtime": False,
+            "emergency_stop": False,
+            "generated_at": "2026-07-09T00:00:00+09:00",
+            "expires_at": "2026-07-10T00:00:00+09:00",
+        },
+    )
+    return path
+
+
 def _write_jsonl(path: Path, records):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8")
-

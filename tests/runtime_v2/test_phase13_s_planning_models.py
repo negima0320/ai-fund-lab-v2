@@ -6,14 +6,14 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     DailyPlan,
     OrderPlan,
     PlanningResult,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 
 
 def test_planning_signal_models_exist():
     assert AIPlanningSignal
     assert CapitalAllocationSignal
-    assert SafetySignal
+    assert RuntimeSafetyContext
 
 
 def test_order_plan_daily_plan_and_result_required_fields():
@@ -42,4 +42,3 @@ def test_ai_score_and_rank_are_input_fields_only():
     field_names = {field.name for field in fields(AIPlanningSignal)}
 
     assert {"rank", "score"}.issubset(field_names)
-

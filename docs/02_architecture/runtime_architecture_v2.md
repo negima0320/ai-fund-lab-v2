@@ -1126,6 +1126,151 @@ manual_review_required
 
 未定義の policy で BLOCK した場合は `REVIEW_REQUIRED` または `BLOCKED` として止め、Operator がどの契約により止まったか判断できるようにする。
 
+### 12.3 Phase15-B 追補: Purpose-Based Runtime Control Contract
+
+Phase15-A で定義した AI Fund Lab v2 の最終目的は以下である。
+
+```text
+年間50%の利益を目指し、安心・安全に自動売買を継続できる運用システムを実現すること
+```
+
+Runtime v2 はこの目的を直接達成する AI ではない。しかし Runtime v2 は、AI / Capital Allocation / Safety / Broker / Current / Report / Notification を接続する制御中枢であるため、Runtime が隠れ保守化・隠れ停止・隠れ資金配分変更を行うと、AI Fund Lab v2 の目的そのものを阻害する。
+
+したがって Runtime v2 は、以下を設計上の禁止事項として扱う。
+
+- `max_order_amount=100000` のような Runtime 内固定注文金額上限。
+- `max_positions=5` のような Runtime 内固定保有銘柄数上限。
+- Runtime 独自の cash buffer。
+- Runtime 独自の target investment ratio / max exposure / 投資率制限。
+- BUY と SELL を同じ notional guard で止める設計。
+- Capital Allocation が出力した資金配分を Submit Guard が後段で再決定または上書きする構造。
+- fixture、test default、legacy helper default、CLI default を production / demo operation policy として暗黙採用すること。
+
+これらが必要な場合は Runtime 固有の default ではなく、Capital Deployment Contract / Risk Policy / Safety / Broker constraint として明示し、manifest / report / audit / regression に出力する。
+
+#### Capital Deployment は Runtime の判断ではない
+
+年率 50% を目指す運用では、資金投入は過度に保守化されてはならない。一方で、Runtime が攻めた資金投入を独自判断で作ってもならない。
+
+Runtime の責務は、明示された Capital Deployment Contract を安全に実行することである。以下は Runtime が決める値ではなく、Capital Allocation / Risk Policy / Safety / Broker constraint の明示 contract として入力される。
+
+- target investment ratio
+- cash buffer
+- max exposure
+- max position weight
+- position sizing
+- buying power usage
+- order size
+- rebalance / replacement
+- position count
+- SELL-first / BUY-after-fill
+
+Runtime はこれらを読み、以下を確認する。
+
+- policy source が存在する。
+- policy version / effective date / runtime mode が manifest に残る。
+- Planning / Pending / Approval / Submit Guard の単位と意味が一致する。
+- Submit Guard が資金配分を再計算していない。
+- policy 不足時は hidden default で補完せず `REVIEW_REQUIRED` とする。
+
+#### 保有銘柄数 Contract
+
+Runtime は保有銘柄数の固定上限を持たない。
+
+以下のような値を Runtime 内 default として持つことは禁止する。
+
+```text
+max_positions = 5
+```
+
+保有銘柄数上限を使う場合は、Risk Policy / Capital Deployment Contract として明示し、少なくとも以下を manifest / report / audit に出力する。
+
+```text
+active_max_positions
+max_positions_source
+max_positions_policy_version
+current_position_count
+planned_position_count
+post_trade_position_count
+max_positions_decision
+max_positions_reason
+manual_review_required
+```
+
+Runtime は銘柄数を理由に AI / Capital Allocation / Safety の出力を機械的に捨てない。銘柄数制限に抵触する場合は、Planning / Capital Allocation / Replacement Policy 側で解決するのか、Submit 側で `REVIEW_REQUIRED` として止めるのかを manifest に明示する。
+
+#### 注文金額上限 Contract
+
+Runtime は固定の注文金額上限を持たない。
+
+BUY の注文金額上限を設ける場合は、少なくとも以下から導出する。
+
+- evaluation capital
+- target investment ratio
+- cash buffer
+- max exposure
+- max position weight
+- buying power
+- price
+- lot size
+- broker constraint
+- safety result
+
+SELL の注文金額上限を設ける場合は BUY とは別 contract とする。SELL は原則として Runtime-owned exposure を減らす処理であり、BUY 用の notional cap だけで止めてはならない。
+
+Submit Guard が注文を止める場合は、以下を manifest / report / audit に出力する。
+
+```text
+violated_policy
+violated_policy_source
+violated_policy_version
+side
+planning_amount
+capital_allocation_amount
+submit_estimated_amount
+guard_decision
+guard_reason
+manual_review_required
+should_have_been_blocked_at_planning
+blocked_at_submit_reason
+```
+
+#### BUY / SELL Guard Separation
+
+BUY は新規リスク投入であり、SELL はリスク低減である。
+
+BUY Guard は、Capital Allocation が意図した exposure 増加が、cash / buying_power / target investment ratio / max exposure / max position weight / price / lot size / Broker constraint / Safety result と一致していることを確認する。
+
+SELL liquidation は、以下で制御する。
+
+- Runtime-owned Current position
+- Current quantity
+- Broker available quantity
+- Broker issue code normalization
+- Safety / Operation Guard
+- explicit SELL liquidation policy
+
+SELL liquidation は Broker-only position、report 由来 position、日付別 artifact から推測した position、Runtime-owned であることを Current / Ledger で確認できない position を対象にしてはならない。
+
+#### Capital Allocation と Submit Guard の境界
+
+Runtime は Capital Allocation の出力を後段で勝手に変更しない。
+
+Submit Guard は Broker Write 直前の安全確認であり、資金配分の再決定ではない。Submit Guard ができることは以下に限定する。
+
+- Pending / Approval / policy source の整合を確認する。
+- Broker Write 前に明示 policy 違反を検出する。
+- Current / buying_power / Broker available quantity / duplicate submit を確認する。
+- 違反時に `REVIEW_REQUIRED`、`BLOCKED`、`HALT` として止める。
+- なぜ止めたかを manifest / report / audit に出す。
+
+Submit Guard がしてはならないことは以下である。
+
+- Capital Allocation amount を hidden cap で縮小する。
+- BUY 用 cap を SELL liquidation に流用する。
+- Planning が出した注文を、設計にない現金温存・銘柄数・注文金額 policy で silent block する。
+- `tests pass` だけを理由に policy source 不明の guard を正規化する。
+
 ## 13. 約定監視設計
 
 約定監視は Broker ReadOnly を使って行う。
@@ -1627,16 +1772,21 @@ Runtime Architecture v2 の受け入れ基準は、Architecture Acceptance Crite
 - Runtime が制御するのは銘柄数ではなく、資金・買付余力・Broker 制約・Safety 制約・重複注文防止であることが明記されている。
 - Runtime は年 50% 運用目標を直接達成する AI ではないが、Capital Allocation / Risk Policy が決めた資金配分を隠れ固定値で阻害しないことが明記されている。
 - Capital Deployment Contract として、目標投資率、現金バッファ、最大 1 銘柄比率、最大保有銘柄数、最小注文金額、最大注文金額、BUY/SELL 別 notional guard、Safety 停止条件を明示 policy として扱うことが定義されている。
+- Phase15-A の目的に基づき、Runtime が隠れ保守化・隠れ停止・隠れ資金配分変更によって AI Fund Lab v2 の目的を阻害してはならないことが明記されている。
+- target investment ratio、cash buffer、max exposure、position sizing、buying power usage、order size、rebalance / replacement、position count、SELL-first / BUY-after-fill は Runtime の判断ではなく明示 contract として扱うことが明記されている。
 - Runtime が `max_positions` を隠れ固定値として持たず、設定する場合は Capital Deployment Contract / Risk Policy として manifest に出力することが明記されている。
+- Runtime が固定注文金額上限を持たず、BUY 上限は evaluation capital、target investment ratio、cash buffer、max exposure、max position weight、buying_power、price、lot size、broker constraint、safety result から導出することが明記されている。
 - Submit Guard が Capital Allocation を hidden fixed cap で上書きしてはならないことが明記されている。
 - `max_order_amount` のような注文金額 guard は設計契約、manifest、test で明示されなければならないことが明記されている。
 - BUY notional guard と SELL liquidation guard を同一扱いにしないこと、統一する場合は設計根拠を明記することが定義されている。
 - SELL liquidation の source は Runtime-owned Current position のみであり、Broker-only position を売却対象にしないことが明記されている。
 - Submit Guard の active policy を manifest / audit に出力することが明記されている。
+- Submit Guard が止める場合、違反 policy、policy source、BUY/SELL区分、manual review required、Planning側で防ぐべきかSubmit側で止めるべきかを manifest / report / audit に出すことが明記されている。
 - Demo / Production を保存先ではなく metadata で分けることが明文化されている。
 - Broker Orders fallback が Demo 限定であり、Production の現在保有確定に使わないことが明文化されている。
 - `demo_ledger/` の legacy 化方針が明文化されている。
 - Report / Notification / Audit が Derived / Evidence 層であり、Runtime Current 入力ではないことが明文化されている。
+- Phase15 Review Rule として Runtime Evidence First Rule、Evidence Request Rule、No Guess Rule、Review Level 区別、PASS誤認禁止が明記されている。
 - Phase13 design-only 期間では実装しないこと、Phase13-E2 時点では Submit、Broker 注文、Demo 注文、Production 注文、通知送信、既存 plist 削除、新規 plist 作成、`launchd` 再開を行わないことが明文化されている。
 
 ### 22.2 Future Implementation / Test Criteria
@@ -1683,6 +1833,309 @@ Review level は以下を明示する。
 | Level 1 | Component PASS | Component 単体の Input / Output / Consumer が合う | fake / fixture 使用可。本番 Runtime 成功とは呼ばない |
 | Level 2 | Flow PASS | BUY / SELL / Notification など Flow 単位で通常 Runtime 経路を確認する | fake adapter 不可。必要に応じ Demo Broker ReadOnly / Submit 証跡を要求する |
 | Level 3 | Full Runtime PASS | Market Refresh / Morning / Submit / Execution / Current / Report / Notification まで通常 Runtime で通す | 運用開始前や重大契約変更後に要求する |
+
+### 22.3 Phase15 Review Rule
+
+Phase15 以降、Runtime v2 のレビューは以下の原則で行う。
+
+#### Runtime Evidence First Rule
+
+Runtime 状態を推測で判断しない。確認可能な場合は、Runtime artifact、Runtime Manifest、Broker ReadOnly、Current SoT、Persistent Ledger、Report、Notification payload / delivery ledger、Regression result を優先する。
+
+#### Evidence Request Rule
+
+証拠が不足している場合、修正指示を出す前に Operator へ必要最小限の確認コマンドを提示する。大量のコマンドを一度に要求しない。1〜2個の確認結果を見て、次の確認または判断へ進む。
+
+#### No Guess Rule
+
+`PASS`、`FAIL`、原因、Runtime 状態を推測で断定しない。
+
+レビュー順序は以下とする。
+
+```text
+Runtime Evidence
+↓
+Review
+↓
+Judgment
+```
+
+#### PASS 誤認禁止
+
+以下はいずれも単独では Acceptance ではない。
+
+- `tests pass`
+- `Broker Accepted`
+- `Report generated`
+- `Payload generated`
+- manifest generated
+- fake adapter PASS
+- fixture PASS
+- test-only path PASS
+
+`Broker Accepted` は Broker が注文を受け付けた証拠であり、Runtime が Capital Allocation / Safety / Current / Report / Notification と整合している証拠ではない。
+
+`Report generated` は Report artifact が生成された証拠であり、Report が Current / Today / Run / Ledger History を意味的に正しく分離している証拠ではない。
+
+`Payload generated` は Notification payload が生成された証拠であり、Notification delivery、delivery ledger、二重送信防止、送信結果 audit が正しく機能した証拠ではない。
+
+Phase15 の Runtime PASS は、以下の一致が確認された場合のみ宣言できる。
+
+```text
+Design Contract
+↓
+Implementation
+↓
+CLI Regular Path
+↓
+Runtime Manifest
+↓
+Broker Evidence
+↓
+Current SoT
+↓
+Report
+↓
+Notification
+↓
+Regression
+```
+
+## 22.4 Phase15-X Runtime Reality Rule / Demo-Production Boundary Contract
+
+Phase15-X 以降、Runtime v2 は Demo 環境で検証する場合でも Production Reality を基準に設計する。
+
+### Runtime Reality Rule
+
+```text
+Runtimeは常にProduction Realityを基準として設計する。
+
+Demo環境の制約はRuntime仕様ではなく、
+Broker Environment / Broker Capability / Broker Evidenceとして扱う。
+
+Demo専用Runtime、Phase専用Runtime、Fake Runtime、
+Demo専用Current、Demo専用Ledger、Demo専用Policyは作らない。
+
+Demo / Productionの差異はBroker LayerまたはCapability Layerで表現し、
+Runtime Coreの制御契約は共通に保つ。
+```
+
+Runtime Core は以下を Demo / Production 共通の制御契約として扱う。
+
+```text
+Policy
+↓
+Safety
+↓
+Planning
+↓
+Pending
+↓
+Approval
+↓
+Submit Guard
+↓
+Broker Boundary
+↓
+Execution
+↓
+Ledger
+↓
+Current
+↓
+Report
+↓
+Notification
+```
+
+Demo のログイン可能時間、注文・約定可能時間、メンテナンス、約定不可銘柄、日次リセット、Production との差異は Runtime Core の hidden branch にしない。これらは Broker Environment / Broker Capability / Broker Evidence として manifest / report / notification に証跡化し、必要に応じて `REVIEW_REQUIRED` にする。
+
+### Demo / Production Boundary Contract
+
+| Layer | Responsibility | Demo Handling | Production Handling |
+| --- | --- | --- | --- |
+| Runtime Core | Policy / Safety / Planning / Pending / Approval / Submit Guard / Ledger / Current / Report / Notification の制御契約 | Production Reality と同じ契約で動かす | 同じ契約で動かす |
+| Broker Environment | 接続先、mode、endpoint、ログイン時間、注文時間、メンテナンス状態 | `broker_environment=demo` として証跡化する | `broker_environment=production` として証跡化する |
+| Broker Capability | 約定可否、銘柄制約、数量制約、利用可能 API、口座状態差分 | Demo 制約を capability として表現する | Production capability として表現する |
+| Broker Evidence | Broker ReadOnly snapshot、available quantity、window status、API error classification | Demo 制約による `production_equivalent=false` / `review_required=true` を明示する | Production equivalent evidence を要求する |
+| Acceptance | Runtime の設計契約一致確認 | Demo 差異を理由に Runtime PASS を水増ししない | Production unlock は別 gate とする |
+
+許可される Demo / Production 差異表現は以下に限定する。
+
+```text
+broker_environment=demo
+broker_mode=demo
+broker_capability
+production_equivalent=false
+review_required=true
+broker evidence classification
+```
+
+禁止する実装パターンは以下である。
+
+- `if demo:` による特別な売買ロジック
+- `if phase15:` による特別な Runtime 経路
+- `demo_current.json`
+- `demo_ledger.json` を Runtime v2 の本線 SoT として使うこと
+- Demo 専用 Policy / Safety / Submit / Execution
+- Demo でだけ通る Current projection
+- Demo でだけ通る Report
+- Demo 制約を避ける Runtime bypass
+
+### Demo API Error Triage
+
+Demo Runtime Review で Broker API エラーが発生した場合、いきなり Runtime bug と断定しない。一次切り分けは以下の順で行う。
+
+```text
+1. Broker login window
+2. Broker order/execution window
+3. Broker maintenance
+4. Demo-specific execution restriction
+5. Demo reset / account state reset
+6. Broker capability mismatch
+7. Runtime bug
+8. Broker API behavior change
+```
+
+この triage 結果は Broker Evidence として保持し、Runtime Core の hidden policy や Demo 専用分岐で吸収しない。
+
+### Required Broker Environment Evidence
+
+Demo Runtime Review では、最低限以下を manifest / report の対象 evidence とする。
+
+```text
+broker_environment
+broker_mode
+broker_capability
+login_window_status
+order_window_status
+maintenance_status
+demo_execution_restriction_detected
+demo_reset_detected
+production_equivalent
+review_required
+```
+
+これらは Runtime Core の分岐条件ではなく、Broker Boundary の証跡である。`production_equivalent=false` または source が不明な場合は、Runtime が正常に止まったことを Acceptance 対象にし、正常に売買継続したことを PASS にしない。
+
+## 22.5 Phase15-Y Non-Trading-Day Demo Acceptance Override
+
+Phase15-Y では、Demo Runtime Evidence Review 中に限り、非営業日でも Demo Acceptance 用の evidence 取得を継続できる明示 CLI option を定義する。
+
+```text
+--allow-non-trading-day-demo
+```
+
+この option は Runtime Core の営業日判定を削除・緩和するものではない。Production Reality を基準にした Runtime Reality Rule を維持し、Demo の非営業日 API 利用可能性を Broker Environment / Broker Capability / Broker Evidence として扱うための、Operator 手動実行専用の acceptance override である。
+
+### Contract
+
+| Case | Expected Runtime Decision | Evidence |
+| --- | --- | --- |
+| `--mode production --allow-non-trading-day-demo` | `BLOCKED` | `reason=non_trading_day_demo_override_forbidden_in_production` |
+| `--mode demo` / 非営業日 / override なし | `REVIEW_REQUIRED` or `BLOCKED` | `reason=non_trading_day` |
+| `--mode demo` / 非営業日 / override あり | Demo Acceptance scope only | `non_trading_day_demo_override=true`, `production_equivalent=false` |
+| 営業日 / override あり | 通常営業日動作 | `non_trading_day_demo_override=false` or `not_applicable` |
+
+### Required Evidence
+
+Runtime Manifest / Report / Notification payload は、override が評価された場合に以下を保持する。
+
+```text
+trading_day
+business_day
+market_open
+non_trading_day_demo_override
+override_source
+override_reason
+production_equivalent
+acceptance_scope
+```
+
+非営業日 override が有効な実行は以下として扱う。
+
+```text
+DEMO_ACCEPTANCE_OVERRIDE
+```
+
+これは Full Runtime PASS ではない。Production Equivalent でもない。Demo Evidence Review 用の補助であり、Production 運用可能性を意味しない。
+
+### Constraints
+
+- Production では絶対に有効化しない。
+- Demo でも default は無効であり、非営業日は通常停止する。
+- launchd / autonomous operation では使わない。
+- Runtime v2 launchd plist に `--allow-non-trading-day-demo` を追加しない。
+- Demo 専用 Runtime / Current / Ledger / Policy / Submit / Execution は作らない。
+
+## 22.6 Runtime Temporal / Freshness Contract
+
+Runtime v2 の日時、鮮度、営業日、市場データ更新、Current 評価基準は、正式 Source of Truth として以下に定義する。
+
+```text
+docs/02_architecture/runtime_temporal_freshness_contract.md
+```
+
+Runtime Architecture v2 は、単一の `as_of` や `artifact_date == business_date` だけで freshness を判定しない。以下を必ず分離する。
+
+```text
+runtime_business_date
+latest_expected_trading_date
+latest_available_market_date
+market_data_as_of
+feature_date
+broker_snapshot_at
+position_state_as_of
+valuation_as_of
+last_execution_date
+safety_generated_at
+safety_expires_at
+pending_target_session_date
+artifact_generated_at
+```
+
+特に Current は、Position State と Valuation State を分けて扱う。
+
+```text
+position_state_as_of
+valuation_as_of
+last_execution_date
+last_reconciled_at
+source_market_date
+updated_at
+```
+
+旧来の単純契約:
+
+```text
+Current.as_of == business_date
+```
+
+は廃止または互換 fallback に限定する。約定がない日は Position State が前営業日のままでも正常であり得る。一方、Market Evidence が更新済みで Current valuation が更新されていない場合は valuation freshness の問題として扱う。
+
+Runtime v2 は、No-Fill / Valuation-Only の正規 Producer を必要とする。この Producer は Runtime-owned position だけを対象に評価価格を更新し、Broker-only position を Current へ混入させず、quantity / average_price を変更しない。
+
+Market / Quote Evidence も正式 contract として扱う。
+
+```text
+.runtime/runtime_state/market/<market_date>/market_evidence.json
+```
+
+この artifact は `runtime_business_date`、`market_date`、`latest_expected_trading_date`、`latest_available_market_date`、`quotes`、`market_summary`、`provider_status`、`data_not_yet_available`、`stale` を持つ。J-Quants の当日データがまだ配信されていない状態は、即 `STALE` ではなく `DATA_NOT_YET_AVAILABLE` として分類する。
+
+Data Readiness、Safety、Report、Notification は Temporal / Freshness Contract を共通参照し、以下のような component status を出す。
+
+```text
+market_freshness_status
+feature_freshness_status
+current_position_status
+current_valuation_status
+broker_snapshot_status
+safety_temporal_status
+pending_temporal_status
+```
+
+これにより、非営業日、祝日、配信前、約定なし、Broker Snapshot のみ当日、Demo reset などを Runtime Core の hidden branch ではなく、明示 Evidence として扱う。
 
 ## 23. 禁止事項
 

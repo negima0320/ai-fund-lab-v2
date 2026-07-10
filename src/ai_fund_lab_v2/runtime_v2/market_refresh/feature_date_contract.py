@@ -8,6 +8,13 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
+    CANONICAL_SCHEMA_VERSION,
+    FeatureConsumerReadiness,
+    validate_feature_consumer_readiness,
+    write_feature_consumer_readiness,
+)
+
 
 REQUIRED_FEATURE_ARTIFACTS = (
     "candidate_features.parquet",
@@ -34,12 +41,20 @@ class FeatureDateContract:
     requested_feature_artifact_dir: str
     requested_missing_feature_artifacts: tuple[str, ...]
     price_source_alignment: str
+    consumer_ready: bool = False
+    schema_version: str = CANONICAL_SCHEMA_VERSION
+    candidate_schema_status: str = "UNKNOWN"
+    candidate_missing_columns: tuple[str, ...] = ()
+    opportunity_schema_status: str = "UNKNOWN"
+    pm_schema_status: str = "UNKNOWN"
+    consumer_readiness_artifact_path: str = ""
     contract_artifact_path: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["missing_feature_artifacts"] = list(self.missing_feature_artifacts)
         payload["requested_missing_feature_artifacts"] = list(self.requested_missing_feature_artifacts)
+        payload["candidate_missing_columns"] = list(self.candidate_missing_columns)
         return payload
 
 
@@ -53,6 +68,37 @@ def resolve_feature_date_contract(
     root = Path(operations_root)
     requested_artifacts, requested_missing = _artifact_status(root, requested_feature_date)
     if not requested_missing:
+        readiness = validate_feature_consumer_readiness(
+            operations_root=root,
+            feature_date=requested_feature_date,
+        )
+        readiness_path = write_feature_consumer_readiness(
+            operations_root=root,
+            feature_date=requested_feature_date,
+            readiness=readiness,
+        )
+        if readiness.status != "READY":
+            return _with_readiness(
+                FeatureDateContract(
+                    status="REVIEW_REQUIRED",
+                    reason=readiness.reason,
+                    requested_feature_date=requested_feature_date,
+                    selected_feature_date=requested_feature_date,
+                    latest_available_market_date=latest_available_market_date or requested_feature_date,
+                    carryover_used=False,
+                    carryover_reason="",
+                    freshness_lag_business_days=0,
+                    freshness_limit_business_days=freshness_limit_business_days,
+                    feature_artifact_dir=str(root / "feature_artifacts" / requested_feature_date),
+                    generated_feature_artifacts=requested_artifacts,
+                    missing_feature_artifacts=(),
+                    requested_feature_artifact_dir=str(root / "feature_artifacts" / requested_feature_date),
+                    requested_missing_feature_artifacts=(),
+                    price_source_alignment="selected_feature_date",
+                ),
+                readiness,
+                readiness_path,
+            )
         return FeatureDateContract(
             status="PASS",
             reason="requested_feature_artifacts_available",
@@ -69,6 +115,13 @@ def resolve_feature_date_contract(
             requested_feature_artifact_dir=str(root / "feature_artifacts" / requested_feature_date),
             requested_missing_feature_artifacts=(),
             price_source_alignment="selected_feature_date",
+            consumer_ready=True,
+            schema_version=readiness.schema_version,
+            candidate_schema_status=readiness.candidate_schema_status,
+            candidate_missing_columns=readiness.candidate_missing_columns,
+            opportunity_schema_status=readiness.opportunity_schema_status,
+            pm_schema_status=readiness.pm_schema_status,
+            consumer_readiness_artifact_path=str(readiness_path),
         )
 
     latest = latest_available_market_date or _latest_available_from_markers(root, requested_feature_date)
@@ -116,6 +169,37 @@ def resolve_feature_date_contract(
             price_source_alignment="selected_feature_date",
         )
 
+    readiness = validate_feature_consumer_readiness(
+        operations_root=root,
+        feature_date=latest,
+    )
+    readiness_path = write_feature_consumer_readiness(
+        operations_root=root,
+        feature_date=latest,
+        readiness=readiness,
+    )
+    if readiness.status != "READY":
+        return _with_readiness(
+            FeatureDateContract(
+                status="REVIEW_REQUIRED",
+                reason=readiness.reason,
+                requested_feature_date=requested_feature_date,
+                selected_feature_date=latest,
+                latest_available_market_date=latest,
+                carryover_used=True,
+                carryover_reason="requested_feature_date_missing_latest_available_requires_consumer_review",
+                freshness_lag_business_days=lag,
+                freshness_limit_business_days=freshness_limit_business_days,
+                feature_artifact_dir=str(root / "feature_artifacts" / latest),
+                generated_feature_artifacts=selected_artifacts,
+                missing_feature_artifacts=(),
+                requested_feature_artifact_dir=str(root / "feature_artifacts" / requested_feature_date),
+                requested_missing_feature_artifacts=requested_missing,
+                price_source_alignment="selected_feature_date",
+            ),
+            readiness,
+            readiness_path,
+        )
     return FeatureDateContract(
         status="PASS",
         reason="carryover_feature_artifacts_available",
@@ -132,6 +216,13 @@ def resolve_feature_date_contract(
         requested_feature_artifact_dir=str(root / "feature_artifacts" / requested_feature_date),
         requested_missing_feature_artifacts=requested_missing,
         price_source_alignment="selected_feature_date",
+        consumer_ready=True,
+        schema_version=readiness.schema_version,
+        candidate_schema_status=readiness.candidate_schema_status,
+        candidate_missing_columns=readiness.candidate_missing_columns,
+        opportunity_schema_status=readiness.opportunity_schema_status,
+        pm_schema_status=readiness.pm_schema_status,
+        consumer_readiness_artifact_path=str(readiness_path),
     )
 
 
@@ -174,7 +265,46 @@ def load_feature_date_contract(
         requested_feature_artifact_dir=str(payload.get("requested_feature_artifact_dir") or ""),
         requested_missing_feature_artifacts=tuple(payload.get("requested_missing_feature_artifacts") or ()),
         price_source_alignment=str(payload.get("price_source_alignment") or "selected_feature_date"),
+        consumer_ready=bool(payload.get("consumer_ready")),
+        schema_version=str(payload.get("schema_version") or CANONICAL_SCHEMA_VERSION),
+        candidate_schema_status=str(payload.get("candidate_schema_status") or "UNKNOWN"),
+        candidate_missing_columns=tuple(payload.get("candidate_missing_columns") or ()),
+        opportunity_schema_status=str(payload.get("opportunity_schema_status") or "UNKNOWN"),
+        pm_schema_status=str(payload.get("pm_schema_status") or "UNKNOWN"),
+        consumer_readiness_artifact_path=str(payload.get("consumer_readiness_artifact_path") or ""),
         contract_artifact_path=str(payload.get("contract_artifact_path") or path),
+    )
+
+
+def _with_readiness(
+    contract: FeatureDateContract,
+    readiness: FeatureConsumerReadiness,
+    readiness_path: Path,
+) -> FeatureDateContract:
+    return FeatureDateContract(
+        status=contract.status,
+        reason=contract.reason,
+        requested_feature_date=contract.requested_feature_date,
+        selected_feature_date=contract.selected_feature_date,
+        latest_available_market_date=contract.latest_available_market_date,
+        carryover_used=contract.carryover_used,
+        carryover_reason=contract.carryover_reason,
+        freshness_lag_business_days=contract.freshness_lag_business_days,
+        freshness_limit_business_days=contract.freshness_limit_business_days,
+        feature_artifact_dir=contract.feature_artifact_dir,
+        generated_feature_artifacts=contract.generated_feature_artifacts,
+        missing_feature_artifacts=contract.missing_feature_artifacts,
+        requested_feature_artifact_dir=contract.requested_feature_artifact_dir,
+        requested_missing_feature_artifacts=contract.requested_missing_feature_artifacts,
+        price_source_alignment=contract.price_source_alignment,
+        consumer_ready=readiness.consumer_ready,
+        schema_version=readiness.schema_version,
+        candidate_schema_status=readiness.candidate_schema_status,
+        candidate_missing_columns=readiness.candidate_missing_columns,
+        opportunity_schema_status=readiness.opportunity_schema_status,
+        pm_schema_status=readiness.pm_schema_status,
+        consumer_readiness_artifact_path=str(readiness_path),
+        contract_artifact_path=contract.contract_artifact_path,
     )
 
 
@@ -248,4 +378,3 @@ def _business_day_lag(start: str, end: str) -> int | None:
         if current.weekday() < 5:
             lag += 1
     return lag
-

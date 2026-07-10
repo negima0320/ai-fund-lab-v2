@@ -63,6 +63,17 @@ def read_pending_order_plan(
             payload=None,
             errors=("pending payload must be an object",),
         )
+    if str(payload.get("status") or payload.get("state") or "").upper() == "EMPTY" and not bool(
+        payload.get("active_pending", True)
+    ):
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=True,
+            classification="EMPTY",
+            plan=None,
+            payload=payload,
+        )
     try:
         plan = pending_order_plan_from_payload(payload)
     except (KeyError, TypeError, ValueError) as exc:
@@ -145,6 +156,11 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
             approval_status=str(approval["approval_status"]),
             approved_item_ids=tuple(approval["approved_item_ids"]),
             approval_expires_at=str(approval["approval_expires_at"]),
+            policy_version=str(approval.get("policy_version") or ""),
+            policy_source=str(approval.get("policy_source") or ""),
+            pending_policy_hash=str(approval.get("pending_policy_hash") or ""),
+            safety_decision_id=str(approval.get("safety_decision_id") or ""),
+            safety_policy_version=str(approval.get("safety_policy_version") or ""),
         ),
         approved_item_ids=tuple(payload["approved_item_ids"]),
         items=tuple(
@@ -163,6 +179,31 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 price_as_of=str(item.get("price_as_of") or ""),
                 price_confidence=str(item.get("price_confidence") or ""),
                 price_required=bool(item.get("price_required", True)),
+                capital_allocation_amount=float(item.get("capital_allocation_amount") or item["estimated_amount"]),
+                policy_version=str(item.get("policy_version") or ""),
+                policy_source=str(item.get("policy_source") or ""),
+                evaluation_capital=_optional_float(item.get("evaluation_capital")),
+                target_investment_ratio=_optional_float(item.get("target_investment_ratio")),
+                cash_buffer=_optional_float(item.get("cash_buffer")),
+                max_exposure=_optional_float(item.get("max_exposure")),
+                max_position_weight=_optional_float(item.get("max_position_weight")),
+                max_positions=_optional_int(item.get("max_positions")),
+                max_buy_order_amount=_optional_float(item.get("max_buy_order_amount")),
+                max_sell_liquidation_amount=_optional_float(item.get("max_sell_liquidation_amount")),
+                min_order_amount=_optional_float(item.get("min_order_amount")),
+                buy_notional_policy=str(item.get("buy_notional_policy") or ""),
+                sell_liquidation_policy=str(item.get("sell_liquidation_policy") or ""),
+                manual_review_threshold=(
+                    dict(item["manual_review_threshold"])
+                    if isinstance(item.get("manual_review_threshold"), Mapping)
+                    else None
+                ),
+                sizing_policy_reason=str(item.get("sizing_policy_reason") or ""),
+                safety_decision_id=str(item.get("safety_decision_id") or ""),
+                safety_policy_version=str(item.get("safety_policy_version") or ""),
+                safety_source=str(item.get("safety_source") or ""),
+                safety_decision=str(item.get("safety_decision") or ""),
+                safety_reason=str(item.get("safety_reason") or ""),
             )
             for item in payload["items"]
         ),
@@ -183,4 +224,23 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
         raw_response_saved=bool(payload["raw_response_saved"]),
         secret_saved=bool(payload["secret_saved"]),
         feature_date_contract=dict(payload["feature_date_contract"]) if payload.get("feature_date_contract") else None,
+        policy_context=dict(payload["policy_context"]) if payload.get("policy_context") else None,
+        policy_version=str(payload.get("policy_version") or ""),
+        policy_source=str(payload.get("policy_source") or ""),
+        pending_policy_hash=str(payload.get("pending_policy_hash") or ""),
+        safety_context=dict(payload["safety_context"]) if payload.get("safety_context") else None,
+        safety_decision_id=str(payload.get("safety_decision_id") or ""),
+        safety_policy_version=str(payload.get("safety_policy_version") or ""),
     )
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)

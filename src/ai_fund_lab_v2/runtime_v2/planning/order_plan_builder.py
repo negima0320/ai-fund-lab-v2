@@ -27,6 +27,11 @@ def order_plan_to_pending_items(order_plan: OrderPlan) -> tuple[PendingOrderItem
             price_as_of=item.price_as_of,
             price_confidence=item.price_confidence,
             price_required=item.price_required,
+            safety_decision_id=item.safety_decision_id,
+            safety_policy_version=item.safety_policy_version,
+            safety_source=item.safety_source,
+            safety_decision=item.safety_decision,
+            safety_reason=item.safety_reason,
         )
         for item in order_plan.items
         if not item.blocked
@@ -54,6 +59,11 @@ def order_plan_to_pending_items_with_capability(
             price_as_of=item.price_as_of,
             price_confidence=item.price_confidence,
             price_required=item.price_required,
+            safety_decision_id=item.safety_decision_id,
+            safety_policy_version=item.safety_policy_version,
+            safety_source=item.safety_source,
+            safety_decision=item.safety_decision,
+            safety_reason=item.safety_reason,
         )
         for item in order_plan.items
         if not item.blocked and is_symbol_allowed_by_capability(item.symbol, capability)

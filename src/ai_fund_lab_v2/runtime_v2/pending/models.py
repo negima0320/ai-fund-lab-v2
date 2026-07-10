@@ -9,15 +9,21 @@ from typing import Any, Mapping
 
 
 class PendingPlanState(str, Enum):
+    CREATED = "CREATED"
+    PENDING_REVIEW = "PENDING_REVIEW"
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
     SUBMITTING = "SUBMITTING"
     SUBMITTED = "SUBMITTED"
     CONSUMED = "CONSUMED"
     EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+    SUPERSEDED = "SUPERSEDED"
     BLOCKED = "BLOCKED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     POST_SEND_UNKNOWN = "POST_SEND_UNKNOWN"
+    EMPTY = "EMPTY"
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,11 @@ class PendingApprovalLink:
     approval_status: str
     approved_item_ids: tuple[str, ...]
     approval_expires_at: str
+    policy_version: str = ""
+    policy_source: str = ""
+    pending_policy_hash: str = ""
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,27 @@ class PendingOrderItem:
     price_as_of: str = ""
     price_confidence: str = ""
     price_required: bool = True
+    capital_allocation_amount: float = 0.0
+    policy_version: str = ""
+    policy_source: str = ""
+    evaluation_capital: float | None = None
+    target_investment_ratio: float | None = None
+    cash_buffer: float | None = None
+    max_exposure: float | None = None
+    max_position_weight: float | None = None
+    max_positions: int | None = None
+    max_buy_order_amount: float | None = None
+    max_sell_liquidation_amount: float | None = None
+    min_order_amount: float | None = None
+    buy_notional_policy: str = ""
+    sell_liquidation_policy: str = ""
+    manual_review_threshold: dict[str, Any] | None = None
+    sizing_policy_reason: str = ""
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""
+    safety_source: str = ""
+    safety_decision: str = ""
+    safety_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -90,6 +122,13 @@ class PendingOrderPlan:
     raw_response_saved: bool = False
     secret_saved: bool = False
     feature_date_contract: dict[str, Any] | None = None
+    policy_context: dict[str, Any] | None = None
+    policy_version: str = ""
+    policy_source: str = ""
+    pending_policy_hash: str = ""
+    safety_context: dict[str, Any] | None = None
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""
 
 
 @dataclass(frozen=True)

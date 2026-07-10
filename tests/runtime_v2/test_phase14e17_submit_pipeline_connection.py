@@ -1,5 +1,7 @@
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 
 from ai_fund_lab_v2.broker.settings import BrokerSettings
 from ai_fund_lab_v2.runtime_v2.cli import run_daily_operation
@@ -10,12 +12,15 @@ from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntim
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import load_capital_deployment_policy
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import SubmitItemResult, SubmitPipelineResult, run_submit_pipeline
 
 
 def test_phase14e17_submit_pipeline_submits_all_approved_pending_items(tmp_path):
     runtime_root = _runtime_root(tmp_path)
-    pending = _approved_pending(("65220", "78780", "68970", "63270", "45910"))
+    _write_asset_state(runtime_root)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    pending = _approved_pending(("65220", "78780", "68970", "63270", "45910"), policy_path=policy_path)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
 
     result = run_submit_pipeline(
@@ -26,6 +31,7 @@ def test_phase14e17_submit_pipeline_submits_all_approved_pending_items(tmp_path)
         job="submit",
         settings=_demo_settings(),
         adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
     )
 
     updated = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
@@ -51,7 +57,9 @@ def test_phase14e17_submit_pipeline_submits_all_approved_pending_items(tmp_path)
 
 def test_phase14e17_submit_pipeline_blocks_demo_9000_series_before_submit(tmp_path):
     runtime_root = _runtime_root(tmp_path)
-    pending = _approved_pending(("9432",))
+    _write_asset_state(runtime_root)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    pending = _approved_pending(("9432",), policy_path=policy_path)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
 
     result = run_submit_pipeline(
@@ -62,6 +70,7 @@ def test_phase14e17_submit_pipeline_blocks_demo_9000_series_before_submit(tmp_pa
         job="submit",
         settings=_demo_settings(),
         adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
     )
 
     orders = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
@@ -86,6 +95,7 @@ def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tm
     runtime_root = _runtime_root(tmp_path)
     _write_asset_state(runtime_root)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", _approved_pending(("7203",)))
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     def fake_submit_pipeline(**kwargs):
         return SubmitPipelineResult(
@@ -153,6 +163,8 @@ def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tm
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
         ]
     )
     manifest = json.loads(
@@ -175,6 +187,7 @@ def _runtime_root(tmp_path: Path) -> Path:
     ledger.mkdir(parents=True)
     for name in ("orders", "executions", "positions", "cash", "events"):
         (ledger / f"{name}.jsonl").write_text("", encoding="utf-8")
+    _write_safety_decision(root)
     return root
 
 
@@ -203,7 +216,7 @@ def _write_asset_state(root: Path) -> None:
     (root / "persistent_ledger" / "state.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _approved_pending(symbols: tuple[str, ...]):
+def _approved_pending(symbols: tuple[str, ...], *, policy_path: Optional[Path] = None):
     items = tuple(
         PendingOrderItem(
             pending_item_id=f"item-{index}",
@@ -225,6 +238,9 @@ def _approved_pending(symbols: tuple[str, ...]):
         )
         for index, symbol in enumerate(symbols, start=1)
     )
+    if policy_path is not None:
+        policy = load_capital_deployment_policy(policy_path)
+        items = tuple(_item_with_policy(item, policy) for item in items)
     pending = promote_order_plan_to_pending(
         order_plan_id="order-plan-e17",
         source_order_plan_path=".runtime/runtime_state/morning_pipeline/2026-07-08/order_plan.json",
@@ -248,8 +264,36 @@ def _approved_pending(symbols: tuple[str, ...]):
         expires_at="2026-07-08T15:00:00+09:00",
         review_required=False,
         reason="test approval",
+        policy_version=pending.policy_version,
+        policy_source=pending.policy_source,
+        pending_policy_hash=pending.pending_policy_hash,
     )
     return link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
+
+
+def _item_with_policy(item: PendingOrderItem, policy) -> PendingOrderItem:
+    return replace(
+        item,
+        capital_allocation_amount=item.estimated_amount,
+        policy_version=policy.policy_version,
+        policy_source=policy.policy_source,
+        evaluation_capital=policy.evaluation_capital,
+        target_investment_ratio=policy.target_investment_ratio,
+        cash_buffer=policy.cash_buffer,
+        max_exposure=policy.max_exposure,
+        max_position_weight=policy.max_position_weight,
+        max_positions=policy.max_positions,
+        max_buy_order_amount=policy.max_buy_order_amount,
+        max_sell_liquidation_amount=policy.max_sell_liquidation_amount,
+        min_order_amount=policy.min_order_amount,
+        buy_notional_policy=policy.buy_notional_policy,
+        sell_liquidation_policy=policy.sell_liquidation_policy,
+        manual_review_threshold={
+            "buy_amount": policy.manual_review_threshold.buy_amount,
+            "sell_liquidation_amount": policy.manual_review_threshold.sell_liquidation_amount,
+        },
+        sizing_policy_reason="phase14e17 fixture policy evidence",
+    )
 
 
 def _demo_settings() -> BrokerSettings:
@@ -258,6 +302,65 @@ def _demo_settings() -> BrokerSettings:
         base_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9",
         second_password_file="/tmp/phase14e17-second-password",
     )
+
+
+def _write_policy(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "policy_version": "capital_deployment_v1",
+                "policy_source": str(path),
+                "evaluation_capital": 1_000_000,
+                "target_investment_ratio": 0.85,
+                "cash_buffer": 0.05,
+                "max_exposure": 850_000,
+                "max_position_weight": 0.2,
+                "max_positions": 5,
+                "min_order_amount": 0,
+                "max_buy_order_amount": None,
+                "max_sell_liquidation_amount": None,
+                "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+                "sell_liquidation_policy": "current_owned_available_quantity_policy",
+                "manual_review_threshold": {
+                    "buy_amount": None,
+                    "sell_liquidation_amount": None,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_safety_decision(root: Path) -> Path:
+    path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "safety_decision_id": "safety-phase14e17-fixture",
+                "safety_policy_version": "safety_policy_v1",
+                "safety_source": str(path),
+                "business_date": "2026-07-08",
+                "runtime_mode": "demo",
+                "decision": "ALLOW",
+                "reason": "phase14e17 fixture safety allow",
+                "review_required": False,
+                "block_buy": False,
+                "block_sell": False,
+                "block_submit": False,
+                "halt_runtime": False,
+                "emergency_stop": False,
+                "generated_at": "2026-07-08T08:00:00+09:00",
+                "expires_at": "2026-07-08T15:00:00+09:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _read_jsonl(path: Path):

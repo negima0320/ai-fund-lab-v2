@@ -66,6 +66,8 @@ class RuntimeV2ReportContext:
     events: tuple[dict[str, Any], ...]
     pending: dict[str, Any]
     runtime_state: dict[str, Any]
+    latest_runtime_manifest: dict[str, Any]
+    runtime_evidence_paths: tuple[str, ...]
     source_current_paths: tuple[str, ...]
 
 
@@ -104,6 +106,7 @@ def load_runtime_v2_report_context(
         or str(pending.get("target_session_date") or "")
         or date.today().isoformat()
     )
+    latest_manifest_path, latest_runtime_manifest = _load_latest_runtime_manifest(root, resolved_business_date)
     runtime_mode = str(
         runtime_state.get("runtime_mode")
         or runtime_state.get("mode")
@@ -131,6 +134,8 @@ def load_runtime_v2_report_context(
         events=events,
         pending=pending,
         runtime_state=runtime_state,
+        latest_runtime_manifest=latest_runtime_manifest,
+        runtime_evidence_paths=(str(latest_manifest_path.relative_to(root)),) if latest_manifest_path else (),
         source_current_paths=tuple(str(path) for path in CURRENT_INPUTS.values()),
     )
 
@@ -282,6 +287,23 @@ def build_report_summary(context: RuntimeV2ReportContext) -> dict[str, Any]:
         "report_scope_warning": False,
         "notes": tuple(notes),
     }
+    reason_evidence = _build_reason_evidence(
+        manifest=context.latest_runtime_manifest,
+        runtime_state=context.runtime_state,
+        pending=context.pending,
+        events=context.events,
+        review_required=review_required,
+        blocked=blocked,
+        halt=halt,
+    )
+    position_management = _position_management_evidence(context.latest_runtime_manifest)
+    buy_ai = _buy_ai_evidence(context.latest_runtime_manifest)
+    data_readiness = _data_readiness_evidence(context.latest_runtime_manifest)
+    market_evidence = _market_evidence(context.latest_runtime_manifest)
+    current_migration = _current_temporal_migration_evidence(context.latest_runtime_manifest)
+    current_valuation = _current_valuation_refresh_evidence(context.latest_runtime_manifest)
+    pending_lifecycle = _pending_lifecycle_evidence(context.latest_runtime_manifest)
+    non_trading_day_demo_override = _non_trading_day_demo_override_evidence(context.latest_runtime_manifest)
 
     return {
         "business_date": context.business_date,
@@ -294,6 +316,10 @@ def build_report_summary(context: RuntimeV2ReportContext) -> dict[str, Any]:
             "current_run_source": "runtime_state/current_state.json",
             "ledger_history_source": "persistent_ledger/*.jsonl cumulative records",
             "pending_approval_source": "pending_order_plan/pending_order_plan.json",
+            "runtime_evidence_source": "runtime_state/run_manifest/<business_date>/*.json",
+            "derived_only": True,
+            "report_writes_current": False,
+            "report_recalculates_policy_safety_or_guard": False,
         },
         "current_portfolio": current_portfolio,
         "today_operation": today_operation,
@@ -301,16 +327,46 @@ def build_report_summary(context: RuntimeV2ReportContext) -> dict[str, Any]:
         "ledger_history": ledger_history,
         "pending_approval": pending_approval,
         "warning_summary": warning_summary,
+        "reason_evidence": reason_evidence,
+        "buy_ai": buy_ai,
+        "position_management": position_management,
+        "data_readiness": data_readiness,
+        "market_evidence": market_evidence,
+        "current_temporal_migration": current_migration,
+        "current_valuation_refresh": current_valuation,
+        "pending_lifecycle": pending_lifecycle,
+        "non_trading_day_demo_override": non_trading_day_demo_override,
         "notification": {
             "payload_generated": True,
             "send_executed": False,
             "mode": "payload-only",
+            "severity": reason_evidence["severity"],
+            "review_required": reason_evidence["review_required"],
+            "reason_summary": reason_evidence["reason_summary"],
+            "buy_ai_summary": buy_ai["summary"],
+            "selected_candidates": buy_ai["selected_candidates"],
+            "selected_top_rank": buy_ai["selected_top_rank"],
+            "position_management_summary": position_management["summary"],
+            "data_readiness_status": data_readiness["data_readiness_status"],
+            "data_readiness_reason": data_readiness["summary"],
+            "market_evidence_status": market_evidence["market_evidence_status"],
+            "market_evidence_reason": market_evidence["summary"],
+            "current_temporal_migration_status": current_migration["current_temporal_migration_status"],
+            "current_temporal_migration_reason": current_migration["summary"],
+            "current_valuation_status": current_valuation["current_valuation_status"],
+            "current_valuation_reason": current_valuation["summary"],
+            "pending_lifecycle_status": pending_lifecycle["pending_lifecycle_status"],
+            "pending_lifecycle_reason": pending_lifecycle["summary"],
+            "next_operator_action": reason_evidence["next_operator_action"],
             "line_status": "send-disabled",
             "discord_status": "send-disabled",
             "execution_equivalent_count": today_execution_equivalent_count,
             "sell_filled_count": int(today_execution_side_counts.get("SELL", 0)),
             "buy_filled_count": int(today_execution_side_counts.get("BUY", 0)),
             "summary_only": True,
+            "non_trading_day_demo_override": non_trading_day_demo_override["non_trading_day_demo_override"],
+            "production_equivalent": non_trading_day_demo_override["production_equivalent"],
+            "acceptance_scope": non_trading_day_demo_override["acceptance_scope"],
         },
         # Backward-compatible aliases for older tests and callers.
         "current_sot": {
@@ -359,9 +415,37 @@ def build_report_summary(context: RuntimeV2ReportContext) -> dict[str, Any]:
         "notification_payload": {
             "mode": "payload-only",
             "send_executed": False,
+            "notification_delivery_status": "PAYLOAD_ONLY",
+            "notification_sent": False,
+            "runtime_state": reason_evidence["runtime_state"],
+            "severity": reason_evidence["severity"],
+            "reason_summary": reason_evidence["reason_summary"],
+            "policy_summary": reason_evidence["policy_summary"],
+            "safety_summary": reason_evidence["safety_summary"],
+            "guard_summary": reason_evidence["guard_summary"],
+            "buy_ai_summary": buy_ai["summary"],
+            "selected_candidates": buy_ai["selected_candidates"],
+            "selected_top_rank": buy_ai["selected_top_rank"],
+            "position_management_summary": position_management["summary"],
+            "data_readiness_status": data_readiness["data_readiness_status"],
+            "data_readiness_reason": data_readiness["summary"],
+            "market_evidence_status": market_evidence["market_evidence_status"],
+            "market_evidence_reason": market_evidence["summary"],
+            "current_temporal_migration_status": current_migration["current_temporal_migration_status"],
+            "current_temporal_migration_reason": current_migration["summary"],
+            "current_valuation_status": current_valuation["current_valuation_status"],
+            "current_valuation_reason": current_valuation["summary"],
+            "pending_lifecycle_status": pending_lifecycle["pending_lifecycle_status"],
+            "pending_lifecycle_reason": pending_lifecycle["summary"],
+            "review_required": reason_evidence["review_required"],
+            "next_operator_action": reason_evidence["next_operator_action"],
             "summary_only": True,
+            "non_trading_day_demo_override": non_trading_day_demo_override["non_trading_day_demo_override"],
+            "production_equivalent": non_trading_day_demo_override["production_equivalent"],
+            "acceptance_scope": non_trading_day_demo_override["acceptance_scope"],
         },
         "notes": warning_summary["notes"],
+        "runtime_evidence_paths": context.runtime_evidence_paths,
         "source_current_paths": context.source_current_paths,
     }
 
@@ -397,6 +481,48 @@ def render_runtime_markdown(summary: dict[str, Any]) -> str:
         "",
         "## Pending / Approval",
         _bullet_dict(summary["pending_approval"]),
+        "",
+        "## Why BUY",
+        _why_text(summary["reason_evidence"], side="BUY"),
+        "",
+        "## Candidate AI Summary",
+        _bullet_dict(summary["buy_ai"]["candidate"]),
+        "",
+        "## Opportunity AI Summary",
+        _bullet_dict(summary["buy_ai"]["opportunity"]),
+        "",
+        "## Why Selected",
+        _buy_ai_why_selected(summary["buy_ai"]),
+        "",
+        "## Why SELL",
+        _why_text(summary["reason_evidence"], side="SELL"),
+        "",
+        "## Position Management Decision",
+        _bullet_dict(summary["position_management"]),
+        "",
+        "## Why HOLD",
+        _pm_why_text(summary["position_management"], "HOLD"),
+        "",
+        "## Why EXIT",
+        _pm_why_text(summary["position_management"], "EXIT"),
+        "",
+        "## Why BLOCKED / REVIEW_REQUIRED / HALT",
+        _bullet_dict(summary["reason_evidence"]["review_required_blocked_halt"]),
+        "",
+        "## Policy Evidence",
+        _bullet_dict(summary["reason_evidence"]["policy_evidence"]),
+        "",
+        "## Safety Evidence",
+        _bullet_dict(summary["reason_evidence"]["safety_evidence"]),
+        "",
+        "## Submit Guard Evidence",
+        _bullet_dict(summary["reason_evidence"]["submit_guard_evidence"]),
+        "",
+        "## Non-Trading-Day Demo Override",
+        _bullet_dict(summary["non_trading_day_demo_override"]),
+        "",
+        "## Next Operator Action",
+        f"- {summary['reason_evidence']['next_operator_action']}",
         "",
         "## Warnings / Known Gaps",
         _bullet_dict(summary["warning_summary"]),
@@ -478,6 +604,7 @@ def render_public_markdown(summary: dict[str, Any]) -> str:
         f"- Demo broker reset evidence ignored: {summary['warning_summary']['demo_broker_reset_evidence_ignored']}",
         f"- Valuation confidence warning: {summary['warning_summary']['valuation_confidence_warning']}",
         f"- Market data freshness: {summary['warning_summary']['market_data_freshness']}",
+        f"- Non-Trading-Day Demo Override: {summary['non_trading_day_demo_override']}",
         "",
         "## Notification",
         f"- Payload generated: {summary['notification']['payload_generated']}",
@@ -488,6 +615,13 @@ def render_public_markdown(summary: dict[str, Any]) -> str:
         "",
         "## Operations Memo",
         *[f"- {note}" for note in summary["notes"]],
+        "",
+        "## Why",
+        f"- Reason summary: {summary['reason_evidence']['reason_summary']}",
+        f"- Policy summary: {summary['reason_evidence']['policy_summary']}",
+        f"- Safety summary: {summary['reason_evidence']['safety_summary']}",
+        f"- Guard summary: {summary['reason_evidence']['guard_summary']}",
+        f"- Next operator action: {summary['reason_evidence']['next_operator_action']}",
         "",
     ]
     return "\n".join(lines)
@@ -533,6 +667,41 @@ def write_markdown_reports(
                 "mode": "payload-only",
                 "send_executed": False,
                 "summary": reports.summary["notification_payload"],
+                "runtime_state": reports.summary["notification_payload"]["runtime_state"],
+                "severity": reports.summary["notification_payload"]["severity"],
+                "reason_summary": reports.summary["notification_payload"]["reason_summary"],
+                "policy_summary": reports.summary["notification_payload"]["policy_summary"],
+                "safety_summary": reports.summary["notification_payload"]["safety_summary"],
+                "guard_summary": reports.summary["notification_payload"]["guard_summary"],
+                "buy_ai_summary": reports.summary["notification_payload"]["buy_ai_summary"],
+                "selected_candidates": reports.summary["notification_payload"]["selected_candidates"],
+                "selected_top_rank": reports.summary["notification_payload"]["selected_top_rank"],
+                "position_management_summary": reports.summary["notification_payload"][
+                    "position_management_summary"
+                ],
+                "data_readiness_status": reports.summary["notification_payload"]["data_readiness_status"],
+                "data_readiness_reason": reports.summary["notification_payload"]["data_readiness_reason"],
+                "market_evidence_status": reports.summary["notification_payload"]["market_evidence_status"],
+                "market_evidence_reason": reports.summary["notification_payload"]["market_evidence_reason"],
+                "current_temporal_migration_status": reports.summary["notification_payload"][
+                    "current_temporal_migration_status"
+                ],
+                "current_temporal_migration_reason": reports.summary["notification_payload"][
+                    "current_temporal_migration_reason"
+                ],
+                "current_valuation_status": reports.summary["notification_payload"]["current_valuation_status"],
+                "current_valuation_reason": reports.summary["notification_payload"]["current_valuation_reason"],
+                "pending_lifecycle_status": reports.summary["notification_payload"]["pending_lifecycle_status"],
+                "pending_lifecycle_reason": reports.summary["notification_payload"]["pending_lifecycle_reason"],
+                "review_required": reports.summary["notification_payload"]["review_required"],
+                "next_operator_action": reports.summary["notification_payload"]["next_operator_action"],
+                "non_trading_day_demo_override": reports.summary["notification_payload"][
+                    "non_trading_day_demo_override"
+                ],
+                "production_equivalent": reports.summary["notification_payload"]["production_equivalent"],
+                "acceptance_scope": reports.summary["notification_payload"]["acceptance_scope"],
+                "notification_delivery_status": "PAYLOAD_ONLY",
+                "notification_sent": False,
                 "scoped_summary": {
                     "current_portfolio": reports.summary["current_portfolio"],
                     "today_operation": {
@@ -542,6 +711,14 @@ def write_markdown_reports(
                     "ledger_history": reports.summary["ledger_history"],
                     "pending_approval": reports.summary["pending_approval"],
                     "warnings": reports.summary["warning_summary"],
+                    "reason_evidence": reports.summary["reason_evidence"],
+                    "position_management": reports.summary["position_management"],
+                    "data_readiness": reports.summary["data_readiness"],
+                    "market_evidence": reports.summary["market_evidence"],
+                    "current_temporal_migration": reports.summary["current_temporal_migration"],
+                    "current_valuation_refresh": reports.summary["current_valuation_refresh"],
+                    "pending_lifecycle": reports.summary["pending_lifecycle"],
+                    "non_trading_day_demo_override": reports.summary["non_trading_day_demo_override"],
                 },
             }
         ),
@@ -629,6 +806,473 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _load_latest_runtime_manifest(root: Path, business_date: str | None) -> tuple[Path | None, dict[str, Any]]:
+    if not business_date:
+        return None, {}
+    manifest_dir = root / "runtime_state" / "run_manifest" / business_date
+    if not manifest_dir.exists():
+        return None, {}
+    manifests = sorted(path for path in manifest_dir.glob("*.json") if path.is_file())
+    if not manifests:
+        return None, {}
+    latest = manifests[-1]
+    return latest, _load_json(latest)
+
+
+def _build_reason_evidence(
+    *,
+    manifest: dict[str, Any],
+    runtime_state: dict[str, Any],
+    pending: dict[str, Any],
+    events: tuple[dict[str, Any], ...],
+    review_required: bool,
+    blocked: bool,
+    halt: bool,
+) -> dict[str, Any]:
+    policy = _policy_evidence(manifest, pending)
+    safety = _safety_evidence(manifest, pending)
+    guard = _submit_guard_evidence(manifest)
+    review = _review_required_blocked_halt(
+        manifest=manifest,
+        runtime_state=runtime_state,
+        events=events,
+        review_required=review_required,
+        blocked=blocked,
+        halt=halt,
+        guard=guard,
+        safety=safety,
+    )
+    severity = _notification_severity(review, guard, safety)
+    reason_summary = _reason_summary(policy=policy, safety=safety, guard=guard, review=review)
+    return {
+        "runtime_state": review["final_state"],
+        "severity": severity,
+        "review_required": severity in {"ACTION_REQUIRED", "REVIEW_REQUIRED", "BLOCKED", "HALT"},
+        "reason_summary": reason_summary,
+        "policy_summary": _policy_summary(policy),
+        "safety_summary": _safety_summary(safety),
+        "guard_summary": _guard_summary(guard),
+        "next_operator_action": _next_operator_action(severity, guard, safety, review),
+        "policy_evidence": policy,
+        "safety_evidence": safety,
+        "submit_guard_evidence": guard,
+        "review_required_blocked_halt": review,
+        "why_buy": _why_side("BUY", guard, policy, safety),
+        "why_sell": _why_side("SELL", guard, policy, safety),
+    }
+
+
+def _position_management_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    count = int(manifest.get("pm_decision_count") or 0)
+    exit_count = int(manifest.get("pm_exit_count") or 0)
+    hold_count = int(manifest.get("pm_hold_count") or 0)
+    reduce_count = int(manifest.get("pm_reduce_count") or 0)
+    add_count = int(manifest.get("pm_add_count") or 0)
+    summary = (
+        f"EXIT {exit_count}, HOLD {hold_count}, REDUCE {reduce_count}, ADD {add_count}"
+        if count
+        else f"Position Management evidence not present; status={manifest.get('pm_status') or ''}; reason={manifest.get('pm_reason') or ''}"
+    )
+    return {
+        "pm_status": manifest.get("pm_status") or "",
+        "pm_reason": manifest.get("pm_reason") or "",
+        "pm_model_version": manifest.get("pm_model_version") or "",
+        "pm_feature_date": manifest.get("pm_feature_date") or "",
+        "pm_artifact_path": manifest.get("pm_artifact_path") or "",
+        "pm_decision_count": count,
+        "pm_exit_count": exit_count,
+        "pm_hold_count": hold_count,
+        "pm_reduce_count": reduce_count,
+        "pm_add_count": add_count,
+        "pm_generated_at": manifest.get("pm_generated_at") or "",
+        "pm_input_schema_status": manifest.get("pm_input_schema_status") or "",
+        "pm_current_source": manifest.get("pm_current_source") or "",
+        "pm_current_as_of": manifest.get("pm_current_as_of") or "",
+        "pm_current_freshness": manifest.get("pm_current_freshness") or "",
+        "pm_feature_source": manifest.get("pm_feature_source") or "",
+        "pm_feature_row_count": manifest.get("pm_feature_row_count"),
+        "pm_opportunity_source": manifest.get("pm_opportunity_source") or "",
+        "pm_opportunity_status": manifest.get("pm_opportunity_status") or "",
+        "pm_missing_fields": manifest.get("pm_missing_fields") or [],
+        "pm_missing_symbols": manifest.get("pm_missing_symbols") or [],
+        "pm_derived_fields": manifest.get("pm_derived_fields") or [],
+        "pm_defaulted_fields": manifest.get("pm_defaulted_fields") or [],
+        "pm_review_required": bool(manifest.get("pm_review_required")),
+        "pm_review_reason": manifest.get("pm_review_reason") or "",
+        "summary": summary,
+    }
+
+
+def _data_readiness_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    status = str(manifest.get("data_readiness_status") or "")
+    reasons = list(manifest.get("data_readiness_review_reasons") or manifest.get("data_readiness_halt_reasons") or [])
+    summary = (
+        f"Data readiness {status}: {', '.join(str(reason) for reason in reasons)}"
+        if status and reasons
+        else f"Data readiness {status or 'not evaluated'}"
+    )
+    return {
+        "data_readiness_status": status,
+        "data_readiness_scope": manifest.get("data_readiness_scope") or "",
+        "data_readiness_artifact_path": manifest.get("data_readiness_artifact_path") or "",
+        "data_readiness_review_reasons": list(manifest.get("data_readiness_review_reasons") or []),
+        "data_readiness_halt_reasons": list(manifest.get("data_readiness_halt_reasons") or []),
+        "data_readiness_next_operator_action": manifest.get("data_readiness_next_operator_action") or "",
+        "market_calendar_status": manifest.get("market_calendar_status") or "",
+        "market_data_status": manifest.get("market_data_status") or "",
+        "quote_status": manifest.get("quote_status") or "",
+        "safety_market_input_status": manifest.get("safety_market_input_status") or "",
+        "candidate_model_path": manifest.get("candidate_model_path") or "",
+        "candidate_model_status": manifest.get("candidate_model_status") or "",
+        "opportunity_model_path": manifest.get("opportunity_model_path") or "",
+        "opportunity_model_status": manifest.get("opportunity_model_status") or "",
+        "pending_slot_status": manifest.get("pending_slot_status") or "",
+        "pending_active": bool(manifest.get("pending_active")),
+        "runtime_core_production_baseline": bool(manifest.get("runtime_core_production_baseline")),
+        "broker_environment": manifest.get("broker_environment") or "",
+        "broker_environment_production": bool(manifest.get("broker_environment_production")),
+        "evidence_production_equivalent": bool(manifest.get("evidence_production_equivalent")),
+        "acceptance_production_equivalent": bool(manifest.get("acceptance_production_equivalent")),
+        "runtime_execution_path": manifest.get("runtime_execution_path") or "",
+        "component_reasons": manifest.get("component_reasons") or {},
+        "effective_component_statuses": manifest.get("effective_component_statuses") or {},
+        "summary": summary,
+    }
+
+
+def _market_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    status = str(manifest.get("market_evidence_status") or manifest.get("market_data_status") or "")
+    reason = str(manifest.get("market_evidence_reason") or "")
+    market_date = str(manifest.get("market_date") or "")
+    latest_expected = str(manifest.get("latest_expected_trading_date") or "")
+    latest_available = str(manifest.get("latest_available_market_date") or "")
+    quote_count = int(manifest.get("quote_count") or 0)
+    missing_quote_count = int(manifest.get("missing_quote_count") or 0)
+    publication_status = str(manifest.get("publication_status") or "")
+    next_action = (
+        "Review market / quote evidence before proceeding."
+        if status in {"REVIEW_REQUIRED", "STALE", "DATA_NOT_YET_AVAILABLE", "HALT"}
+        else "Proceed with normal evidence review."
+    )
+    summary = (
+        f"Market Evidence {status or 'not evaluated'}: market_date={market_date}, "
+        f"latest_expected={latest_expected}, latest_available={latest_available}, "
+        f"quotes={quote_count}, missing_quotes={missing_quote_count}, publication={publication_status}"
+    )
+    if reason:
+        summary += f", reason={reason}"
+    return {
+        "market_evidence_status": status,
+        "market_evidence_reason": reason,
+        "market_evidence_path": manifest.get("market_evidence_path") or "",
+        "market_date": market_date,
+        "latest_expected_trading_date": latest_expected,
+        "latest_available_market_date": latest_available,
+        "quote_count": quote_count,
+        "missing_quote_count": missing_quote_count,
+        "publication_status": publication_status,
+        "next_operator_action": next_action,
+        "summary": summary,
+    }
+
+
+def _current_temporal_migration_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    status = str(manifest.get("current_temporal_migration_status") or "")
+    reason = str(manifest.get("current_temporal_migration_reason") or "")
+    source_schema = str(manifest.get("current_temporal_source_schema_version") or "")
+    target_schema = str(manifest.get("current_temporal_target_schema_version") or "")
+    position_date = str(manifest.get("position_state_as_of") or "")
+    valuation_date = str(manifest.get("valuation_as_of") or "")
+    legacy_used = bool(manifest.get("current_temporal_legacy_as_of_used"))
+    apply_executed = bool(manifest.get("current_temporal_apply_executed"))
+    missing = list(manifest.get("current_temporal_missing_evidence") or [])
+    summary = (
+        f"Current Temporal Migration {status or 'not evaluated'}: "
+        f"source={source_schema}, target={target_schema}, "
+        f"position_state_as_of={position_date}, valuation_as_of={valuation_date}, "
+        f"legacy_as_of_used={legacy_used}, apply_executed={apply_executed}"
+    )
+    if missing:
+        summary += ", missing=" + ",".join(str(item) for item in missing)
+    if reason:
+        summary += f", reason={reason}"
+    return {
+        "current_temporal_migration_status": status,
+        "current_temporal_migration_reason": reason,
+        "source_schema": source_schema,
+        "target_schema": target_schema,
+        "position_state_as_of": position_date,
+        "valuation_as_of": valuation_date,
+        "legacy_as_of_used": legacy_used,
+        "missing_evidence": missing,
+        "apply_executed": apply_executed,
+        "summary": summary,
+    }
+
+
+def _current_valuation_refresh_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    status = str(manifest.get("current_valuation_refresh_status") or manifest.get("current_valuation_status") or "")
+    reason = str(manifest.get("current_valuation_refresh_reason") or "")
+    no_fill = bool(manifest.get("current_valuation_no_fill"))
+    position_date = str(manifest.get("current_valuation_position_state_as_of") or "")
+    valuation_date = str(manifest.get("current_valuation_as_of") or "")
+    market_date = str(manifest.get("current_valuation_market_date") or "")
+    valued_count = int(manifest.get("current_valuation_valued_position_count") or 0)
+    missing_symbols = list(manifest.get("current_valuation_missing_symbols") or [])
+    previous_market_value = float(manifest.get("current_valuation_previous_total_market_value") or 0)
+    new_market_value = float(manifest.get("current_valuation_new_total_market_value") or 0)
+    apply_executed = bool(manifest.get("current_valuation_apply_executed"))
+    summary = (
+        f"Current Valuation Refresh {status or 'not evaluated'}: no_fill={no_fill}, "
+        f"position_state_as_of={position_date}, valuation_as_of={valuation_date}, "
+        f"market_date={market_date}, valued_positions={valued_count}, "
+        f"missing_symbols={missing_symbols}, market_value={previous_market_value}->{new_market_value}, "
+        f"apply_executed={apply_executed}"
+    )
+    if reason:
+        summary += f", reason={reason}"
+    return {
+        "current_valuation_status": status,
+        "current_valuation_reason": reason,
+        "no_fill": no_fill,
+        "position_state_as_of": position_date,
+        "valuation_as_of": valuation_date,
+        "market_date": market_date,
+        "valued_position_count": valued_count,
+        "missing_symbols": missing_symbols,
+        "previous_total_market_value": previous_market_value,
+        "new_total_market_value": new_market_value,
+        "apply_executed": apply_executed,
+        "summary": summary,
+    }
+
+
+def _pending_lifecycle_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    status = str(manifest.get("pending_lifecycle_status") or "")
+    reason = str(manifest.get("transition_reason") or "")
+    summary = (
+        f"Pending lifecycle {status}: {reason}"
+        if status
+        else "Pending lifecycle not evaluated"
+    )
+    return {
+        "pending_lifecycle_status": status,
+        "pending_plan_id": manifest.get("pending_plan_id") or "",
+        "previous_state": manifest.get("previous_state") or "",
+        "new_state": manifest.get("new_state") or "",
+        "transition_reason": reason,
+        "target_session_date": manifest.get("target_session_date") or "",
+        "approval_expires_at": manifest.get("approval_expires_at") or "",
+        "consumed": bool(manifest.get("consumed")),
+        "submit_attempt_detected": bool(manifest.get("submit_attempt_detected")),
+        "unknown_submit_risk": bool(manifest.get("unknown_submit_risk")),
+        "history_path": manifest.get("history_path") or "",
+        "next_operator_action": manifest.get("next_operator_action") or "",
+        "summary": summary,
+    }
+
+
+def _buy_ai_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    candidate_count = int(manifest.get("candidate_count") or 0)
+    opportunity_count = int(manifest.get("opportunity_count") or 0)
+    selected_count = int(manifest.get("selected_rank_count") or 0)
+    summary = (
+        f"selected_candidates {selected_count}, selected_top_rank 1"
+        if selected_count
+        else f"Candidate/Opportunity AI evidence not present; status={manifest.get('buy_ai_status') or ''}; reason={manifest.get('buy_ai_reason') or ''}"
+    )
+    return {
+        "buy_ai_status": manifest.get("buy_ai_status") or "",
+        "buy_ai_reason": manifest.get("buy_ai_reason") or "",
+        "candidate": {
+            "candidate_model_version": manifest.get("candidate_model_version") or "",
+            "candidate_artifact_path": manifest.get("candidate_artifact_path") or "",
+            "candidate_count": candidate_count,
+            "candidate_schema_status": manifest.get("candidate_schema_status") or "",
+            "candidate_missing_columns": manifest.get("candidate_missing_columns") or [],
+            "candidate_review_required": manifest.get("candidate_review_required") or False,
+            "candidate_review_reason": manifest.get("candidate_review_reason") or "",
+        },
+        "opportunity": {
+            "opportunity_model_version": manifest.get("opportunity_model_version") or "",
+            "opportunity_artifact_path": manifest.get("opportunity_artifact_path") or "",
+            "opportunity_count": opportunity_count,
+            "selected_rank_count": selected_count,
+            "opportunity_schema_status": manifest.get("opportunity_schema_status") or "",
+            "opportunity_missing_columns": manifest.get("opportunity_missing_columns") or [],
+            "opportunity_review_required": manifest.get("opportunity_review_required") or False,
+            "opportunity_review_reason": manifest.get("opportunity_review_reason") or "",
+        },
+        "selected_candidates": selected_count,
+        "selected_top_rank": 1 if selected_count else None,
+        "summary": summary,
+    }
+
+
+def _policy_evidence(manifest: dict[str, Any], pending: dict[str, Any]) -> dict[str, Any]:
+    pending_policy = dict(pending.get("policy_context") or {})
+    return {
+        "capital_deployment_policy_source": manifest.get("capital_deployment_policy_source")
+        or pending_policy.get("policy_source")
+        or "",
+        "capital_deployment_policy_version": manifest.get("capital_deployment_policy_version")
+        or pending_policy.get("policy_version")
+        or "",
+        "active_policy_hash": manifest.get("active_policy_hash")
+        or manifest.get("capital_deployment_policy_hash")
+        or pending.get("capital_deployment_policy_hash")
+        or pending_policy.get("policy_hash")
+        or "",
+        "target_investment_ratio": manifest.get("target_investment_ratio")
+        or pending_policy.get("target_investment_ratio"),
+        "cash_buffer": manifest.get("cash_buffer") or pending_policy.get("cash_buffer"),
+        "max_exposure": manifest.get("max_exposure") or pending_policy.get("max_exposure"),
+        "max_position_weight": manifest.get("max_position_weight") or pending_policy.get("max_position_weight"),
+        "max_positions": manifest.get("max_positions") or pending_policy.get("max_positions"),
+    }
+
+
+def _safety_evidence(manifest: dict[str, Any], pending: dict[str, Any]) -> dict[str, Any]:
+    pending_safety = dict(pending.get("safety_context") or {})
+    return {
+        "safety_decision_id": manifest.get("safety_decision_id")
+        or pending.get("safety_decision_id")
+        or pending_safety.get("safety_decision_id")
+        or "",
+        "safety_policy_version": manifest.get("safety_policy_version")
+        or pending.get("safety_policy_version")
+        or pending_safety.get("safety_policy_version")
+        or "",
+        "safety_source": manifest.get("safety_source") or pending_safety.get("safety_source") or "",
+        "safety_decision": manifest.get("safety_decision") or pending_safety.get("decision") or "",
+        "safety_reason": manifest.get("safety_reason") or pending_safety.get("reason") or "",
+        "safety_status": manifest.get("safety_status") or "",
+        "block_buy": bool(manifest.get("safety_block_buy") or pending_safety.get("block_buy")),
+        "block_sell": bool(manifest.get("safety_block_sell") or pending_safety.get("block_sell")),
+        "block_submit": bool(manifest.get("safety_block_submit") or pending_safety.get("block_submit")),
+        "halt_runtime": bool(manifest.get("safety_halt_runtime") or pending_safety.get("halt_runtime")),
+        "emergency_stop": bool(manifest.get("safety_emergency_stop") or pending_safety.get("emergency_stop")),
+    }
+
+
+def _submit_guard_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    item_evidence = tuple(item for item in manifest.get("submit_guard_item_evidence") or () if isinstance(item, dict))
+    policy_consistency = dict(manifest.get("submit_policy_consistency") or {})
+    item_decisions = tuple(str(item.get("guard_decision") or item.get("decision") or "") for item in item_evidence)
+    reasons = tuple(
+        str(item.get("guard_reason") or item.get("reason") or item.get("manual_review_reason") or "")
+        for item in item_evidence
+        if item.get("guard_reason") or item.get("reason") or item.get("manual_review_reason")
+    )
+    violated = tuple(
+        str(item.get("violated_policy") or item.get("violated_policy_source") or "")
+        for item in item_evidence
+        if item.get("violated_policy") or item.get("violated_policy_source")
+    )
+    broker_quantity_checked = any(
+        bool(item.get("broker_available_quantity_checked") or item.get("broker_available_quantity_source"))
+        for item in item_evidence
+    )
+    sell_quantity_status = next(
+        (
+            str(item.get("sell_quantity_guard_status") or item.get("quantity_guard_status") or "")
+            for item in item_evidence
+            if str(item.get("side") or "").upper() == "SELL"
+        ),
+        "",
+    )
+    return {
+        "guard_decision": _aggregate_guard_decision(item_decisions),
+        "guard_reason": "; ".join(reasons),
+        "violated_policy": ", ".join(value for value in violated if value),
+        "violated_policy_source": _first_non_empty(item.get("violated_policy_source") for item in item_evidence),
+        "manual_review_required": any(bool(item.get("manual_review_required")) for item in item_evidence),
+        "policy_consistency_status": policy_consistency.get("policy_consistency_status")
+        or policy_consistency.get("status")
+        or "",
+        "policy_mismatch_reason": policy_consistency.get("policy_mismatch_reason")
+        or policy_consistency.get("reason")
+        or "",
+        "broker_available_quantity_checked": broker_quantity_checked,
+        "broker_available_quantity_source": _first_non_empty(
+            item.get("broker_available_quantity_source") for item in item_evidence
+        ),
+        "sell_quantity_guard_status": sell_quantity_status,
+        "item_count": len(item_evidence),
+    }
+
+
+def _non_trading_day_demo_override_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "trading_day": bool(manifest.get("trading_day", True)),
+        "business_day": bool(manifest.get("business_day", True)),
+        "market_open": bool(manifest.get("market_open", True)),
+        "non_trading_day_demo_override": bool(manifest.get("non_trading_day_demo_override", False)),
+        "override_source": str(manifest.get("override_source") or "not_applicable"),
+        "override_reason": str(manifest.get("override_reason") or "not_applicable"),
+        "production_equivalent": bool(manifest.get("production_equivalent", True)),
+        "acceptance_scope": str(manifest.get("acceptance_scope") or "regular_runtime"),
+    }
+
+
+def _review_required_blocked_halt(
+    *,
+    manifest: dict[str, Any],
+    runtime_state: dict[str, Any],
+    events: tuple[dict[str, Any], ...],
+    review_required: bool,
+    blocked: bool,
+    halt: bool,
+    guard: dict[str, Any],
+    safety: dict[str, Any],
+) -> dict[str, Any]:
+    final_state = str(manifest.get("final_state") or runtime_state.get("state") or "unknown")
+    warnings = tuple(str(value) for value in manifest.get("warnings") or ())
+    errors = tuple(str(value) for value in manifest.get("errors") or ())
+    review_reasons = list(warnings)
+    blocked_reasons = list(errors if blocked else ())
+    halt_reasons = list(errors if halt else ())
+    for stage in manifest.get("stages") or ():
+        if not isinstance(stage, dict):
+            continue
+        status = str(stage.get("status") or "").upper()
+        message = str(stage.get("message") or stage.get("name") or "")
+        if status == "REVIEW_REQUIRED":
+            review_reasons.append(message)
+        elif status == "BLOCKED":
+            blocked_reasons.append(message)
+        elif status == "HALT":
+            halt_reasons.append(message)
+    for event in events:
+        severity = str(event.get("severity") or "").upper()
+        message = str(event.get("message") or event.get("event_type") or "")
+        if severity == "REVIEW_REQUIRED":
+            review_reasons.append(message)
+        elif severity == "BLOCKED":
+            blocked_reasons.append(message)
+        elif severity == "HALT":
+            halt_reasons.append(message)
+    if guard.get("manual_review_required"):
+        review_reasons.append(guard.get("guard_reason") or "submit guard manual review required")
+    if safety.get("safety_reason") and (
+        safety.get("block_buy")
+        or safety.get("block_sell")
+        or safety.get("block_submit")
+        or safety.get("halt_runtime")
+        or safety.get("emergency_stop")
+    ):
+        review_reasons.append(str(safety["safety_reason"]))
+    return {
+        "final_state": final_state,
+        "review_required_reasons": tuple(dict.fromkeys(reason for reason in review_reasons if reason)),
+        "blocked_reasons": tuple(dict.fromkeys(reason for reason in blocked_reasons if reason)),
+        "halt_reasons": tuple(dict.fromkeys(reason for reason in halt_reasons if reason)),
+        "review_required": bool(review_required or review_reasons),
+        "blocked": bool(blocked or blocked_reasons),
+        "halt": bool(halt or halt_reasons),
+    }
+
+
 def _positions_from_asset(asset_state: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     positions = asset_state.get("positions") or ()
     if isinstance(positions, dict):
@@ -711,6 +1355,41 @@ def _operation_summary(operation: dict[str, Any], *, include_orders: bool = True
     if include_orders:
         lines.extend(("", "### Today's Orders", _orders_table(operation.get("orders"))))
     return "\n".join(lines)
+
+
+def _why_text(reason_evidence: dict[str, Any], *, side: str) -> str:
+    values = reason_evidence["why_buy"] if side == "BUY" else reason_evidence["why_sell"]
+    if not values:
+        return "- No side-specific Runtime Core reason evidence."
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _pm_why_text(position_management: dict[str, Any], decision: str) -> str:
+    key = "pm_hold_count" if decision == "HOLD" else "pm_exit_count"
+    count = int(position_management.get(key) or 0)
+    if count <= 0:
+        return f"- No {decision} decision in latest Position Management artifact."
+    return (
+        f"- {decision} count: {count}\n"
+        f"- model_version: {position_management.get('pm_model_version') or 'unknown'}\n"
+        f"- artifact: {position_management.get('pm_artifact_path') or 'unknown'}"
+    )
+
+
+def _buy_ai_why_selected(buy_ai: dict[str, Any]) -> str:
+    selected = int(buy_ai.get("selected_candidates") or 0)
+    if selected <= 0:
+        return "- No selected BUY candidate in latest Candidate/Opportunity AI artifacts."
+    opportunity = dict(buy_ai.get("opportunity") or {})
+    candidate = dict(buy_ai.get("candidate") or {})
+    return (
+        f"- selected_candidates: {selected}\n"
+        f"- selected_top_rank: {buy_ai.get('selected_top_rank')}\n"
+        f"- candidate_model_version: {candidate.get('candidate_model_version') or 'unknown'}\n"
+        f"- opportunity_model_version: {opportunity.get('opportunity_model_version') or 'unknown'}\n"
+        f"- candidate_artifact: {candidate.get('candidate_artifact_path') or 'unknown'}\n"
+        f"- opportunity_artifact: {opportunity.get('opportunity_artifact_path') or 'unknown'}"
+    )
 
 
 def _bullet_dict(values: dict[str, Any]) -> str:
@@ -818,6 +1497,8 @@ def _public_json_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "ledger_history": summary["ledger_history"],
         "pending_approval": summary["pending_approval"],
         "warning_summary": summary["warning_summary"],
+        "reason_evidence": summary["reason_evidence"],
+        "position_management": summary["position_management"],
         "notification": summary["notification"],
         "current_sot": summary["current_sot"],
         "positions": summary["positions"],
@@ -829,6 +1510,135 @@ def _public_json_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "notification_payload": summary["notification_payload"],
         "notes": summary["notes"],
     }
+
+
+def _notification_severity(review: dict[str, Any], guard: dict[str, Any], safety: dict[str, Any]) -> str:
+    final_state = str(review.get("final_state") or "").upper()
+    if final_state == "HALT" or review.get("halt") or safety.get("halt_runtime") or safety.get("emergency_stop"):
+        return "HALT"
+    if final_state == "BLOCKED" or review.get("blocked"):
+        return "BLOCKED"
+    if final_state == "REVIEW_REQUIRED" or review.get("review_required"):
+        return "REVIEW_REQUIRED"
+    if guard.get("manual_review_required"):
+        return "ACTION_REQUIRED"
+    return "INFO"
+
+
+def _next_operator_action(
+    severity: str,
+    guard: dict[str, Any],
+    safety: dict[str, Any],
+    review: dict[str, Any],
+) -> str:
+    if severity == "HALT":
+        return "Stop runtime operation and inspect Safety / Operation Guard before rerun."
+    if guard.get("violated_policy") == "broker_available_quantity" or (
+        "broker_available_quantity" in str(guard.get("guard_reason") or "")
+    ):
+        return "Refresh Broker ReadOnly positions and confirm SELL available quantity."
+    if safety.get("block_submit"):
+        return "Inspect Runtime Safety decision and do not submit until Safety is PASS."
+    if severity in {"REVIEW_REQUIRED", "ACTION_REQUIRED"}:
+        reasons = tuple(review.get("review_required_reasons") or ())
+        if reasons:
+            return "Review Runtime manifest reasons: " + "; ".join(reasons[:3])
+        return "Review Runtime manifest, Pending, Approval, Safety, and Submit Guard evidence."
+    if severity == "BLOCKED":
+        return "Resolve blocked Runtime evidence before rerun."
+    return "No operator action required."
+
+
+def _reason_summary(
+    *,
+    policy: dict[str, Any],
+    safety: dict[str, Any],
+    guard: dict[str, Any],
+    review: dict[str, Any],
+) -> str:
+    parts = [
+        "final_state=" + str(review.get("final_state") or "unknown"),
+        "policy=" + _policy_summary(policy),
+        "safety=" + _safety_summary(safety),
+        "guard=" + _guard_summary(guard),
+    ]
+    return "; ".join(parts)
+
+
+def _policy_summary(policy: dict[str, Any]) -> str:
+    source = policy.get("capital_deployment_policy_source") or "missing"
+    version = policy.get("capital_deployment_policy_version") or "missing"
+    max_exposure = policy.get("max_exposure")
+    max_position_weight = policy.get("max_position_weight")
+    return (
+        f"source={source}, version={version}, max_exposure={max_exposure}, "
+        f"max_position_weight={max_position_weight}"
+    )
+
+
+def _safety_summary(safety: dict[str, Any]) -> str:
+    decision = safety.get("safety_decision") or "unknown"
+    reason = safety.get("safety_reason") or "none"
+    return f"decision={decision}, reason={reason}"
+
+
+def _guard_summary(guard: dict[str, Any]) -> str:
+    decision = guard.get("guard_decision") or "NOT_EVALUATED"
+    reason = guard.get("guard_reason") or "none"
+    violated = guard.get("violated_policy") or "none"
+    return f"decision={decision}, violated_policy={violated}, reason={reason}"
+
+
+def _why_side(
+    side: str,
+    guard: dict[str, Any],
+    policy: dict[str, Any],
+    safety: dict[str, Any],
+) -> tuple[str, ...]:
+    side_upper = side.upper()
+    if guard.get("item_count") == 0:
+        return (
+            f"{side_upper} was not submitted in the latest Runtime manifest, or Submit Guard was not evaluated.",
+            "Report did not recalculate Policy, Safety, or Submit Guard.",
+        )
+    safety_blocked = safety.get("block_buy") if side_upper == "BUY" else safety.get("block_sell")
+    lines = [
+        f"Policy source: {policy.get('capital_deployment_policy_source') or 'missing'}",
+        f"Policy version: {policy.get('capital_deployment_policy_version') or 'missing'}",
+        f"Safety decision: {safety.get('safety_decision') or 'unknown'}",
+        f"Safety reason: {safety.get('safety_reason') or 'none'}",
+        f"Submit Guard decision: {guard.get('guard_decision') or 'NOT_EVALUATED'}",
+    ]
+    if safety_blocked:
+        lines.append(f"{side_upper} is blocked by Runtime Safety.")
+    if guard.get("violated_policy"):
+        lines.append(f"Violated policy: {guard['violated_policy']}")
+    if guard.get("guard_reason"):
+        lines.append(f"Guard reason: {guard['guard_reason']}")
+    if side_upper == "SELL":
+        lines.append(f"Broker available quantity checked: {guard.get('broker_available_quantity_checked')}")
+        if guard.get("broker_available_quantity_source"):
+            lines.append(f"Broker available quantity source: {guard['broker_available_quantity_source']}")
+    return tuple(lines)
+
+
+def _aggregate_guard_decision(decisions: tuple[str, ...]) -> str:
+    normalized = tuple(decision.upper() for decision in decisions if decision)
+    if not normalized:
+        return "NOT_EVALUATED"
+    for status in ("HALT", "BLOCKED", "REVIEW_REQUIRED", "FAIL"):
+        if status in normalized:
+            return status
+    if all(status == "PASS" for status in normalized):
+        return "PASS"
+    return normalized[0]
+
+
+def _first_non_empty(values: Any) -> str:
+    for value in values:
+        if value:
+            return str(value)
+    return ""
 
 
 def _has_event(events: Any, event_type: str) -> bool:

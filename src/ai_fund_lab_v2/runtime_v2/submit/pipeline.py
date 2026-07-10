@@ -5,11 +5,15 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from ai_fund_lab_v2.broker.issue_code_normalizer import (
+    BrokerIssueCodeNormalizationError,
+    normalize_broker_issue_code,
+)
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
@@ -18,6 +22,18 @@ from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
+    CapitalDeploymentPolicy,
+    CapitalDeploymentPolicyError,
+    capital_deployment_policy_hash,
+    load_capital_deployment_policy,
+    missing_policy_manifest_fields,
+)
+from ai_fund_lab_v2.runtime_v2.safety_decision import (
+    RuntimeSafetyDecision,
+    load_runtime_safety_decision,
+    safety_allows_action,
+)
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, RuntimeV2SubmitResult
 
@@ -31,6 +47,23 @@ class RuntimeV2SubmitAdapter(Protocol):
 
     def submit(self, command: RuntimeV2SubmitCommand) -> RuntimeV2SubmitResult:
         ...
+
+
+@dataclass(frozen=True)
+class BrokerAvailableQuantityEvidence:
+    checked: bool
+    source: str
+    quantity: float | None = None
+    symbol: str = ""
+    issue_code: str = ""
+    snapshot_path: str = ""
+    snapshot_at: str = ""
+    review_required: bool = True
+    production_equivalent: bool = False
+    total_quantity: float | None = None
+    restricted_quantity: float | None = None
+    account_type: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -54,6 +87,7 @@ class SubmitItemResult:
     response_classification: dict[str, Any]
     configuration_diagnostic: dict[str, Any]
     next_action: str
+    guard_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,6 +111,9 @@ class SubmitPipelineResult:
     raw_request_saved: bool = False
     raw_response_saved: bool = False
     secret_saved: bool = False
+    submit_guard_policy: dict[str, Any] = field(default_factory=dict)
+    submit_policy_consistency: dict[str, Any] = field(default_factory=dict)
+    submit_guard_item_evidence: tuple[dict[str, Any], ...] = ()
 
     def to_stage_details(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -84,6 +121,7 @@ class SubmitPipelineResult:
         payload["submitted_order_ids"] = list(self.submitted_order_ids)
         payload["ledger_order_record_ids"] = list(self.ledger_order_record_ids)
         payload["submitted_symbols"] = list(self.submitted_symbols)
+        payload["submit_guard_item_evidence"] = list(self.submit_guard_item_evidence)
         return payload
 
 
@@ -96,7 +134,9 @@ def run_submit_pipeline(
     job: str,
     settings: Any | None = None,
     adapter: RuntimeV2SubmitAdapter | None = None,
-    max_order_amount: float | None = 100_000.0,
+    capital_deployment_policy_path: Path | str | None = None,
+    capital_deployment_policy: CapitalDeploymentPolicy | None = None,
+    safety_decision: RuntimeSafetyDecision | None = None,
 ) -> SubmitPipelineResult:
     """Submit all approved Pending items through the Runtime v2 submit path."""
 
@@ -109,6 +149,17 @@ def run_submit_pipeline(
         )
     if mode != "demo":
         return _blocked_result(reason="production submit is prohibited in Phase14-E17", runtime_root=runtime_root_path)
+    policy, policy_manifest, policy_error = _resolve_capital_deployment_policy(
+        capital_deployment_policy=capital_deployment_policy,
+        capital_deployment_policy_path=capital_deployment_policy_path,
+    )
+    if policy is None:
+        return _blocked_result(
+            reason=policy_error or "capital deployment policy missing",
+            runtime_root=runtime_root_path,
+            status="REVIEW_REQUIRED",
+            submit_guard_policy=policy_manifest,
+        )
 
     settings = settings or _load_broker_settings()
     base_url = settings.base_url.rstrip("/")
@@ -127,8 +178,29 @@ def run_submit_pipeline(
         return _blocked_result(reason=guard_reason, runtime_root=runtime_root_path, pending_path=str(pending_read.path))
 
     approval = _approval_from_pending(pending)
+    policy_consistency = _policy_consistency_evidence(
+        pending=pending,
+        approval=approval,
+        active_policy=policy,
+    )
+    if policy_consistency["policy_consistency_status"] != "PASS":
+        return _blocked_result(
+            reason=str(policy_consistency["policy_mismatch_reason"]),
+            runtime_root=runtime_root_path,
+            pending_path=str(pending_read.path),
+            status="REVIEW_REQUIRED",
+            submit_guard_policy=_submit_guard_policy_manifest(policy),
+            submit_policy_consistency=policy_consistency,
+        )
     existing_dedup_keys = _existing_order_dedup_keys(runtime_root_path / "persistent_ledger" / "orders.jsonl")
-    current_positions = _current_position_quantities(runtime_root_path / "persistent_ledger" / "state.json")
+    current_state = _current_state_summary(runtime_root_path / "persistent_ledger" / "state.json")
+    current_positions = dict(current_state["positions"])
+    broker_available_positions = _load_broker_available_quantity_snapshot(runtime_root_path)
+    runtime_safety_decision = safety_decision or load_runtime_safety_decision(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+    )
     submit_adapter = adapter or _build_tachibana_demo_submit_adapter(settings)
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
@@ -136,6 +208,46 @@ def run_submit_pipeline(
     for approved_item_id in pending.approved_item_ids:
         item = next(item for item in pending.items if item.pending_item_id == approved_item_id)
         sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
+        broker_available_evidence = (
+            _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
+            if item.side == "SELL"
+            else BrokerAvailableQuantityEvidence(checked=False, source="")
+        )
+        guard_evidence = _submit_guard_item_evidence(
+            item=item,
+            policy=policy,
+            current_state=current_state,
+            broker_position_quantity=sell_position_quantity,
+            broker_available_quantity=broker_available_evidence.quantity,
+            broker_available_quantity_evidence=broker_available_evidence,
+            safety_decision=runtime_safety_decision,
+        )
+        if guard_evidence["guard_decision"] == "BLOCKED":
+            item_results.append(
+                SubmitItemResult(
+                    pending_item_id=item.pending_item_id,
+                    symbol=item.symbol,
+                    side=item.side,
+                    quantity=item.quantity,
+                    preflight_status="BLOCKED",
+                    submit_status="NOT_SUBMITTED",
+                    submitted=False,
+                    accepted=False,
+                    rejected=False,
+                    unknown=False,
+                    blocked=True,
+                    review_required=bool(guard_evidence["manual_review_required"]),
+                    broker_order_id_hash="",
+                    ledger_order_record_id="",
+                    reason=str(guard_evidence["guard_reason"]),
+                    issue_code_normalization={},
+                    response_classification={},
+                    configuration_diagnostic={},
+                    next_action="",
+                    guard_evidence=guard_evidence,
+                )
+            )
+            continue
         preflight = run_submit_preflight(
             pending_plan=pending,
             approval_artifact=approval,
@@ -145,13 +257,20 @@ def run_submit_pipeline(
             base_url_is_demo=base_url_is_demo,
             base_url_is_production=base_url_is_production,
             live_order_allowed=True,
-            max_order_amount=max_order_amount,
             broker_position_quantity=sell_position_quantity,
-            broker_available_quantity=sell_position_quantity,
+            broker_available_quantity=broker_available_evidence.quantity,
             source_current_path="pending_order_plan/pending_order_plan.json",
             broker_capability=get_broker_capability(mode),
         )
         if not preflight.allowed or preflight.command is None:
+            guard_evidence = {
+                **guard_evidence,
+                "guard_decision": "BLOCKED",
+                "guard_reason": preflight.reason,
+                "blocked_at_submit_reason": preflight.reason,
+                "violated_policy": guard_evidence.get("violated_policy") or "submit_preflight",
+                "violated_policy_source": guard_evidence.get("violated_policy_source") or "runtime_v2_submit_preflight",
+            }
             item_results.append(
                 SubmitItemResult(
                     pending_item_id=item.pending_item_id,
@@ -173,6 +292,7 @@ def run_submit_pipeline(
                     response_classification={},
                     configuration_diagnostic={},
                     next_action="",
+                    guard_evidence=guard_evidence,
                 )
             )
             continue
@@ -199,6 +319,7 @@ def run_submit_pipeline(
                     response_classification=dict(adapter_preflight.response_classification),
                     configuration_diagnostic=dict(adapter_preflight.configuration_diagnostic),
                     next_action=adapter_preflight.next_action,
+                    guard_evidence=guard_evidence,
                 )
             )
             continue
@@ -233,6 +354,7 @@ def run_submit_pipeline(
                 response_classification=dict(submit_result.response_classification),
                 configuration_diagnostic=dict(submit_result.configuration_diagnostic),
                 next_action=submit_result.next_action,
+                guard_evidence=guard_evidence,
             )
         )
 
@@ -256,8 +378,15 @@ def run_submit_pipeline(
     status = "PASS"
     reason = "submitted"
     if submitted_count == 0:
-        status = "BLOCKED"
-        reason = "no pending items were submitted"
+        if any(result.guard_evidence.get("safety_guard_status") == "HALT" for result in item_results):
+            status = "HALT"
+            reason = "safety halt runtime"
+        elif any(result.review_required for result in item_results):
+            status = "REVIEW_REQUIRED"
+            reason = "submit blocked before broker boundary; manual review required"
+        else:
+            status = "BLOCKED"
+            reason = "no pending items were submitted"
     elif unknown_count or rejected_count or blocked_count:
         status = "REVIEW_REQUIRED"
         reason = "submit completed with rejected/unknown/blocked items"
@@ -279,6 +408,9 @@ def run_submit_pipeline(
         ledger_order_record_ids=tuple(result.ledger_order_record_id for result in item_results if result.submitted),
         submitted_symbols=tuple(result.symbol for result in item_results if result.submitted),
         item_results=tuple(item_results),
+        submit_guard_policy=_submit_guard_policy_manifest(policy),
+        submit_policy_consistency=policy_consistency,
+        submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
     )
 
 
@@ -323,7 +455,82 @@ def _approval_from_pending(pending: PendingOrderPlan) -> ApprovalArtifact:
         expires_at=pending.approval.approval_expires_at,
         review_required=False,
         reason="approval reconstructed from Pending Current link",
+        policy_version=pending.approval.policy_version,
+        policy_source=pending.approval.policy_source,
+        pending_policy_hash=pending.approval.pending_policy_hash,
+        safety_decision_id=pending.approval.safety_decision_id,
+        safety_policy_version=pending.approval.safety_policy_version,
     )
+
+
+def _policy_consistency_evidence(
+    *,
+    pending: PendingOrderPlan,
+    approval: ApprovalArtifact,
+    active_policy: CapitalDeploymentPolicy,
+) -> dict[str, Any]:
+    active_hash = capital_deployment_policy_hash(active_policy)
+    evidence = {
+        "policy_consistency_status": "PASS",
+        "pending_policy_version": pending.policy_version,
+        "pending_policy_source": pending.policy_source,
+        "pending_policy_hash": pending.pending_policy_hash,
+        "approval_policy_version": approval.policy_version,
+        "approval_policy_source": approval.policy_source,
+        "approval_pending_policy_hash": approval.pending_policy_hash,
+        "active_policy_version": active_policy.policy_version,
+        "active_policy_source": active_policy.policy_source,
+        "active_policy_hash": active_hash,
+        "policy_mismatch_reason": "",
+        "policy_mismatch_manual_review_required": False,
+    }
+    missing_reason = _missing_policy_evidence_reason(pending=pending, approval=approval, active_hash=active_hash)
+    if missing_reason:
+        evidence.update(
+            {
+                "policy_consistency_status": "REVIEW_REQUIRED",
+                "policy_mismatch_reason": missing_reason,
+                "policy_mismatch_manual_review_required": True,
+            }
+        )
+        return evidence
+    mismatches = []
+    if pending.policy_version != active_policy.policy_version:
+        mismatches.append("pending_policy_version")
+    if pending.policy_source != active_policy.policy_source:
+        mismatches.append("pending_policy_source")
+    if pending.pending_policy_hash != active_hash:
+        mismatches.append("pending_policy_hash")
+    if approval.policy_version != pending.policy_version:
+        mismatches.append("approval_policy_version")
+    if approval.policy_source != pending.policy_source:
+        mismatches.append("approval_policy_source")
+    if approval.pending_policy_hash != pending.pending_policy_hash:
+        mismatches.append("approval_pending_policy_hash")
+    if mismatches:
+        evidence.update(
+            {
+                "policy_consistency_status": "REVIEW_REQUIRED",
+                "policy_mismatch_reason": "policy_mismatch:" + ",".join(mismatches),
+                "policy_mismatch_manual_review_required": True,
+            }
+        )
+    return evidence
+
+
+def _missing_policy_evidence_reason(
+    *,
+    pending: PendingOrderPlan,
+    approval: ApprovalArtifact,
+    active_hash: str,
+) -> str:
+    if not pending.policy_version or not pending.policy_source or not pending.pending_policy_hash:
+        return "missing_policy_evidence"
+    if not approval.policy_version or not approval.policy_source or not approval.pending_policy_hash:
+        return "missing_approval_policy_evidence"
+    if not active_hash:
+        return "active_policy_hash_missing"
+    return ""
 
 
 def _ledger_order_record(
@@ -409,9 +616,494 @@ def _current_position_quantities(path: Path) -> dict[str, float]:
     return quantities
 
 
-def _blocked_result(*, reason: str, runtime_root: Path, pending_path: str = "") -> SubmitPipelineResult:
+def _current_state_summary(path: Path) -> dict[str, Any]:
+    empty = {
+        "cash": None,
+        "buying_power": None,
+        "current_exposure": 0.0,
+        "positions": {},
+        "current_position_source": str(path),
+    }
+    if not path.exists():
+        return empty
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return empty
+    positions: dict[str, float] = {}
+    exposure = 0.0
+    for position in payload.get("positions") or ():
+        symbol = str(position.get("symbol") or position.get("issue_code") or "").strip()
+        if not symbol:
+            continue
+        positions[symbol] = positions.get(symbol, 0.0) + _float(position.get("quantity"))
+        exposure += _float(position.get("market_value"))
+    return {
+        "cash": _optional_float(payload.get("cash")),
+        "buying_power": _optional_float(payload.get("buying_power")),
+        "current_exposure": exposure,
+        "positions": positions,
+        "current_position_source": str(path),
+    }
+
+
+def _load_broker_available_quantity_snapshot(runtime_root: Path) -> dict[str, Any]:
+    snapshot_dir = runtime_root / "broker" / "snapshots" / "positions"
+    snapshot_path = _latest_broker_positions_snapshot_path(snapshot_dir)
+    if snapshot_path is None:
+        return {
+            "status": "MISSING",
+            "source": "missing",
+            "snapshot_path": "",
+            "snapshot_at": "",
+            "records": (),
+            "review_required": True,
+            "production_equivalent": False,
+            "reason": "broker positions readonly snapshot missing",
+        }
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {
+            "status": "INVALID",
+            "source": "invalid",
+            "snapshot_path": str(snapshot_path),
+            "snapshot_at": "",
+            "records": (),
+            "review_required": True,
+            "production_equivalent": False,
+            "reason": "broker positions readonly snapshot invalid json",
+        }
+    records = tuple(_broker_position_records(payload))
+    source = str(payload.get("source") or "broker_readonly")
+    snapshot_at = str(payload.get("as_of") or payload.get("created_at") or payload.get("generated_at") or "")
+    return {
+        "status": "PASS" if records else "EMPTY",
+        "source": source,
+        "snapshot_path": str(snapshot_path),
+        "snapshot_at": snapshot_at,
+        "records": records,
+        "review_required": bool(payload.get("review_required", False)),
+        "production_equivalent": bool(payload.get("production_equivalent", source == "broker_readonly")),
+        "reason": "" if records else "broker positions readonly snapshot empty",
+    }
+
+
+def _latest_broker_positions_snapshot_path(snapshot_dir: Path) -> Path | None:
+    if not snapshot_dir.exists():
+        return None
+    candidates = [
+        path
+        for path in snapshot_dir.glob("*.json")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def _broker_position_records(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    records = payload.get("records")
+    if isinstance(records, list):
+        return tuple(record for record in records if isinstance(record, dict))
+    positions = payload.get("positions")
+    if isinstance(positions, list):
+        return tuple(position for position in positions if isinstance(position, dict))
+    return ()
+
+
+def _broker_available_quantity_evidence(
+    *,
+    item: Any,
+    snapshot: dict[str, Any],
+) -> BrokerAvailableQuantityEvidence:
+    normalized = _broker_issue_code_for_item(item)
+    if normalized.get("status") != "PASS":
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source=str(snapshot.get("source") or "missing"),
+            symbol=str(item.symbol),
+            issue_code="",
+            snapshot_path=str(snapshot.get("snapshot_path") or ""),
+            snapshot_at=str(snapshot.get("snapshot_at") or ""),
+            review_required=True,
+            production_equivalent=bool(snapshot.get("production_equivalent", False)),
+            reason="broker issue code normalization failed: " + str(normalized.get("reason") or ""),
+        )
+    broker_issue_code = str(normalized["broker_issue_code"])
+    if snapshot.get("status") != "PASS":
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source="missing",
+            symbol=str(item.symbol),
+            issue_code=broker_issue_code,
+            snapshot_path=str(snapshot.get("snapshot_path") or ""),
+            snapshot_at=str(snapshot.get("snapshot_at") or ""),
+            review_required=True,
+            production_equivalent=bool(snapshot.get("production_equivalent", False)),
+            reason=str(snapshot.get("reason") or "broker positions readonly snapshot missing"),
+        )
+    matching = [
+        record
+        for record in snapshot.get("records", ())
+        if _record_issue_code(record) == broker_issue_code
+    ]
+    if not matching:
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source="missing",
+            symbol=str(item.symbol),
+            issue_code=broker_issue_code,
+            snapshot_path=str(snapshot.get("snapshot_path") or ""),
+            snapshot_at=str(snapshot.get("snapshot_at") or ""),
+            review_required=True,
+            production_equivalent=bool(snapshot.get("production_equivalent", False)),
+            reason="broker positions readonly record missing for symbol",
+        )
+    total_quantity = sum(_float(record.get("quantity")) for record in matching)
+    available_values = [_optional_float(record.get("available_quantity")) for record in matching]
+    if any(value is None for value in available_values):
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source="missing",
+            symbol=str(item.symbol),
+            issue_code=broker_issue_code,
+            snapshot_path=str(snapshot.get("snapshot_path") or ""),
+            snapshot_at=_record_snapshot_at(matching, snapshot),
+            review_required=True,
+            production_equivalent=bool(snapshot.get("production_equivalent", False)),
+            total_quantity=total_quantity,
+            restricted_quantity=None,
+            account_type=_record_account_type(matching),
+            reason="broker available quantity missing in readonly record",
+        )
+    available_quantity = sum(float(value or 0.0) for value in available_values)
+    review_required = bool(snapshot.get("review_required", False)) or any(
+        bool(record.get("review_required", False)) for record in matching
+    )
+    production_equivalent = bool(snapshot.get("production_equivalent", False)) and all(
+        bool(record.get("production_equivalent", True)) for record in matching
+    )
+    return BrokerAvailableQuantityEvidence(
+        checked=not review_required,
+        source="broker_readonly",
+        quantity=available_quantity,
+        symbol=str(item.symbol),
+        issue_code=broker_issue_code,
+        snapshot_path=str(snapshot.get("snapshot_path") or ""),
+        snapshot_at=_record_snapshot_at(matching, snapshot),
+        review_required=review_required,
+        production_equivalent=production_equivalent,
+        total_quantity=total_quantity,
+        restricted_quantity=max(total_quantity - available_quantity, 0.0),
+        account_type=_record_account_type(matching),
+        reason="broker_readonly_available_quantity_confirmed",
+    )
+
+
+def _broker_issue_code_for_item(item: Any) -> dict[str, Any]:
+    try:
+        normalized = normalize_broker_issue_code(item.symbol, listed_info=item.listed_info)
+    except BrokerIssueCodeNormalizationError as exc:
+        return {"status": "BLOCKED", "reason": str(exc)}
+    return {"status": "PASS", "broker_issue_code": normalized.broker_issue_code}
+
+
+def _record_issue_code(record: dict[str, Any]) -> str:
+    return str(record.get("issue_code") or record.get("symbol") or record.get("position_key") or "").strip()
+
+
+def _record_snapshot_at(records: list[dict[str, Any]], snapshot: dict[str, Any]) -> str:
+    for record in records:
+        value = record.get("as_of") or record.get("updated_at")
+        if value:
+            return str(value)
+    return str(snapshot.get("snapshot_at") or "")
+
+
+def _record_account_type(records: list[dict[str, Any]]) -> str:
+    account_types = sorted({str(record.get("account_type") or "") for record in records if record.get("account_type")})
+    return ",".join(account_types)
+
+
+def _resolve_capital_deployment_policy(
+    *,
+    capital_deployment_policy: CapitalDeploymentPolicy | None,
+    capital_deployment_policy_path: Path | str | None,
+) -> tuple[CapitalDeploymentPolicy | None, dict[str, Any], str]:
+    if capital_deployment_policy is not None:
+        return capital_deployment_policy, _submit_guard_policy_manifest(capital_deployment_policy), ""
+    if capital_deployment_policy_path is None:
+        manifest = missing_policy_manifest_fields(
+            None,
+            reason="POLICY_MISSING:capital deployment policy is required for submit",
+        )
+        return None, manifest, str(manifest["policy_validation_status"])
+    try:
+        policy = load_capital_deployment_policy(capital_deployment_policy_path)
+    except CapitalDeploymentPolicyError as exc:
+        manifest = missing_policy_manifest_fields(capital_deployment_policy_path, reason="POLICY_MISSING:" + str(exc))
+        return None, manifest, str(manifest["policy_validation_status"])
+    return policy, _submit_guard_policy_manifest(policy), ""
+
+
+def _submit_guard_policy_manifest(policy: CapitalDeploymentPolicy) -> dict[str, Any]:
+    manifest = policy.to_manifest_fields()
+    manifest.update(
+        {
+            "guard_policy_version": "submit_guard_policy_v1",
+            "active_amount_policy": "buy_sell_separated_capital_deployment_policy",
+            "policy_source": policy.policy_source,
+            "policy_version": policy.policy_version,
+            "active_policy_hash": capital_deployment_policy_hash(policy),
+            "max_positions": policy.max_positions,
+        }
+    )
+    return manifest
+
+
+def _submit_guard_item_evidence(
+    *,
+    item: Any,
+    policy: CapitalDeploymentPolicy,
+    current_state: dict[str, Any],
+    broker_position_quantity: float | None,
+    broker_available_quantity: float | None,
+    broker_available_quantity_evidence: BrokerAvailableQuantityEvidence,
+    safety_decision: RuntimeSafetyDecision,
+) -> dict[str, Any]:
+    side = str(item.side).upper()
+    estimated_amount = float(item.estimated_amount)
+    max_position_amount = policy.evaluation_capital * policy.max_position_weight
+    evidence = {
+        "guard_policy_version": "submit_guard_policy_v1",
+        "active_amount_policy": "buy_sell_separated_capital_deployment_policy",
+        "policy_source": policy.policy_source,
+        "policy_version": policy.policy_version,
+        "side": side,
+        "pending_item_id": item.pending_item_id,
+        "symbol": item.symbol,
+        "quantity": float(item.quantity),
+        "estimated_amount": estimated_amount,
+        "capital_allocation_amount": estimated_amount,
+        "max_buy_order_amount": policy.max_buy_order_amount,
+        "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
+        "target_investment_ratio": policy.target_investment_ratio,
+        "cash_buffer": policy.cash_buffer,
+        "max_exposure": policy.max_exposure,
+        "max_position_weight": policy.max_position_weight,
+        "max_positions": policy.max_positions,
+        "notional_guard_source": "",
+        "quantity_guard_source": "",
+        "current_position_source": current_state["current_position_source"],
+        "current_quantity": broker_position_quantity,
+        "sell_quantity": float(item.quantity) if side == "SELL" else None,
+        "sell_quantity_guard_status": "",
+        "broker_available_quantity_checked": False,
+        "broker_available_quantity_source": broker_available_quantity_evidence.source,
+        "broker_available_quantity": broker_available_quantity,
+        "broker_available_quantity_symbol": broker_available_quantity_evidence.symbol,
+        "broker_available_quantity_issue_code": broker_available_quantity_evidence.issue_code,
+        "broker_available_quantity_snapshot_path": broker_available_quantity_evidence.snapshot_path,
+        "broker_available_quantity_snapshot_at": broker_available_quantity_evidence.snapshot_at,
+        "broker_available_quantity_review_required": broker_available_quantity_evidence.review_required,
+        "broker_available_quantity_production_equivalent": broker_available_quantity_evidence.production_equivalent,
+        "broker_total_quantity": broker_available_quantity_evidence.total_quantity,
+        "broker_restricted_quantity": broker_available_quantity_evidence.restricted_quantity,
+        "broker_available_quantity_account_type": broker_available_quantity_evidence.account_type,
+        "safety_decision_id": safety_decision.safety_decision_id,
+        "safety_policy_version": safety_decision.safety_policy_version,
+        "safety_source": safety_decision.safety_source,
+        "safety_decision": safety_decision.decision,
+        "safety_reason": safety_decision.reason,
+        "pending_safety_decision_id": getattr(item, "safety_decision_id", ""),
+        "pending_safety_policy_version": getattr(item, "safety_policy_version", ""),
+        "pending_safety_source": getattr(item, "safety_source", ""),
+        "pending_safety_decision": getattr(item, "safety_decision", ""),
+        "pending_safety_reason": getattr(item, "safety_reason", ""),
+        "safety_block_buy": safety_decision.block_buy,
+        "safety_block_sell": safety_decision.block_sell,
+        "safety_block_submit": safety_decision.block_submit,
+        "safety_halt_runtime": safety_decision.halt_runtime,
+        "safety_emergency_stop": safety_decision.emergency_stop,
+        "safety_guard_status": "",
+        "guard_decision": "PASS",
+        "guard_reason": "approved_by_submit_guard_policy",
+        "manual_review_required": False,
+        "violated_policy": "",
+        "violated_policy_source": "",
+        "should_have_been_blocked_at_planning": False,
+        "blocked_at_submit_reason": "",
+    }
+    safety_allowed, safety_status, safety_reason = safety_allows_action(
+        safety_decision,
+        action="submit",
+        side=side,
+    )
+    evidence["safety_guard_status"] = safety_status
+    if not safety_allowed:
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason=safety_reason,
+            violated_policy="safety_operation_guard",
+            violated_policy_source=safety_decision.safety_source or safety_decision.artifact_path,
+        )
+    if side == "BUY":
+        return _buy_guard_evidence(evidence=evidence, policy=policy, current_state=current_state)
+    if side == "SELL":
+        return _sell_guard_evidence(
+            evidence=evidence,
+            policy=policy,
+            item=item,
+            broker_position_quantity=broker_position_quantity,
+            broker_available_quantity=broker_available_quantity,
+        )
+    return _blocked_guard_evidence(
+        evidence=evidence,
+        reason="unsupported side",
+        violated_policy="supported_side",
+        violated_policy_source="runtime_v2_submit_guard",
+    )
+
+
+def _buy_guard_evidence(
+    *,
+    evidence: dict[str, Any],
+    policy: CapitalDeploymentPolicy,
+    current_state: dict[str, Any],
+) -> dict[str, Any]:
+    estimated_amount = float(evidence["estimated_amount"])
+    evidence["notional_guard_source"] = policy.buy_notional_policy
+    evidence["quantity_guard_source"] = "broker_lot_size_and_pending_quantity"
+    max_position_amount = policy.evaluation_capital * policy.max_position_weight
+    violations = []
+    cash = current_state["cash"]
+    buying_power = current_state["buying_power"]
+    if cash is None:
+        violations.append(("cash_missing", "Current cash is missing"))
+    elif estimated_amount > float(cash):
+        violations.append(("cash", "estimated amount exceeds Current cash"))
+    if buying_power is None:
+        violations.append(("buying_power_missing", "Current buying_power is missing"))
+    elif estimated_amount > float(buying_power):
+        violations.append(("buying_power", "estimated amount exceeds buying_power"))
+    if current_state["current_exposure"] + estimated_amount > policy.max_exposure:
+        violations.append(("max_exposure", "estimated amount exceeds remaining max_exposure"))
+    if estimated_amount > max_position_amount:
+        violations.append(("max_position_weight", "estimated amount exceeds max_position_weight"))
+    if policy.max_buy_order_amount is not None and estimated_amount > policy.max_buy_order_amount:
+        violations.append(("max_buy_order_amount", "estimated amount exceeds max_buy_order_amount"))
+    if not violations:
+        return evidence
+    policy_name, reason = violations[0]
+    return _blocked_guard_evidence(
+        evidence=evidence,
+        reason=reason,
+        violated_policy=policy_name,
+        violated_policy_source=policy.policy_source,
+        should_have_been_blocked_at_planning=True,
+    )
+
+
+def _sell_guard_evidence(
+    *,
+    evidence: dict[str, Any],
+    policy: CapitalDeploymentPolicy,
+    item: Any,
+    broker_position_quantity: float | None,
+    broker_available_quantity: float | None,
+) -> dict[str, Any]:
+    evidence["notional_guard_source"] = policy.sell_liquidation_policy
+    evidence["quantity_guard_source"] = "current_owned_quantity_and_broker_available_quantity"
+    evidence["broker_available_quantity_checked"] = evidence["broker_available_quantity_source"] == "broker_readonly"
+    evidence["manual_review_required"] = evidence["broker_available_quantity_review_required"]
+    if broker_position_quantity is None:
+        evidence["sell_quantity_guard_status"] = "CURRENT_MISSING"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="sell current position quantity missing",
+            violated_policy="sell_current_position_quantity",
+            violated_policy_source="persistent_ledger/state.json",
+            should_have_been_blocked_at_planning=True,
+        )
+    if float(item.quantity) > float(broker_position_quantity):
+        evidence["sell_quantity_guard_status"] = "CURRENT_INSUFFICIENT"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="sell quantity exceeds Current quantity",
+            violated_policy="sell_current_position_quantity",
+            violated_policy_source="persistent_ledger/state.json",
+            should_have_been_blocked_at_planning=True,
+        )
+    if broker_available_quantity is None:
+        evidence["sell_quantity_guard_status"] = "BROKER_AVAILABLE_MISSING"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="sell broker available quantity missing",
+            violated_policy="broker_available_quantity",
+            violated_policy_source=evidence["broker_available_quantity_source"],
+        )
+    if not evidence["broker_available_quantity_checked"]:
+        evidence["sell_quantity_guard_status"] = "BROKER_AVAILABLE_NOT_READONLY"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="sell broker available quantity not confirmed by Broker ReadOnly evidence",
+            violated_policy="broker_available_quantity",
+            violated_policy_source=evidence["broker_available_quantity_source"],
+        )
+    if float(item.quantity) > float(broker_available_quantity):
+        evidence["sell_quantity_guard_status"] = "BROKER_AVAILABLE_INSUFFICIENT"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="sell quantity exceeds broker available quantity",
+            violated_policy="broker_available_quantity",
+            violated_policy_source=evidence["broker_available_quantity_source"],
+        )
+    if policy.max_sell_liquidation_amount is not None and float(item.estimated_amount) > policy.max_sell_liquidation_amount:
+        evidence["sell_quantity_guard_status"] = "POLICY_NOTIONAL_BLOCKED"
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason="estimated amount exceeds max_sell_liquidation_amount",
+            violated_policy="max_sell_liquidation_amount",
+            violated_policy_source=policy.policy_source,
+        )
+    evidence["sell_quantity_guard_status"] = "PASS"
+    return evidence
+
+
+def _blocked_guard_evidence(
+    *,
+    evidence: dict[str, Any],
+    reason: str,
+    violated_policy: str,
+    violated_policy_source: str,
+    should_have_been_blocked_at_planning: bool = False,
+) -> dict[str, Any]:
+    evidence.update(
+        {
+            "guard_decision": "BLOCKED",
+            "guard_reason": reason,
+            "manual_review_required": True,
+            "violated_policy": violated_policy,
+            "violated_policy_source": violated_policy_source,
+            "should_have_been_blocked_at_planning": should_have_been_blocked_at_planning,
+            "blocked_at_submit_reason": reason,
+        }
+    )
+    return evidence
+
+
+def _blocked_result(
+    *,
+    reason: str,
+    runtime_root: Path,
+    pending_path: str = "",
+    status: str = "BLOCKED",
+    submit_guard_policy: dict[str, Any] | None = None,
+    submit_policy_consistency: dict[str, Any] | None = None,
+) -> SubmitPipelineResult:
     return SubmitPipelineResult(
-        status="BLOCKED",
+        status=status,
         reason=reason,
         pending_plan_id="",
         pending_path=pending_path or str(runtime_root / "pending_order_plan" / "pending_order_plan.json"),
@@ -427,6 +1119,9 @@ def _blocked_result(*, reason: str, runtime_root: Path, pending_path: str = "") 
         ledger_order_record_ids=(),
         submitted_symbols=(),
         item_results=(),
+        submit_guard_policy=submit_guard_policy or {},
+        submit_policy_consistency=submit_policy_consistency or {},
+        submit_guard_item_evidence=(),
     )
 
 
@@ -449,6 +1144,12 @@ def _short_hash(value: str) -> str:
 def _float(value: Any) -> float:
     if value in (None, ""):
         return 0.0
+    return float(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
     return float(value)
 
 

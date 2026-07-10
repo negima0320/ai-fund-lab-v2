@@ -3,7 +3,7 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     AIPlanningSignal,
     CapitalAllocationSignal,
     PlanningInput,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 
 
@@ -68,15 +68,21 @@ def make_allocation(symbol="7203", cash_required=50000.0) -> CapitalAllocationSi
     )
 
 
-def make_safety(symbol="7203", allowed=True, review_required=False, blocked=False):
-    return SafetySignal(
-        safety_id=f"safety-{symbol}",
-        symbol=symbol,
-        side="BUY",
-        allowed=allowed,
+def make_runtime_safety(decision="ALLOW", review_required=False, block_buy=False, block_sell=False):
+    return RuntimeSafetyContext(
+        safety_decision_id="safety-fixture",
+        safety_policy_version="safety_fixture_v1",
+        safety_source="tests.runtime_v2.planning_fixtures",
+        safety_decision=decision,
+        safety_reason="runtime safety fixture",
         review_required=review_required,
-        blocked=blocked,
-        reason="safety fixture",
+        block_buy=block_buy,
+        block_sell=block_sell,
+        block_submit=False,
+        halt_runtime=decision == "HALT",
+        emergency_stop=False,
+        generated_at="2026-07-07T00:00:00+09:00",
+        expires_at="2026-07-08T00:00:00+09:00",
     )
 
 
@@ -85,7 +91,7 @@ def make_planning_input(
     asset_state=None,
     ai_signals=None,
     capital_allocations=None,
-    safety_signals=None,
+    runtime_safety=None,
 ) -> PlanningInput:
     if asset_state is None:
         asset_state = make_asset_state()
@@ -93,8 +99,8 @@ def make_planning_input(
         ai_signals = (make_ai_signal(),)
     if capital_allocations is None:
         capital_allocations = (make_allocation(),)
-    if safety_signals is None:
-        safety_signals = (make_safety(),)
+    if runtime_safety is None:
+        runtime_safety = make_runtime_safety()
     return PlanningInput(
         mode="demo",
         environment="demo",
@@ -103,7 +109,7 @@ def make_planning_input(
         asset_state=asset_state,
         ai_signals=tuple(ai_signals),
         capital_allocations=tuple(capital_allocations),
-        safety_signals=tuple(safety_signals),
+        runtime_safety=runtime_safety,
     )
 
 

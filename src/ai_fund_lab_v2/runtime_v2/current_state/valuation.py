@@ -1,0 +1,513 @@
+"""Current valuation-only / no-fill producer for Runtime v2."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from ai_fund_lab_v2.runtime_v2.current_state.temporal import (
+    CURRENT_TEMPORAL_SCHEMA_VERSION,
+    build_current_temporal_candidate,
+    write_current_temporal_state,
+)
+from ai_fund_lab_v2.runtime_v2.temporal import (
+    FreshnessStatus,
+    evaluate_current_position_freshness,
+    evaluate_current_valuation_freshness,
+    resolve_temporal_context,
+)
+
+
+CURRENT_VALUATION_REFRESH_SCHEMA_VERSION = "runtime_v2_current_valuation_refresh_v1"
+ALLOWED_MARKET_STATUSES = {"READY", "VALID_CARRYOVER"}
+ALLOWED_PRICE_TYPES = {"daily_close", "intraday_quote", "broker_valuation_price", "jquants_daily_quote"}
+
+
+@dataclass(frozen=True)
+class CurrentValuationRefreshResult:
+    status: str
+    reason: str
+    artifact_path: str
+    source_current_path: str
+    market_evidence_path: str
+    market_date: str
+    valuation_as_of: str
+    position_state_as_of: str
+    no_fill: bool
+    position_count: int
+    valued_position_count: int
+    missing_symbols: tuple[str, ...]
+    valuation_source: str
+    previous_total_market_value: float
+    new_total_market_value: float
+    previous_unrealized_pnl: float
+    new_unrealized_pnl: float
+    apply_requested: bool
+    apply_executed: bool
+    backup_path: str
+    review_required: bool
+    candidate_current: dict[str, Any]
+
+    @property
+    def manifest_fields(self) -> dict[str, Any]:
+        return {
+            "current_valuation_refresh_status": self.status,
+            "current_valuation_refresh_reason": self.reason,
+            "current_valuation_refresh_artifact_path": self.artifact_path,
+            "current_valuation_source_current_path": self.source_current_path,
+            "current_valuation_market_evidence_path": self.market_evidence_path,
+            "current_valuation_market_date": self.market_date,
+            "current_valuation_as_of": self.valuation_as_of,
+            "current_valuation_position_state_as_of": self.position_state_as_of,
+            "current_valuation_no_fill": self.no_fill,
+            "current_valuation_position_count": self.position_count,
+            "current_valuation_valued_position_count": self.valued_position_count,
+            "current_valuation_missing_symbols": list(self.missing_symbols),
+            "current_valuation_source": self.valuation_source,
+            "current_valuation_previous_total_market_value": self.previous_total_market_value,
+            "current_valuation_new_total_market_value": self.new_total_market_value,
+            "current_valuation_previous_unrealized_pnl": self.previous_unrealized_pnl,
+            "current_valuation_new_unrealized_pnl": self.new_unrealized_pnl,
+            "current_valuation_apply_requested": self.apply_requested,
+            "current_valuation_apply_executed": self.apply_executed,
+            "current_valuation_backup_path": self.backup_path,
+            "current_valuation_review_required": self.review_required,
+            "current_position_status": self.candidate_current.get("current_position_status") or "",
+            "current_valuation_status": self.candidate_current.get("current_valuation_status") or "",
+        }
+
+
+def validate_current_valuation_input(*, current: dict[str, Any], market_evidence: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    reasons: list[str] = []
+    if current.get("temporal_schema_version") != CURRENT_TEMPORAL_SCHEMA_VERSION:
+        reasons.append("current_temporal_schema_required")
+    market_status = str(market_evidence.get("market_status") or "")
+    freshness = str(market_evidence.get("market_freshness_status") or market_status)
+    market_date = str(market_evidence.get("market_date") or "")
+    if market_status not in ALLOWED_MARKET_STATUSES or freshness not in ALLOWED_MARKET_STATUSES:
+        reasons.append("market_status_not_allowed")
+    if not market_date:
+        reasons.append("market_date_missing")
+    return ("READY" if not reasons else "REVIEW_REQUIRED", tuple(reasons))
+
+
+def build_current_valuation_candidate(
+    *,
+    runtime_root: Path | str,
+    business_date: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    root = Path(runtime_root)
+    current_path = root / "persistent_ledger" / "state.json"
+    current_payload = _read_json(current_path)
+    temporal_current, metadata, missing_evidence, warnings = build_current_temporal_candidate(
+        runtime_root=root,
+        business_date=business_date,
+        current_payload=current_payload,
+        now=now,
+    )
+    if metadata.legacy_as_of_used or metadata.review_required:
+        return temporal_current, {}, tuple(missing_evidence), tuple((*warnings, "current_temporal_migration_required_before_valuation"))
+    market_path, market = _load_market_evidence(root)
+    market_date = str(market.get("market_date") or market.get("latest_available_market_date") or "")
+    freshness = str(market.get("market_freshness_status") or market.get("market_status") or "")
+    if freshness == "DATA_NOT_YET_AVAILABLE":
+        return temporal_current, market, ("market_data_not_yet_available",), warnings
+    quotes = dict(market.get("quotes") or {})
+    positions = [_normalize_position(position) for position in temporal_current.get("positions") or []]
+    runtime_positions = [position for position in positions if not _is_broker_only_position(position)]
+    validation_status, validation_reasons = validate_current_valuation_input(current=temporal_current, market_evidence=market)
+    if validation_status != "READY":
+        return temporal_current, market, tuple(validation_reasons), warnings
+    if not runtime_positions:
+        candidate = dict(temporal_current)
+        candidate.update(
+            {
+                "no_position": True,
+                "no_position_reason": "current_has_no_runtime_owned_positions",
+                "no_fill": True,
+                "valuation_as_of": market_date or candidate.get("valuation_as_of") or "",
+                "source_market_date": market_date or candidate.get("source_market_date") or "",
+                "valuation_source": str(market_path),
+                "valuation_generated_at": _iso(now),
+            }
+        )
+        return _attach_temporal_status(candidate, business_date=business_date, now=now), market, (), warnings
+    quote_status = str(market.get("quote_status") or "")
+    quote_status_not_allowed = quote_status not in ALLOWED_MARKET_STATUSES
+    missing_symbols: list[str] = []
+    invalid_symbols: list[str] = []
+    valued_positions: list[dict[str, Any]] = []
+    for position in runtime_positions:
+        symbol = _symbol(position)
+        quote = _quote_for_symbol(quotes, symbol)
+        if not quote:
+            missing_symbols.append(symbol)
+            continue
+        price = _price(quote)
+        if price is None or price <= 0:
+            invalid_symbols.append(symbol)
+            continue
+        price_type = str(quote.get("price_type") or "")
+        if price_type not in ALLOWED_PRICE_TYPES:
+            invalid_symbols.append(symbol)
+            continue
+        quote_freshness = str(quote.get("freshness_status") or "")
+        if quote_freshness not in ALLOWED_MARKET_STATUSES:
+            invalid_symbols.append(symbol)
+            continue
+        quote_market_date = str(quote.get("market_date") or "")
+        if quote_market_date and quote_market_date != market_date:
+            invalid_symbols.append(symbol)
+            continue
+        if not str(quote.get("source") or ""):
+            invalid_symbols.append(symbol)
+            continue
+        quantity = float(position.get("quantity") or 0)
+        average_price = float(position.get("average_price") or position.get("avg_price") or 0)
+        updated = dict(position)
+        updated["current_price"] = price
+        updated["market_value"] = quantity * price
+        updated["unrealized_pnl"] = (price - average_price) * quantity
+        updated["valuation_as_of"] = market_date
+        updated["source_market_date"] = market_date
+        updated["valuation_source"] = str(quote.get("source") or market_path)
+        updated["valuation_price_type"] = price_type
+        updated["valuation_adjusted"] = bool(quote.get("adjusted"))
+        valued_positions.append(updated)
+    if missing_symbols or invalid_symbols or quote_status_not_allowed:
+        reasons = ["current_valuation_quote_missing"] if missing_symbols else []
+        if quote_status_not_allowed:
+            reasons.append("quote_status_not_allowed")
+        reasons.extend("current_valuation_quote_invalid:" + symbol for symbol in invalid_symbols)
+        return temporal_current, market, tuple(sorted(reasons + missing_symbols)), warnings
+    previous_total = _sum_market_value(runtime_positions)
+    previous_unrealized = _sum_unrealized(runtime_positions)
+    candidate = dict(temporal_current)
+    candidate["positions"] = valued_positions
+    candidate["market_value"] = _sum_market_value(valued_positions)
+    candidate["total_equity"] = float(candidate.get("cash") or 0) + candidate["market_value"]
+    candidate["valuation_as_of"] = market_date
+    candidate["source_market_date"] = market_date
+    candidate["valuation_source"] = str(market_path)
+    candidate["valuation_generated_at"] = _iso(now)
+    candidate["no_fill"] = True
+    candidate["previous_total_market_value"] = previous_total
+    candidate["new_total_market_value"] = candidate["market_value"]
+    candidate["previous_unrealized_pnl"] = previous_unrealized
+    candidate["new_unrealized_pnl"] = _sum_unrealized(valued_positions)
+    candidate["cash"] = temporal_current.get("cash")
+    candidate["buying_power"] = temporal_current.get("buying_power")
+    candidate["realized_pnl"] = temporal_current.get("realized_pnl")
+    return _attach_temporal_status(candidate, business_date=business_date, now=now), market, (), warnings
+
+
+def run_current_valuation_refresh(
+    *,
+    runtime_root: Path | str,
+    business_date: str,
+    apply_current_valuation: bool = False,
+    now: datetime | None = None,
+) -> CurrentValuationRefreshResult:
+    root = Path(runtime_root)
+    generated_at = _iso(now)
+    artifact_path = root / "runtime_state" / "current_valuation" / business_date / "current_valuation_refresh.json"
+    source_path = root / "persistent_ledger" / "state.json"
+    try:
+        candidate, market, missing, warnings = build_current_valuation_candidate(
+            runtime_root=root,
+            business_date=business_date,
+            now=now,
+        )
+    except ValueError as exc:
+        payload = _artifact_payload(
+            business_date=business_date,
+            generated_at=generated_at,
+            status="HALT",
+            reason=str(exc),
+            source_current_path=str(source_path),
+            market_evidence_path="",
+            market_date="",
+            candidate_current={},
+            missing_symbols=(),
+            missing_evidence=("current",),
+            warnings=(str(exc),),
+            apply_requested=apply_current_valuation,
+            apply_executed=False,
+            backup_path="",
+            history_path="",
+        )
+        _write_json(artifact_path, payload)
+        return _result_from_payload(payload, artifact_path=artifact_path)
+    market_path, _ = _load_market_evidence(root) if market else ("", {})
+    missing_symbols = _missing_symbols_from_reasons(missing)
+    status = "READY" if not missing and not warnings else "REVIEW_REQUIRED"
+    reason = "current_valuation_ready" if status == "READY" else "current_valuation_review_required"
+    if candidate.get("no_position"):
+        status = "READY"
+        reason = "current_has_no_runtime_owned_positions"
+    apply_executed = False
+    backup_path = ""
+    history_path = _write_valuation_history(root=root, valuation_as_of=str(candidate.get("valuation_as_of") or business_date), candidate=candidate, market=market)
+    if apply_current_valuation and status == "READY":
+        backup_path = str(_atomic_write_current(root=root, source_path=source_path, payload=candidate, now=now))
+        apply_executed = True
+    payload = _artifact_payload(
+        business_date=business_date,
+        generated_at=generated_at,
+        status=status,
+        reason=reason,
+        source_current_path=str(source_path),
+        market_evidence_path=str(market_path),
+        market_date=str(market.get("market_date") or ""),
+        candidate_current=candidate,
+        missing_symbols=missing_symbols,
+        missing_evidence=missing,
+        warnings=warnings,
+        apply_requested=apply_current_valuation,
+        apply_executed=apply_executed,
+        backup_path=backup_path,
+        history_path=str(history_path),
+    )
+    _write_json(artifact_path, payload)
+    return _result_from_payload(payload, artifact_path=artifact_path)
+
+
+def _attach_temporal_status(candidate: dict[str, Any], *, business_date: str, now: datetime | None) -> dict[str, Any]:
+    context = resolve_temporal_context(
+        runtime_business_date=business_date,
+        latest_available_market_date=str(candidate.get("source_market_date") or "") or None,
+        now=now,
+    )
+    from ai_fund_lab_v2.runtime_v2.temporal import CurrentTemporalState
+
+    state = CurrentTemporalState(
+        position_state_as_of=str(candidate.get("position_state_as_of") or ""),
+        valuation_as_of=str(candidate.get("valuation_as_of") or ""),
+        last_execution_date=str(candidate.get("last_execution_date") or ""),
+        last_reconciled_at=str(candidate.get("last_reconciled_at") or ""),
+        source_market_date=str(candidate.get("source_market_date") or ""),
+    )
+    position = evaluate_current_position_freshness(context=context, current=state)
+    valuation = evaluate_current_valuation_freshness(context=context, current=state, now=now)
+    candidate["current_position_status"] = position.status.value
+    candidate["current_valuation_status"] = valuation.status.value
+    candidate["current_position_temporal_evidence"] = position.to_payload()
+    candidate["current_valuation_temporal_evidence"] = valuation.to_payload()
+    candidate["temporal_status"] = "READY" if valuation.status in {FreshnessStatus.READY, FreshnessStatus.VALID_CARRYOVER} else "REVIEW_REQUIRED"
+    return candidate
+
+
+def _artifact_payload(
+    *,
+    business_date: str,
+    generated_at: str,
+    status: str,
+    reason: str,
+    source_current_path: str,
+    market_evidence_path: str,
+    market_date: str,
+    candidate_current: dict[str, Any],
+    missing_symbols: tuple[str, ...],
+    missing_evidence: tuple[str, ...],
+    warnings: tuple[str, ...],
+    apply_requested: bool,
+    apply_executed: bool,
+    backup_path: str,
+    history_path: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": CURRENT_VALUATION_REFRESH_SCHEMA_VERSION,
+        "business_date": business_date,
+        "generated_at": generated_at,
+        "status": status,
+        "reason": reason,
+        "review_required": status == "REVIEW_REQUIRED",
+        "apply_requested": apply_requested,
+        "apply_executed": apply_executed,
+        "source_current_path": source_current_path,
+        "market_evidence_path": market_evidence_path,
+        "market_date": market_date,
+        "valuation_as_of": candidate_current.get("valuation_as_of") or "",
+        "position_state_as_of": candidate_current.get("position_state_as_of") or "",
+        "no_fill": bool(candidate_current.get("no_fill")),
+        "no_position": bool(candidate_current.get("no_position")),
+        "no_position_reason": candidate_current.get("no_position_reason") or "",
+        "position_count": len(candidate_current.get("positions") or []),
+        "valued_position_count": len(candidate_current.get("positions") or []) if status == "READY" else 0,
+        "missing_symbols": list(missing_symbols),
+        "missing_evidence": list(missing_evidence),
+        "warnings": list(warnings),
+        "valuation_source": candidate_current.get("valuation_source") or "",
+        "previous_total_market_value": float(candidate_current.get("previous_total_market_value") or 0),
+        "new_total_market_value": float(candidate_current.get("new_total_market_value") or candidate_current.get("market_value") or 0),
+        "previous_unrealized_pnl": float(candidate_current.get("previous_unrealized_pnl") or 0),
+        "new_unrealized_pnl": float(candidate_current.get("new_unrealized_pnl") or 0),
+        "candidate_current": candidate_current,
+        "backup_path": backup_path,
+        "history_path": history_path,
+        "next_operator_action": "review missing quote/current evidence" if status == "REVIEW_REQUIRED" else "apply explicitly if reviewing temp candidate is accepted",
+    }
+
+
+def _result_from_payload(payload: dict[str, Any], *, artifact_path: Path) -> CurrentValuationRefreshResult:
+    return CurrentValuationRefreshResult(
+        status=str(payload.get("status") or ""),
+        reason=str(payload.get("reason") or ""),
+        artifact_path=str(artifact_path),
+        source_current_path=str(payload.get("source_current_path") or ""),
+        market_evidence_path=str(payload.get("market_evidence_path") or ""),
+        market_date=str(payload.get("market_date") or ""),
+        valuation_as_of=str(payload.get("valuation_as_of") or ""),
+        position_state_as_of=str(payload.get("position_state_as_of") or ""),
+        no_fill=bool(payload.get("no_fill")),
+        position_count=int(payload.get("position_count") or 0),
+        valued_position_count=int(payload.get("valued_position_count") or 0),
+        missing_symbols=tuple(payload.get("missing_symbols") or ()),
+        valuation_source=str(payload.get("valuation_source") or ""),
+        previous_total_market_value=float(payload.get("previous_total_market_value") or 0),
+        new_total_market_value=float(payload.get("new_total_market_value") or 0),
+        previous_unrealized_pnl=float(payload.get("previous_unrealized_pnl") or 0),
+        new_unrealized_pnl=float(payload.get("new_unrealized_pnl") or 0),
+        apply_requested=bool(payload.get("apply_requested")),
+        apply_executed=bool(payload.get("apply_executed")),
+        backup_path=str(payload.get("backup_path") or ""),
+        review_required=bool(payload.get("review_required")),
+        candidate_current=dict(payload.get("candidate_current") or {}),
+    )
+
+
+def _load_market_evidence(root: Path) -> tuple[Path | str, dict[str, Any]]:
+    latest = root / "runtime_state" / "market" / "latest.json"
+    if latest.is_file():
+        payload = _read_json(latest)
+        artifact = Path(str(payload.get("artifact_path") or ""))
+        if artifact.is_file():
+            return artifact, _read_json(artifact)
+    candidates = sorted((root / "runtime_state" / "market").glob("*/market_evidence.json"))
+    if not candidates:
+        raise ValueError("market_evidence missing")
+    return candidates[-1], _read_json(candidates[-1])
+
+
+def _write_valuation_history(*, root: Path, valuation_as_of: str, candidate: dict[str, Any], market: dict[str, Any]) -> Path:
+    payload = {
+        "schema_version": "runtime_v2_current_valuation_history_v1",
+        "valuation_as_of": valuation_as_of,
+        "no_fill": True,
+        "previous_temporal_metadata": {
+            "position_state_as_of": candidate.get("position_state_as_of"),
+            "last_execution_date": candidate.get("last_execution_date"),
+        },
+        "new_temporal_metadata": {
+            "valuation_as_of": candidate.get("valuation_as_of"),
+            "source_market_date": candidate.get("source_market_date"),
+        },
+        "position_level_valuation": candidate.get("positions") or [],
+        "source_quote_evidence": {
+            "market_date": market.get("market_date"),
+            "market_status": market.get("market_status"),
+            "quote_status": market.get("quote_status"),
+        },
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    path = root / "persistent_ledger" / "history" / "valuation" / (valuation_as_of or "unknown") / f"{digest}.json"
+    if not path.exists():
+        _write_json(path, payload)
+    return path
+
+
+def _atomic_write_current(*, root: Path, source_path: Path, payload: dict[str, Any], now: datetime | None) -> Path:
+    timestamp = _iso(now).replace(":", "").replace("+", "")
+    backup_path = root / "persistent_ledger" / "history" / "current" / f"{timestamp}.json"
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.exists():
+        shutil.copy2(source_path, backup_path)
+    temp_path = source_path.with_suffix(".json.tmp")
+    write_current_temporal_state(temp_path, payload)
+    os.replace(temp_path, source_path)
+    _read_json(source_path)
+    return backup_path
+
+
+def _normalize_position(position: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(position)
+    if "average_price" not in normalized and "avg_price" in normalized:
+        normalized["average_price"] = normalized["avg_price"]
+    return normalized
+
+
+def _is_broker_only_position(position: dict[str, Any]) -> bool:
+    return bool(position.get("broker_only")) or str(position.get("ownership") or "").lower() == "broker_only"
+
+
+def _symbol(position: dict[str, Any]) -> str:
+    return _normalize_symbol(str(position.get("symbol") or position.get("issue_code") or ""))
+
+
+def _quote_for_symbol(quotes: dict[str, Any], symbol: str) -> dict[str, Any]:
+    return dict(quotes.get(symbol) or quotes.get(symbol + "0") or {})
+
+
+def _normalize_symbol(value: str) -> str:
+    text = value.strip()
+    if text.endswith(".T"):
+        text = text[:-2]
+    if text.endswith("0") and len(text) == 5:
+        text = text[:-1]
+    return text
+
+
+def _price(quote: dict[str, Any]) -> float | None:
+    try:
+        return float(quote.get("price"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sum_market_value(positions: list[dict[str, Any]]) -> float:
+    return sum(float(position.get("market_value") or 0) for position in positions)
+
+
+def _sum_unrealized(positions: list[dict[str, Any]]) -> float:
+    return sum(float(position.get("unrealized_pnl") or 0) for position in positions)
+
+
+def _missing_symbols_from_reasons(reasons: tuple[str, ...]) -> tuple[str, ...]:
+    symbols = [
+        reason
+        for reason in reasons
+        if reason
+        and not reason.startswith("current_valuation_")
+        and reason
+        not in {"market_status_not_allowed", "quote_status_not_allowed", "current_temporal_schema_required"}
+        and ":" not in reason
+    ]
+    return tuple(sorted(set(symbols)))
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"{path} missing") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path} invalid json: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must be a JSON object")
+    return payload
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _iso(value: datetime | None) -> str:
+    return (value or datetime.now(timezone.utc)).isoformat()

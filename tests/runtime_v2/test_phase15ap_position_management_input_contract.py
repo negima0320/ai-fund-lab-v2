@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
+
+
+BUSINESS_DATE = "2026-07-09"
+
+
+def test_phase15ap_valid_pm_input_contract_allows_pm_and_sell_planning(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), expected_edge=-0.05, downside=0.8)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "PASS"
+    assert result.to_manifest_fields()["pm_input_schema_status"] == "READY"
+    assert artifact["input_contract"]["pm_input_schema_status"] == "READY"
+    assert artifact["defaulted_fields"] == []
+    assert artifact["decision_count"] == 1
+
+
+def test_phase15ap_stale_current_is_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")], current_as_of="2026-07-08")
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",))
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_input_stale_artifacts"
+    assert artifact["stale_artifacts"] == ["current"]
+    assert artifact["review_required"] is True
+
+
+def test_phase15ap_current_positions_with_zero_pm_feature_rows_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), feature_symbols=())
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_feature_rows_missing_for_current_positions"
+    assert artifact["missing_symbols"] == ["6522"]
+
+
+def test_phase15ap_partial_held_symbol_feature_coverage_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522"), _position("7203")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522", "7203"), feature_symbols=("6522",))
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "7203" in artifact["missing_symbols"]
+
+
+def test_phase15ap_current_empty_with_no_position_reason_is_no_position_ready(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=(), include_no_position_reason=True)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "NO_POSITION"
+    assert artifact["input_contract"]["pm_input_schema_status"] == "READY"
+    assert artifact["decision_count"] == 0
+
+
+def test_phase15ap_current_empty_without_no_position_reason_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=(), include_no_position_reason=False)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert artifact["review_reason"] == "pm_no_position_reason_missing"
+    assert "pm_feature.no_position_reason" in artifact["missing_fields"]
+
+
+def test_phase15ap_opportunity_missing_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    _, feature_path = _pm_inputs(tmp_path, symbols=("6522",))
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=tmp_path / "missing_opportunity.json",
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_opportunity_artifact_missing"
+    assert "pm_opportunity_source" in artifact["missing_fields"]
+
+
+def test_phase15ap_opportunity_review_required_blocks_pm(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), opportunity_status="REVIEW_REQUIRED")
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert artifact["input_contract"]["pm_opportunity_status"] == "REVIEW_REQUIRED"
+
+
+def test_phase15ap_hidden_default_fields_are_not_used(tmp_path):
+    position = _position("6522")
+    position.pop("holding_days")
+    position.pop("peak_return")
+    position.pop("current_price")
+    position.pop("market_value")
+    runtime_root = _runtime_root(tmp_path, positions=[position])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",))
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "current.positions[6522].holding_days" in artifact["missing_fields"]
+    assert "current.positions[6522].peak_return" in artifact["missing_fields"]
+    assert "current.positions[6522].current_price" in artifact["missing_fields"]
+    assert artifact["defaulted_fields"] == []
+
+
+def test_phase15ap_cli_does_not_enter_sell_planning_on_pm_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), feature_symbols=())
+    policy_path = _write_policy(tmp_path / "capital_deployment.json")
+
+    exit_code = main(
+        [
+            "--mode",
+            "demo",
+            "--job",
+            "sell_planning",
+            "--business-date",
+            BUSINESS_DATE,
+            "--submit-enabled",
+            "false",
+            "--notification-mode",
+            "payload-only",
+            "--runtime-root",
+            str(runtime_root),
+            "--reports-root",
+            str(tmp_path / "reports" / "runtime_v2"),
+            "--public-reports-root",
+            str(tmp_path / "reports" / "public" / "runtime_v2"),
+            "--manifest-root",
+            str(runtime_root / "runtime_state" / "run_manifest"),
+            "--log-root",
+            str(runtime_root / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            "--pm-opportunity-path",
+            str(opportunity_path),
+            "--pm-feature-path",
+            str(feature_path),
+        ]
+    )
+    manifest = _latest_manifest(runtime_root)
+    stage_names = {stage["name"] for stage in manifest["stages"]}
+
+    assert exit_code == 20
+    assert manifest["pm_status"] == "REVIEW_REQUIRED"
+    assert manifest["pm_input_schema_status"] == "REVIEW_REQUIRED"
+    assert "runtime_data_readiness_gate" in stage_names
+    assert "position_management_ai_runtime_producer" not in stage_names
+    assert "sell_planning_pending_pipeline" not in stage_names
+
+
+def _runtime_root(tmp_path: Path, *, positions: list[dict[str, Any]], current_as_of: str = BUSINESS_DATE) -> Path:
+    root = tmp_path / ".runtime"
+    _write_json(
+        root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-phase15ap",
+            "environment": "demo",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": current_as_of,
+            "updated_at": current_as_of + "T00:00:00Z",
+            "positions": positions,
+            "cash": 500000,
+            "buying_power": 500000,
+            "market_value": sum(float(item.get("market_value") or 0) for item in positions),
+            "total_equity": 500000 + sum(float(item.get("market_value") or 0) for item in positions),
+            "review_required": False,
+        },
+    )
+    _write_json(root / "pending_order_plan" / "pending_order_plan.json", {"state": "CONSUMED", "items": []})
+    _write_json(root / "runtime_state" / "current_state.json", {"state": "CURRENT_STATE_LOADED"})
+    _write_safety_decision(root)
+    for name in ("orders", "executions", "cash", "events", "positions"):
+        _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
+    return root
+
+
+def _position(symbol: str, *, quantity: float = 100, average_price: float = 1000, current_price: float = 850) -> dict[str, Any]:
+    current_return = (current_price / average_price) - 1.0
+    return {
+        "symbol": symbol,
+        "quantity": quantity,
+        "average_price": average_price,
+        "current_price": current_price,
+        "market_value": quantity * current_price,
+        "unrealized_pnl": (current_price - average_price) * quantity,
+        "holding_days": 12,
+        "peak_return": max(current_return, 0.0),
+        "source": "runtime_v2_runtime_owned_fill_projection",
+        "as_of": BUSINESS_DATE,
+    }
+
+
+def _pm_inputs(
+    tmp_path: Path,
+    *,
+    symbols: tuple[str, ...],
+    feature_symbols: tuple[str, ...] | None = None,
+    expected_edge: float = -0.05,
+    downside: float = 0.8,
+    include_no_position_reason: bool = True,
+    opportunity_status: str = "CSV",
+) -> tuple[Path, Path]:
+    if opportunity_status == "REVIEW_REQUIRED":
+        opportunity_path = tmp_path / "pm_opportunity.json"
+        _write_json(
+            opportunity_path,
+            {
+                "status": "REVIEW_REQUIRED",
+                "review_required": True,
+                "feature_date": BUSINESS_DATE,
+                "model_version": "opportunity_fixture",
+                "generated_at": BUSINESS_DATE + "T00:00:00Z",
+                "rankings": [],
+            },
+        )
+    else:
+        opportunity_path = tmp_path / "pm_opportunity.csv"
+        pd.DataFrame(
+            [
+                {
+                    "target_date": BUSINESS_DATE,
+                    "code": symbol,
+                    "expected_edge_score": expected_edge,
+                    "buy_rank": 999,
+                    "downside_risk_score": downside,
+                    "risk_guard_status": "high_risk" if downside >= 0.7 else "ok",
+                    "candidate_score": 0.5,
+                    "candidate_rank": 999,
+                    "buy_reason": "",
+                    "no_buy_reason": "",
+                    "calibration_policy_name": "fixture",
+                }
+                for symbol in symbols
+            ]
+        ).to_csv(opportunity_path, index=False)
+    feature_path = tmp_path / "pm_feature.csv"
+    selected_feature_symbols = symbols if feature_symbols is None else feature_symbols
+    feature_rows = [
+        {
+            "target_date": BUSINESS_DATE,
+            "as_of_date": BUSINESS_DATE,
+            "code": symbol,
+            "feature_version": "position_management_feature_v1",
+            "return_5d": expected_edge,
+            "return_20d": expected_edge,
+            "close_over_ma_20d": expected_edge,
+        }
+        for symbol in selected_feature_symbols
+    ]
+    frame = pd.DataFrame(feature_rows)
+    if frame.empty:
+        columns = ["target_date", "code", "as_of_date", "feature_version"]
+        if include_no_position_reason:
+            columns.append("no_position_reason")
+        frame = pd.DataFrame(columns=columns)
+    frame.to_csv(feature_path, index=False)
+    return opportunity_path, feature_path
+
+
+def _write_policy(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "policy_version": "capital_deployment_v1",
+            "policy_source": str(path),
+            "evaluation_capital": 1_000_000,
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+            "max_position_weight": 0.2,
+            "max_positions": 5,
+            "min_order_amount": 0,
+            "max_buy_order_amount": None,
+            "max_sell_liquidation_amount": None,
+            "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+            "sell_liquidation_policy": "current_owned_available_quantity_policy",
+            "manual_review_threshold": {"buy_amount": None, "sell_liquidation_amount": None},
+        },
+    )
+    return path
+
+
+def _write_safety_decision(root: Path) -> None:
+    path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
+    _write_json(
+        path,
+        {
+            "safety_decision_id": "safety-phase15ap-allow",
+            "safety_policy_version": "safety_operation_guard_v1",
+            "safety_source": str(path),
+            "business_date": BUSINESS_DATE,
+            "runtime_mode": "demo",
+            "decision": "ALLOW",
+            "reason": "phase15ap fixture safety allow",
+            "review_required": False,
+            "block_buy": False,
+            "block_sell": False,
+            "block_submit": False,
+            "halt_runtime": False,
+            "emergency_stop": False,
+            "generated_at": BUSINESS_DATE + "T00:00:00+09:00",
+            "expires_at": "2026-07-10T00:00:00+09:00",
+        },
+    )
+
+
+def _latest_manifest(runtime_root: Path) -> dict:
+    manifests = sorted((runtime_root / "runtime_state" / "run_manifest" / BUSINESS_DATE).glob("*.json"))
+    return _read_json(manifests[-1])
+
+
+def _read_json(path: str | Path) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8")

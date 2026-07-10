@@ -11,7 +11,12 @@ from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, RuntimeV2SubmitResult
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import RuntimeV2SubmitAdapter, run_submit_pipeline
 
-from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _approved_pending, _runtime_root
+from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import (
+    _approved_pending,
+    _runtime_root,
+    _write_asset_state,
+    _write_policy,
+)
 
 
 def test_phase14e19_runtime_v2_command_uses_existing_normalizer_for_broker_request():
@@ -64,7 +69,9 @@ def test_phase14e19_demo_9000_block_and_production_capability_still_allows_9000(
 
 def test_phase14e19_submit_pipeline_writes_normalization_and_response_metadata_to_manifest_and_ledger(tmp_path):
     runtime_root = _runtime_root(tmp_path)
-    pending = _approved_pending(("65220",))
+    _write_asset_state(runtime_root)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    pending = _approved_pending(("65220",), policy_path=policy_path)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
 
     result = run_submit_pipeline(
@@ -75,6 +82,7 @@ def test_phase14e19_submit_pipeline_writes_normalization_and_response_metadata_t
         job="submit",
         settings=_demo_settings(),
         adapter=_MetadataAdapter(),
+        capital_deployment_policy_path=policy_path,
     )
     ledger_rows = [
         json.loads(line)

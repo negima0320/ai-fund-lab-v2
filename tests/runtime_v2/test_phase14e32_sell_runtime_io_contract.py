@@ -8,7 +8,7 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     AIPlanningSignal,
     CapitalAllocationSignal,
     PlanningInput,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
@@ -82,16 +82,20 @@ def test_phase14e32_sell_planning_blocks_quantity_above_current_position(tmp_pat
                     price_required=True,
                 ),
             ),
-            safety_signals=(
-                SafetySignal(
-                    safety_id="sell-over-safety",
-                    symbol="6522",
-                    side="SELL",
-                    allowed=True,
-                    review_required=False,
-                    blocked=False,
-                    reason="allow",
-                ),
+            runtime_safety=RuntimeSafetyContext(
+                safety_decision_id="sell-over-safety",
+                safety_policy_version="safety_test_v1",
+                safety_source="test_phase14e32",
+                safety_decision="ALLOW",
+                safety_reason="allow",
+                review_required=False,
+                block_buy=False,
+                block_sell=False,
+                block_submit=False,
+                halt_runtime=False,
+                emergency_stop=False,
+                generated_at="2026-07-08T00:00:00+09:00",
+                expires_at="2026-07-09T00:00:00+09:00",
             ),
         )
     )
@@ -104,11 +108,14 @@ def test_phase14e32_sell_planning_blocks_quantity_above_current_position(tmp_pat
 def test_phase14e32_sell_submit_execution_current_report_notification_flow(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_current_state(runtime_root, positions=[_current_position("6522", quantity=100, price=102)])
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    _write_broker_positions_snapshot(runtime_root, symbol="6522", quantity=100, available_quantity=100)
     run_sell_planning_pending_pipeline(
         runtime_root=runtime_root,
         business_date="2026-07-08",
         mode="demo",
         exit_decisions=(SellExitDecision(symbol="6522", quantity=100, reason="exit signal"),),
+        capital_deployment_policy=_load_policy(policy_path),
     )
 
     submit = run_submit_pipeline(
@@ -119,6 +126,7 @@ def test_phase14e32_sell_submit_execution_current_report_notification_flow(tmp_p
         job="submit",
         settings=_demo_settings(),
         adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
     )
 
     assert submit.status == "PASS"
@@ -166,6 +174,7 @@ def _runtime_root(tmp_path: Path) -> Path:
     ledger.mkdir(parents=True)
     for name in ("orders", "executions", "positions", "cash", "events"):
         (ledger / f"{name}.jsonl").write_text("", encoding="utf-8")
+    _write_safety_decision(root)
     return root
 
 
@@ -293,6 +302,67 @@ def _demo_settings() -> BrokerSettings:
     )
 
 
+def _write_policy(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "policy_version": "capital_deployment_v1",
+            "policy_source": str(path),
+            "evaluation_capital": 1_000_000,
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+            "max_position_weight": 0.2,
+            "max_positions": 5,
+            "min_order_amount": 0,
+            "max_buy_order_amount": None,
+            "max_sell_liquidation_amount": None,
+            "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+            "sell_liquidation_policy": "current_owned_available_quantity_policy",
+            "manual_review_threshold": {
+                "buy_amount": None,
+                "sell_liquidation_amount": None,
+            },
+        },
+    )
+    return path
+
+
+def _write_broker_positions_snapshot(root: Path, *, symbol: str, quantity: float, available_quantity: float) -> Path:
+    path = root / "broker" / "snapshots" / "positions" / "positions-phase14e32.json"
+    _write_json(
+        path,
+        {
+            "kind": "positions",
+            "source": "broker_readonly",
+            "as_of": "2026-07-08T08:30:00+09:00",
+            "review_required": False,
+            "production_equivalent": True,
+            "records": [
+                {
+                    "environment": "demo",
+                    "source": "broker_readonly",
+                    "as_of": "2026-07-08T08:30:00+09:00",
+                    "account_type": "cash",
+                    "issue_code": symbol,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "available_quantity": available_quantity,
+                    "review_required": False,
+                    "production_equivalent": True,
+                }
+            ],
+        },
+    )
+    return path
+
+
+def _load_policy(path: Path):
+    from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import load_capital_deployment_policy
+
+    return load_capital_deployment_policy(path)
+
+
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -304,3 +374,28 @@ def _read_jsonl(path: Path):
 def _write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_safety_decision(root: Path) -> Path:
+    path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
+    _write_json(
+        path,
+        {
+            "safety_decision_id": "safety-phase14e32-fixture",
+            "safety_policy_version": "safety_policy_v1",
+            "safety_source": str(path),
+            "business_date": "2026-07-08",
+            "runtime_mode": "demo",
+            "decision": "ALLOW",
+            "reason": "phase14e32 fixture safety allow",
+            "review_required": False,
+            "block_buy": False,
+            "block_sell": False,
+            "block_submit": False,
+            "halt_runtime": False,
+            "emergency_stop": False,
+            "generated_at": "2026-07-08T08:00:00+09:00",
+            "expires_at": "2026-07-08T15:00:00+09:00",
+        },
+    )
+    return path

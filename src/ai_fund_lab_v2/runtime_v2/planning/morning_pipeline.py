@@ -31,13 +31,25 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
+    CapitalDeploymentPolicy,
+    CapitalDeploymentPolicyError,
+    capital_deployment_policy_hash_from_context,
+    load_capital_deployment_policy,
+)
 from ai_fund_lab_v2.runtime_v2.planning.models import (
     AIPlanningSignal,
     CapitalAllocationSignal,
     PlanningInput,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
+from ai_fund_lab_v2.runtime_v2.safety_decision import (
+    RuntimeSafetyDecision,
+    load_runtime_safety_decision,
+    safety_allows_action,
+    safety_manifest_fields,
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +87,13 @@ class MorningPipelineResult:
     feature_date_contract_status: str = ""
     feature_date_contract_reason: str = ""
     feature_date_contract_path: str = ""
+    consumer_ready: bool = False
+    schema_version: str = ""
+    candidate_schema_status: str = ""
+    candidate_missing_columns: tuple[str, ...] = ()
+    opportunity_schema_status: str = ""
+    pm_schema_status: str = ""
+    consumer_readiness_artifact_path: str = ""
     available_cash: float | None = None
     planning_budget: float | None = None
     current_exposure: float = 0.0
@@ -86,10 +105,35 @@ class MorningPipelineResult:
     price_missing_count: int = 0
     budget_excluded_count: int = 0
     sample_order_sizing: tuple[dict[str, Any], ...] = ()
+    capital_deployment_policy_used_by_morning: bool = False
+    morning_policy_source: str = ""
+    morning_policy_version: str = ""
+    morning_policy_sizing_method: str = ""
+    morning_policy_target_investment_ratio: float | None = None
+    morning_policy_cash_buffer: float | None = None
+    morning_policy_max_exposure: float | None = None
+    morning_policy_max_position_weight: float | None = None
+    morning_policy_max_positions: int | None = None
+    morning_policy_max_buy_order_amount: float | None = None
+    morning_policy_min_order_amount: float | None = None
+    morning_order_count_source: str = ""
+    morning_per_order_budget_source: str = ""
+    morning_hidden_cap_removed: bool = False
+    safety_decision_id: str = ""
+    safety_policy_version: str = ""
+    safety_source: str = ""
+    safety_decision: str = ""
+    safety_reason: str = ""
+    safety_status: str = ""
+    safety_block_buy: bool = False
+    safety_block_sell: bool = False
+    safety_block_submit: bool = False
+    safety_halt_runtime: bool = False
 
     def to_stage_details(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["selected_symbols"] = list(self.selected_symbols)
+        payload["candidate_missing_columns"] = list(self.candidate_missing_columns)
         payload["sample_order_sizing"] = list(self.sample_order_sizing)
         return payload
 
@@ -101,7 +145,12 @@ def run_morning_ai_planning_pending_pipeline(
     mode: str,
     feature_root: Path | str = ".runtime/operations/feature_artifacts",
     feature_date: str | None = None,
-    max_orders: int = 5,
+    max_orders: int | None = None,
+    capital_deployment_policy: CapitalDeploymentPolicy | None = None,
+    capital_deployment_policy_path: Path | str | None = None,
+    safety_decision: RuntimeSafetyDecision | None = None,
+    ai_signals: tuple[AIPlanningSignal, ...] | None = None,
+    buy_ai_context: dict[str, Any] | None = None,
 ) -> MorningPipelineResult:
     """Connect feature input to Planning, Approval, and Current Pending.
 
@@ -124,11 +173,76 @@ def run_morning_ai_planning_pending_pipeline(
     resolved_feature_date = feature_contract.selected_feature_date or requested_feature_date
     capability = get_broker_capability(mode)
     asset_state = _load_asset_state(runtime_root_path / "persistent_ledger" / "state.json")
-    evaluation_capital = capability.default_evaluation_capital or asset_state.total_equity or asset_state.buying_power
+    runtime_safety_decision = safety_decision or load_runtime_safety_decision(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+    )
+    safety_allowed, safety_status, safety_reason = safety_allows_action(runtime_safety_decision, action="planning", side="BUY")
+    if not safety_allowed:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            feature_date=resolved_feature_date,
+            feature_contract=feature_contract,
+            target_session_date=target_session_date,
+            reason=safety_reason,
+            status=safety_status,
+            evaluation_capital=None,
+            price_source_status="NOT_EVALUATED",
+            price_source_path=str(_price_source_path(Path(feature_root))),
+            policy_context=_empty_morning_policy_context(operator_max_orders=max_orders),
+            safety_decision=runtime_safety_decision,
+        )
+    policy = capital_deployment_policy
+    if policy is None and capital_deployment_policy_path is not None:
+        try:
+            policy = load_capital_deployment_policy(capital_deployment_policy_path)
+        except CapitalDeploymentPolicyError:
+            policy = None
+    if policy is None:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            feature_date=resolved_feature_date,
+            feature_contract=feature_contract,
+            target_session_date=target_session_date,
+            reason="capital_deployment_policy_missing",
+            status="REVIEW_REQUIRED",
+            evaluation_capital=None,
+            price_source_status="NOT_EVALUATED",
+            price_source_path=str(_price_source_path(Path(feature_root))),
+            policy_context=_empty_morning_policy_context(operator_max_orders=max_orders),
+            safety_decision=runtime_safety_decision,
+        )
+    evaluation_capital = policy.evaluation_capital
     available_cash = _available_cash(asset_state, capability_default=capability.default_evaluation_capital)
-    planning_budget = available_cash
     current_exposure = _current_exposure(asset_state)
     current_position_symbols = _current_position_symbols(asset_state)
+    effective_order_limit = _effective_order_limit(
+        policy=policy,
+        current_position_count=len(current_position_symbols),
+        operator_max_orders=max_orders,
+    )
+    planning_budget = _policy_planning_budget(
+        policy=policy,
+        available_cash=available_cash,
+        current_exposure=current_exposure,
+    )
+    per_order_budget = _policy_per_order_budget(
+        policy=policy,
+        planning_budget=planning_budget,
+        effective_order_limit=effective_order_limit,
+    )
+    policy_context = _morning_policy_context(
+        policy,
+        operator_max_orders=max_orders,
+        effective_order_limit=effective_order_limit,
+        planning_budget=planning_budget,
+        per_order_budget=per_order_budget,
+        current_exposure=current_exposure,
+        available_cash=available_cash,
+    )
     if evaluation_capital is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -142,8 +256,10 @@ def run_morning_ai_planning_pending_pipeline(
             planning_budget=planning_budget,
             current_exposure=current_exposure,
             current_position_symbols=current_position_symbols,
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
-    if planning_budget is None or planning_budget <= 0:
+    if planning_budget <= 0 or effective_order_limit <= 0 or per_order_budget <= 0:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
             business_date=business_date,
@@ -156,6 +272,8 @@ def run_morning_ai_planning_pending_pipeline(
             planning_budget=planning_budget,
             current_exposure=current_exposure,
             current_position_symbols=current_position_symbols,
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
     if feature_contract.status != "PASS":
         return _write_no_signal_pending(
@@ -173,28 +291,29 @@ def run_morning_ai_planning_pending_pipeline(
             current_position_symbols=current_position_symbols,
             price_source_status="NOT_EVALUATED",
             price_source_path=str(_price_source_path(Path(feature_root))),
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
 
-    feature_dir = Path(feature_root) / resolved_feature_date
-    feature_inputs = _load_feature_inputs(feature_dir)
-    missing = tuple(name for name, value in feature_inputs.items() if value is None)
-    if missing:
+    if ai_signals is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
             target_session_date=target_session_date,
-            reason="feature_input_missing:" + ",".join(missing),
+            reason="buy_ai_opportunity_artifact_missing",
             status="REVIEW_REQUIRED",
             evaluation_capital=evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
             current_position_symbols=current_position_symbols,
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
 
-    candidate_rows = _candidate_rows(feature_inputs["candidate"])
+    candidate_rows = tuple(ai_signals)
     if not candidate_rows:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -202,15 +321,16 @@ def run_morning_ai_planning_pending_pipeline(
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
             target_session_date=target_session_date,
-            reason="NO_SIGNAL:candidate_rows_empty",
+            reason="NO_SIGNAL:opportunity_ai_rankings_empty",
             evaluation_capital=evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
             current_position_symbols=current_position_symbols,
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
 
-    per_order_budget = min(float(planning_budget) / max(max_orders, 1), 100_000.0)
     price_source = _load_price_source(Path(feature_root), resolved_feature_date)
     if price_source is None:
         return _write_no_signal_pending(
@@ -229,6 +349,8 @@ def run_morning_ai_planning_pending_pipeline(
             candidate_count=len(candidate_rows),
             price_source_status="MISSING",
             price_source_path=str(_price_source_path(Path(feature_root))),
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
 
     selected_rows: list[dict[str, Any]] = []
@@ -236,12 +358,12 @@ def run_morning_ai_planning_pending_pipeline(
     price_missing_count = 0
     budget_excluded_count = 0
     existing_position_excluded_count = 0
-    for row in candidate_rows:
-        symbol = _symbol(row)
+    for signal in candidate_rows:
+        symbol = signal.symbol
         if not is_symbol_allowed_by_capability(symbol, capability):
             demo_filtered_9000_count += 1
             continue
-        broker_symbol = _broker_symbol(symbol, _listed_info(row))
+        broker_symbol = _broker_symbol(symbol, {})
         if broker_symbol in current_position_symbols:
             existing_position_excluded_count += 1
             continue
@@ -253,8 +375,15 @@ def run_morning_ai_planning_pending_pipeline(
         if quantity <= 0:
             budget_excluded_count += 1
             continue
-        selected_rows.append({**row, "__price_evidence": price, "__planned_quantity": quantity})
-        if len(selected_rows) >= max_orders:
+        selected_rows.append(
+            {
+                "code": symbol,
+                "__price_evidence": price,
+                "__planned_quantity": quantity,
+                "__ai_signal": signal,
+            }
+        )
+        if len(selected_rows) >= effective_order_limit:
             break
     if not selected_rows:
         reason = (
@@ -281,18 +410,19 @@ def run_morning_ai_planning_pending_pipeline(
             price_missing_count=price_missing_count,
             budget_excluded_count=budget_excluded_count,
             existing_position_excluded_count=existing_position_excluded_count,
+            policy_context=policy_context,
+            safety_decision=runtime_safety_decision,
         )
 
     planning_run_id = _planning_run_id(business_date)
-    ai_signals = tuple(
-        _ai_signal(row, rank, planning_run_id=planning_run_id)
+    selected_ai_signals = tuple(
+        _runtime_ai_signal(row["__ai_signal"], rank, planning_run_id=planning_run_id)
         for rank, row in enumerate(selected_rows, start=1)
     )
     allocations = tuple(
-        _allocation(row=row, signal=signal, per_order_budget=per_order_budget)
-        for row, signal in zip(selected_rows, ai_signals)
+        _allocation(row=row, signal=signal, per_order_budget=per_order_budget, policy_context=policy_context)
+        for row, signal in zip(selected_rows, selected_ai_signals)
     )
-    safety = tuple(_safety(signal) for signal in ai_signals)
     planning_result = build_order_plan(
         PlanningInput(
             mode=mode,
@@ -300,16 +430,18 @@ def run_morning_ai_planning_pending_pipeline(
             business_date=business_date,
             target_session_date=target_session_date,
             asset_state=asset_state,
-            ai_signals=ai_signals,
+            ai_signals=selected_ai_signals,
             capital_allocations=allocations,
-            safety_signals=safety,
+            runtime_safety=_runtime_safety_context(runtime_safety_decision),
         )
     )
     order_plan_path = _morning_artifact_dir(runtime_root_path, business_date) / "order_plan.json"
     order_plan_path.parent.mkdir(parents=True, exist_ok=True)
     order_plan_payload = _jsonable(planning_result.order_plan)
+    order_plan_payload["policy_context"] = policy_context
     order_plan_payload["feature_date_contract"] = _feature_contract_payload(feature_contract)
     order_plan_payload["market_data_freshness"] = _market_data_freshness_payload(feature_contract)
+    order_plan_payload["buy_ai_context"] = buy_ai_context or {}
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     order_plan_hash = _hash(order_plan_path.read_text(encoding="utf-8"))
 
@@ -392,6 +524,13 @@ def run_morning_ai_planning_pending_pipeline(
         feature_date_contract_status=feature_contract.status,
         feature_date_contract_reason=feature_contract.reason,
         feature_date_contract_path=feature_contract.contract_artifact_path,
+        consumer_ready=feature_contract.consumer_ready,
+        schema_version=feature_contract.schema_version,
+        candidate_schema_status=feature_contract.candidate_schema_status,
+        candidate_missing_columns=feature_contract.candidate_missing_columns,
+        opportunity_schema_status=feature_contract.opportunity_schema_status,
+        pm_schema_status=feature_contract.pm_schema_status,
+        consumer_readiness_artifact_path=feature_contract.consumer_readiness_artifact_path,
         existing_position_excluded_count=existing_position_excluded_count,
         selected_price_source="jquants_raw_normalized_daily_quotes_close",
         price_source_status="PASS",
@@ -399,6 +538,8 @@ def run_morning_ai_planning_pending_pipeline(
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
         sample_order_sizing=tuple(_sizing_summary(item) for item in pending.items),
+        **_result_policy_fields(policy_context),
+        **_result_safety_fields(runtime_safety_decision),
     )
 
 
@@ -447,6 +588,8 @@ def _write_no_signal_pending(
     price_missing_count: int = 0,
     budget_excluded_count: int = 0,
     existing_position_excluded_count: int = 0,
+    policy_context: dict[str, Any] | None = None,
+    safety_decision: RuntimeSafetyDecision | None = None,
 ) -> MorningPipelineResult:
     order_plan_path = _morning_artifact_dir(runtime_root, business_date) / "order_plan.json"
     approval_path = _morning_artifact_dir(runtime_root, business_date) / "approval_artifact.json"
@@ -469,6 +612,8 @@ def _write_no_signal_pending(
             "price_source_path": price_source_path,
             "fallback_allowed": False,
         },
+        "policy_context": policy_context or {},
+        "safety_context": _safety_context_payload(safety_decision),
     }
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     approval_path.write_text(
@@ -485,6 +630,21 @@ def _write_no_signal_pending(
         items=(),
     )
     pending = replace(pending, feature_date_contract=_feature_contract_payload(feature_contract))
+    if safety_decision is not None:
+        pending = replace(
+            pending,
+            safety_context=_safety_context_payload(safety_decision),
+            safety_decision_id=safety_decision.safety_decision_id,
+            safety_policy_version=safety_decision.safety_policy_version,
+        )
+    if policy_context:
+        pending = replace(
+            pending,
+            policy_context=policy_context,
+            policy_version=str(policy_context.get("policy_version") or ""),
+            policy_source=str(policy_context.get("policy_source") or ""),
+            pending_policy_hash=_policy_hash(policy_context),
+        )
     if status == "REVIEW_REQUIRED":
         pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED)
     elif status == "BLOCKED":
@@ -519,12 +679,21 @@ def _write_no_signal_pending(
         feature_date_contract_status=feature_contract.status,
         feature_date_contract_reason=feature_contract.reason,
         feature_date_contract_path=feature_contract.contract_artifact_path,
+        consumer_ready=feature_contract.consumer_ready,
+        schema_version=feature_contract.schema_version,
+        candidate_schema_status=feature_contract.candidate_schema_status,
+        candidate_missing_columns=feature_contract.candidate_missing_columns,
+        opportunity_schema_status=feature_contract.opportunity_schema_status,
+        pm_schema_status=feature_contract.pm_schema_status,
+        consumer_readiness_artifact_path=feature_contract.consumer_readiness_artifact_path,
         existing_position_excluded_count=existing_position_excluded_count,
         selected_price_source="jquants_raw_normalized_daily_quotes_close",
         price_source_status=price_source_status,
         price_source_path=price_source_path,
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
+        **_result_policy_fields(policy_context),
+        **_result_safety_fields(safety_decision),
     )
 
 
@@ -589,41 +758,19 @@ def _market_data_freshness_payload(contract: FeatureDateContract) -> dict[str, A
     }
 
 
-def _candidate_rows(frame) -> list[dict[str, Any]]:
-    if frame is None or frame.empty:
-        return []
-    working = frame.copy()
-    if "universe_eligible" in working.columns:
-        working = working[working["universe_eligible"].fillna(False).astype(bool)]
-    sort_columns = [
-        column
-        for column in (
-            "price_momentum_return_20d",
-            "price_momentum_return_5d",
-            "liquidity_avg_volume_20d",
-        )
-        if column in working.columns
-    ]
-    if sort_columns:
-        working = working.sort_values(sort_columns, ascending=[False] * len(sort_columns))
-    return list(working.to_dict(orient="records"))
-
-
 def _planning_run_id(business_date: str) -> str:
     return f"morning-run-{business_date}-{uuid.uuid4().hex[:12]}"
 
 
-def _ai_signal(row: dict[str, Any], rank: int, *, planning_run_id: str) -> AIPlanningSignal:
-    symbol = _symbol(row)
-    score = _number(row.get("price_momentum_return_20d"), default=0.0)
+def _runtime_ai_signal(signal: AIPlanningSignal, rank: int, *, planning_run_id: str) -> AIPlanningSignal:
     return AIPlanningSignal(
-        signal_id=f"{planning_run_id}-ai-{symbol}-{rank:03d}",
-        symbol=symbol,
-        side="BUY",
+        signal_id=f"{planning_run_id}-{signal.signal_id}",
+        symbol=signal.symbol,
+        side=signal.side,
         rank=rank,
-        score=score,
-        reason="feature momentum inference",
-        source_ai="runtime_v2_morning_feature_inference",
+        score=signal.score,
+        reason=signal.reason,
+        source_ai=signal.source_ai,
     )
 
 
@@ -632,6 +779,7 @@ def _allocation(
     row: dict[str, Any],
     signal: AIPlanningSignal,
     per_order_budget: float,
+    policy_context: dict[str, Any],
 ) -> CapitalAllocationSignal:
     price = row.get("__price_evidence")
     if not isinstance(price, PriceEvidence):
@@ -648,6 +796,10 @@ def _allocation(
             price_as_of="",
             price_confidence="",
             price_required=True,
+            policy_version=str(policy_context.get("policy_version") or ""),
+            policy_source=str(policy_context.get("policy_source") or ""),
+            sizing_policy_reason=str(policy_context.get("sizing_policy_reason") or ""),
+            policy_context=policy_context,
         )
     estimated_price = price.price
     quantity = _round_lot_quantity(per_order_budget, estimated_price)
@@ -667,19 +819,188 @@ def _allocation(
         price_as_of=price.price_as_of,
         price_confidence=price.price_confidence,
         price_required=True,
+        policy_version=str(policy_context.get("policy_version") or ""),
+        policy_source=str(policy_context.get("policy_source") or ""),
+        sizing_policy_reason=str(policy_context.get("sizing_policy_reason") or ""),
+        policy_context=policy_context,
     )
 
 
-def _safety(signal: AIPlanningSignal) -> SafetySignal:
-    return SafetySignal(
-        safety_id=f"morning-safety-{signal.symbol}",
-        symbol=signal.symbol,
-        side=signal.side,
-        allowed=True,
-        review_required=False,
-        blocked=False,
-        reason="morning pipeline safety placeholder allow",
+def _effective_order_limit(
+    *,
+    policy: CapitalDeploymentPolicy,
+    current_position_count: int,
+    operator_max_orders: int | None,
+) -> int:
+    remaining_slots = max(policy.max_positions - current_position_count, 0)
+    if operator_max_orders is None:
+        return remaining_slots
+    return max(min(operator_max_orders, remaining_slots), 0)
+
+
+def _policy_planning_budget(
+    *,
+    policy: CapitalDeploymentPolicy,
+    available_cash: float | None,
+    current_exposure: float,
+) -> float:
+    target_exposure = policy.evaluation_capital * policy.target_investment_ratio
+    cash_buffer_amount = policy.evaluation_capital * policy.cash_buffer
+    target_remaining = max(target_exposure - current_exposure, 0.0)
+    exposure_remaining = max(policy.max_exposure - current_exposure, 0.0)
+    cash_capacity = 0.0 if available_cash is None else max(float(available_cash) - cash_buffer_amount, 0.0)
+    return min(target_remaining, exposure_remaining, cash_capacity)
+
+
+def _policy_per_order_budget(
+    *,
+    policy: CapitalDeploymentPolicy,
+    planning_budget: float,
+    effective_order_limit: int,
+) -> float:
+    if effective_order_limit <= 0 or planning_budget <= 0:
+        return 0.0
+    candidates = [
+        float(planning_budget) / float(effective_order_limit),
+        policy.evaluation_capital * policy.max_position_weight,
+    ]
+    if policy.max_buy_order_amount is not None:
+        candidates.append(policy.max_buy_order_amount)
+    return max(min(candidates), 0.0)
+
+
+def _morning_policy_context(
+    policy: CapitalDeploymentPolicy,
+    *,
+    operator_max_orders: int | None,
+    effective_order_limit: int,
+    planning_budget: float,
+    per_order_budget: float,
+    current_exposure: float,
+    available_cash: float | None,
+) -> dict[str, Any]:
+    order_count_source = (
+        "operator_override_capped_by_policy_max_positions"
+        if operator_max_orders is not None
+        else "capital_deployment_policy.max_positions"
     )
+    return {
+        "policy_version": policy.policy_version,
+        "policy_source": policy.policy_source,
+        "evaluation_capital": policy.evaluation_capital,
+        "target_investment_ratio": policy.target_investment_ratio,
+        "cash_buffer": policy.cash_buffer,
+        "max_exposure": policy.max_exposure,
+        "max_position_weight": policy.max_position_weight,
+        "max_positions": policy.max_positions,
+        "max_buy_order_amount": policy.max_buy_order_amount,
+        "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
+        "min_order_amount": policy.min_order_amount,
+        "buy_notional_policy": policy.buy_notional_policy,
+        "sell_liquidation_policy": policy.sell_liquidation_policy,
+        "manual_review_threshold": {
+            "buy_amount": policy.manual_review_threshold.buy_amount,
+            "sell_liquidation_amount": policy.manual_review_threshold.sell_liquidation_amount,
+        },
+        "effective_order_limit": effective_order_limit,
+        "operator_max_orders": operator_max_orders,
+        "planning_budget": planning_budget,
+        "per_order_budget": per_order_budget,
+        "current_exposure": current_exposure,
+        "available_cash": available_cash,
+        "capital_deployment_policy_used_by_morning": True,
+        "morning_policy_sizing_method": "target_ratio_cash_buffer_exposure_position_weight",
+        "morning_order_count_source": order_count_source,
+        "morning_per_order_budget_source": "capital_deployment_policy_derived",
+        "morning_hidden_cap_removed": True,
+        "sizing_policy_reason": (
+            "derived_from Capital Deployment Policy: target_investment_ratio, cash_buffer, "
+            "max_exposure, max_position_weight, max_positions, max_buy_order_amount"
+        ),
+    }
+
+
+def _empty_morning_policy_context(*, operator_max_orders: int | None) -> dict[str, Any]:
+    return {
+        "policy_version": "",
+        "policy_source": "",
+        "operator_max_orders": operator_max_orders,
+        "capital_deployment_policy_used_by_morning": False,
+        "morning_policy_sizing_method": "",
+        "morning_order_count_source": "POLICY_MISSING",
+        "morning_per_order_budget_source": "POLICY_MISSING",
+        "morning_hidden_cap_removed": True,
+    }
+
+
+def _result_policy_fields(policy_context: dict[str, Any] | None) -> dict[str, Any]:
+    context = policy_context or {}
+    return {
+        "capital_deployment_policy_used_by_morning": bool(context.get("capital_deployment_policy_used_by_morning")),
+        "morning_policy_source": str(context.get("policy_source") or ""),
+        "morning_policy_version": str(context.get("policy_version") or ""),
+        "morning_policy_sizing_method": str(context.get("morning_policy_sizing_method") or ""),
+        "morning_policy_target_investment_ratio": context.get("target_investment_ratio"),
+        "morning_policy_cash_buffer": context.get("cash_buffer"),
+        "morning_policy_max_exposure": context.get("max_exposure"),
+        "morning_policy_max_position_weight": context.get("max_position_weight"),
+        "morning_policy_max_positions": context.get("max_positions"),
+        "morning_policy_max_buy_order_amount": context.get("max_buy_order_amount"),
+        "morning_policy_min_order_amount": context.get("min_order_amount"),
+        "morning_order_count_source": str(context.get("morning_order_count_source") or ""),
+        "morning_per_order_budget_source": str(context.get("morning_per_order_budget_source") or ""),
+        "morning_hidden_cap_removed": bool(context.get("morning_hidden_cap_removed")),
+    }
+
+
+def _result_safety_fields(decision: RuntimeSafetyDecision | None) -> dict[str, Any]:
+    fields = safety_manifest_fields(decision)
+    return {
+        "safety_decision_id": str(fields.get("safety_decision_id") or ""),
+        "safety_policy_version": str(fields.get("safety_policy_version") or ""),
+        "safety_source": str(fields.get("safety_source") or ""),
+        "safety_decision": str(fields.get("safety_decision") or ""),
+        "safety_reason": str(fields.get("safety_reason") or ""),
+        "safety_status": str(fields.get("safety_status") or ""),
+        "safety_block_buy": bool(fields.get("safety_block_buy")),
+        "safety_block_sell": bool(fields.get("safety_block_sell")),
+        "safety_block_submit": bool(fields.get("safety_block_submit")),
+        "safety_halt_runtime": bool(fields.get("safety_halt_runtime")),
+    }
+
+
+def _runtime_safety_context(decision: RuntimeSafetyDecision) -> RuntimeSafetyContext:
+    return RuntimeSafetyContext(
+        safety_decision_id=decision.safety_decision_id,
+        safety_policy_version=decision.safety_policy_version,
+        safety_source=decision.safety_source or decision.artifact_path,
+        safety_decision=decision.decision,
+        safety_reason=decision.reason,
+        review_required=decision.review_required,
+        block_buy=decision.block_buy,
+        block_sell=decision.block_sell,
+        block_submit=decision.block_submit,
+        halt_runtime=decision.halt_runtime,
+        emergency_stop=decision.emergency_stop,
+        generated_at=decision.generated_at,
+        expires_at=decision.expires_at,
+    )
+
+
+def _safety_context_payload(decision: RuntimeSafetyDecision | None) -> dict[str, Any]:
+    if decision is None:
+        return {}
+    return {
+        "safety_decision_id": decision.safety_decision_id,
+        "safety_policy_version": decision.safety_policy_version,
+        "safety_source": decision.safety_source or decision.artifact_path,
+        "safety_decision": decision.decision,
+        "safety_reason": decision.reason,
+    }
+
+
+def _policy_hash(policy_context: dict[str, Any]) -> str:
+    return capital_deployment_policy_hash_from_context(policy_context)
 
 
 def _pending_item(item) -> PendingOrderItem:
@@ -697,6 +1018,27 @@ def _pending_item(item) -> PendingOrderItem:
         price_as_of=item.price_as_of,
         price_confidence=item.price_confidence,
         price_required=item.price_required,
+        capital_allocation_amount=item.capital_allocation_amount,
+        policy_version=item.policy_version,
+        policy_source=item.policy_source,
+        evaluation_capital=item.evaluation_capital,
+        target_investment_ratio=item.target_investment_ratio,
+        cash_buffer=item.cash_buffer,
+        max_exposure=item.max_exposure,
+        max_position_weight=item.max_position_weight,
+        max_positions=item.max_positions,
+        max_buy_order_amount=item.max_buy_order_amount,
+        max_sell_liquidation_amount=item.max_sell_liquidation_amount,
+        min_order_amount=item.min_order_amount,
+        buy_notional_policy=item.buy_notional_policy,
+        sell_liquidation_policy=item.sell_liquidation_policy,
+        manual_review_threshold=item.manual_review_threshold,
+        sizing_policy_reason=item.sizing_policy_reason,
+        safety_decision_id=item.safety_decision_id,
+        safety_policy_version=item.safety_policy_version,
+        safety_source=item.safety_source,
+        safety_decision=item.safety_decision,
+        safety_reason=item.safety_reason,
     )
 
 

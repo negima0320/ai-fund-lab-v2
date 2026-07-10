@@ -33,7 +33,7 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     AIPlanningSignal,
     CapitalAllocationSignal,
     PlanningInput,
-    SafetySignal,
+    RuntimeSafetyContext,
 )
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
 from ai_fund_lab_v2.runtime_v2.reconcile.reconciler import run_reconciliation
@@ -103,16 +103,20 @@ def run_simulation_replay(
                         reason="simulation allocation",
                     ),
                 ),
-                safety_signals=(
-                    SafetySignal(
-                        safety_id=f"safety-{instruction.business_date}-{instruction.side}-{instruction.symbol}",
-                        symbol=instruction.symbol,
-                        side=instruction.side,
-                        allowed=True,
-                        review_required=False,
-                        blocked=False,
-                        reason="simulation safety pass",
-                    ),
+                runtime_safety=RuntimeSafetyContext(
+                    safety_decision_id=f"simulation-safety-{instruction.business_date}",
+                    safety_policy_version="simulation_safety_v1",
+                    safety_source="simulation_replay",
+                    safety_decision="ALLOW",
+                    safety_reason="simulation safety decision fixture",
+                    review_required=False,
+                    block_buy=False,
+                    block_sell=False,
+                    block_submit=False,
+                    halt_runtime=False,
+                    emergency_stop=False,
+                    generated_at=instruction.business_date,
+                    expires_at=instruction.business_date,
                 ),
             )
         )

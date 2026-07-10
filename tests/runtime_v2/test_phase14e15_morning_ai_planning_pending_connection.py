@@ -1,14 +1,29 @@
 import json
+import pickle
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 
 
+class CandidateFixtureModel:
+    def predict_proba(self, matrix):
+        values = np.asarray(matrix, dtype=float)[:, 0]
+        scores = np.clip(values, 0.0, 1.0)
+        return np.column_stack([1.0 - scores, scores])
+
+
+class OpportunityFixtureModel:
+    def predict(self, matrix):
+        return np.asarray(matrix, dtype=float)[:, 0]
+
+
 def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
         [
@@ -36,6 +51,9 @@ def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(t
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            *_buy_ai_args(tmp_path),
         ]
     )
 
@@ -68,6 +86,7 @@ def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(t
 def test_phase14e15_morning_job_generates_new_pending_plan_on_same_day_retry(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     args = [
         "--mode",
@@ -94,6 +113,9 @@ def test_phase14e15_morning_job_generates_new_pending_plan_on_same_day_retry(tmp
         str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
         "--log-root",
         str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+        "--capital-deployment-policy",
+        str(policy_path),
+        *_buy_ai_args(tmp_path),
     ]
 
     assert main(args) == 0
@@ -114,6 +136,7 @@ def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         candidate_codes=("9432", "9501"),
     )
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
         [
@@ -141,6 +164,9 @@ def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            *_buy_ai_args(tmp_path),
         ]
     )
 
@@ -166,6 +192,7 @@ def test_phase14e28_morning_job_blocks_when_reliable_price_source_is_missing(tmp
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         write_price_source=False,
     )
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
         [
@@ -193,6 +220,9 @@ def test_phase14e28_morning_job_blocks_when_reliable_price_source_is_missing(tmp
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            *_buy_ai_args(tmp_path),
         ]
     )
 
@@ -221,6 +251,7 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         candidate_codes=("72030", "65010", "67580", "99840"),
     )
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
         [
@@ -248,6 +279,9 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
             str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            *_buy_ai_args(tmp_path),
         ]
     )
 
@@ -270,7 +304,10 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
     assert morning_stage["status"] == "PASS"
     assert morning_stage["details"]["evaluation_capital"] == 1_000_000
     assert morning_stage["details"]["available_cash"] == 700_000
-    assert morning_stage["details"]["planning_budget"] == 700_000
+    assert morning_stage["details"]["planning_budget"] == 550_000
+    assert morning_stage["details"]["capital_deployment_policy_used_by_morning"] is True
+    assert morning_stage["details"]["morning_policy_source"] == str(policy_path)
+    assert morning_stage["details"]["morning_hidden_cap_removed"] is True
     assert morning_stage["details"]["current_exposure"] == 300_000
     assert morning_stage["details"]["current_position_symbols"] == ["7203"]
     assert morning_stage["details"]["existing_position_excluded_count"] == 1
@@ -328,6 +365,7 @@ def _write_fixed_current(root: Path) -> Path:
     )
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
+    _write_safety_decision(root)
     return root
 
 
@@ -390,6 +428,7 @@ def _write_runtime_owned_current_with_positions(root: Path) -> Path:
     )
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
+    _write_safety_decision(root)
     return root
 
 
@@ -406,19 +445,16 @@ def _write_feature_inputs(root: Path, candidate_codes=("9432", "7203", "6501"), 
                 "universe_eligible": True,
                 "price_momentum_return_20d": 0.90 - index * 0.10,
                 "price_momentum_return_5d": 0.50 - index * 0.05,
+                "trend_close_over_ma_20d": 0.20,
+                "volatility_return_std_20d": 0.02,
+                "volume_momentum_ratio_1d_20d": 1.2,
                 "liquidity_avg_volume_20d": 1_000_000 - index,
                 "data_until": "2026-07-07",
             }
         )
     candidate = pd.DataFrame(rows)
     candidate.to_parquet(feature_dir / "candidate_features.parquet", index=False)
-    candidate.rename(
-        columns={
-            "price_momentum_return_20d": "feature__price_momentum_return_20d",
-            "price_momentum_return_5d": "feature__price_momentum_return_5d",
-            "liquidity_avg_volume_20d": "feature__liquidity_avg_volume_20d",
-        }
-    ).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    candidate.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
     pd.DataFrame(
         columns=[
             "target_date",
@@ -468,9 +504,100 @@ def _fixture_price(code: str) -> float:
     }.get(str(code), 750.0)
 
 
+def _write_policy(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "policy_version": "capital_deployment_v1",
+            "policy_source": str(path),
+            "evaluation_capital": 1_000_000,
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+            "max_position_weight": 0.2,
+            "max_positions": 5,
+            "min_order_amount": 0,
+            "max_buy_order_amount": None,
+            "max_sell_liquidation_amount": None,
+            "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+            "sell_liquidation_policy": "current_owned_available_quantity_policy",
+            "manual_review_threshold": {
+                "buy_amount": None,
+                "sell_liquidation_amount": None,
+            },
+        },
+    )
+    return path
+
+
+def _buy_ai_args(tmp_path: Path) -> list[str]:
+    return [
+        "--candidate-model-path",
+        str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
+        "--opportunity-model-path",
+        str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
+    ]
+
+
+def _write_candidate_model(path: Path) -> Path:
+    _write_pickle(
+        path,
+        {
+            "model": CandidateFixtureModel(),
+            "feature_columns": ["feature__price_momentum_return_20d"],
+            "model_version": "candidate_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
+def _write_opportunity_model(path: Path) -> Path:
+    _write_pickle(
+        path,
+        {
+            "model": OpportunityFixtureModel(),
+            "feature_columns": ["feature__candidate_score"],
+            "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
+            "model_version": "opportunity_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
 def _write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_pickle(path: Path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        pickle.dump(payload, handle)
+
+
+def _write_safety_decision(root: Path) -> Path:
+    path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
+    _write_json(
+        path,
+        {
+            "safety_decision_id": "safety-phase14e15-allow",
+            "safety_policy_version": "safety_operation_guard_v1",
+            "safety_source": str(path),
+            "business_date": "2026-07-09",
+            "runtime_mode": "demo",
+            "decision": "ALLOW",
+            "reason": "phase14e15 fixture safety allow",
+            "review_required": False,
+            "block_buy": False,
+            "block_sell": False,
+            "block_submit": False,
+            "halt_runtime": False,
+            "emergency_stop": False,
+            "generated_at": "2026-07-09T00:00:00+09:00",
+            "expires_at": "2026-07-10T00:00:00+09:00",
+        },
+    )
+    return path
 
 
 def _write_jsonl(path: Path, records):

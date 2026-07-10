@@ -85,9 +85,14 @@ def test_phase14e11_cli_runs_all_scheduler_jobs_without_external_writes(tmp_path
         "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_runtime_v2_market_refresh_pipeline",
         _fake_market_refresh_pipeline,
     )
+    monkeypatch.setattr(
+        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_morning_ai_planning_pending_pipeline",
+        _fake_morning_pipeline,
+    )
     for job, expected in PLISTS.items():
         job_root = tmp_path / job
         runtime_root = _write_fixed_current(job_root / ".runtime")
+        policy_path = _write_policy(job_root / "capital_deployment_policy.json")
 
         exit_code = main(
             [
@@ -113,6 +118,8 @@ def test_phase14e11_cli_runs_all_scheduler_jobs_without_external_writes(tmp_path
                 str(job_root / ".runtime" / "runtime_state" / "run_manifest"),
                 "--log-root",
                 str(job_root / ".runtime" / "runtime_state" / "logs"),
+                "--capital-deployment-policy",
+                str(policy_path),
             ]
         )
 
@@ -171,6 +178,7 @@ def test_phase14e11_cli_blocks_non_payload_notification_mode(tmp_path):
 def test_phase14e11_cli_allows_submit_enabled_true_for_submit_job_only(tmp_path):
     submit_root = tmp_path / "submit"
     runtime_root = _write_fixed_current(submit_root / ".runtime")
+    submit_policy_path = _write_policy(submit_root / "capital_deployment_policy.json")
 
     submit_exit_code = main(
         [
@@ -194,6 +202,8 @@ def test_phase14e11_cli_allows_submit_enabled_true_for_submit_job_only(tmp_path)
             str(submit_root / ".runtime" / "runtime_state" / "run_manifest"),
             "--log-root",
             str(submit_root / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(submit_policy_path),
         ]
     )
 
@@ -307,6 +317,32 @@ def _fake_market_refresh_pipeline(**kwargs):
     )()
 
 
+def _write_policy(path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "policy_version": "capital_deployment_v1",
+            "policy_source": str(path),
+            "evaluation_capital": 1_000_000,
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+            "max_position_weight": 0.2,
+            "max_positions": 5,
+            "min_order_amount": 0,
+            "max_buy_order_amount": None,
+            "max_sell_liquidation_amount": None,
+            "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
+            "sell_liquidation_policy": "current_owned_available_quantity_policy",
+            "manual_review_threshold": {
+                "buy_amount": None,
+                "sell_liquidation_amount": None,
+            },
+        },
+    )
+    return path
+
+
 def _write_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
@@ -336,3 +372,21 @@ class _FakeExecutionReadOnlyResult:
 
 def _fake_execution_readonly_pipeline(**kwargs):
     return _FakeExecutionReadOnlyResult()
+
+
+class _FakeMorningResult:
+    status = "PASS"
+    reason = ""
+    selected_symbols = ("7203",)
+
+    def to_stage_details(self):
+        return {
+            "status": "PASS",
+            "reason": "",
+            "evaluation_capital": 1_000_000,
+            "selected_symbols": list(self.selected_symbols),
+        }
+
+
+def _fake_morning_pipeline(**kwargs):
+    return _FakeMorningResult()

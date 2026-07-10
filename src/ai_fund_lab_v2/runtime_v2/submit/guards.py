@@ -28,7 +28,6 @@ def run_submit_preflight(
     base_url_is_demo: bool,
     base_url_is_production: bool,
     live_order_allowed: bool,
-    max_order_amount: float | None = None,
     broker_position_quantity: float | None = None,
     broker_available_quantity: float | None = None,
     source_current_path: str = "pending_order_plan/pending_order_plan.json",
@@ -45,7 +44,6 @@ def run_submit_preflight(
         base_url_is_demo=base_url_is_demo,
         base_url_is_production=base_url_is_production,
         live_order_allowed=live_order_allowed,
-        max_order_amount=max_order_amount,
         broker_position_quantity=broker_position_quantity,
         broker_available_quantity=broker_available_quantity,
         source_current_path=source_current_path,
@@ -112,7 +110,6 @@ def _blocked_reason(
     base_url_is_demo: bool,
     base_url_is_production: bool,
     live_order_allowed: bool,
-    max_order_amount: float | None,
     broker_position_quantity: float | None,
     broker_available_quantity: float | None,
     source_current_path: str,
@@ -159,8 +156,6 @@ def _blocked_reason(
             return "sell quantity exceeds broker position"
         if item.quantity > broker_available_quantity:
             return "sell quantity exceeds available quantity"
-    if max_order_amount is not None and item.estimated_amount > max_order_amount:
-        return "estimated amount exceeds max order amount"
     return ""
 
 

@@ -20,7 +20,6 @@ def test_phase14d14_sell_preflight_allows_7203_with_position_and_available_quant
         base_url_is_demo=True,
         base_url_is_production=False,
         live_order_allowed=True,
-        max_order_amount=500000,
         broker_position_quantity=100,
         broker_available_quantity=100,
     )

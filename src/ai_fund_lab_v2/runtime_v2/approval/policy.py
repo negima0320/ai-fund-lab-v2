@@ -31,6 +31,11 @@ def build_approval_request(
         created_at=business_date,
         expires_at=expires_at,
         review_required=pending_plan.state.value == "REVIEW_REQUIRED",
+        policy_version=pending_plan.policy_version,
+        policy_source=pending_plan.policy_source,
+        pending_policy_hash=pending_plan.pending_policy_hash,
+        safety_decision_id=pending_plan.safety_decision_id,
+        safety_policy_version=pending_plan.safety_policy_version,
     )
 
 
@@ -44,6 +49,9 @@ def build_approval_artifact(
         request.approval_request_id,
         decision.status.value,
         ",".join(decision.approved_item_ids),
+        request.pending_policy_hash,
+        request.safety_decision_id,
+        request.safety_policy_version,
         decision.decided_at,
     )
     return ApprovalArtifact(
@@ -64,10 +72,14 @@ def build_approval_artifact(
             or decision.status in {ApprovalStatus.REVIEW_REQUIRED, ApprovalStatus.EXPIRED}
         ),
         reason=decision.reason,
+        policy_version=request.policy_version,
+        policy_source=request.policy_source,
+        pending_policy_hash=request.pending_policy_hash,
+        safety_decision_id=request.safety_decision_id,
+        safety_policy_version=request.safety_policy_version,
     )
 
 
 def _hash_id(prefix: str, *parts: str) -> str:
     raw = "|".join(parts).encode("utf-8")
     return prefix + "-" + hashlib.sha256(raw).hexdigest()[:16]
-
