@@ -13,6 +13,12 @@ from ai_fund_lab_v2.runtime_v2.asset.runtime_owned_fill_projection import (
     project_runtime_owned_fills_to_current,
 )
 from ai_fund_lab_v2.runtime_v2.broker_readonly.normalizer import normalize_broker_readonly_payload
+from ai_fund_lab_v2.runtime_v2.current_state.apply import apply_current_projection_to_runtime_state
+from ai_fund_lab_v2.runtime_v2.execution.demo_fallback import (
+    DemoExecutionFallbackAuthority,
+    fallback_policy_summary,
+    load_demo_execution_fallback_authority,
+)
 from ai_fund_lab_v2.runtime_v2.execution.ledger_projection import (
     project_cash_to_ledger_record,
     project_execution_to_ledger_record,
@@ -69,6 +75,14 @@ class ExecutionReadOnlyPipelineResult:
     projected_runtime_owned_symbols: tuple[str, ...] = ()
     excluded_broker_position_symbols: tuple[str, ...] = ()
     source_ledger_records: tuple[str, ...] = ()
+    demo_execution_fallback: dict[str, Any] | None = None
+    current_apply_status: str = "NOT_EXECUTED"
+    current_apply_reason: str = ""
+    current_hash: str = ""
+    current_version: str = ""
+    runtime_state_path: str = ""
+    runtime_state_version: str = ""
+    execution_references: tuple[str, ...] = ()
 
     def to_stage_details(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,6 +94,7 @@ def run_execution_readonly_pipeline(
     business_date: str,
     mode: str,
     snapshot_provider: Callable[..., Any] | None = None,
+    demo_execution_fallback_authority_path: Path | str | None = None,
 ) -> ExecutionReadOnlyPipelineResult:
     """Run Broker ReadOnly ingestion for the regular execution job.
 
@@ -98,6 +113,17 @@ def run_execution_readonly_pipeline(
     )
     runtime_root_path = Path(runtime_root)
     _reject_mode_rooted_runtime_root(runtime_root_path)
+    try:
+        demo_fallback_authority = load_demo_execution_fallback_authority(
+            demo_execution_fallback_authority_path,
+            mode=mode,
+        )
+    except ValueError as exc:
+        return _result(
+            status="BLOCKED",
+            reason=str(exc),
+            runtime_root=runtime_root_path,
+        )
 
     evidence_dir = runtime_root_path / "runtime_state" / "broker_readonly" / business_date
     snapshot_path = evidence_dir / "tachibana_snapshot.json"
@@ -120,9 +146,14 @@ def run_execution_readonly_pipeline(
 
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     as_of = str(payload.get("generated_at") or business_date)
+    readonly_source = (
+        "runtime_v2_execution_readonly_simulation"
+        if bool(payload.get("simulation")) or bool(payload.get("acceptance_only"))
+        else "runtime_v2_execution_readonly"
+    )
     bundle = normalize_broker_readonly_payload(
         environment=mode,
-        source="runtime_v2_execution_readonly",
+        source=readonly_source,
         as_of=as_of,
         orders=tuple(_runtime_order_payload(order) for order in payload.get("orders") or ()),
         executions=tuple(_runtime_execution_payload(execution) for execution in payload.get("executions") or ()),
@@ -149,6 +180,7 @@ def run_execution_readonly_pipeline(
         business_date=business_date,
         as_of=as_of,
         detail_status=str(acceptance["order_detail_status"]),
+        demo_fallback_authority=demo_fallback_authority,
     )
     ledger_executions = (*broker_detail_executions, *equivalent_executions)
 
@@ -175,6 +207,13 @@ def run_execution_readonly_pipeline(
     projected_runtime_owned_symbols: tuple[str, ...] = ()
     excluded_broker_position_symbols: tuple[str, ...] = ()
     source_ledger_records: tuple[str, ...] = ()
+    current_apply_status = "NOT_EXECUTED"
+    current_apply_reason = ""
+    current_hash = ""
+    current_version = ""
+    runtime_state_path = ""
+    runtime_state_version = ""
+    execution_references: tuple[str, ...] = ()
 
     pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
     reconciliation = run_reconciliation(
@@ -195,6 +234,7 @@ def run_execution_readonly_pipeline(
         as_of=as_of,
         business_date=business_date,
         acceptance=acceptance,
+        production_equivalent=bundle.production_equivalent,
     )
     events_appended = _append_ledger_records(
         runtime_root_path / "persistent_ledger" / "events.jsonl",
@@ -237,6 +277,22 @@ def run_execution_readonly_pipeline(
         if projection.status != "PASS":
             status = "REVIEW_REQUIRED"
             reason = f"runtime owned current projection failed: {projection.reason}"
+        else:
+            execution_references = tuple(
+                record.execution_id for record in ledger_executions if getattr(record, "execution_id", "")
+            )
+            current_apply = apply_current_projection_to_runtime_state(
+                runtime_root=runtime_root_path,
+                business_date=business_date,
+                mode=mode,
+                execution_references=execution_references,
+            )
+            current_apply_status = current_apply.status
+            current_apply_reason = current_apply.reason
+            current_hash = current_apply.current_hash
+            current_version = current_apply.current_version
+            runtime_state_path = current_apply.runtime_state_path
+            runtime_state_version = current_apply.runtime_state_version
 
     return ExecutionReadOnlyPipelineResult(
         status=status,
@@ -278,6 +334,14 @@ def run_execution_readonly_pipeline(
         projected_runtime_owned_symbols=projected_runtime_owned_symbols,
         excluded_broker_position_symbols=excluded_broker_position_symbols,
         source_ledger_records=source_ledger_records,
+        demo_execution_fallback=fallback_policy_summary(demo_fallback_authority),
+        current_apply_status=current_apply_status,
+        current_apply_reason=current_apply_reason,
+        current_hash=current_hash,
+        current_version=current_version,
+        runtime_state_path=runtime_state_path,
+        runtime_state_version=runtime_state_version,
+        execution_references=execution_references,
     )
 
 
@@ -381,6 +445,7 @@ def _execution_acceptance_events(
     as_of: str,
     business_date: str,
     acceptance: dict[str, Any],
+    production_equivalent: bool = True,
 ) -> tuple[LedgerEventRecord, ...]:
     warnings = tuple(str(item) for item in acceptance.get("warnings") or ())
     if "order_detail_optional_missing" not in warnings:
@@ -396,7 +461,7 @@ def _execution_acceptance_events(
             created_at=as_of,
             dedup_key=f"runtime_v2_execution_readonly:{event_id}",
             review_required=False,
-            production_equivalent=True,
+            production_equivalent=production_equivalent,
             event_id=event_id,
             event_type="order_detail_optional_missing",
             severity="INFO",
@@ -418,28 +483,48 @@ def _execution_equivalent_records(
     business_date: str,
     as_of: str,
     detail_status: str,
+    demo_fallback_authority: DemoExecutionFallbackAuthority | None = None,
 ) -> tuple[LedgerExecutionRecord, ...]:
     if not cash_present:
         return ()
     positions_by_symbol = {position.symbol: position for position in positions}
     records: list[LedgerExecutionRecord] = []
-    for order in orders:
+    orders_tuple = tuple(orders)
+    for order in orders_tuple:
         if order.order_status != "filled" or order.filled_quantity <= 0 or order.remaining_quantity != 0:
             continue
         position = positions_by_symbol.get(order.symbol)
         if position is None and order.side != "SELL":
             continue
+        fallback_applies = (
+            demo_fallback_authority.applies_to(order, orders_count=len(orders_tuple))
+            if demo_fallback_authority is not None
+            else False
+        )
         evidence_refs = (
-            "CLMOrderList",
-            "CLMGenbutuKabuList",
-            "CLMZanKaiSummary",
-            "CLMZanKaiKanougaku",
+            demo_fallback_authority.evidence_refs
+            if fallback_applies and demo_fallback_authority is not None
+            else (
+                "CLMOrderList",
+                "CLMGenbutuKabuList",
+                "CLMZanKaiSummary",
+                "CLMZanKaiKanougaku",
+            )
         )
         position_quantity = float(getattr(position, "quantity", 0.0) or 0.0) if position is not None else 0.0
         average_price = float(getattr(position, "average_price", 0.0) or 0.0) if position is not None else 0.0
         market_value = float(getattr(position, "market_value", 0.0) or 0.0) if position is not None else 0.0
         market_price = market_value / position_quantity if position_quantity else 0.0
-        cash_effect = average_price * order.filled_quantity
+        execution_price = average_price
+        price_source = "position_evidence"
+        production_equivalent = bool(getattr(order, "production_equivalent", True))
+        if fallback_applies and demo_fallback_authority is not None:
+            execution_price = demo_fallback_authority.execution_price
+            price_source = "operator_browser_confirmation"
+            production_equivalent = False
+            if demo_fallback_authority.valuation_price:
+                market_price = demo_fallback_authority.valuation_price
+        cash_effect = execution_price * order.filled_quantity
         execution_id = f"execution-equivalent:{order.order_ref_hash}"
         records.append(
             LedgerExecutionRecord(
@@ -451,7 +536,7 @@ def _execution_equivalent_records(
                 created_at=as_of,
                 dedup_key=f"runtime_v2_execution_equivalent:{order.order_ref_hash}",
                 review_required=False,
-                production_equivalent=True,
+                production_equivalent=production_equivalent,
                 execution_id=execution_id,
                 order_id=order.order_ref_hash,
                 execution_key=f"execution_equivalent:{business_date}:{order.symbol}:{order.side}",
@@ -466,9 +551,9 @@ def _execution_equivalent_records(
                 remaining_quantity=order.remaining_quantity,
                 order_status=order.order_status,
                 execution_status="filled",
-                price_source="position_evidence",
-                price=average_price,
-                average_price=average_price,
+                price_source=price_source,
+                price=execution_price,
+                average_price=execution_price,
                 market_price=market_price,
                 market_value=market_value,
                 cash_effect=cash_effect,

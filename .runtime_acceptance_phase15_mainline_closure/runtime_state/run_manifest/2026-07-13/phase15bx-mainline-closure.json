@@ -1,0 +1,13 @@
+{
+  "broker_write_performed": false,
+  "business_date": "2026-07-13",
+  "expected_6501_quantity_after": 100.0,
+  "expected_cash_after": 17704424.0,
+  "initial_6501_quantity": 200.0,
+  "initial_cash": 17694424.0,
+  "pending_state": "APPROVED",
+  "production_equivalent": false,
+  "runtime_root": ".runtime_acceptance_phase15_mainline_closure",
+  "schema_version": "phase15bx_fixture_manifest_v1",
+  "source_demo_root": ".runtime_acceptance_phase15_demo_reinit"
+}

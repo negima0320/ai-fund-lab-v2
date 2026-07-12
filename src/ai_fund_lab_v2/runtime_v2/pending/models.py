@@ -45,6 +45,7 @@ class PendingApprovalLink:
     pending_policy_hash: str = ""
     safety_decision_id: str = ""
     safety_policy_version: str = ""
+    approved_order_conditions: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

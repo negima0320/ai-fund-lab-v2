@@ -1,0 +1,15 @@
+{
+  "business_date": "2026-07-13",
+  "items": [
+    {
+      "issue_code": "6501",
+      "pending_item_id": "phase15bs-sell-6501",
+      "quantity": 100.0,
+      "side": "SELL"
+    }
+  ],
+  "order_plan_id": "order-plan-phase15bs-sell-6501",
+  "schema_version": "phase15bs_order_plan_v1",
+  "source": "Phase15-BR2 scenario selection plus Phase15-BS fresh broker evidence",
+  "target_session": "2026-07-13"
+}

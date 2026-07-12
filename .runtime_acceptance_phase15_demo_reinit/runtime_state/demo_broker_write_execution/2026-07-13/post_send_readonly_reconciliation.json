@@ -1,0 +1,41 @@
+{
+  "broker_order_id_hash_from_order_list": "order_b80b43eeb157caa8",
+  "broker_order_id_hash_from_submit": "sha256:b80b43eeb157caa8a56c14684356cbbd0b9cddebc05905a49059f72e4861d153",
+  "cash": {
+    "buying_power": "20009824",
+    "cash_available": "17704424"
+  },
+  "classification": "ORDER_AND_POSITION_CONFIRMED_EXECUTION_DETAIL_REVIEW_REQUIRED",
+  "current_apply_performed": false,
+  "execution_detail_failure_count": 1,
+  "execution_detail_status": "FAIL",
+  "execution_normalization_performed": false,
+  "executions_count": 0,
+  "ledger_append_performed": false,
+  "open_orders_count": 1,
+  "order": {
+    "executed_quantity": "100",
+    "expire_date": "20260712",
+    "issue_code": "6501",
+    "order_datetime": "20260712100459",
+    "quantity": "100",
+    "remaining_quantity": "0",
+    "side": "sell",
+    "status": "全部約定"
+  },
+  "order_list_confirmed": true,
+  "position_6501": {
+    "as_of": "2026-07-12T01:27:56.563913+00:00",
+    "available_quantity": "100",
+    "market_value": "470000",
+    "quantity": "100"
+  },
+  "read_only_data_origin": "BROKER_API",
+  "refresh_status": "REVIEW_REQUIRED",
+  "run_manifest_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/run_manifest/2026-07-13/runtime-v2-broker_readonly_refresh-2026-07-13-20260712T012755.193596+0000.json",
+  "schema_version": "phase15bt_post_send_readonly_reconciliation_v1",
+  "snapshot_hash": "sha256:f33c64cf88eade3788a18f7704aac0e0b26339ae6b6cf781a8dc90e9099113fb",
+  "snapshot_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "snapshot_report_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/snapshot_report.json",
+  "snapshot_status": "FAILED_BROKER_READONLY_FETCH"
+}

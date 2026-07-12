@@ -23,4 +23,5 @@ def link_approval_to_pending(
         approval_status=approval_artifact.status.value,
         approved_item_ids=approval_artifact.approved_item_ids,
         approval_expires_at=approval_artifact.expires_at,
+        approved_order_conditions=approval_artifact.approved_order_conditions,
     )

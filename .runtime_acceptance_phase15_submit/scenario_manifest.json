@@ -1,0 +1,38 @@
+{
+  "artifacts": {
+    "apply_candidate": ".runtime_acceptance_phase15_submit/runtime_state/authoritative_pending_apply_candidate/2026-07-09/apply-candidate-phase15bn.json",
+    "broker_capability": ".runtime_acceptance_phase15_submit/runtime_state/broker_capability/2026-07-09/broker-capability-demo.json",
+    "broker_snapshot": ".runtime_acceptance_phase15_submit/broker/snapshots/positions/positions-phase15bn.json",
+    "current": ".runtime_acceptance_phase15_submit/persistent_ledger/state.json",
+    "human_approval": ".runtime_acceptance_phase15_submit/runtime_state/human_approval/2026-07-09/human-approval-phase15bn.json",
+    "market_evidence": ".runtime_acceptance_phase15_submit/runtime_state/market/2026-07-09/market_evidence.json",
+    "order_condition_approval": ".runtime_acceptance_phase15_submit/runtime_state/order_condition_approval/2026-07-09/order-condition-approval-phase15bn.json",
+    "pending": ".runtime_acceptance_phase15_submit/pending_order_plan/pending_order_plan.json",
+    "policy": ".runtime_acceptance_phase15_submit/runtime_state/policy/capital_deployment.json",
+    "promotion_candidate": ".runtime_acceptance_phase15_submit/runtime_state/pending_promotion_candidate/2026-07-09/promotion-candidate-phase15bn.json",
+    "quote_evidence": ".runtime_acceptance_phase15_submit/runtime_state/quote/2026-07-09/quote_evidence.json",
+    "safety": ".runtime_acceptance_phase15_submit/runtime_state/safety/latest_safety_decision.json"
+  },
+  "broker_write_performed": false,
+  "business_date": "2026-07-09",
+  "current_mutated_after_fixture": false,
+  "execution_created": false,
+  "existing_runtime_referenced": false,
+  "order_condition_authority": {
+    "broker_capability_evidence": "validates supported side/order/session/cash/demo constraints",
+    "human_approval": "approves concrete item order conditions",
+    "policy": "defines allowed order methods and constraints",
+    "submit_pending_producer": "freezes approved conditions into Pending",
+    "submit_runtime": "sends approved conditions without changing them"
+  },
+  "phase": "Phase15-BN",
+  "runtime_root": ".runtime_acceptance_phase15_submit",
+  "safety_action_scope": {
+    "broker_write": "ALLOWED_FOR_ACCEPTANCE",
+    "sell_submit": "ALLOWED"
+  },
+  "scenario_issue_code": "6522",
+  "scenario_side": "SELL",
+  "schema_version": "phase15bn_isolated_submit_scenario_v1",
+  "submit_attempted": false
+}

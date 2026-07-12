@@ -1,0 +1,19 @@
+{
+  "buy_notional_policy": "acceptance_fixture_single_buy_100_shares",
+  "cash_buffer": 0.05,
+  "evaluation_capital": 1000000,
+  "manual_review_threshold": {
+    "buy_amount": null,
+    "sell_liquidation_amount": null
+  },
+  "max_buy_order_amount": null,
+  "max_exposure": 200000,
+  "max_position_weight": 0.1,
+  "max_positions": 1,
+  "max_sell_liquidation_amount": null,
+  "min_order_amount": 0,
+  "policy_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/policy/phase15by_capital_deployment_policy.json",
+  "policy_version": "phase15by_buy_origin_acceptance_policy_v1",
+  "sell_liquidation_policy": "current_owned_available_quantity_policy",
+  "target_investment_ratio": 0.2
+}

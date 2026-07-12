@@ -1,0 +1,39 @@
+{
+  "checks": {
+    "approval_unexpired_unrevoked": true,
+    "available_quantity_ge_100": true,
+    "broker_send_window": true,
+    "broker_snapshot_fresh": true,
+    "demo_login_session": true,
+    "open_opposite_side_order_conflict_none": true,
+    "open_sell_order_conflict_none": true,
+    "pending_approved": true,
+    "pending_unconsumed": true,
+    "quantity_ge_100": true,
+    "request_hash_matches_authorization": true,
+    "safety_block_submit_false": true,
+    "safety_broker_write_allowed_for_acceptance": true,
+    "safety_sell_submit_allowed": true,
+    "safety_unexpired": true,
+    "target_session_valid": true
+  },
+  "gate_status": "PASS",
+  "generated_at": "2026-07-12T01:27:39.676485+00:00",
+  "pending_hash_before": "sha256:55205df91701f3aa1d80e6e3b39c0143ff4fd7aab9ff0a48aa312067a70d3cc0",
+  "pending_path": ".runtime_acceptance_phase15_demo_reinit/pending_order_plan/pending_order_plan.json",
+  "request_hash": "sha256:56ebea4e14ffe7369f133260645720c49303711b74c21960973e833016b37f70",
+  "schema_version": "phase15bt_final_pre_send_gate_v1",
+  "snapshot_hash": "sha256:3b72f2d300ea7154a5465a50a9b32034ece6804e46ee63b14b59092c3a237aff",
+  "snapshot_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "temporal_audit": {
+    "authorized_at": "2026-07-12T01:27:39.676485+00:00",
+    "business_date": "2026-07-13",
+    "created_at_is_not_send_authority": true,
+    "created_at_metadata_only": "2026-07-13",
+    "intended_submit_date": "2026-07-13",
+    "target_session_date": "2026-07-13",
+    "updated_at_metadata_or_expiry": "2026-07-13T15:00:00+09:00"
+  },
+  "user_authorization_hash": "sha256:c51ba2ef9ff4998939373e9a7013544879ce6f8010820bba6e98364bcc597864",
+  "user_authorization_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/user_authorization/2026-07-13/phase15bt_user_authorization.json"
+}

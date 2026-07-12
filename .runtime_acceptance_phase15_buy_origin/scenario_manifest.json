@@ -1,0 +1,11 @@
+{
+  "acceptance_fixture": true,
+  "broker_write_performed": false,
+  "buy_date": "2026-07-13",
+  "investment_decision_generated_by_codex": false,
+  "issue_code": "7203",
+  "next_business_date": "2026-07-14",
+  "production_equivalent": false,
+  "runtime_root": ".runtime_acceptance_phase15_buy_origin",
+  "schema_version": "phase15by_fixture_manifest_v1"
+}

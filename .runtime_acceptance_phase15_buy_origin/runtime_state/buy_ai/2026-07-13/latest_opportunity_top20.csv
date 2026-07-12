@@ -1,0 +1,2 @@
+target_date,code,expected_edge_score,buy_rank,expected_return_horizon,downside_risk_score,buy_reason,no_buy_reason,candidate_score,candidate_rank,model_version,feature_version,inference_run_id,created_at,is_top5,is_top10,is_top20
+2026-07-10,7203,0.9,1,20d,0.1125,opportunity_top5|positive_expected_edge|candidate_prior_available|downside_risk_not_extreme,,0.9,1,opportunity_model_phase15by_acceptance_fixture,phase15by_acceptance_features,runtime-v2-buy-ai-2026-07-13-20260712T031651.830860+0000,2026-07-12T03:16:51.830860+00:00,True,True,True

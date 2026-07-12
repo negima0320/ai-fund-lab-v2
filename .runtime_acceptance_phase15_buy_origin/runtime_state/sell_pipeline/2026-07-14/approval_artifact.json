@@ -1,0 +1,22 @@
+{
+  "approval_hash": "approval-hash-dfc6e88575d1c372",
+  "approval_id": "approval-c30066a6216addad",
+  "approval_request_id": "approval-request-e7be63fb406c8d81",
+  "approved_at": "2026-07-14T08:45:00+09:00",
+  "approved_item_ids": [
+    "opi-sell-exit-ai-7203-001"
+  ],
+  "approved_order_conditions": null,
+  "expires_at": "2026-07-14T15:00:00+09:00",
+  "order_plan_id": "order-plan-011da41b82aa7fbe",
+  "pending_plan_id": "pending-order-plan-011da41b82aa7fbe",
+  "pending_policy_hash": "sha256:40985b08383388f337ca35bc45320d0368af3952672746d719e0fc65b142ab53",
+  "policy_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/policy/phase15by_capital_deployment_policy.json",
+  "policy_version": "phase15by_buy_origin_acceptance_policy_v1",
+  "reason": "runtime v2 sell daily operation approval",
+  "rejected_item_ids": [],
+  "review_required": false,
+  "safety_decision_id": "phase15by-nextday-safety-allow",
+  "safety_policy_version": "safety_operation_guard_v1",
+  "status": "APPROVED"
+}

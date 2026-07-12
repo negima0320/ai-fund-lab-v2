@@ -1,0 +1,11 @@
+{
+  "business_date": "2026-07-09",
+  "quote_status": "READY",
+  "quotes": [
+    {
+      "close": 300.0,
+      "issue_code": "6522"
+    }
+  ],
+  "schema_version": "runtime_v2_quote_evidence_v1"
+}

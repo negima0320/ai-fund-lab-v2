@@ -298,11 +298,33 @@ def _runtime_root(
         },
     )
     _write_json(root / "pending_order_plan" / "pending_order_plan.json", {"state": "CONSUMED", "environment": mode, "items": []})
+    _write_runtime_state(root, business_date=business_date, mode=mode)
     _write_safety_decision(root, business_date=business_date, mode=mode)
     _write_market_evidence(root, business_date=business_date)
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_runtime_state(root: Path, *, business_date: str, mode: str) -> None:
+    _write_json(
+        root / "runtime_state" / "current_state.json",
+        {
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
+            "business_date": business_date,
+            "generated_at": business_date + "T00:00:00Z",
+            "updated_at": business_date + "T00:00:00Z",
+            "environment": mode,
+            "runtime_mode": mode,
+            "state": "CURRENT_STATE_LOADED",
+            "safety_state": "NORMAL",
+            "current_safety_state": "NORMAL",
+            "source": "runtime_v2_runtime_state_producer",
+            "asset_state_is_authoritative_here": False,
+            "pending_state_is_authoritative_here": False,
+        },
+    )
 
 
 def _position(symbol: str) -> dict:

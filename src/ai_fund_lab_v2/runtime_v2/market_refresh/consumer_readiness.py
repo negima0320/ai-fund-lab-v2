@@ -34,7 +34,18 @@ OPPORTUNITY_REQUIRED_COLUMNS: tuple[str, ...] = CANDIDATE_REQUIRED_COLUMNS
 
 PM_REQUIRED_COLUMNS: tuple[str, ...] = (
     "target_date",
+    "position_state_as_of",
+    "entry_date",
     "code",
+    "broker_issue_code",
+    "holding_days",
+    "average_price",
+    "current_price",
+    "unrealized_return",
+    "quantity",
+    "feature_version",
+    "data_until",
+    "created_at",
 )
 
 CANONICAL_ALIAS_POLICY: dict[str, str] = {
@@ -297,10 +308,11 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         )
     frame = pd.read_parquet(artifact_path)
     columns = tuple(str(column) for column in frame.columns)
-    missing = tuple(column for column in PM_REQUIRED_COLUMNS if column not in columns)
     current_position_count = _current_position_count(runtime_root)
     has_no_position_reason = "no_position_reason" in columns
-    if missing:
+    required_columns = PM_REQUIRED_COLUMNS if current_position_count > 0 else ("target_date", "code")
+    missing = tuple(column for column in required_columns if column not in columns)
+    if current_position_count > 0 and missing:
         status = "REVIEW_REQUIRED"
         reason = "required_pm_feature_columns_missing"
     elif current_position_count > 0 and len(frame) == 0:
@@ -309,6 +321,9 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
     elif current_position_count == 0 and len(frame) == 0 and not has_no_position_reason:
         status = "REVIEW_REQUIRED"
         reason = "pm_feature_empty_without_no_position_reason"
+    elif missing:
+        status = "REVIEW_REQUIRED"
+        reason = "required_pm_feature_columns_missing"
     else:
         status = "READY"
         reason = "consumer_schema_ready"
@@ -318,7 +333,7 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         schema_version=CANONICAL_SCHEMA_VERSION,
         status=status,
         artifact_path=str(artifact_path),
-        required_columns=PM_REQUIRED_COLUMNS,
+        required_columns=required_columns,
         missing_columns=missing,
         row_count=len(frame),
         reason=reason,

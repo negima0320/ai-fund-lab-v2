@@ -25,10 +25,26 @@ from ai_fund_lab_v2.runtime_v2.position_management.producer import (
     validate_position_management_input_contract,
 )
 from ai_fund_lab_v2.runtime_v2.safety_decision import load_runtime_safety_decision
+from ai_fund_lab_v2.runtime_v2.human_review import (
+    EXPECTED_ACTION_SCOPE,
+    HIGH_RISK_REVIEW_ISSUE_CODE,
+    HIGH_RISK_REVIEW_REASON,
+    validate_human_review_artifact,
+)
+from ai_fund_lab_v2.runtime_v2.runtime_state import validate_runtime_operation_state
 
 
 DATA_READINESS_SCHEMA_VERSION = "runtime_v2_data_readiness_v1"
-ALLOWED_READINESS_SCOPES = ("morning", "sell_planning", "submit", "execution")
+FULL_MORNING_SCOPES = {"morning", "morning_full"}
+REVIEW_ONLY_MORNING_SCOPE = "morning_sell_hold_review_only"
+ALLOWED_READINESS_SCOPES = (
+    "morning",
+    "morning_full",
+    REVIEW_ONLY_MORNING_SCOPE,
+    "sell_planning",
+    "submit",
+    "execution",
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +84,13 @@ class RuntimeDataReadinessResult:
             "pending_slot_status",
             "pending_active",
             "runtime_core_production_baseline",
+            "runtime_state_status",
+            "runtime_state_reason",
+            "runtime_state_artifact_path",
+            "full_morning_readiness",
+            "review_only_morning_readiness",
+            "human_review_status",
+            "human_review_artifact_path",
             "broker_environment",
             "broker_environment_production",
             "evidence_production_equivalent",
@@ -173,6 +196,15 @@ def evaluate_runtime_data_readiness(
         "pending": [],
         "runtime_environment": [],
         "runtime_state": [],
+        "human_review": [],
+    }
+    review_only_scope_payload: dict[str, Any] = {
+        "status": "NOT_REQUIRED",
+        "reason": "",
+        "missing_evidence": [],
+        "stale_artifacts": [],
+        "mismatched_fields": [],
+        "source_paths": {},
     }
 
     calendar = resolve_operation_date(business_date, root=base_dir)
@@ -283,6 +315,7 @@ def evaluate_runtime_data_readiness(
     )
     if pm_payload["status"] == "REVIEW_REQUIRED":
         review_reasons.append(pm_payload["reason"])
+        component_reasons["feature"].append(pm_payload["reason"])
         missing_evidence.extend(pm_payload["missing_evidence"])
         missing_columns.extend(pm_payload["missing_fields"])
         stale_artifacts.extend(pm_payload["stale_artifacts"])
@@ -316,6 +349,44 @@ def evaluate_runtime_data_readiness(
         missing_evidence.extend(dependency_payload["missing_evidence"])
     source_paths.update(safety_payload["source_paths"])
 
+    if readiness_scope == REVIEW_ONLY_MORNING_SCOPE:
+        review_only_scope_payload = _review_only_morning_payload(
+            root=root,
+            business_date=business_date,
+            mode=mode,
+            feature_payload=feature_payload,
+            broker_payload=broker_payload,
+            safety_payload=safety_payload,
+            now=now,
+        )
+        source_paths.update(review_only_scope_payload["source_paths"])
+        if review_only_scope_payload["status"] == "READY":
+            review_reasons = [
+                reason for reason in review_reasons if str(reason).upper() != HIGH_RISK_REVIEW_REASON
+            ]
+            component_reasons["safety"] = [
+                reason
+                for reason in component_reasons["safety"]
+                if str(reason).upper() != HIGH_RISK_REVIEW_REASON
+            ]
+        elif review_only_scope_payload["status"] == "REVIEW_REQUIRED":
+            review_reasons.append(review_only_scope_payload["reason"])
+            component_reasons["human_review"].append(review_only_scope_payload["reason"])
+            missing_evidence.extend(review_only_scope_payload["missing_evidence"])
+            stale_artifacts.extend(review_only_scope_payload["stale_artifacts"])
+            mismatched_dates.extend(review_only_scope_payload.get("mismatched_fields") or [])
+
+    runtime_state_payload = _runtime_state_readiness_payload(root=root, business_date=business_date, mode=mode)
+    if runtime_state_payload["status"] == "HALT":
+        halt_reasons.append(runtime_state_payload["reason"])
+        component_reasons["runtime_state"].append(runtime_state_payload["reason"])
+    elif runtime_state_payload["status"] == "REVIEW_REQUIRED":
+        review_reasons.append(runtime_state_payload["reason"])
+        component_reasons["runtime_state"].append(runtime_state_payload["reason"])
+        missing_evidence.extend(runtime_state_payload["missing_evidence"])
+        stale_artifacts.extend(runtime_state_payload["stale_artifacts"])
+    source_paths.update(runtime_state_payload["source_paths"])
+
     pending_payload = _pending_readiness_payload(root=root, business_date=business_date)
     if pending_payload["status"] == "REVIEW_REQUIRED":
         review_reasons.append(pending_payload["reason"])
@@ -345,17 +416,22 @@ def evaluate_runtime_data_readiness(
         broker_payload["status"],
         dependency_payload["broker_dependency_status"],
     )
+    effective_safety_status = safety_payload["status"]
+    if readiness_scope == REVIEW_ONLY_MORNING_SCOPE and review_only_scope_payload["status"] == "READY":
+        effective_safety_status = "READY_FOR_REVIEW_ONLY"
     effective_component_statuses = {
         "market": market_effective_status,
         "quote": effective_quote_status,
         "broker": broker_effective_status,
-        "safety": safety_payload["status"],
+        "safety": effective_safety_status,
         "feature": feature_status,
         "candidate": candidate_status["status"],
         "opportunity": opportunity_status["status"],
         "current": "READY" if current_status == "READY" and current_freshness == "FRESH" else "REVIEW_REQUIRED",
         "pending": pending_payload["status"],
         "runtime_environment": environment_payload["status"],
+        "runtime_state": runtime_state_payload["status"],
+        "human_review": review_only_scope_payload["status"],
     }
     artifact_path = root / "runtime_state" / "data_readiness" / business_date / "data_readiness.json"
     payload = {
@@ -387,10 +463,18 @@ def evaluate_runtime_data_readiness(
         "broker_effective_status": broker_effective_status,
         "broker_status": broker_effective_status,
         "safety_status": safety_payload["status"],
+        "effective_safety_status": effective_safety_status,
+        "human_review_status": review_only_scope_payload["status"],
+        "human_review_artifact_path": review_only_scope_payload.get("artifact_path") or "",
+        "full_morning_readiness": "NOT_APPLICABLE" if readiness_scope == REVIEW_ONLY_MORNING_SCOPE else overall_status,
+        "review_only_morning_readiness": overall_status if readiness_scope == REVIEW_ONLY_MORNING_SCOPE else "NOT_APPLICABLE",
         "pending_status": pending_payload["status"],
         "pending_slot_status": pending_payload["slot_status"],
         "pending_active": pending_payload["active_pending"],
         "runtime_environment_status": environment_payload["status"],
+        "runtime_state_status": runtime_state_payload["status"],
+        "runtime_state_reason": runtime_state_payload["reason"],
+        "runtime_state_artifact_path": runtime_state_payload["artifact_path"],
         "missing_columns": _unique(missing_columns),
         "missing_evidence": _unique(missing_evidence),
         "stale_artifacts": _unique(stale_artifacts),
@@ -428,6 +512,8 @@ def evaluate_runtime_data_readiness(
             "broker": broker_payload,
             "safety_dependency": dependency_payload,
             "safety": safety_payload,
+            "human_review": review_only_scope_payload,
+            "runtime_state": runtime_state_payload,
             "pending": pending_payload,
             "runtime_environment": environment_payload,
         },
@@ -468,6 +554,51 @@ def _feature_readiness_payload(*, operations_root: Path, feature_date: str) -> d
             "consumer_ready": False,
             "readiness_artifact_path": str(artifact),
         }
+
+
+def _runtime_state_readiness_payload(*, root: Path, business_date: str, mode: str) -> dict[str, Any]:
+    result = validate_runtime_operation_state(
+        runtime_root=root,
+        business_date=business_date,
+        mode=mode,
+    )
+    missing = list(result.missing_fields)
+    stale = list(result.stale_fields)
+    if result.status == "HALT":
+        return {
+            "status": "HALT",
+            "reason": result.reason,
+            "artifact_path": result.artifact_path,
+            "missing_evidence": missing,
+            "stale_artifacts": stale,
+            "source_paths": {"runtime_state": result.artifact_path},
+            "contract_role": result.payload.get("role") or "",
+            "schema_version": result.payload.get("schema_version") or "",
+        }
+    if result.status != "READY":
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": result.reason,
+            "artifact_path": result.artifact_path,
+            "missing_evidence": missing,
+            "stale_artifacts": stale or ["runtime_state"],
+            "source_paths": {"runtime_state": result.artifact_path},
+            "contract_role": result.payload.get("role") or "",
+            "schema_version": result.payload.get("schema_version") or "",
+        }
+    return {
+        "status": "READY",
+        "reason": result.reason,
+        "artifact_path": result.artifact_path,
+        "missing_evidence": [],
+        "stale_artifacts": [],
+        "source_paths": {"runtime_state": result.artifact_path},
+        "contract_role": result.payload.get("role") or "",
+        "schema_version": result.payload.get("schema_version") or "",
+        "state": result.payload.get("state") or "",
+        "safety_state": result.payload.get("safety_state") or "",
+        "generated_at": result.payload.get("generated_at") or "",
+    }
 
 
 def _current_temporal_payload(*, root: Path, business_date: str, current_payload: dict[str, Any]) -> dict[str, Any]:
@@ -603,7 +734,7 @@ def _candidate_pre_inference_status(
     feature_payload: dict[str, Any],
 ) -> dict[str, Any]:
     source = str(candidate_model_path or "")
-    if scope != "morning":
+    if scope not in FULL_MORNING_SCOPES:
         return {"status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "source_paths": {"candidate_model": source}, "candidate_model_path": source, "candidate_model_status": "NOT_REQUIRED"}
     model = _model_artifact_status(path=Path(source), model_kind="candidate")
     missing: list[str] = []
@@ -641,7 +772,7 @@ def _opportunity_pre_inference_status(
     feature_payload: dict[str, Any],
 ) -> dict[str, Any]:
     source = str(opportunity_model_path or "")
-    if scope not in {"morning"}:
+    if scope not in FULL_MORNING_SCOPES:
         return {"status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "source_paths": {"opportunity_model": source}, "opportunity_model_path": source, "opportunity_model_status": "NOT_REQUIRED"}
     model = _model_artifact_status(path=Path(source), model_kind="opportunity")
     missing: list[str] = []
@@ -729,6 +860,29 @@ def _pm_readiness_payload(
     pm_opportunity_path: Path | str | None,
     pm_feature_path: Path | str | None,
 ) -> dict[str, Any]:
+    if scope == REVIEW_ONLY_MORNING_SCOPE:
+        feature_payload = _feature_readiness_payload(
+            operations_root=current_path.parents[1] / "operations",
+            feature_date=feature_date,
+        )
+        pm_status = str(feature_payload.get("pm_schema_status") or "")
+        return {
+            "status": "READY" if pm_status == "READY" else "REVIEW_REQUIRED",
+            "reason": "pm_feature_consumer_ready_for_review_only"
+            if pm_status == "READY"
+            else "pm_feature_consumer_not_ready_for_review_only",
+            "missing_evidence": [] if pm_status == "READY" else ["pm_feature"],
+            "missing_fields": list(feature_payload.get("pm_missing_columns") or []),
+            "stale_artifacts": [],
+            "source_paths": {"pm_feature": str(feature_payload.get("readiness_artifact_path") or "")},
+            "contract": {
+                "pm_input_schema_status": pm_status or "REVIEW_REQUIRED",
+                "pm_feature_date": feature_date,
+                "pm_review_reason": "pm_feature_consumer_ready_for_review_only"
+                if pm_status == "READY"
+                else "pm_feature_consumer_not_ready_for_review_only",
+            },
+        }
     if scope != "sell_planning":
         return {"status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "missing_fields": [], "stale_artifacts": [], "source_paths": {}}
     contract = validate_position_management_input_contract(
@@ -759,25 +913,65 @@ def _pm_readiness_payload(
 
 
 def _broker_readiness_payload(*, root: Path, business_date: str, scope: str) -> dict[str, Any]:
-    required = scope in {"sell_planning", "submit", "execution"}
-    candidates = list((root / "runtime_state" / "broker_readonly" / business_date).glob("*.json"))
-    candidates.extend((root / "broker" / "snapshots" / "positions").glob("*.json"))
+    required = scope in {"sell_planning", "submit", "execution", REVIEW_ONLY_MORNING_SCOPE}
+    candidates = _broker_snapshot_candidates(root=root, business_date=business_date)
     existing = [path for path in candidates if path.is_file()]
     if not required:
-        return {"status": "NOT_REQUIRED", "direct_status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "source_paths": {"broker_snapshot": str(existing[-1]) if existing else ""}}
+        if not existing:
+            return {"status": "NOT_REQUIRED", "direct_status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "source_paths": {"broker_snapshot": ""}}
+        payload, status, reason, path = _read_json_object(existing[0])
+        if status != "READY":
+            return {"status": "REVIEW_REQUIRED", "direct_status": "NOT_REQUIRED", "reason": reason, "missing_evidence": ["broker_snapshot"], "source_paths": {"broker_snapshot": str(path)}}
+        broker_review_reason = _broker_contract_review_reason(payload)
+        if broker_review_reason:
+            return {
+                "status": "REVIEW_REQUIRED",
+                "direct_status": "NOT_REQUIRED",
+                "reason": broker_review_reason,
+                "missing_evidence": [],
+                "source_paths": {"broker_snapshot": str(path)},
+            }
+        return {"status": "READY", "direct_status": "NOT_REQUIRED", "reason": "", "missing_evidence": [], "source_paths": {"broker_snapshot": str(path)}}
     if not existing:
         return {"status": "REVIEW_REQUIRED", "direct_status": "REVIEW_REQUIRED", "reason": "broker_readonly_snapshot_missing", "missing_evidence": ["broker_snapshot"], "source_paths": {}}
-    payload, status, reason, path = _read_json_object(existing[-1])
+    payload, status, reason, path = _read_json_object(existing[0])
     if status != "READY":
         return {"status": "REVIEW_REQUIRED", "direct_status": "REVIEW_REQUIRED", "reason": reason, "missing_evidence": ["broker_snapshot"], "source_paths": {"broker_snapshot": str(path)}}
-    review_required = bool(payload.get("review_required"))
+    broker_review_reason = _broker_contract_review_reason(payload)
+    review_required = bool(payload.get("review_required")) or bool(broker_review_reason)
     return {
         "status": "REVIEW_REQUIRED" if review_required else "READY",
         "direct_status": "REVIEW_REQUIRED" if review_required else "READY",
-        "reason": "broker_snapshot_review_required" if review_required else "broker_snapshot_ready",
+        "reason": broker_review_reason or ("broker_snapshot_review_required" if review_required else "broker_snapshot_ready"),
         "missing_evidence": [],
         "source_paths": {"broker_snapshot": str(path)},
     }
+
+
+def _broker_snapshot_candidates(*, root: Path, business_date: str) -> list[Path]:
+    runtime_state_candidates = sorted(
+        (root / "runtime_state" / "broker_readonly" / business_date).glob("*.json"),
+        key=lambda path: path.stat().st_mtime if path.is_file() else 0,
+        reverse=True,
+    )
+    legacy_candidates = sorted(
+        (root / "broker" / "snapshots" / "positions").glob("*.json"),
+        key=lambda path: path.stat().st_mtime if path.is_file() else 0,
+        reverse=True,
+    )
+    return [*runtime_state_candidates, *legacy_candidates]
+
+
+def _broker_contract_review_reason(payload: dict[str, Any]) -> str:
+    authenticity = str(payload.get("authenticity_status") or "")
+    alignment = str(payload.get("account_alignment_status") or "")
+    if not authenticity and not alignment:
+        return ""
+    if authenticity and authenticity != "READY":
+        return "broker_snapshot_authenticity_review_required"
+    if alignment in {"MISMATCH", "UNKNOWN"}:
+        return "broker_account_alignment_review_required"
+    return ""
 
 
 def _safety_readiness_payload(*, root: Path, business_date: str, mode: str) -> dict[str, Any]:
@@ -822,6 +1016,67 @@ def _safety_dependency_payload(*, safety_payload: dict[str, Any], broker_payload
         "quote_reasons": quote_reasons,
         "safety_market_input_status": _max_status(quote_status, broker_dependency_status),
         "missing_evidence": missing_evidence,
+    }
+
+
+def _review_only_morning_payload(
+    *,
+    root: Path,
+    business_date: str,
+    mode: str,
+    feature_payload: dict[str, Any],
+    broker_payload: dict[str, Any],
+    safety_payload: dict[str, Any],
+    now: datetime | None,
+) -> dict[str, Any]:
+    decision = load_runtime_safety_decision(runtime_root=root, business_date=business_date, mode=mode)
+    permissions = {str(key): str(value).upper() for key, value in (decision.action_permissions or {}).items()}
+    mismatched: list[str] = []
+    for key, expected in EXPECTED_ACTION_SCOPE.items():
+        if permissions.get(key) != expected:
+            mismatched.append(f"action_permissions.{key}")
+    feature_ready = bool(feature_payload.get("consumer_ready")) and str(feature_payload.get("pm_schema_status") or "") == "READY"
+    if not feature_ready:
+        mismatched.append("pm_feature_consumer_readiness")
+    if broker_payload.get("status") != "READY":
+        mismatched.append("broker_readonly")
+    if safety_payload.get("status") != "REVIEW_REQUIRED" or str(safety_payload.get("reason") or "").upper() != HIGH_RISK_REVIEW_REASON:
+        mismatched.append("safety_high_risk_review")
+    validation = validate_human_review_artifact(
+        runtime_root=root,
+        business_date=business_date,
+        issue_code=HIGH_RISK_REVIEW_ISSUE_CODE,
+        now=now,
+    )
+    source_paths = {
+        "human_review": validation.artifact_path,
+        "safety_decision": decision.artifact_path,
+    }
+    if validation.status != "READY":
+        mismatched.append("human_review_artifact")
+        mismatched.extend(validation.mismatched_fields)
+    if mismatched:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": validation.reason if validation.status != "READY" else "review_only_scope_contract_mismatch",
+            "artifact_path": validation.artifact_path,
+            "missing_evidence": list(validation.missing_evidence),
+            "stale_artifacts": list(validation.stale_artifacts),
+            "mismatched_fields": _unique(mismatched),
+            "source_paths": source_paths,
+            "safety_action_permissions": permissions,
+            "human_review_validation": validation.payload,
+        }
+    return {
+        "status": "READY",
+        "reason": "morning_sell_hold_review_only_ready",
+        "artifact_path": validation.artifact_path,
+        "missing_evidence": [],
+        "stale_artifacts": [],
+        "mismatched_fields": [],
+        "source_paths": source_paths,
+        "safety_action_permissions": permissions,
+        "human_review_validation": validation.payload,
     }
 
 
@@ -871,7 +1126,7 @@ def _read_json_object(path: Path, *, corrupt_status: str = "REVIEW_REQUIRED") ->
 
 
 def _scope_requires_feature(scope: str) -> bool:
-    return scope == "morning"
+    return scope in {*FULL_MORNING_SCOPES, REVIEW_ONLY_MORNING_SCOPE}
 
 
 def _next_operator_action(status: str, review_reasons: list[str], halt_reasons: list[str]) -> str:

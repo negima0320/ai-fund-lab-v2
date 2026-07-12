@@ -88,7 +88,11 @@ def test_phase15an_opportunity_double_prefix_is_not_consumer_ready(tmp_path):
 
 def test_phase15an_pm_feature_zero_rows_with_current_positions_requires_review(tmp_path):
     operations_root = tmp_path / ".runtime" / "operations"
-    _write_feature_artifacts(operations_root / "feature_artifacts" / "2026-07-10", "2026-07-10")
+    _write_feature_artifacts(
+        operations_root / "feature_artifacts" / "2026-07-10",
+        "2026-07-10",
+        position_rows=[],
+    )
     _write_current(tmp_path / ".runtime", positions=[{"symbol": "7203", "quantity": 100}])
 
     readiness = validate_feature_consumer_readiness(
@@ -150,6 +154,7 @@ def _write_feature_artifacts(
     drop_candidate_column: str = "",
     extra_candidate_columns: Optional[dict] = None,
     extra_opportunity_columns: Optional[dict] = None,
+    position_rows: Optional[list[dict]] = None,
 ) -> None:
     feature_dir.mkdir(parents=True, exist_ok=True)
     row = {column: _value_for_column(column, feature_date) for column in CANDIDATE_REQUIRED_COLUMNS}
@@ -161,7 +166,29 @@ def _write_feature_artifacts(
     opportunity.update(extra_opportunity_columns or {})
     pd.DataFrame([candidate]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
     pd.DataFrame([opportunity]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
-    pd.DataFrame(columns=["target_date", "code", "no_position_reason"]).to_parquet(
+    if position_rows is None:
+        position_rows = []
+    position_columns = [
+        "target_date",
+        "position_state_as_of",
+        "entry_date",
+        "code",
+        "broker_issue_code",
+        "holding_days",
+        "average_price",
+        "current_price",
+        "unrealized_return",
+        "quantity",
+        "feature_version",
+        "data_until",
+        "created_at",
+        "no_position_reason",
+    ]
+    if position_rows:
+        position_frame = pd.DataFrame(position_rows, columns=position_columns)
+    else:
+        position_frame = pd.DataFrame(columns=position_columns)
+    position_frame.to_parquet(
         feature_dir / "position_feature_input.parquet",
         index=False,
     )

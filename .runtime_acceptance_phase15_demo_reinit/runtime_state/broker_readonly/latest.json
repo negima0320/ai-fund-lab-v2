@@ -1,0 +1,15 @@
+{
+  "account_alignment_status": "NOT_APPLICABLE",
+  "account_identity_status": "REFERENCE_HASHED",
+  "authenticity_status": "READY",
+  "broker_snapshot_as_of": "2026-07-12T01:38:38.234416+00:00",
+  "business_date": "2026-07-13",
+  "freshness_status": "READY",
+  "generated_at": "2026-07-12T01:38:38.234416+00:00",
+  "read_only": true,
+  "report_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/snapshot_report.json",
+  "runtime_business_date": "2026-07-13",
+  "schema_version": "runtime_v2_broker_readonly_latest_pointer_v1",
+  "snapshot_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "snapshot_status": "FAILED_BROKER_READONLY_FETCH"
+}

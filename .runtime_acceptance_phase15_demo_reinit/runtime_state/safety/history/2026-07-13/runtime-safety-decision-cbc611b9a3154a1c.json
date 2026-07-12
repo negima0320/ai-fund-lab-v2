@@ -1,0 +1,31 @@
+{
+  "action_permissions": {
+    "auto_sell": "BLOCKED",
+    "broker_write": "ALLOWED_FOR_ACCEPTANCE",
+    "buy_inference": "BLOCKED",
+    "buy_planning": "BLOCKED",
+    "buy_submit": "ALLOWED",
+    "human_review": "ALLOWED",
+    "sell_hold_inference": "ALLOWED",
+    "sell_planning": "BLOCKED",
+    "sell_submit": "ALLOWED"
+  },
+  "artifact_path": "",
+  "block_buy": true,
+  "block_sell": true,
+  "block_submit": false,
+  "business_date": "2026-07-13",
+  "decision": "ALLOW",
+  "emergency_stop": false,
+  "expires_at": "2026-07-13T15:00:00+09:00",
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "halt_runtime": false,
+  "human_review_artifact_refs": [],
+  "reason": "Phase15-BS demo SELL 6501 acceptance preconditions ready for user authorization; submit/send not executed.",
+  "review_required": false,
+  "runtime_mode": "demo",
+  "safety_decision_id": "runtime-safety-decision-cbc611b9a3154a1c",
+  "safety_policy_version": "phase11_safety_report_v2",
+  "safety_source": ".runtime_acceptance_phase15_demo_reinit/reports/safety/phase11/2026-07-13_safety_report.json",
+  "safety_status": "PASS"
+}

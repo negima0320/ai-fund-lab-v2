@@ -1,0 +1,21 @@
+{
+  "approval_id": "order-condition-approval-phase15bn",
+  "approved_at": "2026-07-09T08:45:00+09:00",
+  "approved_order_conditions": {
+    "phase15bn-sell-6522": {
+      "broker_issue_code": "6522",
+      "issue_code": "6522",
+      "limit_price": null,
+      "order_type": "MARKET",
+      "price_condition": "MARKET",
+      "quantity": 100.0,
+      "side": "SELL",
+      "target_session": "2026-07-09",
+      "time_in_force": "DAY"
+    }
+  },
+  "broker_capability_hash": "sha256:75663cbc767b3eedec73fb2e90fd3db3493e676617f983c09f2b3178cc0fb2f5",
+  "expires_at": "2026-07-09T15:00:00+09:00",
+  "policy_hash": "sha256:f279277ec0410b8337103efea98359505981696857ac15bea2ce999c8c5d94b2",
+  "schema_version": "runtime_v2_order_condition_approval_v1"
+}

@@ -302,8 +302,10 @@ def _holding_frame_from_current(
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     derived_fields = list(contract.get("pm_derived_fields") or [])
+    position_context = dict(contract.get("pm_position_context") or {})
     for position in current.get("positions") or ():
         symbol = str(position.get("symbol") or position.get("issue_code") or "").strip()
+        context = dict(position_context.get(symbol) or {})
         quantity = float(position.get("quantity") or 0)
         if not symbol or quantity <= 0:
             continue
@@ -313,8 +315,8 @@ def _holding_frame_from_current(
         if current_price <= 0 and market_value > 0:
             current_price = market_value / quantity
             derived_fields.append(f"{symbol}.current_price:market_value/quantity")
-        holding_days = int(position.get("holding_days"))
-        peak_return = float(position.get("peak_return"))
+        holding_days = int(position.get("holding_days") if position.get("holding_days") not in (None, "") else context.get("holding_days"))
+        peak_return = float(position.get("peak_return") if position.get("peak_return") not in (None, "") else context.get("peak_return"))
         current_return = _safe_return(current_price, average_price)
         if "unrealized_pnl" not in position:
             derived_fields.append(f"{symbol}.unrealized_pnl:(current_price-entry_price)*quantity")
@@ -477,6 +479,7 @@ def _validate_pm_input_contract(
 ) -> dict[str, Any]:
     positions = [item for item in current.get("positions") or () if float(item.get("quantity") or 0) > 0]
     held_symbols = tuple(str(item.get("symbol") or item.get("issue_code") or "").strip() for item in positions)
+    position_context = _pm_feature_position_context(feature_path=feature_path, feature_date=feature_date)
     missing_fields: list[str] = []
     missing_symbols: list[str] = []
     stale_artifacts: list[str] = []
@@ -484,7 +487,15 @@ def _validate_pm_input_contract(
     defaulted_fields: list[str] = []
     current_as_of = str(current.get("as_of") or "")
     current_updated_at = str(current.get("updated_at") or "")
-    if current_as_of != business_date or not current_updated_at:
+    current_position_status = str(current.get("current_position_status") or "")
+    current_valuation_status = str(current.get("current_valuation_status") or "")
+    temporal_schema = bool(current.get("temporal_schema_version"))
+    temporal_current_ready = (
+        temporal_schema
+        and current_position_status in {"READY", "VALID_CARRYOVER"}
+        and current_valuation_status in {"READY", "VALID_CARRYOVER"}
+    )
+    if not temporal_current_ready and (current_as_of != business_date or not current_updated_at):
         stale_artifacts.append("current")
     for position in positions:
         symbol = str(position.get("symbol") or position.get("issue_code") or "").strip()
@@ -497,9 +508,15 @@ def _validate_pm_input_contract(
             else:
                 missing_fields.append(f"current.positions[{symbol}].current_price")
         if "holding_days" not in position or position.get("holding_days") in (None, ""):
-            missing_fields.append(f"current.positions[{symbol}].holding_days")
+            if symbol in position_context and position_context[symbol].get("holding_days") not in (None, ""):
+                derived_fields.append(f"{symbol}.holding_days:pm_feature")
+            else:
+                missing_fields.append(f"current.positions[{symbol}].holding_days")
         if "peak_return" not in position or position.get("peak_return") in (None, ""):
-            missing_fields.append(f"current.positions[{symbol}].peak_return")
+            if symbol in position_context and position_context[symbol].get("peak_return") not in (None, ""):
+                derived_fields.append(f"{symbol}.peak_return:pm_feature")
+            else:
+                missing_fields.append(f"current.positions[{symbol}].peak_return")
     feature_status = _pm_feature_status(
         feature_path=feature_path,
         feature_date=feature_date,
@@ -535,6 +552,10 @@ def _validate_pm_input_contract(
         "pm_input_schema_status": "REVIEW_REQUIRED" if review_required else "READY",
         "pm_current_source": str(current_path),
         "pm_current_as_of": current_as_of,
+        "pm_position_state_as_of": str(current.get("position_state_as_of") or ""),
+        "pm_valuation_as_of": str(current.get("valuation_as_of") or ""),
+        "pm_current_position_status": current_position_status,
+        "pm_current_valuation_status": current_valuation_status,
         "pm_current_freshness": "STALE" if "current" in stale_artifacts else "FRESH",
         "pm_feature_source": str(feature_path),
         "pm_feature_row_count": feature_status["row_count"],
@@ -546,6 +567,7 @@ def _validate_pm_input_contract(
         "pm_stale_artifacts": sorted(set(stale_artifacts)),
         "pm_derived_fields": sorted(set(derived_fields)),
         "pm_defaulted_fields": defaulted_fields,
+        "pm_position_context": position_context,
         "pm_review_required": review_required,
         "pm_review_reason": reason if review_required else "",
     }
@@ -613,6 +635,34 @@ def _pm_feature_status(
         "missing_symbols": missing_symbols,
         "stale": stale,
     }
+
+
+def _pm_feature_position_context(*, feature_path: Path, feature_date: str) -> dict[str, dict[str, Any]]:
+    if not feature_path or not feature_path.is_file():
+        return {}
+    try:
+        frame = _read_table(feature_path)
+    except Exception:
+        return {}
+    if "target_date" not in frame.columns or "code" not in frame.columns:
+        return {}
+    frame = frame.copy()
+    frame["target_date"] = frame["target_date"].astype(str)
+    frame["code"] = frame["code"].astype(str)
+    rows = frame[frame["target_date"] == feature_date]
+    context: dict[str, dict[str, Any]] = {}
+    for row in rows.to_dict("records"):
+        symbol = str(row.get("broker_issue_code") or row.get("code") or "").strip()
+        if not symbol:
+            continue
+        peak_return = row.get("peak_return")
+        if peak_return in (None, "") and row.get("unrealized_return") not in (None, ""):
+            peak_return = max(_float(row.get("unrealized_return")), 0.0)
+        context[symbol] = {
+            "holding_days": row.get("holding_days"),
+            "peak_return": peak_return,
+        }
+    return context
 
 
 def _pm_opportunity_status(

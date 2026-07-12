@@ -388,11 +388,19 @@ def _runtime_root(tmp_path: Path, *, broker_snapshot_at: str | None = None) -> P
     _write_json(
         root / "runtime_state" / "current_state.json",
         {
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
             "business_date": BUSINESS_DATE,
             "generated_at": BUSINESS_DATE + "T09:00:00+00:00",
+            "updated_at": BUSINESS_DATE + "T09:00:00+00:00",
             "environment": "demo",
+            "runtime_mode": "demo",
             "state": "CURRENT_STATE_LOADED",
             "safety_state": "NORMAL",
+            "current_safety_state": "NORMAL",
+            "source": "runtime_v2_runtime_state_producer",
+            "asset_state_is_authoritative_here": False,
+            "pending_state_is_authoritative_here": False,
         },
     )
     _write_json(

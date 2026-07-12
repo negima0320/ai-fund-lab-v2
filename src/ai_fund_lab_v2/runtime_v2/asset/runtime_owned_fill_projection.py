@@ -10,6 +10,11 @@ from typing import Any
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.asset.writer import write_current_asset_state
 
+EXECUTION_READONLY_SOURCES = {
+    "runtime_v2_execution_readonly",
+    "runtime_v2_execution_readonly_simulation",
+}
+
 
 @dataclass(frozen=True)
 class RuntimeOwnedFillProjectionResult:
@@ -100,6 +105,10 @@ def project_runtime_owned_fills_to_current(
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
     )
+    realized_pnl = _projected_realized_pnl(
+        ledger_executions=ledger_executions,
+        runtime_owned_symbols=runtime_owned_symbols,
+    )
     projected_buying_power = projected_cash
     projected_total_equity = projected_cash + market_value
     generated_from = tuple(
@@ -134,7 +143,7 @@ def project_runtime_owned_fills_to_current(
     )
     if write:
         write_current_asset_state(state_path, state)
-    after = json.loads(json.dumps(_state_payload_with_metadata(state, before), sort_keys=True))
+    after = json.loads(json.dumps(_state_payload_with_metadata(state, before, realized_pnl=realized_pnl), sort_keys=True))
     if write:
         state_path.write_text(json.dumps(after, sort_keys=True), encoding="utf-8")
 
@@ -175,7 +184,7 @@ def _runtime_owned_broker_symbols(orders: list[dict[str, Any]]) -> tuple[str, ..
 def _latest_positions_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for row in rows:
-        if row.get("source") != "runtime_v2_execution_readonly":
+        if row.get("source") not in EXECUTION_READONLY_SOURCES:
             continue
         symbol = str(row.get("symbol") or "").strip()
         if not symbol:
@@ -209,7 +218,7 @@ def _projected_cash(
     execution_rows = [
         row
         for row in ledger_executions
-        if row.get("source") == "runtime_v2_execution_readonly"
+        if row.get("source") in EXECUTION_READONLY_SOURCES
         and row.get("execution_evidence_type") == "execution_equivalent"
         and str(row.get("symbol") or "") in runtime_owned_symbols
     ]
@@ -226,7 +235,49 @@ def _projected_cash(
     return max(cash, 0.0)
 
 
-def _state_payload_with_metadata(state: CurrentAssetState, before: dict[str, Any]) -> dict[str, Any]:
+def _projected_realized_pnl(
+    *,
+    ledger_executions: list[dict[str, Any]],
+    runtime_owned_symbols: tuple[str, ...],
+) -> float:
+    positions: dict[str, dict[str, float]] = {
+        symbol: {"quantity": 0.0, "cost": 0.0}
+        for symbol in runtime_owned_symbols
+    }
+    realized = 0.0
+    rows = sorted(
+        (
+            row
+            for row in ledger_executions
+            if row.get("source") in EXECUTION_READONLY_SOURCES
+            and row.get("execution_evidence_type") == "execution_equivalent"
+            and str(row.get("symbol") or "") in runtime_owned_symbols
+        ),
+        key=lambda row: str(row.get("executed_at") or row.get("recorded_at") or row.get("created_at") or ""),
+    )
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        state = positions.setdefault(symbol, {"quantity": 0.0, "cost": 0.0})
+        quantity = _number(row.get("filled_quantity") or row.get("quantity"))
+        price = _number(row.get("price") or row.get("average_price"))
+        side = str(row.get("side") or "").upper()
+        if side == "BUY":
+            state["quantity"] += quantity
+            state["cost"] += quantity * price
+        elif side == "SELL" and quantity > 0:
+            average_cost = state["cost"] / state["quantity"] if state["quantity"] > 0 else 0.0
+            realized += (price - average_cost) * quantity
+            state["quantity"] = max(state["quantity"] - quantity, 0.0)
+            state["cost"] = max(state["cost"] - average_cost * quantity, 0.0)
+    return realized
+
+
+def _state_payload_with_metadata(
+    state: CurrentAssetState,
+    before: dict[str, Any],
+    *,
+    realized_pnl: float = 0.0,
+) -> dict[str, Any]:
     payload = {
         "schema_version": state.schema_version,
         "asset_state_id": state.asset_state_id,
@@ -238,8 +289,11 @@ def _state_payload_with_metadata(state: CurrentAssetState, before: dict[str, Any
         "buying_power": state.buying_power,
         "market_value": state.market_value,
         "total_equity": state.total_equity,
+        "realized_pnl": realized_pnl,
         "review_required": state.review_required,
         "production_equivalent": state.production_equivalent,
+        "acceptance_only": bool(before.get("acceptance_only", False)) or not state.production_equivalent,
+        "simulation": bool(before.get("simulation", False)) or state.environment == "demo" and not state.production_equivalent,
         "current_state_confirmed_empty": state.current_state_confirmed_empty,
         "current_positions_unknown": state.current_positions_unknown,
         "cash_unknown": state.cash_unknown,

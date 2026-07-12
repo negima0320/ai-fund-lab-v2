@@ -1343,7 +1343,7 @@ REVIEW_REQUIRED / CLOSED_FOR_PHASE15_RUNTIME_REVIEW
 Status:
 
 ```text
-READY_TO_START
+CLOSED_WITH_OPERATIONAL_BOUNDARIES
 ```
 
 最重要目的。
@@ -1451,6 +1451,101 @@ Runtime Full Acceptance PASS
 ```
 
 Phase15でProduction注文を許可済みとして扱わない。Production注文、Broker API Write、Notification real send、launchd自動運用は、それぞれ明示フェーズとAcceptanceを経てから扱う。
+
+Phase15-CA closure。
+
+```text
+Runtime v2 Completion:
+COMPLETE
+
+Phase15:
+COMPLETE_WITH_OPERATIONAL_BOUNDARIES
+
+Production Ready:
+NOT_READY
+
+Broker-connected Operational Readiness:
+NOT_READY_FOR_CONTINUOUS_OPERATION
+
+Phase16 Readiness:
+PHASE16_READY_WITH_CONDITIONS
+
+Final Judgment:
+RUNTIME_V2_COMPLETE_PHASE15_CLOSED_WITH_OPERATIONAL_BOUNDARIES
+```
+
+Phase15でAcceptance済み。
+
+```text
+Runtime Architecture v2
+Temporal / Freshness Contract
+Safety authority
+Pending lifecycle
+Normal Submit Pipeline
+Normal Execution Processor
+Ledger Writer
+Current Projector
+Current Apply
+Runtime State
+Report / Public Report / Blog Markdown / Notification Payload
+BUY-origin transition
+BUY→SELL Round Trip in simulation
+Tachibana Demo SELL broker write evidence
+```
+
+Phase15完了後もProduction Readyではない。
+
+```text
+実Broker BUY→SELL
+Broker-connected multi-day
+Notification Delivery
+Production credentials
+Production order enablement
+Production account reconciliation
+Monitoring / Recovery / Runbook
+```
+
+はPhase15完了条件ではなく、Operational Boundary / Production Enablementとして残す。
+
+次フェーズは新Runtime作成ではなく、受け入れ済みRuntime v2を固定Engineとして使うHistorical Runtime Paper Testとする。
+
+```text
+Phase16-A Historical Runtime Paper Test Contract
+Phase16-B 5 Business Day Smoke
+Phase16-C 20 Business Day Paper Test
+Phase16-D 1-Year Runtime Paper Test
+Phase16-E Performance and Failure Attribution
+Phase16-F AI / Policy / Safety / PM / Feature Improvement
+Phase16-G 1-Year Revalidation
+Phase16-H 5-Year Runtime Paper Test
+Phase16-I Final Performance Review
+```
+
+Phase16開始位置。
+
+```text
+Current Prefix:
+Phase16-A Historical Runtime Paper Test Contract
+
+Phase16 Purpose:
+Historical Runtime Paper Test
+
+Runtime Policy:
+Runtime v2を固定Engineとして使用する。
+
+Primary Improvement Targets:
+Candidate AI
+Opportunity AI
+Position Management AI
+Feature
+Policy
+Safety
+Capital Allocation
+
+Runtime Core Bug Policy:
+Historical ReplayでRuntime Core bugがEvidence付きで見つかった場合のみ、
+Performance改善とは分離してRuntime修正として扱う。
+```
 
 ---
 

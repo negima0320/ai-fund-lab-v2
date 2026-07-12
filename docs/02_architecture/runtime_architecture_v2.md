@@ -406,6 +406,72 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 依存される Component: Submit Runtime、Report Runtime、Audit Runtime。
 - 重要原則: `approval_artifact/YYYY-MM-DD` は History / Evidence。Submit 対象は pending_order_plan のみ。
 
+#### Human Review / Human Approval / Promotion Candidate Boundary
+
+Human Review と Human Approval は別の authority である。
+
+Human Review は、Safety `REVIEW_REQUIRED` などの状態に対して、SELL/HOLD 評価や人間向けReview evidenceを生成してよいかを判断する。Human Review は Submit 許可ではない。Human Review artifact が `SELL_HOLD_REVIEW_REQUIRED` であっても、Broker Write、Submit、Approval Apply、Authoritative Pending mutation を許可しない。
+
+Human Approval は、どの具体的な issue code、side、quantity、review item を Authoritative Submit Pending 候補へ昇格してよいかを item 単位で判断する。Human Approval artifact は、source Human Review、Safety event、Review Pending hash、review item hash、policy hash、safety decision id、期限、取消状態を持つ。
+
+Review Pending は review evidence であり、Submit source ではない。Review Pending は次を維持する。
+
+```text
+submit_allowed=false
+broker_write_allowed=false
+authoritative_submit_pending=false
+```
+
+Review Pending と Human Approval から直接 `pending_order_plan/pending_order_plan.json` を更新してはならない。まず `pending_promotion_candidate/YYYY-MM-DD/<candidate_id>.json` を生成し、以下を検証する。
+
+- Review Pending schema / hash
+- source Human Review id
+- source Safety event id
+- approval status / expiration / revocation
+- approved item ids / quantities / side / review item hash
+- policy hash
+- Safety action scope
+- Current freshness
+- Broker evidence freshness
+- Pending current slot is `EMPTY`
+- duplicate promotion absence
+
+Promotion Candidate は no-apply evidence である。`apply_requested=false` / `apply_executed=false` の Candidate は Authoritative Submit Pending ではない。
+
+Authoritative Submit Pending Apply は別の明示Scopeでのみ実行できる。Apply review scope では `authoritative_pending_apply_candidate/YYYY-MM-DD/<candidate_id>.json` を生成できるが、これは dry-run evidence であり `pending_order_plan/pending_order_plan.json` ではない。Apply Candidate は Producer、Input Artifact、Output Artifact、Authority、Apply Preconditions、Apply Request、Apply Execution、Idempotency、Atomicity、Backup、History、Rollback、Expiration、Revocation、Audit、Consumer を明示する。
+
+Authoritative Pending へ実Applyする直前には、Human Approval、Promotion Candidate hash、Approval hash、Review Pending hash、Policy hash、Safety Decision、Current State、Broker Evidence、Pending Slot、Target Session、Expiration、Revocation を再検証する。`Safety Decision` が Submit / Broker Write を許可していない場合、Apply Candidate は `READY_BUT_SAFETY_BLOCKED` になり、`apply_allowed=false`、`apply_requested=false`、`apply_executed=false`、`authoritative_pending_mutated=false` を維持する。注文条件が Review / Approval evidence から決定できない場合は `REVIEW_REQUIRED_BEFORE_AUTHORITATIVE_APPLY` として残し、Runtime が注文条件を推測しない。
+
+将来の実Applyは atomic でなければならない。全itemを一括で Authoritative Pending に反映できない場合、元の Pending Slot を保持し、success history を書かず、current pointer を更新しない。再実行時は同一 Apply Candidate、同一 Approval、同一 pending_plan_id の二重消費を防ぎ、failure 後の retry は直前再検証を必須とする。
+
+Apply 時も Submit は実行しない。Submit は引き続き `pending_order_plan/pending_order_plan.json` のみを source とし、`state=APPROVED`、Human Approval linkage、policy / safety / broker / current guards を通過した場合にのみ Submit Runtime へ進める。
+
+Safety-blocked Apply / Submit path is an accepted safe terminal review path, not an abnormal runtime crash. If a valid Review, Human Approval, Promotion Candidate, and Apply Candidate meet structural preconditions but Safety says `sell_submit=BLOCKED` or `broker_write=BLOCKED`, Runtime must classify the result as `EXPECTED_SAFETY_BLOCK` / `BLOCKED_BY_SAFETY` and keep:
+
+```text
+apply_executed=false
+authoritative_pending_mutated=false
+submit_attempted=false
+broker_client_called=false
+broker_write_performed=false
+pending_consumed=false
+execution_created=false
+current_mutated=false
+notification_sent=false
+```
+
+Human Approval cannot override Safety. A blocked attempt may write audit evidence, but it must not consume Human Approval, Promotion Candidate, Apply Candidate, Review Pending, Authoritative Pending, or Pending Item.
+
+Order condition authority is separate from Safety authority. Runtime scaffolding must not infer `order_type` or `price_condition` from implementation defaults. If Policy, Human Approval, Submit Pending Producer, and Broker capability evidence do not define order conditions, Submit Guard must block with `ORDER_CONDITION_AUTHORITY_CONTRACT_REQUIRED` or an equivalent review-required reason before the Broker client boundary.
+
+Normal Submit Acceptance must not reuse an existing Safety-blocked runtime root such as the current 4591 evidence root. It requires an isolated acceptance root or equivalent fully isolated fixture where Safety, Pending, Current, Broker Evidence, Approval, order conditions, and target session are internally consistent.
+
+The formal order-condition authority split is defined in:
+
+```text
+docs/02_architecture/runtime_submit_order_condition_authority_contract.md
+```
+
 #### Submit Runtime
 
 - 役割: 承認済み Pending Order Plan を Broker 注文へ変換し、Submit する。
@@ -435,6 +501,45 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 依存する Component: Runtime Orchestrator、Submit Runtime。
 - 依存される Component: Execution / Fill Runtime、Ledger Runtime、Asset Runtime、Reconcile Runtime、Recovery / Review Runtime。
 - 重要原則: Production では Broker Positions / Executions / Cash を正規 SoT にする。
+
+##### Broker Snapshot Only Refresh
+
+Runtime Acceptance Step0 may require fresh Broker Evidence without executing the Execution Runtime. For this case Runtime defines a snapshot-only ReadOnly producer:
+
+```text
+broker_readonly_refresh
+```
+
+This producer writes only:
+
+```text
+.runtime/runtime_state/broker_readonly/<business_date>/tachibana_snapshot.json
+.runtime/runtime_state/broker_readonly/latest.json
+```
+
+It must not:
+
+- submit or cancel broker orders
+- append persistent ledger records
+- classify executions into Runtime-owned fills
+- mutate Current Position
+- mutate Pending
+- apply Approval
+
+Broker Snapshot is an evidence input for Safety, Data Readiness, Submit guard, and Reconcile. It is not the authoritative Runtime-owned Current and must not be used to silently replace `persistent_ledger/state.json`.
+
+Broker Evidence has two independent readiness dimensions:
+
+- Producer / freshness readiness: the snapshot-only job ran and produced fresh read-only evidence.
+- Authenticity / account alignment readiness: the payload is distinguishable as Broker API vs fixture/mock/unknown, and Runtime-owned positions are reconciled to the intended broker account scope.
+
+Nested `source="mock"` values, fixture payloads, or unknown account identity must not be treated as Safety-ready Broker Evidence. Runtime records `data_origin`, `fixture_used`, `mock_used`, `authenticity_status`, and `account_alignment_status` separately from freshness.
+
+#### Feature Refresh Runtime
+
+Runtime Feature Refresh is the formal producer for Candidate, Opportunity, and Position Management feature artifacts used by Runtime Acceptance.
+
+Candidate features must be generated from market history and include long-history features and missing flags required by the formal model contract. Opportunity artifacts are unprefixed; consumers map to model-level `feature__...` names exactly once. PM feature input must read Runtime Current and emit one row per Runtime-owned position when Current has positions. A zero-row PM artifact is valid only when Current has no positions and the artifact carries `no_position_reason`.
 
 #### Execution / Fill Runtime
 
@@ -568,6 +673,10 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 副作用有無: なし。
 - 重要原則: Safety の投資判断ロジックを Runtime に再実装しない。
 
+Runtime Safety Decision preserves legacy `block_buy`, `block_sell`, and `block_submit` booleans for existing consumers, but these booleans are not sufficient as the formal action contract. Safety Runtime must also expose action-scope permissions for BUY inference/planning, SELL/HOLD review generation, submit, auto sell, human review, and Broker Write.
+
+For `INDIVIDUAL_CRASH / HIGH_RISK_REVIEW`, the event remains valid. Runtime does not alter thresholds or remove the affected symbol. New BUY and Broker Write are blocked; automatic SELL submit is blocked; Human Review and SELL/HOLD review generation may be allowed for review output.
+
 #### Operation Guard Runtime
 
 - 役割: business day、market open、run lock、duplicate order guard、emergency stop などの運用 guard を管理する。
@@ -597,6 +706,20 @@ Runtime Component Architecture は責務設計であり、既存 module 名を�
 - 書く Current State: `runtime_state/current_state.json`、`persistent_ledger/events.jsonl`。
 - 再実行可否: 条件付き。
 - 副作用有無: なし。
+
+`runtime_state/current_state.json` は Runtime Operation State のみを表す authoritative artifact とする。Asset Current ではない。
+
+Contract:
+
+```text
+schema_version=runtime_v2_operation_state_v1
+role=authoritative_runtime_operation_state
+producer=runtime_state_refresh
+```
+
+この artifact は Runtime の状態、Safety state、生成時刻、対象 business date、環境を保持する。保有、現金、買付余力、総資産、Pending submit target は保持しない。これらの SoT は引き続き `persistent_ledger/state.json` と `pending_order_plan/pending_order_plan.json` である。
+
+Safety Evaluation と Data Readiness は、この artifact を required Runtime Operation evidence として扱う。missing / stale / legacy role / invalid state は `REVIEW_REQUIRED`、invalid JSON は `HALT` とする。
 
 ### 8.3 Component 依存関係
 

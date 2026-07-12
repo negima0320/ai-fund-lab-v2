@@ -1,0 +1,22 @@
+{
+  "approval_hash": "approval-hash-4b3bd69a4026499a",
+  "approval_id": "approval-947239678cd403f1",
+  "approval_request_id": "approval-request-4e67af4278cf41b5",
+  "approved_at": "2026-07-13T08:45:00+09:00",
+  "approved_item_ids": [
+    "opi-morning-run-2026-07-13-459ed809b347-runtime-v2-buy-ai-2026-07-13-20260712T031651.830860+0000-opportunity-7203-001"
+  ],
+  "approved_order_conditions": null,
+  "expires_at": "2026-07-13T15:00:00+09:00",
+  "order_plan_id": "order-plan-f77164a1a5e5f998",
+  "pending_plan_id": "pending-order-plan-f77164a1a5e5f998",
+  "pending_policy_hash": "sha256:40985b08383388f337ca35bc45320d0368af3952672746d719e0fc65b142ab53",
+  "policy_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/policy/phase15by_capital_deployment_policy.json",
+  "policy_version": "phase15by_buy_origin_acceptance_policy_v1",
+  "reason": "phase14e15 morning auto approval for demo operation",
+  "rejected_item_ids": [],
+  "review_required": false,
+  "safety_decision_id": "phase15by-nextday-safety-allow",
+  "safety_policy_version": "safety_operation_guard_v1",
+  "status": "APPROVED"
+}

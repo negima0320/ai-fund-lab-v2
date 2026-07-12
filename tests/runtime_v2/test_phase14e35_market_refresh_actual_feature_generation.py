@@ -46,6 +46,8 @@ def test_phase14e35_market_refresh_pipeline_requires_actual_feature_artifacts(tm
     assert set(result.generated_feature_artifacts) == set(ARTIFACTS)
     assert result.missing_feature_artifacts == ()
     assert result.selected_feature_date == "2026-07-08"
+    assert result.latest_expected_trading_date == "2026-07-08"
+    assert result.latest_available_market_date == "2026-07-08"
     assert result.carryover_used is False
     assert result.canonical_normalized_updated is True
     assert result.feature_refresh_executed is True
@@ -124,8 +126,70 @@ def test_phase14e35_cli_market_refresh_records_artifacts_and_blocks_checkpoint_o
 
     assert exit_code == 0
     assert market_stage["status"] == "PASS"
+    assert manifest["market_evidence_status"] == "READY"
+    assert manifest["latest_expected_trading_date"] == "2026-07-08"
+    assert manifest["latest_available_market_date"] == "2026-07-08"
     assert set(manifest["generated_artifacts"]["feature_artifacts"]) == set(ARTIFACTS)
     assert "runtime_v2_market_refresh_pipeline" in {stage["name"] for stage in manifest["stages"]}
+
+
+def test_phase15bc_cli_market_refresh_stale_evidence_exits_review_required_not_exception(tmp_path, monkeypatch):
+    def fake_operations_market_refresh(**kwargs):
+        return {
+            "status": "PASS",
+            "blocked_reasons": [],
+            "jquants_api_fetch_executed": False,
+            "canonical_normalized_updated": False,
+            "feature_refresh_executed": False,
+            "feature_refresh_status": "FEATURES_MISSING",
+            "latest_available_market_date": "2026-07-07",
+            "data_quality_status": "PASS",
+            "feature_freshness_status": "STALE",
+        }
+
+    monkeypatch.setattr(market_refresh_pipeline, "_run_operations_market_refresh", fake_operations_market_refresh)
+    runtime_root = _write_fixed_current(tmp_path / ".runtime")
+
+    exit_code = run_daily_operation.main(
+        [
+            "--mode",
+            "demo",
+            "--job",
+            "market_refresh",
+            "--business-date",
+            "2026-07-08",
+            "--submit-enabled",
+            "false",
+            "--notification-mode",
+            "payload-only",
+            "--runtime-root",
+            str(runtime_root),
+            "--reports-root",
+            str(tmp_path / "reports" / "runtime_v2"),
+            "--public-reports-root",
+            str(tmp_path / "reports" / "public" / "runtime_v2"),
+            "--manifest-root",
+            str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
+            "--log-root",
+            str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--feature-root",
+            str(tmp_path / ".runtime" / "operations" / "feature_artifacts"),
+            "--market-refresh-allow-api-fetch",
+            "false",
+        ]
+    )
+    manifest_path = next((tmp_path / ".runtime" / "runtime_state" / "run_manifest" / "2026-07-08").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    market_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_v2_market_refresh_pipeline")
+
+    assert exit_code == 20
+    assert manifest["final_state"] == "REVIEW_REQUIRED"
+    assert manifest["latest_expected_trading_date"] == "2026-07-08"
+    assert manifest["latest_available_market_date"] == "2026-07-07"
+    assert manifest["market_date"] == "2026-07-07"
+    assert manifest["market_freshness_status"] in {"STALE", "DATE_MISMATCH"}
+    assert market_stage["details"]["latest_expected_trading_date"] == "2026-07-08"
+    assert market_stage["details"]["latest_available_market_date"] == "2026-07-07"
 
 
 def _fake_runtime_market_refresh_pipeline(**kwargs):
@@ -137,10 +201,27 @@ def _fake_runtime_market_refresh_pipeline(**kwargs):
         {
             "status": "PASS",
             "reason": "fake market refresh",
+            "market_evidence_status": "READY",
+            "market_evidence_reason": "market_evidence_ready",
+            "market_evidence_path": str(feature_dir / "market_evidence.json"),
+            "market_evidence_latest_pointer_path": str(feature_dir / "market_latest.json"),
+            "market_evidence_history_artifact_path": str(feature_dir / "market_history.json"),
+            "market_date": kwargs["business_date"],
+            "latest_expected_trading_date": kwargs["business_date"],
+            "latest_available_market_date": kwargs["business_date"],
+            "market_freshness_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 0,
+            "missing_quote_count": 0,
+            "market_summary_status": "READY",
+            "publication_status": "READY",
+            "provider_status": "READY",
             "generated_feature_artifacts": artifacts,
             "feature_artifact_dir": str(feature_dir),
             "to_stage_details": lambda self: {
                 "status": "PASS",
+                "latest_expected_trading_date": kwargs["business_date"],
+                "latest_available_market_date": kwargs["business_date"],
                 "generated_feature_artifacts": artifacts,
                 "feature_artifact_dir": str(feature_dir),
             },
@@ -196,7 +277,24 @@ def _write_consumer_ready_feature_artifacts(feature_dir: Path, feature_date: str
     }
     pd.DataFrame([row]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
     pd.DataFrame([row]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
-    pd.DataFrame(columns=["target_date", "code", "no_position_reason"]).to_parquet(
+    pd.DataFrame(
+        columns=[
+            "target_date",
+            "position_state_as_of",
+            "entry_date",
+            "code",
+            "broker_issue_code",
+            "holding_days",
+            "average_price",
+            "current_price",
+            "unrealized_return",
+            "quantity",
+            "feature_version",
+            "data_until",
+            "created_at",
+            "no_position_reason",
+        ]
+    ).to_parquet(
         feature_dir / "position_feature_input.parquet",
         index=False,
     )

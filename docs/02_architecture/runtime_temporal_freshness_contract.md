@@ -399,33 +399,105 @@ If a dependency changes after Safety Decision generation, Safety must be re-eval
 
 `.runtime/runtime_state/current_state.json` must be classified as one of two roles.
 
-### Option A: Authoritative Runtime Operation State
+Decision:
 
-If Safety or Data Readiness requires this artifact, the system must define:
+```text
+AUTHORITATIVE_RUNTIME_OPERATION_STATE
+```
 
-- producer
-- schema
-- freshness fields
-- state transition
-- CLI update timing
-- consumer list
-- missing/stale behavior
+`.runtime/runtime_state/current_state.json` is authoritative for Runtime operation state only.
 
-### Option B: Legacy / Non-Authoritative
+It is not authoritative for:
 
-If this artifact is not authoritative:
+- positions
+- cash
+- buying power
+- total equity
+- pending submit target
+- approval source
 
-- remove it from Safety required evidence
-- classify it as legacy / advisory
-- suppress non-blocking warnings
-- define migration plan
+Those remain owned by:
 
-Current state cannot remain ambiguous.
+```text
+persistent_ledger/state.json
+pending_order_plan/pending_order_plan.json
+runtime_state/safety/latest_safety_decision.json
+```
+
+Minimum schema:
+
+```text
+schema_version=runtime_v2_operation_state_v1
+role=authoritative_runtime_operation_state
+business_date
+generated_at
+updated_at
+environment
+runtime_mode
+state
+safety_state
+current_safety_state
+source
+asset_state_source
+pending_state_source
+asset_state_is_authoritative_here=false
+pending_state_is_authoritative_here=false
+production_equivalent
+```
+
+Producer:
+
+```text
+runtime_state_refresh
+```
+
+Producer responsibilities:
+
+- write only `.runtime/runtime_state/current_state.json`
+- use atomic publish
+- record Runtime state machine state and Safety state
+- never copy asset values from `persistent_ledger/state.json`
+- never copy active pending items from `pending_order_plan/pending_order_plan.json`
+- set `asset_state_is_authoritative_here=false`
+- set `pending_state_is_authoritative_here=false`
+
+Consumers:
+
+```text
+Safety Evaluation
+Data Readiness
+Runtime Orchestrator
+Report
+Audit
+Recovery / Review
+```
+
+Freshness:
+
+```text
+business_date == runtime_business_date
+environment == runtime mode
+schema_version == runtime_v2_operation_state_v1
+role == authoritative_runtime_operation_state
+state is a valid RuntimeState
+generated_at is timezone-aware producer timestamp
+```
+
+Missing / stale behavior:
+
+| Condition | Status |
+|---|---|
+| Missing file | `REVIEW_REQUIRED` |
+| Invalid JSON / non-object | `HALT` |
+| Missing required fields | `REVIEW_REQUIRED` |
+| Stale business date | `REVIEW_REQUIRED` |
+| Legacy / advisory role | `REVIEW_REQUIRED` |
+| Invalid RuntimeState | `REVIEW_REQUIRED` |
 
 Design decision:
 
 ```text
-RUNTIME_STATE_CONTRACT_REQUIRED
+RUNTIME_STATE_CONTRACT_COMPLETE
 ```
 
 ## 18. Non-Trading-Day Contract
@@ -656,6 +728,387 @@ Temporal Contract implementation is accepted only when:
 - Demo restrictions are not Runtime Core branches.
 - Producer and Consumer use the same contract definitions.
 
+## 25.1 Broker Snapshot ReadOnly Producer Contract
+
+Broker Snapshot is Broker Evidence. It is not Current Position State, Persistent Ledger, Execution Result, or Approval State.
+
+Producer:
+
+```text
+broker_readonly_refresh
+```
+
+Canonical artifacts:
+
+```text
+.runtime/runtime_state/broker_readonly/<runtime_business_date>/tachibana_snapshot.json
+.runtime/runtime_state/broker_readonly/latest.json
+```
+
+Required snapshot fields:
+
+```text
+schema_version
+runtime_schema_version
+provider
+account_id_redacted
+runtime_business_date
+business_date
+broker_snapshot_as_of
+snapshot_at
+generated_at
+evaluation_time
+freshness_status
+freshness_reason
+positions
+cash / account_summary
+buying_power
+open_orders
+executions
+read_only=true
+review_required
+```
+
+Consumer:
+
+- Safety Evaluation
+- Data Readiness
+- Submit SELL guard where available quantity evidence is required
+- Reconcile / operator review
+
+Freshness:
+
+- Compare `broker_snapshot_as_of` / `snapshot_at` against explicit `evaluation_time`.
+- Missing snapshot returns `REVIEW_REQUIRED`.
+- Invalid or timezone-missing timestamp returns `REVIEW_REQUIRED`.
+- Snapshot older than the configured max age returns `REVIEW_REQUIRED` via stale freshness.
+- Fresh snapshot returns `READY`.
+
+Source of Truth boundary:
+
+- Broker Snapshot may prove external broker account / position / order / cash evidence.
+- Broker Snapshot must not be copied into Runtime-owned Current.
+- Runtime-owned Current changes only through explicit Current / Ledger contracts.
+
+Idempotency and side-effect boundary:
+
+- The snapshot-only producer may overwrite the fixed dated snapshot artifact and latest pointer.
+- It must not submit or cancel broker orders.
+- It must not append persistent ledger records.
+- It must not mutate Pending.
+- It must not mutate Current Position.
+- It must not perform execution classification mutation.
+
+Secret handling:
+
+- Authentication credentials, private keys, passwords, and full account identifiers must not be written to snapshot, report, manifest, or logs.
+- Account identity must be redacted or represented only by a non-reversible identifier.
+
+Failure behavior:
+
+- Provider failure writes/returns `REVIEW_REQUIRED` evidence.
+- Missing artifact writes/returns `REVIEW_REQUIRED` evidence.
+- Stale artifact writes/returns `REVIEW_REQUIRED` evidence.
+- Producer implementation exceptions must not be converted to `READY`.
+
+## 25.2 Broker Authenticity and Account Alignment Contract
+
+Broker Snapshot freshness is not Broker Snapshot authenticity.
+
+Runtime v2 Broker Evidence must distinguish:
+
+```text
+provider
+adapter
+transport
+environment
+account_identity_hash
+data_origin
+fixture_used
+mock_used
+read_only
+runtime_business_date
+broker_snapshot_as_of
+generated_at
+freshness_status
+authenticity_status
+account_alignment_status
+```
+
+Accepted `data_origin` values:
+
+```text
+BROKER_API
+FIXTURE
+MOCK
+CACHED_API_RESPONSE
+UNKNOWN
+```
+
+Accepted `authenticity_status` values:
+
+```text
+READY
+REVIEW_REQUIRED
+BLOCKED
+```
+
+Accepted `account_alignment_status` values:
+
+```text
+MATCHED
+NOT_APPLICABLE
+MISMATCH
+UNKNOWN
+```
+
+Nested `source="mock"` in normalized Broker payloads is not sufficient for Safety-ready Broker Evidence. If it is a legacy normalizer label, the adapter must replace it with explicit transport and data-origin evidence before the snapshot can be accepted as authentic. Until then, nested `source="mock"` lowers `authenticity_status` to `REVIEW_REQUIRED`.
+
+Runtime Current remains Runtime-owned. Broker positions are not copied into Current and full symbol equality is not a Current update rule. Account alignment evidence must record:
+
+```text
+runtime_owned_symbols
+broker_symbols
+matched_runtime_owned_symbols
+runtime_owned_symbols_missing_in_broker
+broker_symbols_not_runtime_owned
+```
+
+If Runtime-owned positions exist and the Broker Snapshot is fixture, mock, unknown, or account-mismatched, Safety Evidence must not be treated as `READY`.
+
+## 25.3 Safety Action Scope Contract
+
+Safety Decision may remain `REVIEW_REQUIRED` while still allowing specific human-review generation actions.
+
+Runtime Safety Decision preserves legacy booleans:
+
+```text
+block_buy
+block_sell
+block_submit
+```
+
+It also exposes action-scope permissions:
+
+```text
+buy_inference
+buy_planning
+sell_hold_inference
+sell_planning
+buy_submit
+sell_submit
+auto_sell
+human_review
+broker_write
+```
+
+## 25.4 Human Approval / Promotion Freshness Contract
+
+Human Review freshness and Human Approval freshness are separate.
+
+Human Review validates whether review-only SELL/HOLD evidence may be generated. Human Approval validates whether selected review items may become a Submit Pending promotion candidate. Human Approval must not override Safety, Broker, Current, or Pending freshness.
+
+Human Approval minimum temporal fields:
+
+```text
+business_date
+approved_at
+expires_at
+revoked_at
+source_human_review_id
+source_safety_event_id
+review_pending_hash
+approved_item_ids
+approved_review_item_hashes
+policy_hash
+safety_decision_id
+```
+
+Promotion validation must use a deterministic evaluation time. The following states are not valid for promotion:
+
+```text
+expires_at missing
+expires_at <= evaluation_time
+approved_at > evaluation_time
+revoked_at present
+approval_status=REVOKED
+business_date mismatch
+review_pending_hash mismatch
+source review/event mismatch
+item hash mismatch
+Pending slot not EMPTY
+```
+
+Promotion Candidate freshness is not Submit freshness. A Candidate may be structurally valid while `Safety Decision` still blocks Submit. In that case the Candidate must record:
+
+```text
+promotion_status=READY_BUT_SAFETY_BLOCKED
+promotion_allowed=false
+apply_requested=false
+apply_executed=false
+```
+
+Authoritative Submit Pending mutation requires a later explicit Apply scope. Submit itself remains a separate non-idempotent boundary.
+
+## 25.5 Authoritative Pending Apply Candidate Freshness Contract
+
+Authoritative Pending Apply Candidate freshness is separate from Promotion Candidate freshness and Submit freshness.
+
+Apply review may generate:
+
+```text
+.runtime/runtime_state/authoritative_pending_apply_candidate/<business_date>/<apply_candidate_id>.json
+```
+
+This artifact is no-apply evidence. It must keep:
+
+```text
+apply_requested=false
+apply_executed=false
+authoritative_pending_mutated=false
+submit_executed=false
+broker_write_performed=false
+```
+
+Apply Candidate generation must revalidate the following against deterministic `evaluation_time`:
+
+```text
+Human Approval status / expiration / revocation
+Promotion Candidate hash
+Approval hash
+Review Pending hash
+Policy hash
+Safety Decision id and action scope
+Current State id and readiness
+Broker Evidence id and freshness
+Pending Slot EMPTY
+Target Session
+Approval consumption / duplicate apply absence
+```
+
+If Safety blocks Submit or Broker Write, Apply Candidate may be structurally ready but must record:
+
+```text
+apply_status=READY_BUT_SAFETY_BLOCKED
+apply_allowed=false
+```
+
+Broker available quantity validation may be skipped only when Safety already blocks Apply / Submit. The skip reason must be explicit, for example:
+
+```text
+broker_quantity_validation=SKIPPED_DUE_SAFETY_APPLY_BLOCK
+```
+
+Order conditions must not be invented by Runtime. If `order_type` or `price_condition` cannot be determined from Policy / Review / Approval evidence, the Apply Candidate must record:
+
+```text
+REVIEW_REQUIRED_BEFORE_AUTHORITATIVE_APPLY
+```
+
+Future real Apply must perform TOCTOU revalidation immediately before mutation. Any change to Approval, Safety, Policy, Current, Broker Evidence, Pending Slot, Target Session, Expiration, or Revocation invalidates the stale Apply Candidate.
+
+## 25.6 Safety-Blocked Submit Path Freshness Contract
+
+Safety-blocked Apply / Submit is a valid safe stop when the latest Safety Decision does not allow Submit or Broker Write.
+
+The blocked result must record:
+
+```text
+submit_path_status=BLOCKED_BY_SAFETY
+apply_status=BLOCKED_BY_SAFETY
+submit_attempted=false
+broker_client_called=false
+broker_write_performed=false
+pending_consumed=false
+execution_created=false
+current_mutated=false
+notification_sent=false
+```
+
+Fail-closed applies when Safety evidence is missing, stale, expired, has an id mismatch, lacks the required action scope, or does not explicitly cover `sell_submit` / `broker_write` where action permissions are present. Human Review expiration also keeps Apply and Submit closed.
+
+Retry after a Safety-blocked result requires fresh revalidation. The same Safety Decision must not be retried as if it were new evidence. If Approval expires, Current changes, Broker Evidence changes, Policy changes, Target Session changes, or Safety changes, a fresh Candidate and/or fresh Approval is required according to the changed dependency.
+
+Order condition freshness is separate from Safety freshness. If `order_type` or `price_condition` is unresolved, Submit must remain blocked even if Safety later allows Submit.
+
+Example for `INDIVIDUAL_CRASH / HIGH_RISK_REVIEW`:
+
+```json
+{
+  "action_permissions": {
+    "buy_inference": "BLOCKED",
+    "buy_planning": "BLOCKED",
+    "sell_hold_inference": "ALLOWED_FOR_REVIEW",
+    "sell_planning": "ALLOWED_FOR_REVIEW",
+    "buy_submit": "BLOCKED",
+    "sell_submit": "BLOCKED",
+    "auto_sell": "BLOCKED",
+    "human_review": "ALLOWED",
+    "broker_write": "BLOCKED"
+  }
+}
+```
+
+The high-risk event itself remains valid. Runtime must not change the threshold, remove the affected symbol, or force the Safety Decision to `SAFE`.
+
+## 25.4 Formal Feature Producer Contract
+
+Runtime Feature Refresh is the formal producer for Candidate, Opportunity, and Position Management feature artifacts.
+
+Candidate artifact:
+
+```text
+.runtime/operations/feature_artifacts/<feature_date>/candidate_features.parquet
+```
+
+Required formal Candidate columns include:
+
+```text
+missing_flags_insufficient_history
+missing_flags_price
+missing_flags_volume
+price_momentum_return_60d
+trend_ma_20_60_ratio
+trend_ma_5_20_ratio
+volume_momentum_ratio_1d_20d
+```
+
+These values must be generated from market history. Acceptance must not use arbitrary zero-fill to satisfy schema.
+
+Opportunity artifact:
+
+```text
+.runtime/operations/feature_artifacts/<feature_date>/opportunity_feature_input.parquet
+```
+
+Opportunity feature artifacts are unprefixed. Consumers may map to model-level `feature__...` names exactly once. Producer output containing `feature__...` columns is a schema violation unless a future schema version explicitly changes this rule.
+
+PM artifact:
+
+```text
+.runtime/operations/feature_artifacts/<feature_date>/position_feature_input.parquet
+```
+
+If Runtime Current has positions, PM input must contain one row per Runtime-owned held symbol. Required PM fields:
+
+```text
+target_date
+position_state_as_of
+entry_date
+code
+broker_issue_code
+holding_days
+average_price
+current_price
+unrealized_return
+quantity
+feature_version
+data_until
+created_at
+```
+
+If Current has no positions, an empty PM artifact is allowed only when `no_position_reason` is present.
+
 ## 26. Formal Design Judgments
 
 ```text
@@ -679,4 +1132,3 @@ This document does not implement:
 - Runtime execution
 
 Implementation must happen in later scoped phases.
-

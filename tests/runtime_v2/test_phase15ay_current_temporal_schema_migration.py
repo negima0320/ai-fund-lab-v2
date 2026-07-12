@@ -134,6 +134,33 @@ def test_phase15ay_apply_requires_explicit_option_and_writes_backup(tmp_path):
     assert current["temporal_schema_version"] == CURRENT_TEMPORAL_SCHEMA_VERSION
 
 
+def test_phase15bd_safe_legacy_temporal_metadata_apply_preserves_position_and_cash(tmp_path):
+    root = _runtime_root(tmp_path)
+    _write_legacy_current(root, as_of="2026-07-09", positions=[_position("7203")])
+    _write_execution(root, business_date="2026-07-09", symbol="7203")
+    _write_market_evidence(root, market_date=BUSINESS_DATE)
+    before = _load_json(root / "persistent_ledger" / "state.json")
+
+    result = run_current_temporal_migration(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        apply_current_migration=True,
+        now=_now(),
+    )
+    current = _load_json(root / "persistent_ledger" / "state.json")
+
+    assert result.status == "READY"
+    assert result.apply_executed is True
+    assert Path(result.backup_path).is_file()
+    assert current["temporal_schema_version"] == CURRENT_TEMPORAL_SCHEMA_VERSION
+    assert current["position_state_as_of"] == "2026-07-09"
+    assert current["valuation_as_of"] == BUSINESS_DATE
+    assert current["positions"][0]["quantity"] == before["positions"][0]["quantity"]
+    assert current["positions"][0]["average_price"] == before["positions"][0]["average_price"]
+    assert current["cash"] == before["cash"]
+    assert current["buying_power"] == before["buying_power"]
+
+
 def test_phase15ay_migration_idempotent_for_same_input(tmp_path):
     root = _runtime_root(tmp_path)
     _write_new_current(root)

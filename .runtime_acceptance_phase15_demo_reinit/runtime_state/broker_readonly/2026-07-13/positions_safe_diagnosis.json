@@ -1,0 +1,189 @@
+{
+  "account_identifier_saved": false,
+  "cash": {
+    "candidate_key_hit_counts": {
+      "issue_code": 3,
+      "market_value": 3,
+      "price": 3,
+      "quantity": 3
+    },
+    "candidate_key_match_rate": {
+      "issue_code": "3/3",
+      "market_value": "3/3",
+      "price": "3/3",
+      "quantity": "3/3"
+    },
+    "candidate_key_presence": {
+      "issue_code": [
+        "860"
+      ],
+      "market_value": [
+        "858"
+      ],
+      "price": [
+        "855",
+        "859"
+      ],
+      "quantity": [
+        "864"
+      ]
+    },
+    "list_key_hits": [
+      {
+        "key": "aGenbutuKabuList",
+        "row_count": 3
+      }
+    ],
+    "row_count": 3,
+    "row_key_names": [
+      "579",
+      "772",
+      "847",
+      "855",
+      "856",
+      "857",
+      "858",
+      "859",
+      "860",
+      "861",
+      "862",
+      "863",
+      "864",
+      "865",
+      "920",
+      "921"
+    ],
+    "top_level_keys": [
+      "457",
+      "458",
+      "576",
+      "577",
+      "580",
+      "581",
+      "814",
+      "815",
+      "824",
+      "825",
+      "aGenbutuKabuList",
+      "p_err",
+      "p_errno",
+      "p_no",
+      "p_rv_date",
+      "p_sd_date",
+      "sCLMID",
+      "sIssueCode",
+      "sResultCode",
+      "sResultText",
+      "sWarningCode",
+      "sWarningText"
+    ]
+  },
+  "combined": {
+    "candidate_key_match_rate": {
+      "issue_code": "7/7",
+      "market_value": "3/7",
+      "price": "3/7",
+      "quantity": "7/7"
+    },
+    "row_count": 7
+  },
+  "created_at": "2026-07-12T01:38:37.697453+00:00",
+  "issue_code_value_saved": false,
+  "margin": {
+    "candidate_key_hit_counts": {
+      "issue_code": 4,
+      "market_value": 0,
+      "price": 0,
+      "quantity": 4
+    },
+    "candidate_key_match_rate": {
+      "issue_code": "4/4",
+      "market_value": "0/4",
+      "price": "0/4",
+      "quantity": "4/4"
+    },
+    "candidate_key_presence": {
+      "issue_code": [
+        "sOrderIssueCode"
+      ],
+      "market_value": [],
+      "price": [],
+      "quantity": [
+        "sOrderOrderSuryou"
+      ]
+    },
+    "list_key_hits": [
+      {
+        "key": "aShinyouTategyokuList",
+        "row_count": 4
+      }
+    ],
+    "row_count": 4,
+    "row_key_names": [
+      "619",
+      "627",
+      "628",
+      "629",
+      "630",
+      "635",
+      "636",
+      "639",
+      "640",
+      "641",
+      "654",
+      "655",
+      "662",
+      "664",
+      "665",
+      "666",
+      "667",
+      "668",
+      "674",
+      "675",
+      "676",
+      "681",
+      "682",
+      "772",
+      "795",
+      "797",
+      "847",
+      "920",
+      "921",
+      "sOrderBaibaiKubun",
+      "sOrderIssueCode",
+      "sOrderOrderSuryou"
+    ],
+    "top_level_keys": [
+      "453",
+      "454",
+      "459",
+      "489",
+      "817",
+      "823",
+      "826",
+      "867",
+      "aShinyouTategyokuList",
+      "p_err",
+      "p_errno",
+      "p_no",
+      "p_rv_date",
+      "p_sd_date",
+      "sCLMID",
+      "sIssueCode",
+      "sResultCode",
+      "sResultText",
+      "sWarningCode",
+      "sWarningText"
+    ]
+  },
+  "order_number_saved": false,
+  "price_value_saved": false,
+  "quantity_value_saved": false,
+  "raw_response_saved": false,
+  "raw_values_saved": false,
+  "schema_version": "tachibana_positions_api_safe_diagnosis_v1",
+  "secret_saved": false,
+  "session_saved": false,
+  "token_saved": false,
+  "url_saved": false
+}

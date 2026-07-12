@@ -33,7 +33,10 @@ def normalize_broker_readonly_payload(
         raise ValueError("source is required")
     if not as_of:
         raise ValueError("as_of is required")
-    production_equivalent = source != "broker_orders_fallback"
+    production_equivalent = source not in {
+        "broker_orders_fallback",
+        "runtime_v2_execution_readonly_simulation",
+    }
     review_required = not production_equivalent
     normalized_orders = tuple(
         _normalize_order(

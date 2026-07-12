@@ -62,6 +62,7 @@ def run_operations_market_refresh(
         manifest_root=paths.root / "feature_refresh_detail",
         markdown_report_path=paths.dated("feature_refresh", trade_date, "feature_refresh_detail.md"),
         json_report_path=paths.dated("feature_refresh", trade_date, "feature_refresh_detail.json"),
+        runtime_root=root.parent if root.name == "operations" else None,
     )
     candidate = next((item for item in feature_detail.to_dict().get("artifacts", []) if item.get("ai_name") == "candidate"), {})
     feature_marker_path = paths.dated("feature_refresh", trade_date, "latest_features.json")

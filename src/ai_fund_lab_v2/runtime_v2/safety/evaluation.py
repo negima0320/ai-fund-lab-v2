@@ -38,6 +38,7 @@ from ai_fund_lab_v2.runtime_v2.temporal import (
     evaluate_broker_snapshot_freshness,
     resolve_temporal_context,
 )
+from ai_fund_lab_v2.runtime_v2.runtime_state import validate_runtime_operation_state
 
 
 CURRENT_RELATIVE_PATH = Path("persistent_ledger") / "state.json"
@@ -171,9 +172,19 @@ def _load_evidence(*, root: Path, business_date: str, mode: str, now: datetime) 
     executions = _read_jsonl(executions_path, missing, "executions")
 
     runtime_state_path = root / RUNTIME_STATE_RELATIVE_PATH
-    runtime_state = _read_json_file(runtime_state_path, missing, "runtime_state")
-    runtime_as_of = _timestamp_from(runtime_state, "generated_at", "updated_at", "business_date")
-    _require_business_date(runtime_state, runtime_as_of, business_date, stale, "runtime_state")
+    runtime_state_result = validate_runtime_operation_state(
+        runtime_root=root,
+        business_date=business_date,
+        mode=mode,
+    )
+    runtime_state = dict(runtime_state_result.payload)
+    if runtime_state_result.status == "HALT":
+        missing.append("runtime_state_invalid")
+    elif runtime_state_result.status != "READY":
+        if runtime_state_result.missing_fields:
+            missing.append("runtime_state")
+        if runtime_state_result.stale_fields:
+            stale.append("runtime_state")
 
     manual_path = _first_json(root / MANUAL_STOP_RELATIVE_ROOT)
     if manual_path is None:
@@ -603,6 +614,8 @@ def _require_business_date(payload: dict[str, Any], timestamp: str, business_dat
     payload_date = str(payload.get("business_date") or payload.get("target_session_date") or "")
     if payload_date and payload_date != business_date:
         stale.append(label)
+        return
+    if payload_date == business_date:
         return
     if timestamp and len(timestamp) >= 10 and not timestamp.startswith(business_date):
         stale.append(label)

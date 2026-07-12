@@ -19,6 +19,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     RuntimeSafetyDecision,
     safety_decision_to_payload,
 )
+from ai_fund_lab_v2.runtime_v2.human_review import discover_valid_human_review_refs
 
 
 HISTORY_RELATIVE_ROOT = Path("runtime_state") / "safety" / "history"
@@ -186,9 +187,18 @@ def _decision_from_source(
             expires_at="",
             safety_status="SAFETY_SOURCE_INVALID",
             policy_version=schema_version or "",
+            action_permissions=_fail_closed_action_permissions(),
+            human_review_artifact_refs=[],
         )
 
     mapped = _map_phase11_report(source_payload)
+    human_review_artifact_refs = discover_valid_human_review_refs(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        safety_report_payload=source_payload,
+        safety_report_path=source_path,
+        now=now,
+    )
     if lock_payload and bool(lock_payload.get("is_locked")):
         mapped["decision"] = "HALT" if str(lock_payload.get("status") or "").upper() == "HALT" else "BLOCKED"
         mapped["reason"] = "trading lock active: " + str(lock_payload.get("reason") or "locked")
@@ -197,6 +207,7 @@ def _decision_from_source(
         mapped["block_sell"] = True
         mapped["block_submit"] = True
         mapped["halt_runtime"] = mapped["decision"] == "HALT"
+        mapped["action_permissions"] = _fail_closed_action_permissions()
 
     return _runtime_decision(
         source_path=source_path,
@@ -214,6 +225,8 @@ def _decision_from_source(
         expires_at=expires_at,
         safety_status="PASS",
         policy_version=schema_version,
+        action_permissions=mapped["action_permissions"],
+        human_review_artifact_refs=human_review_artifact_refs,
     )
 
 
@@ -255,6 +268,17 @@ def _map_phase11_report(payload: dict[str, Any]) -> dict[str, Any]:
     reason = str(payload.get("transition_reason") or overall or decision)
     if review_items and decision == "REVIEW_REQUIRED":
         reason = "; ".join(str(item.get("reason_code") or item.get("message") or "") for item in review_items[:3])
+    action_permissions = _action_permissions(
+        decision=decision,
+        emergency=emergency,
+        block_buy=block_buy,
+        block_sell=block_sell,
+        block_submit=block_submit,
+        blocked_actions=blocked_actions,
+        review_items=review_items,
+        broker_write_acceptance_scope=str(payload.get("broker_write_acceptance_scope") or "").upper()
+        == "ALLOWED_FOR_ACCEPTANCE",
+    )
     return {
         "decision": decision,
         "reason": reason or decision,
@@ -264,6 +288,7 @@ def _map_phase11_report(payload: dict[str, Any]) -> dict[str, Any]:
         "block_submit": block_submit,
         "halt_runtime": decision == "HALT",
         "emergency_stop": emergency,
+        "action_permissions": action_permissions,
     }
 
 
@@ -284,6 +309,8 @@ def _runtime_decision(
     expires_at: str,
     safety_status: str,
     policy_version: str,
+    action_permissions: dict[str, str],
+    human_review_artifact_refs: list[dict[str, Any]],
 ) -> RuntimeSafetyDecision:
     return RuntimeSafetyDecision(
         safety_decision_id="runtime-safety-decision-" + uuid4().hex[:16],
@@ -302,6 +329,8 @@ def _runtime_decision(
         generated_at=generated_at,
         expires_at=expires_at,
         safety_status=safety_status,
+        action_permissions=action_permissions,
+        human_review_artifact_refs=human_review_artifact_refs,
         artifact_path="",
     )
 
@@ -335,6 +364,8 @@ def _manifest_fields(
         "block_buy": decision.block_buy,
         "block_sell": decision.block_sell,
         "block_submit": decision.block_submit,
+        "action_permissions": dict(decision.action_permissions or {}),
+        "human_review_artifact_refs": list(decision.human_review_artifact_refs or []),
         "halt_runtime": decision.halt_runtime,
         "emergency_stop": decision.emergency_stop,
         "review_required": decision.review_required,
@@ -358,6 +389,59 @@ def _producer_status(decision: RuntimeSafetyDecision) -> str:
     if decision.review_required or decision.decision == "REVIEW_REQUIRED" or decision.safety_status != "PASS":
         return "REVIEW_REQUIRED"
     return "PASS"
+
+
+def _action_permissions(
+    *,
+    decision: str,
+    emergency: bool,
+    block_buy: bool,
+    block_sell: bool,
+    block_submit: bool,
+    blocked_actions: set[str],
+    review_items: tuple[dict[str, Any], ...],
+    broker_write_acceptance_scope: bool = False,
+) -> dict[str, str]:
+    if emergency or decision == "HALT":
+        return _fail_closed_action_permissions()
+    review_reasons = {str(item.get("reason_code") or "").upper() for item in review_items}
+    high_risk_review = bool(review_reasons.intersection({"HIGH_RISK_REVIEW", "INDIVIDUAL_CRASH", "STOP_LOSS_CANDIDATE"}))
+    buy_permission = "BLOCKED" if block_buy else "ALLOWED"
+    sell_submit_permission = "BLOCKED" if block_submit else "ALLOWED"
+    buy_submit_permission = "BLOCKED" if block_submit or block_buy else "ALLOWED"
+    sell_review_permission = "ALLOWED_FOR_REVIEW" if high_risk_review or decision == "REVIEW_REQUIRED" else "ALLOWED"
+    auto_sell_permission = "BLOCKED" if "auto_sell" in blocked_actions or high_risk_review or decision != "ALLOW" else "ALLOWED"
+    if block_submit or "broker_order_api" in blocked_actions:
+        broker_write_permission = "BLOCKED"
+    elif broker_write_acceptance_scope:
+        broker_write_permission = "ALLOWED_FOR_ACCEPTANCE"
+    else:
+        broker_write_permission = "ALLOWED"
+    return {
+        "buy_inference": buy_permission,
+        "buy_planning": buy_permission,
+        "sell_hold_inference": sell_review_permission,
+        "sell_planning": sell_review_permission if not block_sell or high_risk_review else "BLOCKED",
+        "buy_submit": buy_submit_permission,
+        "sell_submit": sell_submit_permission,
+        "auto_sell": auto_sell_permission,
+        "human_review": "ALLOWED",
+        "broker_write": broker_write_permission,
+    }
+
+
+def _fail_closed_action_permissions() -> dict[str, str]:
+    return {
+        "buy_inference": "BLOCKED",
+        "buy_planning": "BLOCKED",
+        "sell_hold_inference": "BLOCKED",
+        "sell_planning": "BLOCKED",
+        "buy_submit": "BLOCKED",
+        "sell_submit": "BLOCKED",
+        "auto_sell": "BLOCKED",
+        "human_review": "ALLOWED",
+        "broker_write": "BLOCKED",
+    }
 
 
 def _latest_lock_payload(runtime_root: Path) -> dict[str, Any] | None:

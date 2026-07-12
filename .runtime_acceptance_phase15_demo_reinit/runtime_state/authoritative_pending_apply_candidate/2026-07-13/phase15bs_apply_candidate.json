@@ -1,0 +1,26 @@
+{
+  "apply_allowed": true,
+  "apply_candidate_id": "apply-candidate-phase15bs-d3e630ac6b055a99",
+  "apply_executed": false,
+  "apply_requested": false,
+  "apply_status": "READY",
+  "authoritative_pending_mutated": false,
+  "broker_write_performed": false,
+  "business_date": "2026-07-13",
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "schema_version": "runtime_v2_authoritative_pending_apply_candidate_v1",
+  "source_promotion_candidate_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/pending_promotion_candidate/2026-07-13/phase15bs_promotion_candidate.json",
+  "submit_executed": false,
+  "target_pending_hash": "sha256:d3e630ac6b055a99c16faeda7c8ce4dce579db9346064f37f8aa9497975bce3b",
+  "target_pending_path": ".runtime_acceptance_phase15_demo_reinit/pending_order_plan/pending_order_plan.json",
+  "toctou_revalidation": {
+    "approval_valid": "PASS",
+    "available_quantity_ge_100": "PASS",
+    "broker_evidence_fresh": "PASS",
+    "open_order_conflict_none": "PASS",
+    "pending_slot_empty_before_apply": "PASS",
+    "policy_match": "PASS",
+    "safety_valid": "PASS",
+    "target_session_valid": "PASS"
+  }
+}

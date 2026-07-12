@@ -15,9 +15,21 @@ from ai_fund_lab_v2.broker.models import (
 from ai_fund_lab_v2.broker.response import BrokerResponseEnvelope
 
 
-def normalize_balance_summary(envelope: BrokerResponseEnvelope) -> BrokerBalanceSnapshot:
+DEFAULT_ORIGIN_METADATA = {
+    "provider": "tachibana",
+    "adapter": "",
+    "transport": "",
+    "data_origin": "UNKNOWN",
+    "fixture_used": False,
+    "mock_used": False,
+    "read_only": True,
+}
+
+
+def normalize_balance_summary(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> BrokerBalanceSnapshot:
     raw = envelope.raw
     warnings = _warnings(envelope)
+    origin = _origin_metadata(origin_metadata)
     cash_available = decimal_or_zero(_first(raw, "cash_available", "sCashAvailable", "sGenkinZandaka", "sSyukkin", "sSyukkinKanougaku"))
     buying_power = decimal_or_zero(
         _first(raw, "buying_power", "sBuyingPower", "sSummaryGenkabuKaituke", "sGenbutuKabuKaituke", "sGenbutuKaitukeKanougaku")
@@ -25,7 +37,8 @@ def normalize_balance_summary(envelope: BrokerResponseEnvelope) -> BrokerBalance
     withdrawable_cash = decimal_or_zero(_first(raw, "withdrawable_cash", "sWithdrawableCash", "sSyukkin", "sSyukkinKanougaku"))
     total_assets = decimal_or_zero(_first(raw, "total_assets", "sTotalAssets", "sHyokaGakuGoukei", default=buying_power))
     return BrokerBalanceSnapshot(
-        source="mock",
+        source=_source_from_origin(origin),
+        **origin,
         as_of=_as_of(raw),
         currency=str(_first(raw, "currency", "sCurrency", default="JPY") or "JPY"),
         cash_available=cash_available,
@@ -43,11 +56,13 @@ def normalize_balance_summary(envelope: BrokerResponseEnvelope) -> BrokerBalance
     )
 
 
-def normalize_buying_power(envelope: BrokerResponseEnvelope) -> BrokerBalanceSnapshot:
+def normalize_buying_power(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> BrokerBalanceSnapshot:
     raw = envelope.raw
+    origin = _origin_metadata(origin_metadata)
     buying_power = decimal_or_zero(_first(raw, "buying_power", "sBuyingPower", "sSummaryGenkabuKaituke", "sGenbutuKabuKaituke", "sKanougaku"))
     return BrokerBalanceSnapshot(
-        source="mock",
+        source=_source_from_origin(origin),
+        **origin,
         as_of=_as_of(raw),
         currency=str(_first(raw, "currency", "sCurrency", default="JPY") or "JPY"),
         cash_available=decimal_or_zero(_first(raw, "cash_available", "sCashAvailable", "sSummaryGenkabuKaituke", "sGenkinZandaka")),
@@ -65,30 +80,37 @@ def normalize_buying_power(envelope: BrokerResponseEnvelope) -> BrokerBalanceSna
     )
 
 
-def normalize_cash_positions(envelope: BrokerResponseEnvelope) -> list[BrokerPositionSnapshot]:
-    return _normalize_positions(envelope, account_type="cash", list_keys=("positions", "aGenbutuKabuList", "aCLMGenbutuKabuList"))
+def normalize_cash_positions(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> list[BrokerPositionSnapshot]:
+    return _normalize_positions(envelope, account_type="cash", list_keys=("positions", "aGenbutuKabuList", "aCLMGenbutuKabuList"), origin_metadata=origin_metadata)
 
 
-def normalize_margin_positions(envelope: BrokerResponseEnvelope) -> list[BrokerPositionSnapshot]:
-    return _normalize_positions(envelope, account_type="margin", list_keys=("positions", "aShinyouTategyokuList", "aCLMShinyouTategyokuList"))
+def normalize_margin_positions(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> list[BrokerPositionSnapshot]:
+    return _normalize_positions(envelope, account_type="margin", list_keys=("positions", "aShinyouTategyokuList", "aCLMShinyouTategyokuList"), origin_metadata=origin_metadata)
 
 
-def normalize_order_list(envelope: BrokerResponseEnvelope) -> list[BrokerOrderSnapshot]:
-    return _normalize_orders(envelope, list_keys=("orders", "aOrderList", "aCLMOrderList"))
+def normalize_order_list(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> list[BrokerOrderSnapshot]:
+    return _normalize_orders(envelope, list_keys=("orders", "aOrderList", "aCLMOrderList"), origin_metadata=origin_metadata)
 
 
-def normalize_order_list_detail(envelope: BrokerResponseEnvelope) -> list[BrokerOrderSnapshot]:
-    return _normalize_orders(envelope, list_keys=("orders", "order_details", "aOrderList", "aOrderListDetail", "aCLMOrderListDetail"))
+def normalize_order_list_detail(envelope: BrokerResponseEnvelope, *, origin_metadata: Mapping[str, Any] | None = None) -> list[BrokerOrderSnapshot]:
+    return _normalize_orders(envelope, list_keys=("orders", "order_details", "aOrderList", "aOrderListDetail", "aCLMOrderListDetail"), origin_metadata=origin_metadata)
 
 
-def normalize_order_detail_executions(envelope: BrokerResponseEnvelope, *, order_id: str = "") -> list[BrokerExecutionSnapshot]:
+def normalize_order_detail_executions(
+    envelope: BrokerResponseEnvelope,
+    *,
+    order_id: str = "",
+    origin_metadata: Mapping[str, Any] | None = None,
+) -> list[BrokerExecutionSnapshot]:
     raw = envelope.raw
     as_of = _as_of(raw)
     warnings = _warnings(envelope)
+    origin = _origin_metadata(origin_metadata)
     return [
         BrokerExecutionSnapshot(
             broker="tachibana",
-            source="mock",
+            source=_source_from_origin(origin),
+            **origin,
             as_of=as_of,
             execution_id=str(_first(item, "execution_id", "sExecutionId", "sYakuzyouDate", default="") or ""),
             order_id=str(_first(item, "order_id", "sOrderNumber", "sOrderOrderNumber", default=order_id) or order_id),
@@ -129,13 +151,19 @@ def normalize_market_quotes(envelope: BrokerResponseEnvelope) -> list[dict[str, 
 
 
 def _normalize_positions(
-    envelope: BrokerResponseEnvelope, *, account_type: str, list_keys: tuple[str, ...]
+    envelope: BrokerResponseEnvelope,
+    *,
+    account_type: str,
+    list_keys: tuple[str, ...],
+    origin_metadata: Mapping[str, Any] | None = None,
 ) -> list[BrokerPositionSnapshot]:
     as_of = _as_of(envelope.raw)
     warnings = _warnings(envelope)
+    origin = _origin_metadata(origin_metadata)
     return [
         BrokerPositionSnapshot(
-            source="mock",
+            source=_source_from_origin(origin),
+            **origin,
             as_of=as_of,
             account_type=str(_first(item, "account_type", "sAccountType", default=account_type) or account_type),
             issue_code=str(_first(item, "issue_code", "sIssueCode", "sOrderIssueCode", "sMeigaraCode", "860", default="") or ""),
@@ -154,12 +182,19 @@ def _normalize_positions(
     ]
 
 
-def _normalize_orders(envelope: BrokerResponseEnvelope, *, list_keys: tuple[str, ...]) -> list[BrokerOrderSnapshot]:
+def _normalize_orders(
+    envelope: BrokerResponseEnvelope,
+    *,
+    list_keys: tuple[str, ...],
+    origin_metadata: Mapping[str, Any] | None = None,
+) -> list[BrokerOrderSnapshot]:
     as_of = _as_of(envelope.raw)
     warnings = _warnings(envelope)
+    origin = _origin_metadata(origin_metadata)
     return [
         BrokerOrderSnapshot(
-            source="mock",
+            source=_source_from_origin(origin),
+            **origin,
             as_of=as_of,
             order_id=str(_first(item, "order_id", "sOrderId", "sOrderNo", "sOrderNumber", "sOrderOrderNumber", default="") or ""),
             issue_code=str(_first(item, "issue_code", "sIssueCode", "sOrderIssueCode", "sMeigaraCode", default="") or ""),
@@ -188,6 +223,33 @@ def _first(data: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
         if key in data:
             return data[key]
     return default
+
+
+def _origin_metadata(origin_metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    origin = dict(DEFAULT_ORIGIN_METADATA)
+    if origin_metadata:
+        for key in DEFAULT_ORIGIN_METADATA:
+            if key in origin_metadata:
+                origin[key] = origin_metadata[key]
+    origin["provider"] = str(origin.get("provider") or "tachibana")
+    origin["adapter"] = str(origin.get("adapter") or "")
+    origin["transport"] = str(origin.get("transport") or "")
+    origin["data_origin"] = str(origin.get("data_origin") or "UNKNOWN")
+    origin["fixture_used"] = bool(origin.get("fixture_used"))
+    origin["mock_used"] = bool(origin.get("mock_used"))
+    origin["read_only"] = bool(origin.get("read_only", True))
+    return origin
+
+
+def _source_from_origin(origin: Mapping[str, Any]) -> str:
+    data_origin = str(origin.get("data_origin") or "UNKNOWN")
+    if data_origin == "BROKER_API":
+        return "broker_api"
+    if data_origin == "FIXTURE":
+        return "fixture"
+    if data_origin == "MOCK":
+        return "mock"
+    return "unknown"
 
 
 def _items(raw: Mapping[str, Any], list_keys: tuple[str, ...]) -> list[Mapping[str, Any]]:

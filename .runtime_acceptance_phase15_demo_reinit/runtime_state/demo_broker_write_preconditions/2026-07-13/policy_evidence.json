@@ -1,0 +1,20 @@
+{
+  "acceptance_only": true,
+  "day_allowed": true,
+  "demo_preloaded_acceptance_exception_allowed": true,
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "market_order_allowed": true,
+  "policy_hash": "sha256:7a70b1ebd5c7ae47be1759e7aa3a0890fa33f3f91c0bd5807a2ff298e0f9f562",
+  "policy_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+  "policy_status": "READY",
+  "production_equivalent": false,
+  "quantity_100_allowed": true,
+  "scenario_scope": {
+    "issue_code": "6501",
+    "quantity": 100,
+    "side": "SELL"
+  },
+  "schema_version": "phase15bs_policy_evidence_v1",
+  "sell_allowed": true,
+  "target_session_allowed": true
+}

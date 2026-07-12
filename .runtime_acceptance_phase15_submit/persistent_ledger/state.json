@@ -1,0 +1,30 @@
+{
+  "as_of": "2026-07-09",
+  "asset_state_id": "asset-phase15bn",
+  "buying_power": 970000.0,
+  "buying_power_unknown": false,
+  "cash": 970000.0,
+  "cash_unknown": false,
+  "current_position_status": "READY",
+  "current_positions_unknown": false,
+  "current_state_confirmed_empty": false,
+  "current_valuation_status": "READY",
+  "environment": "demo",
+  "market_value": 30000.0,
+  "position_state_as_of": "2026-07-09",
+  "positions": [
+    {
+      "as_of": "2026-07-09",
+      "average_price": 300.0,
+      "market_value": 30000.0,
+      "quantity": 100.0,
+      "source": "phase15bn_isolated_runtime_owned_fixture",
+      "symbol": "6522"
+    }
+  ],
+  "review_required": false,
+  "schema_version": "1",
+  "source": "phase15bn_isolated_runtime_owned_fixture",
+  "total_equity": 1000000.0,
+  "valuation_as_of": "2026-07-09"
+}

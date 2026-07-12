@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date, datetime
 
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import (
@@ -134,6 +135,8 @@ def _blocked_reason(
         return "pending approval link missing"
     if pending_plan.approval.approval_hash != approval_artifact.approval_hash:
         return "approval hash mismatch"
+    if _approval_expired_for_target_session(approval_artifact.expires_at, pending_plan.target_session_date):
+        return "approval expired"
     if approved_item_id not in pending_plan.approved_item_ids:
         return "approved item missing from pending"
     if not can_submit_pending_plan(pending_plan, existing_order_dedup_keys):
@@ -143,6 +146,15 @@ def _blocked_reason(
         return "approved item not found"
     if item.side not in {"BUY", "SELL"}:
         return "unsupported side"
+    if item.order_type not in {"MARKET", "LIMIT"}:
+        return "order condition authority review required"
+    condition_reason = _order_condition_block_reason(
+        approval_artifact=approval_artifact,
+        item=item,
+        target_session_date=pending_plan.target_session_date,
+    )
+    if condition_reason:
+        return condition_reason
     if not is_symbol_allowed_by_capability(item.symbol, capability):
         return "symbol not supported by broker capability"
     if item.quantity <= 0:
@@ -157,6 +169,59 @@ def _blocked_reason(
         if item.quantity > broker_available_quantity:
             return "sell quantity exceeds available quantity"
     return ""
+
+
+def _approval_expired_for_target_session(expires_at: str, target_session_date: str) -> bool:
+    expires_date = _date_from_iso(expires_at)
+    target_date = _date_from_iso(target_session_date)
+    if expires_date is None or target_date is None:
+        return False
+    return expires_date < target_date
+
+
+def _order_condition_block_reason(
+    *,
+    approval_artifact: ApprovalArtifact,
+    item: object,
+    target_session_date: str,
+) -> str:
+    conditions = approval_artifact.approved_order_conditions
+    if conditions is None:
+        return ""
+    item_condition = conditions.get(item.pending_item_id) if isinstance(conditions, dict) else None
+    if not isinstance(item_condition, dict):
+        return "order condition not approved"
+    expected = {
+        "order_type": item.order_type,
+        "target_session": target_session_date,
+        "quantity": item.quantity,
+        "side": item.side,
+        "issue_code": item.symbol,
+    }
+    for key, expected_value in expected.items():
+        if str(item_condition.get(key)) != str(expected_value):
+            return "approved order condition mismatch"
+    if item.order_type == "MARKET" and item_condition.get("limit_price") is not None:
+        return "market order limit_price must be null"
+    if item.order_type == "LIMIT" and item_condition.get("limit_price") in (None, ""):
+        return "limit order limit_price missing"
+    if not item_condition.get("time_in_force"):
+        return "time_in_force missing"
+    if not item_condition.get("price_condition"):
+        return "price_condition missing"
+    return ""
+
+
+def _date_from_iso(value: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
 
 
 def _command_id(pending_plan_id: str, pending_item_id: str, approval_hash: str) -> str:

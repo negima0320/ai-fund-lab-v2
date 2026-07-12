@@ -28,6 +28,7 @@ class RuntimeV2MarketRefreshResult:
     feature_artifact_dir: str
     generated_feature_artifacts: dict[str, str]
     missing_feature_artifacts: tuple[str, ...]
+    latest_expected_trading_date: str
     latest_available_market_date: str
     requested_feature_date: str
     selected_feature_date: str
@@ -114,7 +115,11 @@ def run_runtime_v2_market_refresh_pipeline(
     if contract.status != "PASS" and result.get("status") == "BLOCK":
         status = "BLOCKED"
         reason = "market_refresh_blocked"
-    elif contract.status == "PASS" and result.get("feature_refresh_executed") is not True:
+    elif (
+        contract.status == "PASS"
+        and result.get("feature_refresh_executed") is not True
+        and str(result.get("feature_refresh_status") or "") != "FEATURES_READY"
+    ):
         status = "REVIEW_REQUIRED"
         reason = "feature_refresh_not_executed"
     return RuntimeV2MarketRefreshResult(
@@ -130,6 +135,7 @@ def run_runtime_v2_market_refresh_pipeline(
         feature_artifact_dir=contract.feature_artifact_dir,
         generated_feature_artifacts=generated,
         missing_feature_artifacts=missing,
+        latest_expected_trading_date=market_evidence.latest_expected_trading_date,
         latest_available_market_date=contract.latest_available_market_date,
         requested_feature_date=contract.requested_feature_date,
         selected_feature_date=contract.selected_feature_date,

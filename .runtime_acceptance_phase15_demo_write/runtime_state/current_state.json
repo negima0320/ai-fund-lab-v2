@@ -1,0 +1,20 @@
+{
+  "asset_state_is_authoritative_here": false,
+  "asset_state_source": "persistent_ledger/state.json",
+  "business_date": "2026-07-13",
+  "current_safety_state": "BUY_REVIEW_REQUIRED",
+  "environment": "demo",
+  "generated_at": "2026-07-11T22:18:39.985218+00:00",
+  "pending_state_is_authoritative_here": false,
+  "pending_state_source": "pending_order_plan/pending_order_plan.json",
+  "producer": "runtime_operation_state_refresh",
+  "production_equivalent": false,
+  "reason": "runtime_state_refresh",
+  "role": "authoritative_runtime_operation_state",
+  "runtime_mode": "demo",
+  "safety_state": "BUY_REVIEW_REQUIRED",
+  "schema_version": "runtime_v2_operation_state_v1",
+  "source": "runtime_v2_runtime_state_producer",
+  "state": "CURRENT_STATE_LOADED",
+  "updated_at": "2026-07-11T22:18:39.985218+00:00"
+}

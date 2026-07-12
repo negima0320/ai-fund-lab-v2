@@ -1,0 +1,2 @@
+target_date,code,expected_edge_score,buy_rank,downside_risk_score,risk_guard_status,candidate_score,candidate_rank,buy_reason,no_buy_reason,calibration_policy_name
+2026-07-14,7203,0.1,999,0.2,ok,0.8,999,acceptance_fixture_buy_origin,,phase15by_fixture

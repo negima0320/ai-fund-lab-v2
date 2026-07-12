@@ -106,6 +106,82 @@ def read_pending_order_plan(
     )
 
 
+def read_pending_order_plan_path(*, path: Path, environment: str) -> PendingOrderPlanReadResult:
+    if not path.exists():
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=False,
+            valid=False,
+            classification="MISSING",
+            plan=None,
+            payload=None,
+            errors=("pending order plan missing",),
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=False,
+            classification="INVALID",
+            plan=None,
+            payload=None,
+            errors=(f"json parse error: {exc.msg}",),
+        )
+    if not isinstance(payload, Mapping):
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=False,
+            classification="INVALID",
+            plan=None,
+            payload=None,
+            errors=("pending payload must be an object",),
+        )
+    if str(payload.get("status") or payload.get("state") or "").upper() == "EMPTY" and not bool(
+        payload.get("active_pending", True)
+    ):
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=True,
+            classification="EMPTY",
+            plan=None,
+            payload=payload,
+        )
+    try:
+        plan = pending_order_plan_from_payload(payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=False,
+            classification="INVALID",
+            plan=None,
+            payload=payload,
+            errors=(str(exc),),
+        )
+    if plan.environment != environment:
+        return PendingOrderPlanReadResult(
+            path=path,
+            exists=True,
+            valid=False,
+            classification="UNKNOWN",
+            plan=plan,
+            payload=payload,
+            errors=("environment mismatch",),
+        )
+    return PendingOrderPlanReadResult(
+        path=path,
+        exists=True,
+        valid=True,
+        classification="VALID",
+        plan=plan,
+        payload=payload,
+    )
+
+
 def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderPlan:
     required = (
         "schema_version",
@@ -161,6 +237,11 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
             pending_policy_hash=str(approval.get("pending_policy_hash") or ""),
             safety_decision_id=str(approval.get("safety_decision_id") or ""),
             safety_policy_version=str(approval.get("safety_policy_version") or ""),
+            approved_order_conditions=(
+                dict(approval["approved_order_conditions"])
+                if isinstance(approval.get("approved_order_conditions"), Mapping)
+                else None
+            ),
         ),
         approved_item_ids=tuple(payload["approved_item_ids"]),
         items=tuple(

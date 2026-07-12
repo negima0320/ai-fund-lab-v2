@@ -82,6 +82,7 @@ def attach_approval_link(
     approval_status: str,
     approved_item_ids: Sequence[str],
     approval_expires_at: str,
+    approved_order_conditions: dict | None = None,
 ) -> PendingOrderPlan:
     approved_tuple = tuple(approved_item_ids)
     item_ids = {item.pending_item_id for item in plan.items}
@@ -113,6 +114,7 @@ def attach_approval_link(
             pending_policy_hash=plan.pending_policy_hash,
             safety_decision_id=plan.safety_decision_id,
             safety_policy_version=plan.safety_policy_version,
+            approved_order_conditions=approved_order_conditions,
         ),
         approved_item_ids=approved_tuple,
         items=tuple(

@@ -1,0 +1,18 @@
+{
+  "capability_status": "READY",
+  "cash_equity_only": true,
+  "demo_environment": true,
+  "limit_price_validation": "NOT_APPLICABLE_FOR_MARKET",
+  "mode": "demo",
+  "order_type": "MARKET",
+  "price_tick": null,
+  "quantity_unit": 100,
+  "schema_version": "runtime_v2_broker_capability_evidence_v1",
+  "side": "SELL",
+  "source": "static_runtime_v2_broker_capability",
+  "supports_order_type": true,
+  "supports_session": true,
+  "target_session": "2026-07-09",
+  "time_in_force": "DAY",
+  "trading_unit": 100
+}

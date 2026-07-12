@@ -301,12 +301,34 @@ def _runtime_root(
         )
     else:
         _write_json(root / "pending_order_plan" / "pending_order_plan.json", {"state": "CONSUMED", "environment": "demo", "items": []})
+    _write_runtime_state(root)
     _write_safety(root, decision=safety_decision, reason=safety_reason)
     if write_market:
         _write_market(root)
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_runtime_state(root: Path) -> None:
+    _write_json(
+        root / "runtime_state" / "current_state.json",
+        {
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
+            "business_date": BUSINESS_DATE,
+            "generated_at": BUSINESS_DATE + "T00:00:00Z",
+            "updated_at": BUSINESS_DATE + "T00:00:00Z",
+            "environment": "demo",
+            "runtime_mode": "demo",
+            "state": "CURRENT_STATE_LOADED",
+            "safety_state": "NORMAL",
+            "current_safety_state": "NORMAL",
+            "source": "runtime_v2_runtime_state_producer",
+            "asset_state_is_authoritative_here": False,
+            "pending_state_is_authoritative_here": False,
+        },
+    )
 
 
 def _write_feature_inputs(feature_root: Path) -> Path:

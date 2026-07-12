@@ -1,0 +1,2 @@
+target_date,code,action,hold_score,exit_score,add_score,reduce_score,continue_holding,add_candidate,reduce_candidate,exit_candidate,action_reason,exit_reason,risk_guard_status,feature_version,model_version,created_at
+2026-07-14,7203,HOLD,0.57079464,0.0675,0.599375,0.241375,True,False,False,False,trend_continuation|positive_expected_edge|downside_risk_contained,,ok,position_management_feature_v1,position_management_policy_phase6a_v1,2026-07-14T09:15:00+00:00

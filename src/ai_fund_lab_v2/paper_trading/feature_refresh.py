@@ -9,7 +9,6 @@ from typing import Any
 
 import pandas as pd
 
-from ai_fund_lab_v2.candidate_ai.feature_builder import build_candidate_features_mock_with_audit
 from ai_fund_lab_v2.paper_trading.canonical_data_source import DEFAULT_CONFIG_PATH, resolve_data_source
 
 
@@ -41,11 +40,19 @@ REQUIRED_COLUMNS = {
         "code",
         "feature_version",
         "source_snapshot_id",
+        "feature_set_name",
+        "missing_flags_insufficient_history",
+        "missing_flags_price",
+        "missing_flags_volume",
         "price_momentum_return_5d",
         "price_momentum_return_20d",
+        "price_momentum_return_60d",
         "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
         "volatility_return_std_20d",
         "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
         "liquidity_avg_volume_20d",
         "is_current_listed",
         "has_current_name",
@@ -60,21 +67,34 @@ REQUIRED_COLUMNS = {
         "as_of_date",
         "code",
         "feature_version",
-        "feature__price_momentum_return_5d",
-        "feature__price_momentum_return_20d",
-        "feature__volume_momentum_ratio_5d",
-        "feature__volatility_return_std_20d",
-        "feature__trend_close_over_ma_20d",
-        "feature__liquidity_avg_volume_20d",
+        "liquidity_avg_volume_20d",
+        "missing_flags_insufficient_history",
+        "missing_flags_price",
+        "missing_flags_volume",
+        "price_momentum_return_5d",
+        "price_momentum_return_20d",
+        "price_momentum_return_60d",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "volatility_return_std_20d",
+        "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
     ),
     "position": (
         "target_date",
+        "position_state_as_of",
         "entry_date",
         "code",
+        "broker_issue_code",
         "holding_days",
+        "average_price",
         "current_price",
         "unrealized_return",
+        "quantity",
         "feature_version",
+        "data_until",
+        "created_at",
     ),
     "capital": (
         "target_date",
@@ -161,6 +181,7 @@ def run_feature_refresh(
     markdown_report_path: Path | str = DEFAULT_MD_REPORT,
     json_report_path: Path | str = DEFAULT_JSON_REPORT,
     created_at: str | None = None,
+    runtime_root: Path | str | None = None,
 ) -> FeatureRefreshResult:
     if dry_run and execute:
         raise ValueError("dry_run and execute cannot both be true.")
@@ -215,6 +236,7 @@ def run_feature_refresh(
                     feature_root=feature_root,
                     source_refs=source_refs,
                     created_at=created_at,
+                    runtime_root=Path(runtime_root) if runtime_root is not None else None,
                 )
             else:
                 artifacts = _audit_existing(
@@ -256,6 +278,7 @@ def _execute_refresh(
     feature_root: Path,
     source_refs: dict[str, str],
     created_at: str,
+    runtime_root: Path | None,
 ) -> list[FeatureArtifactStatus]:
     quotes = _read_table(quotes_path)
     if quotes.empty:
@@ -289,7 +312,12 @@ def _execute_refresh(
         created_at=created_at,
     )
     opportunity = _build_opportunity_feature_input(candidate)
-    position = _build_position_feature_input(target_data_until=target_data_until, created_at=created_at)
+    position = _build_position_feature_input(
+        target_data_until=target_data_until,
+        created_at=created_at,
+        runtime_root=runtime_root,
+        quotes=quotes,
+    )
     capital = _build_capital_policy_input(
         target_data_until=target_data_until,
         candidate_path=feature_root / ARTIFACT_FILENAMES["candidate"],
@@ -341,22 +369,11 @@ def _build_candidate_feature_frame(
     target_data_until: str,
     created_at: str,
 ) -> pd.DataFrame:
-    source_rows = pd.DataFrame(
-        {
-            "date": quotes["target_date"].astype(str),
-            "code": quotes["code"].astype(str),
-            "close": pd.to_numeric(quotes["Close"], errors="coerce"),
-            "volume": pd.to_numeric(quotes["Volume"], errors="coerce"),
-        }
-    ).dropna(subset=["close", "volume"])
-    result = build_candidate_features_mock_with_audit(
-        source_rows.to_dict("records"),
-        as_of_date=target_data_until,
-        target_date=target_data_until,
-        feature_version="phase9_candidate_features_v1",
-        source_snapshot_id=f"jquants_normalized_daily_quotes_until_{target_data_until}",
+    frame = _build_formal_candidate_rows(
+        quotes=quotes,
+        target_data_until=target_data_until,
+        created_at=created_at,
     )
-    frame = pd.DataFrame(result.rows)
     if not frame.empty:
         frame = _apply_phase9_universe_hard_gate(frame, listed=listed, target_data_until=target_data_until)
         frame["created_at"] = created_at
@@ -470,26 +487,236 @@ def _build_opportunity_feature_input(candidate: pd.DataFrame) -> pd.DataFrame:
     if candidate.empty:
         return pd.DataFrame(columns=list(REQUIRED_COLUMNS["opportunity"]) + ["data_until", "created_at"])
     feature_columns = [
+        "liquidity_avg_volume_20d",
+        "missing_flags_insufficient_history",
+        "missing_flags_price",
+        "missing_flags_volume",
         "price_momentum_return_5d",
         "price_momentum_return_20d",
-        "volume_momentum_ratio_5d",
-        "volatility_return_std_20d",
+        "price_momentum_return_60d",
         "trend_close_over_ma_20d",
-        "liquidity_avg_volume_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
+        "volatility_return_std_20d",
     ]
     output = candidate[
         ["target_date", "as_of_date", "code", "created_at", "data_until", "feature_version", *feature_columns]
     ].copy()
-    output["feature_version"] = "phase9_opportunity_feature_input_v1"
-    return output.rename(columns={column: f"feature__{column}" for column in feature_columns})
+    output["feature_version"] = "runtime_v2_opportunity_feature_input_v1"
+    return output
 
 
-def _build_position_feature_input(*, target_data_until: str, created_at: str) -> pd.DataFrame:
-    columns = list(REQUIRED_COLUMNS["position"]) + ["data_until", "created_at", "no_position_reason"]
-    frame = pd.DataFrame(columns=columns)
-    frame.attrs["target_data_until"] = target_data_until
-    frame.attrs["created_at"] = created_at
-    return frame
+def _build_position_feature_input(
+    *,
+    target_data_until: str,
+    created_at: str,
+    runtime_root: Path | None,
+    quotes: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = list(REQUIRED_COLUMNS["position"]) + ["no_position_reason"]
+    current = _load_current_state(runtime_root)
+    positions = current.get("positions") if isinstance(current.get("positions"), list) else []
+    if not positions:
+        frame = pd.DataFrame(columns=columns)
+        frame.attrs["target_data_until"] = target_data_until
+        frame.attrs["created_at"] = created_at
+        return frame
+    quote_by_code = _latest_quote_by_code(quotes=quotes, target_data_until=target_data_until)
+    position_state_as_of = str(current.get("position_state_as_of") or current.get("business_date") or current.get("as_of") or "")
+    rows: list[dict[str, Any]] = []
+    for position in positions:
+        broker_issue_code = str(position.get("issue_code") or position.get("symbol") or position.get("code") or "").strip()
+        if not broker_issue_code:
+            continue
+        code = _jquants_code_from_broker_issue_code(broker_issue_code)
+        quote = quote_by_code.get(code, {})
+        current_price = _to_float_or_none(quote.get("Close") or quote.get("close") or position.get("current_price"))
+        average_price = _to_float_or_none(position.get("average_price") or position.get("avg_price") or position.get("cost_price"))
+        quantity = _to_float_or_none(position.get("quantity"))
+        entry_date = str(position.get("entry_date") or position.get("acquired_at") or position.get("last_execution_date") or position_state_as_of or target_data_until)
+        rows.append(
+            {
+                "target_date": target_data_until,
+                "position_state_as_of": position_state_as_of,
+                "entry_date": entry_date,
+                "code": code,
+                "broker_issue_code": broker_issue_code,
+                "holding_days": _holding_days(entry_date=entry_date, target_date=target_data_until),
+                "average_price": average_price,
+                "current_price": current_price,
+                "unrealized_return": _safe_ratio_value(current_price, average_price),
+                "quantity": quantity,
+                "feature_version": "runtime_v2_pm_feature_input_v1",
+                "data_until": target_data_until,
+                "created_at": created_at,
+                "no_position_reason": "",
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str, created_at: str) -> pd.DataFrame:
+    source = pd.DataFrame(
+        {
+            "date": quotes["target_date"].astype(str),
+            "code": quotes["code"].astype(str),
+            "close": pd.to_numeric(quotes["Close"], errors="coerce"),
+            "volume": pd.to_numeric(quotes["Volume"], errors="coerce"),
+        }
+    )
+    source = source[source["date"] <= target_data_until].sort_values(["code", "date"])
+    rows: list[dict[str, Any]] = []
+    for code, group in source.groupby("code", sort=True):
+        visible = group.reset_index(drop=True)
+        closes = visible["close"]
+        volumes = visible["volume"]
+        insufficient_history = len(visible) < 61
+        price_missing = _window_has_missing(closes, 61)
+        volume_missing = _window_has_missing(volumes, 20)
+        eligible = not insufficient_history and not price_missing and not volume_missing
+        row: dict[str, Any] = {
+            "as_of_date": target_data_until,
+            "target_date": target_data_until,
+            "code": str(code),
+            "feature_version": "runtime_v2_candidate_features_v1",
+            "source_snapshot_id": f"jquants_normalized_daily_quotes_until_{target_data_until}",
+            "feature_set_name": "runtime_v2_formal_candidate_feature_producer_v1",
+            "created_at": created_at,
+            "data_start_date": str(visible["date"].iloc[0]) if len(visible) else None,
+            "data_end_date": str(visible["date"].iloc[-1]) if len(visible) else None,
+            "universe_eligible": eligible,
+            "excluded_reason": "" if eligible else _candidate_exclusion_reason(insufficient_history, price_missing, volume_missing),
+            "missing_flags_insufficient_history": bool(insufficient_history),
+            "missing_flags_price": bool(price_missing),
+            "missing_flags_volume": bool(volume_missing),
+        }
+        row.update(_formal_feature_values(closes=closes, volumes=volumes, eligible=eligible))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, eligible: bool) -> dict[str, Any]:
+    if not eligible:
+        return {
+            "price_momentum_return_5d": None,
+            "price_momentum_return_20d": None,
+            "price_momentum_return_60d": None,
+            "volume_momentum_ratio_5d": None,
+            "volume_momentum_ratio_1d_20d": None,
+            "volatility_return_std_20d": None,
+            "trend_close_over_ma_20d": None,
+            "trend_ma_5_20_ratio": None,
+            "trend_ma_20_60_ratio": None,
+            "liquidity_avg_volume_20d": None,
+        }
+    close_values = [float(value) for value in closes.tail(61).tolist()]
+    volume_values = [float(value) for value in volumes.tail(20).tolist()]
+    returns_20d = [_safe_ratio_value(close_values[index], close_values[index - 1]) for index in range(len(close_values) - 20, len(close_values))]
+    ma5 = sum(close_values[-5:]) / 5
+    ma20 = sum(close_values[-20:]) / 20
+    ma60 = sum(close_values[-60:]) / 60
+    avg_volume_5 = sum(volume_values[-5:]) / 5
+    avg_volume_20 = sum(volume_values[-20:]) / 20
+    return {
+        "price_momentum_return_5d": _round(_safe_ratio_value(close_values[-1], close_values[-6])),
+        "price_momentum_return_20d": _round(_safe_ratio_value(close_values[-1], close_values[-21])),
+        "price_momentum_return_60d": _round(_safe_ratio_value(close_values[-1], close_values[-61])),
+        "volume_momentum_ratio_5d": _round(_safe_divide(avg_volume_5, avg_volume_20)),
+        "volume_momentum_ratio_1d_20d": _round(_safe_divide(volume_values[-1], avg_volume_20)),
+        "volatility_return_std_20d": _round(float(pd.Series(returns_20d).std(ddof=0))),
+        "trend_close_over_ma_20d": _round(_safe_divide(close_values[-1], ma20)),
+        "trend_ma_5_20_ratio": _round(_safe_divide(ma5, ma20)),
+        "trend_ma_20_60_ratio": _round(_safe_divide(ma20, ma60)),
+        "liquidity_avg_volume_20d": _round(avg_volume_20),
+    }
+
+
+def _window_has_missing(values: pd.Series, size: int) -> bool:
+    if len(values) < size:
+        return True
+    return bool(values.tail(size).isna().any())
+
+
+def _candidate_exclusion_reason(insufficient_history: bool, price_missing: bool, volume_missing: bool) -> str:
+    reasons = []
+    if insufficient_history:
+        reasons.append("insufficient_history")
+    if price_missing:
+        reasons.append("missing_price")
+    if volume_missing:
+        reasons.append("missing_volume")
+    return ",".join(reasons)
+
+
+def _load_current_state(runtime_root: Path | None) -> dict[str, Any]:
+    if runtime_root is None:
+        return {}
+    path = runtime_root / "persistent_ledger" / "state.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _latest_quote_by_code(*, quotes: pd.DataFrame, target_data_until: str) -> dict[str, dict[str, Any]]:
+    if quotes.empty:
+        return {}
+    frame = quotes[quotes["target_date"].astype(str) <= target_data_until].copy()
+    if frame.empty:
+        return {}
+    frame["_code"] = frame["code"].astype(str)
+    frame["_target_date"] = frame["target_date"].astype(str)
+    frame = frame.sort_values(["_code", "_target_date"])
+    return {str(row["_code"]): row for row in frame.groupby("_code", sort=False).tail(1).to_dict("records")}
+
+
+def _jquants_code_from_broker_issue_code(value: Any) -> str:
+    code = str(value or "").strip().upper()
+    if len(code) == 4:
+        return code + "0"
+    return code
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(parsed):
+        return None
+    return parsed
+
+
+def _holding_days(*, entry_date: str, target_date: str) -> int | None:
+    try:
+        return max(0, (datetime.fromisoformat(target_date[:10]) - datetime.fromisoformat(entry_date[:10])).days)
+    except ValueError:
+        return None
+
+
+def _safe_ratio_value(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in {None, 0}:
+        return None
+    return current / previous - 1.0
+
+
+def _safe_divide(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in {None, 0}:
+        return None
+    return numerator / denominator
+
+
+def _round(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 6)
 
 
 def _build_capital_policy_input(

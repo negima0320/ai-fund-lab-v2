@@ -1,0 +1,18 @@
+{
+  "apply_allowed": true,
+  "apply_candidate_id": "apply-candidate-phase15bn",
+  "apply_executed": false,
+  "apply_requested": false,
+  "apply_status": "READY_FOR_AUTHORITATIVE_APPLY",
+  "authoritative_pending_mutated": true,
+  "broker_capability_hash": "sha256:75663cbc767b3eedec73fb2e90fd3db3493e676617f983c09f2b3178cc0fb2f5",
+  "broker_write_performed": false,
+  "business_date": "2026-07-09",
+  "isolated_root_only": true,
+  "order_condition_approval_hash": "sha256:6ea776abf2ec33ce2c7159da3421e91271ed7b78fd5f8fa6cc18e42c849dd0f5",
+  "policy_hash": "sha256:f279277ec0410b8337103efea98359505981696857ac15bea2ce999c8c5d94b2",
+  "schema_version": "runtime_v2_authoritative_pending_apply_candidate_v1",
+  "source_pending_hash": "sha256:cae92a0b3d962e6bff62a12c1cb9235a46fc2f91cf54bceb1168905a21b27151",
+  "submit_executed": false,
+  "target_pending_plan_id": "pending-order-plan-phase15bn"
+}

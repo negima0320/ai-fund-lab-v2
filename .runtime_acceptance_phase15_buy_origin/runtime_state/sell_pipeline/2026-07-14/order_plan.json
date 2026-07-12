@@ -1,0 +1,87 @@
+{
+  "asset_state_id": "asset-df34c0c699aec4b0",
+  "blocked": false,
+  "business_date": "2026-07-14",
+  "created_at": "2026-07-14",
+  "environment": "demo",
+  "items": [
+    {
+      "allocation_id": "sell-allocation-7203",
+      "blocked": false,
+      "buy_notional_policy": "acceptance_fixture_single_buy_100_shares",
+      "capital_allocation_amount": 105000.0,
+      "cash_buffer": 0.05,
+      "estimated_amount": 105000.0,
+      "estimated_price": 1050.0,
+      "evaluation_capital": 1000000.0,
+      "manual_review_threshold": {
+        "buy_amount": null,
+        "sell_liquidation_amount": null
+      },
+      "max_buy_order_amount": null,
+      "max_exposure": 200000.0,
+      "max_position_weight": 0.1,
+      "max_positions": 1,
+      "max_sell_liquidation_amount": null,
+      "min_order_amount": 0.0,
+      "order_plan_item_id": "opi-sell-exit-ai-7203-001",
+      "policy_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/policy/phase15by_capital_deployment_policy.json",
+      "policy_version": "phase15by_buy_origin_acceptance_policy_v1",
+      "price_as_of": "2026-07-13T09:10:00+09:00",
+      "price_confidence": "current_sot",
+      "price_required": true,
+      "price_source": "current_sot_position_valuation",
+      "quantity": 100.0,
+      "reason": "",
+      "review_required": false,
+      "safety_decision": "ALLOW",
+      "safety_decision_id": "phase15by-nextday-safety-allow",
+      "safety_policy_version": "safety_operation_guard_v1",
+      "safety_reason": "phase15by acceptance fixture safety allow",
+      "safety_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/safety/latest_safety_decision.json",
+      "sell_liquidation_policy": "current_owned_available_quantity_policy",
+      "side": "SELL",
+      "sizing_policy_reason": "sell liquidation governed by Capital Deployment Policy evidence",
+      "source_signal_id": "sell-exit-ai-7203-001",
+      "status": "CREATED",
+      "symbol": "7203",
+      "target_investment_ratio": 0.2
+    }
+  ],
+  "order_plan_id": "order-plan-011da41b82aa7fbe",
+  "policy_context": {
+    "buy_notional_policy": "acceptance_fixture_single_buy_100_shares",
+    "cash_buffer": 0.05,
+    "evaluation_capital": 1000000.0,
+    "manual_review_threshold": {
+      "buy_amount": null,
+      "sell_liquidation_amount": null
+    },
+    "max_buy_order_amount": null,
+    "max_exposure": 200000.0,
+    "max_position_weight": 0.1,
+    "max_positions": 1,
+    "max_sell_liquidation_amount": null,
+    "min_order_amount": 0.0,
+    "policy_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/policy/phase15by_capital_deployment_policy.json",
+    "policy_version": "phase15by_buy_origin_acceptance_policy_v1",
+    "sell_liquidation_policy": "current_owned_available_quantity_policy",
+    "sizing_policy_reason": "sell liquidation governed by Capital Deployment Policy evidence",
+    "target_investment_ratio": 0.2
+  },
+  "review_required": false,
+  "safety_decision": "ALLOW",
+  "safety_decision_id": "phase15by-nextday-safety-allow",
+  "safety_policy_version": "safety_operation_guard_v1",
+  "safety_reason": "phase15by acceptance fixture safety allow",
+  "safety_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/safety/latest_safety_decision.json",
+  "schema_version": "1",
+  "source_ai_signal_ids": [
+    "sell-exit-ai-7203-001"
+  ],
+  "source_allocation_ids": [
+    "sell-allocation-7203"
+  ],
+  "status": "CREATED",
+  "target_session_date": "2026-07-14"
+}

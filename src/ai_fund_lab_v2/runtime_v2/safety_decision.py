@@ -29,6 +29,8 @@ class RuntimeSafetyDecision:
     generated_at: str
     expires_at: str
     safety_status: str
+    action_permissions: dict[str, str] | None = None
+    human_review_artifact_refs: list[dict[str, Any]] | None = None
     artifact_path: str = ""
 
     def to_manifest_fields(self) -> dict[str, Any]:
@@ -47,6 +49,8 @@ class RuntimeSafetyDecision:
             "safety_review_required": self.review_required,
             "safety_generated_at": self.generated_at,
             "safety_expires_at": self.expires_at,
+            "safety_action_permissions": dict(self.action_permissions or {}),
+            "safety_human_review_artifact_refs": list(self.human_review_artifact_refs or []),
             "safety_artifact_path": self.artifact_path,
         }
 
@@ -80,6 +84,7 @@ def load_runtime_safety_decision(
             generated_at="",
             expires_at="",
             safety_status="SAFETY_INVALID",
+            action_permissions=_fail_closed_action_permissions(),
             artifact_path=str(path),
         )
     return _decision_from_payload(payload, path=path, business_date=business_date, mode=mode)
@@ -92,6 +97,15 @@ def safety_allows_action(decision: RuntimeSafetyDecision, *, action: str, side: 
         return False, "HALT", decision.reason or "safety halt runtime"
     if decision.decision == "BLOCKED":
         return False, "BLOCKED", decision.reason or "safety decision blocked"
+    scoped = _scoped_permission(decision, action=action, side=side)
+    if scoped:
+        if scoped in {"ALLOWED", "ALLOWED_FOR_REVIEW", "ALLOWED_FOR_ACCEPTANCE"}:
+            return True, "PASS", decision.reason or f"safety action scope {scoped.lower()}"
+        if scoped == "REVIEW_REQUIRED":
+            return False, "REVIEW_REQUIRED", decision.reason or "safety action scope review required"
+        return False, "BLOCKED", decision.reason or "safety action scope blocked"
+    if decision.action_permissions is not None:
+        return False, "REVIEW_REQUIRED", decision.reason or "safety action scope missing"
     if decision.decision == "REVIEW_REQUIRED" or decision.review_required:
         return False, "REVIEW_REQUIRED", decision.reason or "safety review required"
     if action == "submit" and decision.block_submit:
@@ -127,6 +141,11 @@ def _decision_from_payload(
     review_required = _bool(payload.get("review_required"), default=decision == "REVIEW_REQUIRED")
     halt_runtime = _bool(payload.get("halt_runtime"), default=decision == "HALT")
     emergency_stop = _bool(payload.get("emergency_stop"), default=False)
+    freshness_status = str(payload.get("freshness_status") or payload.get("safety_temporal_status") or "").upper()
+    safety_status = "PASS"
+    if freshness_status in {"STALE", "EXPIRED"}:
+        safety_status = f"SAFETY_{freshness_status}"
+    raw_action_permissions = payload.get("action_permissions")
     return RuntimeSafetyDecision(
         safety_decision_id=str(payload.get("safety_decision_id") or ""),
         safety_policy_version=str(payload.get("safety_policy_version") or ""),
@@ -143,7 +162,9 @@ def _decision_from_payload(
         emergency_stop=emergency_stop,
         generated_at=str(payload.get("generated_at") or ""),
         expires_at=str(payload.get("expires_at") or ""),
-        safety_status="PASS",
+        safety_status=safety_status,
+        action_permissions=dict(raw_action_permissions) if isinstance(raw_action_permissions, dict) else None,
+        human_review_artifact_refs=list(payload.get("human_review_artifact_refs") or []),
         artifact_path=str(path),
     )
 
@@ -166,6 +187,7 @@ def _missing_decision(*, path: Path, business_date: str, mode: str) -> RuntimeSa
         generated_at="",
         expires_at="",
         safety_status="SAFETY_MISSING",
+        action_permissions=_fail_closed_action_permissions(),
         artifact_path=str(path),
     )
 
@@ -176,3 +198,42 @@ def _bool(value: Any, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def _scoped_permission(decision: RuntimeSafetyDecision, *, action: str, side: str) -> str:
+    permissions = {str(key).lower(): str(value).upper() for key, value in (decision.action_permissions or {}).items()}
+    action_key = str(action or "").lower()
+    side_key = str(side or "").upper()
+    candidates: list[str] = []
+    if action_key == "planning" and side_key == "BUY":
+        candidates.append("buy_planning")
+    elif action_key == "planning" and side_key == "SELL":
+        candidates.extend(["sell_planning", "sell_hold_review"])
+    elif action_key == "inference" and side_key == "BUY":
+        candidates.append("buy_inference")
+    elif action_key == "inference" and side_key == "SELL":
+        candidates.append("sell_hold_inference")
+    elif action_key == "submit" and side_key == "BUY":
+        candidates.append("buy_submit")
+    elif action_key == "submit" and side_key == "SELL":
+        candidates.append("sell_submit")
+    elif action_key:
+        candidates.append(action_key)
+    for key in candidates:
+        if key in permissions:
+            return permissions[key]
+    return ""
+
+
+def _fail_closed_action_permissions() -> dict[str, str]:
+    return {
+        "buy_inference": "BLOCKED",
+        "buy_planning": "BLOCKED",
+        "sell_hold_inference": "BLOCKED",
+        "sell_planning": "BLOCKED",
+        "buy_submit": "BLOCKED",
+        "sell_submit": "BLOCKED",
+        "auto_sell": "BLOCKED",
+        "human_review": "ALLOWED",
+        "broker_write": "BLOCKED",
+    }

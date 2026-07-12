@@ -1,0 +1,16 @@
+{
+  "broker_send_window": "READY_FOR_USER_AUTHORIZATION_PRE_SEND_RECHECK_REQUIRED",
+  "broker_send_window_reason": "ReadOnly evidence and target session are valid; actual send window must be rechecked in BT immediately before broker adapter send.",
+  "business_date": "2026-07-13",
+  "calendar_source": "fallback",
+  "current_time_jst": "2026-07-12T09:05:00+09:00",
+  "expired_session": false,
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "market_open_status": true,
+  "order_validity": "DAY",
+  "past_session": false,
+  "schema_version": "phase15bs_session_evidence_v1",
+  "session_expiration": "2026-07-13T15:00:00+09:00",
+  "target_session": "2026-07-13",
+  "target_session_status": "READY"
+}

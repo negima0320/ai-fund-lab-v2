@@ -1,0 +1,21 @@
+{
+  "as_of": "2026-07-09T08:30:00+09:00",
+  "kind": "positions",
+  "production_equivalent": true,
+  "records": [
+    {
+      "account_type": "cash",
+      "as_of": "2026-07-09T08:30:00+09:00",
+      "available_quantity": 100.0,
+      "environment": "demo",
+      "issue_code": "6522",
+      "production_equivalent": true,
+      "quantity": 100.0,
+      "review_required": false,
+      "source": "broker_readonly",
+      "symbol": "6522"
+    }
+  ],
+  "review_required": false,
+  "source": "broker_readonly"
+}

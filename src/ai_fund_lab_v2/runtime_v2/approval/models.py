@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class ApprovalStatus(str, Enum):
@@ -62,3 +63,4 @@ class ApprovalArtifact:
     pending_policy_hash: str = ""
     safety_decision_id: str = ""
     safety_policy_version: str = ""
+    approved_order_conditions: dict[str, Any] | None = None

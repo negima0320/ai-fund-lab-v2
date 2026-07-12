@@ -1,0 +1,22 @@
+{
+  "latest_available_market_date": "2026-07-14",
+  "latest_expected_trading_date": "2026-07-14",
+  "market_date": "2026-07-14",
+  "market_freshness_status": "READY",
+  "market_status": "READY",
+  "quote_status": "READY",
+  "quotes": {
+    "7203": {
+      "adjusted": false,
+      "freshness_status": "READY",
+      "market_date": "2026-07-14",
+      "observed_at": "2026-07-14",
+      "price": 1050.0,
+      "price_type": "jquants_daily_quote",
+      "source": "phase15by_next_day_market_fixture",
+      "symbol": "7203"
+    }
+  },
+  "runtime_business_date": "2026-07-14",
+  "schema_version": "runtime_v2_market_evidence_v1"
+}

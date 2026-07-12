@@ -1,0 +1,36 @@
+{
+  "new_temporal_metadata": {
+    "source_market_date": "2026-07-14",
+    "valuation_as_of": "2026-07-14"
+  },
+  "no_fill": true,
+  "position_level_valuation": [
+    {
+      "as_of": "2026-07-13T09:10:00+09:00",
+      "average_price": 1000.0,
+      "cost_basis": 100000.0,
+      "current_price": 1050.0,
+      "market_value": 105000.0,
+      "quantity": 100.0,
+      "source": "runtime_v2_runtime_owned_fill_projection",
+      "source_market_date": "2026-07-14",
+      "symbol": "7203",
+      "unrealized_pnl": 5000.0,
+      "valuation_adjusted": false,
+      "valuation_as_of": "2026-07-14",
+      "valuation_price_type": "jquants_daily_quote",
+      "valuation_source": "phase15by_next_day_market_fixture"
+    }
+  ],
+  "previous_temporal_metadata": {
+    "last_execution_date": "2026-07-13",
+    "position_state_as_of": "2026-07-13"
+  },
+  "schema_version": "runtime_v2_current_valuation_history_v1",
+  "source_quote_evidence": {
+    "market_date": "2026-07-14",
+    "market_status": "READY",
+    "quote_status": "READY"
+  },
+  "valuation_as_of": "2026-07-14"
+}

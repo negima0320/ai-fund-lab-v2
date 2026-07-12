@@ -1,0 +1,40 @@
+{
+  "approval_hash": "sha256:2df8bca441ca117a85490e6ebefd42ceac77206374623dbf66edc0f67190b224",
+  "approval_id": "human-approval-phase15bs-2df8bca441ca117a",
+  "approval_status": "APPROVED_FOR_PENDING_PROMOTION",
+  "approved_at": "2026-07-12T09:05:00+09:00",
+  "approved_order_conditions": {
+    "phase15bs-sell-6501": {
+      "broker_issue_code": "6501",
+      "issue_code": "6501",
+      "limit_price": null,
+      "order_type": "MARKET",
+      "price_condition": "MARKET",
+      "quantity": 100.0,
+      "side": "SELL",
+      "target_session": "2026-07-13",
+      "time_in_force": "DAY"
+    }
+  },
+  "authoritative_pending_promotion_authorized": true,
+  "automatic_trade_authorized": false,
+  "broker_capability_hash": "sha256:1897197e8d7cd2c4d43303b43181f27f71021abbfafdfecc07ea579237e18ad1",
+  "broker_snapshot_hash": "sha256:d2efda2ee44545cac03dd69374df9b4e57b43c406c7fd89cc027deca112d0735",
+  "broker_snapshot_id": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "broker_write_authorized": false,
+  "business_date": "2026-07-13",
+  "expires_at": "2026-07-13T15:00:00+09:00",
+  "issue_code": "6501",
+  "limit_price": null,
+  "order_type": "MARKET",
+  "policy_hash": "sha256:7a70b1ebd5c7ae47be1759e7aa3a0890fa33f3f91c0bd5807a2ff298e0f9f562",
+  "position_origin": "DEMO_PRELOADED_POSITION",
+  "price_condition": "MARKET",
+  "quantity": 100,
+  "runtime_v2_approval_model_status": "APPROVED",
+  "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+  "schema_version": "runtime_v2_human_submit_approval_candidate_v1",
+  "side": "SELL",
+  "target_session": "2026-07-13",
+  "time_in_force": "DAY"
+}

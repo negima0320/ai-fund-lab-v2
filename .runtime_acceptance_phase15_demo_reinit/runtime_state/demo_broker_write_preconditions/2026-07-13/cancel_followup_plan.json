@@ -1,0 +1,11 @@
+{
+  "cancel_plan_status": "READY",
+  "cancel_scope": "Separate explicit Acceptance Scope required.",
+  "execution_followup_plan_status": "READY",
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "immediate_fill_policy": "Confirm Execution List, Position List, Cash, and Buying Power.",
+  "partial_fill_policy": "Confirm execution quantity and residual quantity; Human Review required.",
+  "post_send_unknown_policy": "No automatic resend; reconcile Order List and Execution List; Human Review required.",
+  "schema_version": "phase15bs_cancel_followup_plan_v1",
+  "unfilled_order_policy": "Broker ReadOnly order check; no automatic resend; no automatic cancel."
+}

@@ -139,12 +139,22 @@ def run_tachibana_broker_snapshot(
                 builder=auth_client.request_builder,
             )
 
+        origin_metadata = {
+            "provider": "tachibana",
+            "adapter": "tachibana_broker_snapshot",
+            "transport": "HTTP_POST",
+            "data_origin": "BROKER_API",
+            "fixture_used": False,
+            "mock_used": False,
+            "read_only": True,
+        }
+
         account_fetch = _readonly_fetch_with_retry(request_client.get_account_summary, sleep_func=sleep_func)
         buying_power_fetch = _readonly_fetch_with_retry(request_client.get_buying_power, sleep_func=sleep_func)
         account_response = account_fetch.value
         buying_power_response = buying_power_fetch.value
-        account_summary = normalize_balance_summary(account_response)
-        buying_power = normalize_buying_power(buying_power_response)
+        account_summary = _normalize_with_origin(normalize_balance_summary, account_response, origin_metadata=origin_metadata)
+        buying_power = _normalize_with_origin(normalize_buying_power, buying_power_response, origin_metadata=origin_metadata)
         health["account"] = _response_health(account_response.is_success() and buying_power_response.is_success(), account_fetch.elapsed_ms + buying_power_fetch.elapsed_ms)
         health["account"]["retry_attempts"] = max(account_fetch.retry_attempts, buying_power_fetch.retry_attempts)
         health["account"]["attempts"] = account_fetch.attempts_dicts() + buying_power_fetch.attempts_dicts()
@@ -156,7 +166,11 @@ def run_tachibana_broker_snapshot(
         positions_safe_diagnosis = build_positions_api_safe_diagnosis(cash_response.raw, margin_response.raw)
         positions_safe_diagnosis_path = report_path.parent / "positions_safe_diagnosis.json"
         _write_json(positions_safe_diagnosis_path, positions_safe_diagnosis)
-        positions = normalize_cash_positions(cash_response) + normalize_margin_positions(margin_response)
+        positions = _normalize_with_origin(normalize_cash_positions, cash_response, origin_metadata=origin_metadata) + _normalize_with_origin(
+            normalize_margin_positions,
+            margin_response,
+            origin_metadata=origin_metadata,
+        )
         health["positions"] = _response_health(cash_response.is_success() and margin_response.is_success(), cash_fetch.elapsed_ms + margin_fetch.elapsed_ms, count=len(positions))
         health["positions"]["retry_attempts"] = max(cash_fetch.retry_attempts, margin_fetch.retry_attempts)
         health["positions"]["attempts"] = cash_fetch.attempts_dicts() + margin_fetch.attempts_dicts()
@@ -165,7 +179,7 @@ def run_tachibana_broker_snapshot(
 
         order_fetch = _readonly_fetch_with_retry(request_client.get_orders, sleep_func=sleep_func)
         order_response = order_fetch.value
-        orders = normalize_order_list(order_response)
+        orders = _normalize_with_origin(normalize_order_list, order_response, origin_metadata=origin_metadata)
         health["orders"] = _response_health(order_response.is_success(), order_fetch.elapsed_ms, count=len(orders))
         health["orders"]["retry_attempts"] = order_fetch.retry_attempts
         health["orders"]["attempts"] = order_fetch.attempts_dicts()
@@ -218,7 +232,7 @@ def run_tachibana_broker_snapshot(
                             "result_code_zero": detail_response.result_code == "0",
                         }
                     )
-                executions.extend(normalize_order_detail_executions(detail_response, order_id=order_id))
+                executions.extend(_normalize_execution_with_origin(detail_response, order_id=order_id, origin_metadata=origin_metadata))
             execution_status = "PASS" if executions and not detail_failures else "PASS_WITH_EMPTY_RESULT" if not detail_failures else "FAIL"
             health["executions"] = _health_item(execution_status, latency_ms=execution_latency, count=len(executions))
             health["executions"]["detail_attempted_count"] = len(orders)
@@ -253,6 +267,19 @@ def run_tachibana_broker_snapshot(
             "generated_at": utc_now_iso(),
             "api_version": "e_api_v4r9",
             "session_status": "PASS",
+            "provider": "tachibana",
+            "adapter": "tachibana_broker_snapshot",
+            "transport": "HTTP_POST",
+            "raw_response_origin": "TACHIBANA_API_RESPONSE",
+            "data_origin": "BROKER_API",
+            "fixture_used": False,
+            "mock_used": False,
+            "read_only": True,
+            "account_identity_hash": _settings_account_identity_hash(auth_settings),
+            "account_identity_status": "REFERENCE_HASHED",
+            "account_type": "demo" if auth_settings.environment == "demo" else auth_settings.environment,
+            "session_environment": auth_settings.environment,
+            "credential_reference_id": _credential_reference_id(auth_settings),
             "account_summary": _snapshot_dict(account_summary),
             "buying_power": _snapshot_dict(buying_power),
             "positions": [_snapshot_dict(item) for item in positions],
@@ -315,6 +342,24 @@ def _measure(func: Callable[[], Any]) -> tuple[Any, int]:
     start = time.perf_counter()
     result = func()
     return result, int((time.perf_counter() - start) * 1000)
+
+
+def _normalize_with_origin(func: Callable[..., Any], response: Any, *, origin_metadata: Mapping[str, Any]) -> Any:
+    try:
+        return func(response, origin_metadata=origin_metadata)
+    except TypeError as exc:
+        if "origin_metadata" not in str(exc):
+            raise
+        return func(response)
+
+
+def _normalize_execution_with_origin(response: Any, *, order_id: str, origin_metadata: Mapping[str, Any]) -> Any:
+    try:
+        return normalize_order_detail_executions(response, order_id=order_id, origin_metadata=origin_metadata)
+    except TypeError as exc:
+        if "origin_metadata" not in str(exc):
+            raise
+        return normalize_order_detail_executions(response, order_id=order_id)
 
 
 def _login_with_retry(
@@ -535,6 +580,31 @@ def _report_payload(
             "redaction_status": _redaction_status(),
         }
     )
+
+
+def _credential_reference_id(settings: BrokerSettings) -> str:
+    references = {
+        "environment": settings.environment,
+        "base_url": settings.base_url,
+        "auth_id_file": str(settings.auth_id_file or ""),
+        "private_key_file": str(settings.private_key_file or ""),
+        "local_config_path": str(settings.local_config_path or ""),
+    }
+    material = json.dumps(references, ensure_ascii=False, sort_keys=True)
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _settings_account_identity_hash(settings: BrokerSettings) -> str:
+    material = json.dumps(
+        {
+            "provider": "tachibana",
+            "environment": settings.environment,
+            "credential_reference_id": _credential_reference_id(settings),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _skipped_payload(settings: BrokerSettings, source: str, snapshot_path: Path, message: str) -> dict[str, Any]:

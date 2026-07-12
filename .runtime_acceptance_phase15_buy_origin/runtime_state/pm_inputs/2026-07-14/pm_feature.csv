@@ -1,0 +1,2 @@
+target_date,as_of_date,code,feature_version,return_5d,return_20d,close_over_ma_20d,ma_5_20_ratio,volume_ratio_5d,volatility_20d,holding_days,current_price,unrealized_return,peak_return
+2026-07-14,2026-07-14,7203,position_management_feature_v1,0.05,0.05,0.05,1.05,1.0,0.02,1,1050.0,0.050000000000000044,0.050000000000000044

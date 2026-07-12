@@ -1,0 +1,107 @@
+{
+  "ai_learning_updated": false,
+  "broker": "tachibana",
+  "broker_snapshot_updated": true,
+  "counts": {
+    "executions": 0,
+    "orders": 1,
+    "positions": 7,
+    "quotes": 0
+  },
+  "environment": "demo",
+  "executed": true,
+  "finished_at": "2026-07-12T01:38:38.242027+00:00",
+  "health": {
+    "account": {
+      "attempts": [],
+      "latency_ms": 438,
+      "retry_attempts": 1,
+      "status": "PASS"
+    },
+    "api_errors": [],
+    "empty_result_classification": {},
+    "executions": {
+      "attempts": [],
+      "count": 0,
+      "detail_attempted_count": 1,
+      "detail_failure_count": 1,
+      "detail_success_count": 0,
+      "failures": [
+        {
+          "classification": "FAILED_BROKER_READONLY_FETCH",
+          "failure_stage": "order_detail_response",
+          "order_id_hash": "order_b80b43eeb157caa8",
+          "result_code_present": true,
+          "result_code_zero": false,
+          "safe_error_class": "BrokerResponseEnvelope"
+        }
+      ],
+      "latency_ms": 185,
+      "status": "FAIL"
+    },
+    "login": {
+      "latency_ms": 644,
+      "retry_attempts": 1,
+      "status": "PASS"
+    },
+    "logout": {
+      "latency_ms": 0,
+      "status": "PASS"
+    },
+    "orders": {
+      "attempts": [],
+      "count": 1,
+      "latency_ms": 228,
+      "retry_attempts": 1,
+      "status": "PASS"
+    },
+    "positions": {
+      "attempts": [],
+      "candidate_key_match_rate": {
+        "issue_code": "7/7",
+        "market_value": "3/7",
+        "price": "3/7",
+        "quantity": "7/7"
+      },
+      "count": 7,
+      "latency_ms": 279,
+      "retry_attempts": 1,
+      "safe_diagnosis_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/positions_safe_diagnosis.json",
+      "status": "PASS"
+    },
+    "quotes": {
+      "count": 0,
+      "latency_ms": 0,
+      "status": "SKIPPED_NOT_REQUESTED"
+    }
+  },
+  "logout": {
+    "attempted": true,
+    "attempts": [],
+    "result_code": "0",
+    "result_text": "",
+    "retry_attempts": 1,
+    "status": "PASS"
+  },
+  "paper_ledger_updated": false,
+  "positions_safe_diagnosis_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/positions_safe_diagnosis.json",
+  "quotes_requested": false,
+  "raw_response_saved": false,
+  "redaction_status": {
+    "account_customer_id_saved": false,
+    "auth_identifier_saved": false,
+    "execution_id_plaintext_saved": false,
+    "order_number_plaintext_saved": false,
+    "private_secret_saved": false,
+    "raw_response_saved": false,
+    "virtual_url_saved": false
+  },
+  "run_count": 1,
+  "secret_saved": false,
+  "snapshot_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "snapshot_written": false,
+  "source": "runtime_v2_broker_readonly_refresh",
+  "started_at": "2026-07-12T01:38:36.331712+00:00",
+  "status": "FAILED_BROKER_READONLY_FETCH",
+  "virtual_url_saved": false
+}

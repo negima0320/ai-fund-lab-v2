@@ -1,0 +1,146 @@
+{
+  "approval": {
+    "approval_expires_at": "2026-07-13T15:00:00+09:00",
+    "approval_hash": "sha256:2df8bca441ca117a85490e6ebefd42ceac77206374623dbf66edc0f67190b224",
+    "approval_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/human_approval/2026-07-13/phase15bs_runtime_approval_model.json",
+    "approval_status": "APPROVED",
+    "approved_item_ids": [
+      "phase15bs-sell-6501"
+    ],
+    "approved_order_conditions": {
+      "phase15bs-sell-6501": {
+        "broker_issue_code": "6501",
+        "issue_code": "6501",
+        "limit_price": null,
+        "order_type": "MARKET",
+        "price_condition": "MARKET",
+        "quantity": 100.0,
+        "side": "SELL",
+        "target_session": "2026-07-13",
+        "time_in_force": "DAY"
+      }
+    },
+    "pending_policy_hash": "sha256:7a70b1ebd5c7ae47be1759e7aa3a0890fa33f3f91c0bd5807a2ff298e0f9f562",
+    "policy_source": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+    "policy_version": "phase15bs_demo_write_acceptance_policy_v1",
+    "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+    "safety_policy_version": "phase11_safety_report_v2"
+  },
+  "approved_item_ids": [
+    "phase15bs-sell-6501"
+  ],
+  "consume": {
+    "consume_reason": "phase15bv_execution_normalization_ledger_current_apply_completed",
+    "consumed": true,
+    "consumed_at": "2026-07-12T01:45:24.372113+00:00",
+    "ledger_order_record_ids": [
+      "ledger-order-phase15bv-6501-sell-100"
+    ],
+    "submitted_order_ids": [
+      "sha256:b80b43eeb157caa8a56c14684356cbbd0b9cddebc05905a49059f72e4861d153"
+    ]
+  },
+  "created_at": "2026-07-13",
+  "environment": "demo",
+  "feature_date_contract": null,
+  "intended_submit_date": "2026-07-13",
+  "items": [
+    {
+      "approved": true,
+      "buy_notional_policy": "buy path not selected for Phase15-BS",
+      "capital_allocation_amount": 470000.0,
+      "cash_buffer": 0.05,
+      "estimated_amount": 470000.0,
+      "estimated_price": 4700.0,
+      "evaluation_capital": 1000000.0,
+      "execution_id": "phase15bv-demo-execution-equivalent-6501-sell-100",
+      "ledger_execution_record_id": "ledger-execution-phase15bv-6501-sell-100",
+      "listed_info": {
+        "code": "6501",
+        "current_listed": true,
+        "market": "TSE",
+        "product_category": "011",
+        "security_type": "011"
+      },
+      "manual_review_threshold": {
+        "buy_amount": null,
+        "sell_liquidation_amount": null
+      },
+      "max_buy_order_amount": null,
+      "max_exposure": 850000.0,
+      "max_position_weight": 0.5,
+      "max_positions": 20,
+      "max_sell_liquidation_amount": null,
+      "min_order_amount": 0.0,
+      "order_type": "MARKET",
+      "pending_item_id": "phase15bs-sell-6501",
+      "policy_source": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+      "policy_version": "phase15bs_demo_write_acceptance_policy_v1",
+      "price_as_of": "",
+      "price_confidence": "",
+      "price_required": true,
+      "price_source": "",
+      "quantity": 100.0,
+      "safety_decision": "ALLOW",
+      "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+      "safety_policy_version": "phase11_safety_report_v2",
+      "safety_reason": "Phase15-BS demo SELL 6501 acceptance preconditions ready for user authorization; submit/send not executed.",
+      "safety_source": ".runtime_acceptance_phase15_demo_reinit/reports/safety/phase11/2026-07-13_safety_report.json",
+      "sell_liquidation_policy": "demo_preloaded_acceptance_exception_sell_6501_quantity_100_only",
+      "side": "SELL",
+      "sizing_policy_reason": "Phase15-BS demo preloaded acceptance exception; not an investment decision",
+      "state": "CURRENT_APPLIED",
+      "symbol": "6501",
+      "target_investment_ratio": 0.85
+    }
+  ],
+  "pending_plan_id": "pending-order-plan-phase15bs-sell-6501",
+  "pending_policy_hash": "sha256:7a70b1ebd5c7ae47be1759e7aa3a0890fa33f3f91c0bd5807a2ff298e0f9f562",
+  "plan_created_date": "2026-07-13",
+  "policy_context": {
+    "buy_notional_policy": "buy path not selected for Phase15-BS",
+    "cash_buffer": 0.05,
+    "evaluation_capital": 1000000.0,
+    "manual_review_threshold": {
+      "buy_amount": null,
+      "sell_liquidation_amount": null
+    },
+    "max_buy_order_amount": null,
+    "max_exposure": 850000.0,
+    "max_position_weight": 0.5,
+    "max_positions": 20,
+    "max_sell_liquidation_amount": null,
+    "min_order_amount": 0.0,
+    "policy_source": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+    "policy_version": "phase15bs_demo_write_acceptance_policy_v1",
+    "sell_liquidation_policy": "demo_preloaded_acceptance_exception_sell_6501_quantity_100_only",
+    "target_investment_ratio": 0.85
+  },
+  "policy_source": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+  "policy_version": "phase15bs_demo_write_acceptance_policy_v1",
+  "raw_request_saved": false,
+  "raw_response_saved": false,
+  "safety_context": {
+    "safety_decision": "ALLOW",
+    "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+    "safety_policy_version": "phase11_safety_report_v2",
+    "safety_reason": "Phase15-BS demo SELL 6501 acceptance preconditions ready for user authorization; submit/send not executed.",
+    "safety_source": ".runtime_acceptance_phase15_demo_reinit/reports/safety/phase11/2026-07-13_safety_report.json"
+  },
+  "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+  "safety_policy_version": "phase11_safety_report_v2",
+  "schema_version": "1",
+  "secret_saved": false,
+  "source_order_plan": {
+    "artifact_hash": "sha256:b865555c76627c100042d8aca93201e0556c9d2ed4c1c14b0019d65432e38a6d",
+    "order_plan_id": "order-plan-phase15bs-sell-6501",
+    "path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/order_plan/2026-07-13/phase15bs_order_plan.json"
+  },
+  "state": "CONSUMED",
+  "submit_constraints": {
+    "allow_post_send_unknown_resubmit": false,
+    "expires_at": ""
+  },
+  "target_session_date": "2026-07-13",
+  "updated_at": "2026-07-12T01:45:24.372113+00:00"
+}

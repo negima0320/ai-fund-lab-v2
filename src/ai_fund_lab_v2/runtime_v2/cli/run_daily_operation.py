@@ -16,6 +16,7 @@ from typing import Any
 from ai_fund_lab_v2.operations.market_calendar import resolve_operation_date
 from ai_fund_lab_v2.runtime_v2.orchestrator.models import RuntimeRunRequest
 from ai_fund_lab_v2.runtime_v2.orchestrator.orchestrator import RuntimeOrchestrator
+from ai_fund_lab_v2.runtime_v2.broker_readonly.refresh import run_broker_readonly_refresh
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import produce_buy_ai_decisions
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
 from ai_fund_lab_v2.runtime_v2.current_state.temporal import run_current_temporal_migration
@@ -37,6 +38,8 @@ from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
     run_sell_planning_pending_pipeline,
 )
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle_runner import run_pending_lifecycle_review
+from ai_fund_lab_v2.runtime_v2.pending_apply import run_authoritative_pending_apply_review
+from ai_fund_lab_v2.runtime_v2.pending_promotion import run_submit_pending_promotion_review
 from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicyError,
@@ -47,6 +50,10 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
 from ai_fund_lab_v2.runtime_v2.report.public_report_writer import (
     generate_public_report_from_current,
 )
+from ai_fund_lab_v2.runtime_v2.review_only.sell_hold_morning import (
+    run_sell_hold_review_only_morning,
+)
+from ai_fund_lab_v2.runtime_v2.runtime_state import produce_runtime_operation_state
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
     load_runtime_safety_decision,
     safety_manifest_fields,
@@ -65,6 +72,9 @@ ALLOWED_JOBS = (
     "daily_rehearsal",
     "morning",
     "sell_planning",
+    "sell_hold_review_only_morning",
+    "submit_pending_promotion_review",
+    "authoritative_pending_apply_review",
     "submit",
     "execution",
     "market_refresh",
@@ -72,8 +82,10 @@ ALLOWED_JOBS = (
     "safety_refresh",
     "data_readiness",
     "pending_lifecycle",
+    "runtime_state_refresh",
     "current_temporal_migration",
     "current_valuation_refresh",
+    "broker_readonly_refresh",
 )
 
 
@@ -101,12 +113,17 @@ def main(argv: list[str] | None = None) -> int:
     safety_evaluation_manifest: dict[str, Any] = {}
     safety_producer_manifest: dict[str, Any] = {}
     position_management_manifest: dict[str, Any] = {}
+    sell_hold_review_only_manifest: dict[str, Any] = {}
     buy_ai_manifest: dict[str, Any] = {}
     data_readiness_manifest: dict[str, Any] = {}
     pending_lifecycle_manifest: dict[str, Any] = {}
+    pending_promotion_manifest: dict[str, Any] = {}
+    pending_apply_manifest: dict[str, Any] = {}
     market_evidence_manifest: dict[str, Any] = {}
     current_temporal_migration_manifest: dict[str, Any] = {}
     current_valuation_manifest: dict[str, Any] = {}
+    broker_readonly_manifest: dict[str, Any] = {}
+    runtime_state_manifest: dict[str, Any] = {}
     non_trading_day_evidence = _non_trading_day_demo_override_evidence(args, business_date)
 
     log_path = Path(args.log_root) / business_date / f"{run_id}.log"
@@ -275,6 +292,34 @@ def main(argv: list[str] | None = None) -> int:
             exit_code = EXIT_REVIEW_REQUIRED
             final_state = "REVIEW_REQUIRED"
 
+        if exit_code != EXIT_HALT:
+            runtime_state_result = produce_runtime_operation_state(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                state=final_state if final_state != "UNKNOWN" else "CURRENT_STATE_LOADED",
+                safety_state=_runtime_safety_state_for_operation_state(runtime_safety_decision),
+                now=evaluation_time,
+            )
+            runtime_state_manifest = dict(runtime_state_result.manifest_fields)
+            stages.append(
+                _stage(
+                    "runtime_state_refresh",
+                    runtime_state_result.status,
+                    "Authoritative Runtime Operation State artifact refreshed.",
+                    runtime_state_manifest,
+                )
+            )
+            generated["runtime_state_artifact"] = runtime_state_result.artifact_path
+            if runtime_state_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(runtime_state_result.reason)
+            elif runtime_state_result.status == "REVIEW_REQUIRED" and exit_code == EXIT_SUCCESS:
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(runtime_state_result.reason)
+
         if args.job == "pending_lifecycle" and exit_code == EXIT_SUCCESS:
             pending_lifecycle_result = run_pending_lifecycle_review(
                 runtime_root=Path(args.runtime_root),
@@ -350,6 +395,32 @@ def main(argv: list[str] | None = None) -> int:
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(current_valuation_result.reason)
 
+        if args.job == "broker_readonly_refresh" and exit_code == EXIT_SUCCESS:
+            broker_readonly_result = run_broker_readonly_refresh(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                evaluation_time=evaluation_time,
+            )
+            broker_readonly_manifest = dict(broker_readonly_result.manifest_fields)
+            stages.append(
+                _stage(
+                    "broker_readonly_refresh",
+                    broker_readonly_result.status,
+                    "Broker ReadOnly snapshot-only producer executed without ledger or Current mutation.",
+                    broker_readonly_result.to_stage_details(),
+                )
+            )
+            generated["broker_readonly_snapshot_artifact"] = broker_readonly_result.snapshot_path
+            if broker_readonly_result.status == "BLOCKED":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(broker_readonly_result.reason)
+            elif broker_readonly_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(broker_readonly_result.reason)
+
         data_readiness_result = None
         if _data_readiness_required_for_job(args.job) and exit_code == EXIT_SUCCESS:
             data_readiness_result = evaluate_runtime_data_readiness(
@@ -359,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
                 readiness_scope=_readiness_scope_for_args(args),
                 feature_root=Path(args.feature_root),
                 feature_date=_resolve_buy_ai_feature_date(args, business_date)
-                if _readiness_scope_for_args(args) == "morning"
+                if _readiness_scope_for_args(args) in {"morning", "morning_full", "morning_sell_hold_review_only"}
                 else args.feature_date,
                 candidate_model_path=args.candidate_model_path,
                 opportunity_model_path=args.opportunity_model_path,
@@ -501,6 +572,102 @@ def main(argv: list[str] | None = None) -> int:
                     final_state = "HALT"
                     errors.append(f"sell planning pipeline halted: {sell_result.reason}")
 
+        if args.job == "sell_hold_review_only_morning" and exit_code == EXIT_SUCCESS:
+            review_only_result = run_sell_hold_review_only_morning(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                feature_date=args.feature_date or business_date,
+            )
+            sell_hold_review_only_manifest = dict(review_only_result.to_stage_details())
+            stages.append(
+                _stage(
+                    "sell_hold_review_only_morning",
+                    review_only_result.status,
+                    "SELL/HOLD Review-only Morning generated PM AI and human review evidence without Submit or Broker Write.",
+                    sell_hold_review_only_manifest,
+                )
+            )
+            generated["sell_hold_review_output"] = review_only_result.review_output_path
+            generated["sell_hold_review_pending"] = review_only_result.review_pending_path
+            if review_only_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(f"sell hold review-only morning review required: {review_only_result.reason}")
+            elif review_only_result.status == "BLOCKED":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(f"sell hold review-only morning blocked: {review_only_result.reason}")
+            elif review_only_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(f"sell hold review-only morning halted: {review_only_result.reason}")
+
+        if args.job == "submit_pending_promotion_review" and exit_code == EXIT_SUCCESS:
+            promotion_result = run_submit_pending_promotion_review(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                capital_deployment_policy_path=Path(args.capital_deployment_policy),
+                now=evaluation_time,
+            )
+            pending_promotion_manifest = dict(promotion_result.to_stage_details())
+            stages.append(
+                _stage(
+                    "submit_pending_promotion_review",
+                    promotion_result.status,
+                    "Review Pending plus Human Approval produced a no-apply Submit Pending Promotion Candidate.",
+                    pending_promotion_manifest,
+                )
+            )
+            generated["human_approval_artifact"] = promotion_result.human_approval_path
+            generated["review_pending_linkage_artifact"] = promotion_result.review_pending_linkage_path
+            generated["pending_promotion_candidate"] = promotion_result.promotion_candidate_path
+            if promotion_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(promotion_result.reason)
+            elif promotion_result.status == "BLOCKED":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(promotion_result.reason)
+            elif promotion_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(promotion_result.reason)
+
+        if args.job == "authoritative_pending_apply_review" and exit_code == EXIT_SUCCESS:
+            pending_apply_result = run_authoritative_pending_apply_review(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                capital_deployment_policy_path=Path(args.capital_deployment_policy),
+                promotion_candidate_path=Path(args.promotion_candidate_path) if args.promotion_candidate_path else None,
+                now=evaluation_time,
+            )
+            pending_apply_manifest = dict(pending_apply_result.to_stage_details())
+            stages.append(
+                _stage(
+                    "authoritative_pending_apply_review",
+                    pending_apply_result.status,
+                    "Promotion Candidate plus Human Approval produced a no-apply Authoritative Pending Apply Candidate.",
+                    pending_apply_manifest,
+                )
+            )
+            generated["authoritative_pending_apply_candidate"] = pending_apply_result.apply_candidate_path
+            if pending_apply_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(pending_apply_result.reason)
+            elif pending_apply_result.status == "BLOCKED":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(pending_apply_result.reason)
+            elif pending_apply_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(pending_apply_result.reason)
+
         submit_result = None
         if args.job == "submit" and _as_bool(args.submit_enabled) and exit_code == EXIT_SUCCESS:
             submit_result = run_submit_pipeline(
@@ -634,12 +801,17 @@ def main(argv: list[str] | None = None) -> int:
                 safety_evaluation_manifest=safety_evaluation_manifest,
                 safety_producer_manifest=safety_producer_manifest,
                 position_management_manifest=position_management_manifest,
+                sell_hold_review_only_manifest=sell_hold_review_only_manifest,
                 buy_ai_manifest=buy_ai_manifest,
                 data_readiness_manifest=data_readiness_manifest,
                 pending_lifecycle_manifest=pending_lifecycle_manifest,
+                pending_promotion_manifest=pending_promotion_manifest,
+                pending_apply_manifest=pending_apply_manifest,
                 market_evidence_manifest=market_evidence_manifest,
                 current_temporal_migration_manifest=current_temporal_migration_manifest,
                 current_valuation_manifest=current_valuation_manifest,
+                broker_readonly_manifest=broker_readonly_manifest,
+                runtime_state_manifest=runtime_state_manifest,
                 submit_result=submit_result if "submit_result" in locals() else None,
             ),
         )
@@ -692,12 +864,17 @@ def main(argv: list[str] | None = None) -> int:
         safety_evaluation_manifest=safety_evaluation_manifest,
         safety_producer_manifest=safety_producer_manifest,
         position_management_manifest=position_management_manifest,
+        sell_hold_review_only_manifest=sell_hold_review_only_manifest,
         buy_ai_manifest=buy_ai_manifest,
         data_readiness_manifest=data_readiness_manifest,
         pending_lifecycle_manifest=pending_lifecycle_manifest,
+        pending_promotion_manifest=pending_promotion_manifest,
+        pending_apply_manifest=pending_apply_manifest,
         market_evidence_manifest=market_evidence_manifest,
         current_temporal_migration_manifest=current_temporal_migration_manifest,
         current_valuation_manifest=current_valuation_manifest,
+        broker_readonly_manifest=broker_readonly_manifest,
+        runtime_state_manifest=runtime_state_manifest,
         submit_result=submit_result if "submit_result" in locals() else None,
     )
     manifest_path = _write_manifest(Path(args.manifest_root), business_date, run_id, manifest)
@@ -727,12 +904,17 @@ def _build_manifest(
     safety_evaluation_manifest: dict[str, Any],
     safety_producer_manifest: dict[str, Any],
     position_management_manifest: dict[str, Any],
+    sell_hold_review_only_manifest: dict[str, Any],
     buy_ai_manifest: dict[str, Any],
     data_readiness_manifest: dict[str, Any],
     pending_lifecycle_manifest: dict[str, Any],
+    pending_promotion_manifest: dict[str, Any],
+    pending_apply_manifest: dict[str, Any],
     market_evidence_manifest: dict[str, Any],
     current_temporal_migration_manifest: dict[str, Any],
     current_valuation_manifest: dict[str, Any],
+    broker_readonly_manifest: dict[str, Any],
+    runtime_state_manifest: dict[str, Any],
     submit_result: Any,
 ) -> dict[str, Any]:
     return {
@@ -755,12 +937,17 @@ def _build_manifest(
         **safety_evaluation_manifest,
         **safety_producer_manifest,
         **position_management_manifest,
+        **sell_hold_review_only_manifest,
         **buy_ai_manifest,
         **data_readiness_manifest,
         **pending_lifecycle_manifest,
+        **pending_promotion_manifest,
+        **pending_apply_manifest,
         **market_evidence_manifest,
         **current_temporal_migration_manifest,
         **current_valuation_manifest,
+        **broker_readonly_manifest,
+        **runtime_state_manifest,
         **capital_policy_manifest,
         **safety_manifest_fields(runtime_safety_decision),
         "submit_guard_policy": submit_guard_policy,
@@ -791,7 +978,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("demo", "simulation", "production"), required=True)
     parser.add_argument("--job", choices=ALLOWED_JOBS, default="daily_rehearsal")
-    parser.add_argument("--readiness-scope", choices=("morning", "sell_planning", "submit", "execution"))
+    parser.add_argument(
+        "--readiness-scope",
+        choices=(
+            "morning",
+            "morning_full",
+            "morning_sell_hold_review_only",
+            "sell_planning",
+            "submit",
+            "execution",
+        ),
+    )
     parser.add_argument("--pending-action", choices=("review", "expire", "cancel"), default="review")
     parser.add_argument("--business-date")
     parser.add_argument("--submit-enabled", choices=("true", "false"), default="false")
@@ -817,6 +1014,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--opportunity-training-metrics-path")
     parser.add_argument("--max-orders", type=int)
     parser.add_argument("--capital-deployment-policy")
+    parser.add_argument("--promotion-candidate-path")
     parser.add_argument("--safety-report-path")
     parser.add_argument("--market-refresh-allow-api-fetch", choices=("true", "false"), default="false")
     parser.add_argument("--allow-non-trading-day-demo", action="store_true")
@@ -938,6 +1136,35 @@ def _job_checkpoints(job: str) -> list[dict[str, Any]]:
             ("pending_generation", "SELL Pending generation checkpoint recorded."),
             ("submit_stop", "SELL planning job stops before Submit."),
         ),
+        "sell_hold_review_only_morning": (
+            ("runtime_state", "Runtime State checkpoint recorded."),
+            ("data_readiness", "Review-only Data Readiness checkpoint recorded."),
+            ("position_management_ai", "Position Management AI review checkpoint recorded."),
+            ("sell_hold_review", "SELL/HOLD review output checkpoint recorded."),
+            ("review_pending", "Review Pending artifact checkpoint recorded."),
+            ("no_buy_path", "BUY inference and BUY Planning remain blocked."),
+            ("no_submit", "Review-only Morning performs no Submit."),
+            ("no_broker_write", "Review-only Morning performs no Broker write."),
+        ),
+        "submit_pending_promotion_review": (
+            ("review_pending", "Review Pending evidence checkpoint recorded."),
+            ("human_approval", "Human Approval artifact checkpoint recorded."),
+            ("promotion_validation", "Submit Pending promotion validation checkpoint recorded."),
+            ("promotion_candidate", "No-apply Promotion Candidate artifact checkpoint recorded."),
+            ("no_pending_apply", "Authoritative Pending slot remains unchanged."),
+            ("no_submit", "Promotion review performs no Submit."),
+            ("no_broker_write", "Promotion review performs no Broker write."),
+        ),
+        "authoritative_pending_apply_review": (
+            ("promotion_candidate", "Promotion Candidate evidence checkpoint recorded."),
+            ("human_approval", "Human Approval evidence checkpoint recorded."),
+            ("apply_preconditions", "Authoritative Pending Apply preconditions checkpoint recorded."),
+            ("toctou_revalidation", "TOCTOU revalidation checkpoint recorded."),
+            ("apply_candidate", "No-apply Authoritative Pending Apply Candidate artifact checkpoint recorded."),
+            ("no_authoritative_pending_mutation", "Authoritative Pending slot remains unchanged."),
+            ("no_submit", "Apply review performs no Submit."),
+            ("no_broker_write", "Apply review performs no Broker write."),
+        ),
         "submit": (
             ("pending", "Open Pending checkpoint recorded."),
             ("approval_recheck", "Open Approval recheck checkpoint recorded."),
@@ -988,6 +1215,11 @@ def _job_checkpoints(job: str) -> list[dict[str, Any]]:
             ("history", "Pending lifecycle history checkpoint recorded."),
             ("no_broker_write", "Pending lifecycle performs no broker write."),
         ),
+        "runtime_state_refresh": (
+            ("runtime_state_contract", "Runtime Operation State contract checkpoint recorded."),
+            ("atomic_publish", "Runtime Operation State fixed-path artifact checkpoint recorded."),
+            ("no_broker_write", "Runtime state refresh performs no broker write."),
+        ),
         "current_temporal_migration": (
             ("current_read", "Current SoT read checkpoint recorded."),
             ("ledger_market_evidence_read", "Ledger and Market Evidence read-only checkpoint recorded."),
@@ -1001,6 +1233,13 @@ def _job_checkpoints(job: str) -> list[dict[str, Any]]:
             ("valuation_projection", "Valuation-only projection checkpoint recorded."),
             ("apply_guard", "Apply requires explicit --apply-current-valuation."),
             ("no_broker_write", "Current valuation refresh performs no broker write."),
+        ),
+        "broker_readonly_refresh": (
+            ("broker_readonly_snapshot", "Broker ReadOnly snapshot-only evidence checkpoint recorded."),
+            ("read_only_guarantee", "Broker ReadOnly refresh does not submit or cancel orders."),
+            ("no_ledger_append", "Broker ReadOnly refresh does not append persistent ledger records."),
+            ("no_current_apply", "Broker ReadOnly refresh does not mutate Current Position."),
+            ("no_pending_mutation", "Broker ReadOnly refresh does not mutate Pending."),
         ),
     }
     return [_stage(name, "CHECKPOINT", message) for name, message in job_steps[job]]
@@ -1020,16 +1259,26 @@ def _parse_evaluation_time(value: str | None) -> datetime | None:
 
 
 def _policy_required_for_job(job: str) -> bool:
-    return job in {"morning", "sell_planning", "submit", "data_readiness"}
+    return job in {
+        "morning",
+        "sell_planning",
+        "sell_hold_review_only_morning",
+        "submit_pending_promotion_review",
+        "authoritative_pending_apply_review",
+        "submit",
+        "data_readiness",
+    }
 
 
 def _data_readiness_required_for_job(job: str) -> bool:
-    return job in {"data_readiness", "morning", "sell_planning"}
+    return job in {"data_readiness", "morning", "sell_planning", "sell_hold_review_only_morning"}
 
 
 def _readiness_scope_for_args(args: argparse.Namespace) -> str:
     if args.readiness_scope:
         return args.readiness_scope
+    if args.job == "sell_hold_review_only_morning":
+        return "morning_sell_hold_review_only"
     if args.job in {"morning", "sell_planning", "submit", "execution"}:
         return args.job
     return "morning"
@@ -1061,6 +1310,18 @@ def _safety_stage_status(decision: Any) -> str:
     if decision.review_required or decision.decision == "REVIEW_REQUIRED":
         return "REVIEW_REQUIRED"
     return "PASS"
+
+
+def _runtime_safety_state_for_operation_state(decision: Any) -> str:
+    if decision is None:
+        return "NORMAL"
+    if getattr(decision, "halt_runtime", False) or getattr(decision, "emergency_stop", False):
+        return "SYSTEM_EMERGENCY_STOP"
+    if getattr(decision, "decision", "") in {"HALT", "EMERGENCY_STOP"}:
+        return "SYSTEM_EMERGENCY_STOP"
+    if getattr(decision, "decision", "") in {"BLOCKED", "REVIEW_REQUIRED"} or getattr(decision, "review_required", False):
+        return "BUY_REVIEW_REQUIRED"
+    return "NORMAL"
 
 
 def _stage(name: str, status: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1114,6 +1375,14 @@ def _trim_generated(generated: dict[str, Any]) -> dict[str, Any]:
             "data_readiness_artifact",
             "current_temporal_migration_artifact",
             "current_valuation_refresh_artifact",
+            "broker_readonly_snapshot_artifact",
+            "runtime_state_artifact",
+            "sell_hold_review_output",
+            "sell_hold_review_pending",
+            "human_approval_artifact",
+            "review_pending_linkage_artifact",
+            "pending_promotion_candidate",
+            "authoritative_pending_apply_candidate",
         }
     }
 

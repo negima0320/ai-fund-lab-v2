@@ -1,0 +1,10 @@
+{
+  "latest_available_market_date": "2026-07-09",
+  "market_date": "2026-07-09",
+  "market_freshness_status": "READY",
+  "provider_status": "READY",
+  "quote_count": 1,
+  "quote_status": "READY",
+  "runtime_business_date": "2026-07-09",
+  "schema_version": "runtime_v2_market_evidence_v1"
+}

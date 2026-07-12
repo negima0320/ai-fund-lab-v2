@@ -1,0 +1,22 @@
+{
+  "action_permissions": {
+    "broker_write": "ALLOWED_FOR_ACCEPTANCE",
+    "sell_submit": "ALLOWED"
+  },
+  "block_buy": true,
+  "block_sell": false,
+  "block_submit": false,
+  "business_date": "2026-07-09",
+  "decision": "ALLOW",
+  "emergency_stop": false,
+  "expires_at": "2026-07-09T15:00:00+09:00",
+  "freshness_status": "READY",
+  "generated_at": "2026-07-09T08:00:00+09:00",
+  "halt_runtime": false,
+  "reason": "isolated normal submit acceptance fixture",
+  "review_required": false,
+  "runtime_mode": "demo",
+  "safety_decision_id": "safety-phase15bn-allow",
+  "safety_policy_version": "safety_policy_v1",
+  "safety_source": "phase15bn_fixture"
+}

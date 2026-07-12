@@ -1,0 +1,21 @@
+{
+  "acceptance_only": true,
+  "as_of": "2026-07-14T08:45:00+09:00",
+  "production_equivalent": false,
+  "records": [
+    {
+      "account_type": "runtime-owned-simulation",
+      "as_of": "2026-07-14T08:45:00+09:00",
+      "available_quantity": 100.0,
+      "issue_code": "7203",
+      "production_equivalent": false,
+      "quantity": 100.0,
+      "review_required": false,
+      "symbol": "7203"
+    }
+  ],
+  "review_required": false,
+  "schema_version": "phase15bz_broker_available_quantity_snapshot_v1",
+  "simulation": true,
+  "source": "broker_readonly"
+}

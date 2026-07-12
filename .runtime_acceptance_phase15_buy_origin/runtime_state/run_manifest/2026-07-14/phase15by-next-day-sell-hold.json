@@ -1,0 +1,81 @@
+{
+  "business_date": "2026-07-14",
+  "current_apply_status": "APPLIED",
+  "current_hash": "sha256:92c63eb4657f11eb1c07f949cb49487969237fb2ef3f5c00d532991b97573dd7",
+  "current_position_status": "READY",
+  "current_valuation_apply_executed": true,
+  "current_valuation_apply_requested": true,
+  "current_valuation_as_of": "2026-07-14",
+  "current_valuation_backup_path": ".runtime_acceptance_phase15_buy_origin/persistent_ledger/history/current/2026-07-14T0900000000.json",
+  "current_valuation_market_date": "2026-07-14",
+  "current_valuation_market_evidence_path": ".runtime_acceptance_phase15_buy_origin/runtime_state/market/2026-07-14/market_evidence.json",
+  "current_valuation_missing_symbols": [],
+  "current_valuation_new_total_market_value": 105000.0,
+  "current_valuation_new_unrealized_pnl": 5000.0,
+  "current_valuation_no_fill": true,
+  "current_valuation_position_count": 1,
+  "current_valuation_position_state_as_of": "2026-07-13",
+  "current_valuation_previous_total_market_value": 100000.0,
+  "current_valuation_previous_unrealized_pnl": 0.0,
+  "current_valuation_refresh_artifact_path": ".runtime_acceptance_phase15_buy_origin/runtime_state/current_valuation/2026-07-14/current_valuation_refresh.json",
+  "current_valuation_refresh_reason": "current_valuation_ready",
+  "current_valuation_refresh_status": "READY",
+  "current_valuation_review_required": false,
+  "current_valuation_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/market/2026-07-14/market_evidence.json",
+  "current_valuation_source_current_path": ".runtime_acceptance_phase15_buy_origin/persistent_ledger/state.json",
+  "current_valuation_status": "READY",
+  "current_valuation_valued_position_count": 1,
+  "environment": "demo",
+  "final_state": "SELL_HOLD_REVIEW_READY",
+  "job": "sell_hold_review_after_buy",
+  "notification_sent": false,
+  "pm_add_count": 0,
+  "pm_artifact_path": ".runtime_acceptance_phase15_buy_origin/runtime_state/position_management/2026-07-14/position_management_decisions.json",
+  "pm_current_as_of": "2026-07-13",
+  "pm_current_freshness": "FRESH",
+  "pm_current_source": ".runtime_acceptance_phase15_buy_origin/persistent_ledger/state.json",
+  "pm_decision_count": 1,
+  "pm_defaulted_fields": [],
+  "pm_derived_fields": [
+    "7203.holding_days:pm_feature",
+    "7203.peak_return:pm_feature"
+  ],
+  "pm_exit_count": 0,
+  "pm_feature_date": "2026-07-14",
+  "pm_feature_row_count": 1,
+  "pm_feature_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/pm_inputs/2026-07-14/pm_feature.csv",
+  "pm_generated_at": "2026-07-14T09:15:00+00:00",
+  "pm_hold_count": 1,
+  "pm_inference_version": "position_management_ai_phase6a_regular_path_v1",
+  "pm_input_schema_status": "READY",
+  "pm_missing_fields": [],
+  "pm_missing_symbols": [],
+  "pm_model_version": "position_management_policy_phase6a_v1",
+  "pm_opportunity_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/pm_inputs/2026-07-14/pm_opportunity.csv",
+  "pm_opportunity_status": "READY",
+  "pm_reason": "",
+  "pm_reduce_count": 0,
+  "pm_review_reason": "",
+  "pm_review_required": false,
+  "pm_status": "PASS",
+  "runtime_mode": "demo",
+  "schema_version": "phase15by_next_day_runtime_manifest_v1",
+  "stages": [
+    {
+      "name": "current_valuation_refresh",
+      "status": "READY"
+    },
+    {
+      "name": "current_apply",
+      "status": "APPLIED"
+    },
+    {
+      "name": "position_management_ai_runtime_producer",
+      "status": "PASS"
+    },
+    {
+      "name": "sell_hold_decision",
+      "status": "PASS"
+    }
+  ]
+}

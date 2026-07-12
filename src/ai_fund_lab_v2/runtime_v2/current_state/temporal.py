@@ -173,6 +173,7 @@ def build_current_temporal_candidate(
         {
             "temporal_schema_version": CURRENT_TEMPORAL_SCHEMA_VERSION,
             "schema_version": CURRENT_TEMPORAL_SCHEMA_VERSION,
+            "business_date": business_date,
             "position_state_as_of": position_state_as_of,
             "valuation_as_of": valuation_as_of,
             "source_market_date": source_market_date,
@@ -250,9 +251,25 @@ def run_current_temporal_migration(
         current_payload=current,
         now=now,
     )
+    safe_legacy_apply = _safe_legacy_temporal_metadata_apply(
+        source=current,
+        candidate=candidate,
+        missing=missing,
+        metadata=metadata,
+    )
+    review_required = metadata.review_required and not safe_legacy_apply
+    if safe_legacy_apply:
+        candidate = dict(candidate)
+        candidate.update(
+            {
+                "temporal_status": "READY",
+                "production_equivalent": False,
+                "legacy_migration_status": "LEGACY_TEMPORAL_METADATA_APPLIED",
+            }
+        )
     apply_executed = False
     backup_path = ""
-    if apply_current_migration and not metadata.review_required:
+    if apply_current_migration and not review_required:
         backup_path = str(_atomic_write_current(root=root, source_path=source_path, payload=candidate, now=now))
         apply_executed = True
     payload = _migration_payload(
@@ -267,15 +284,42 @@ def run_current_temporal_migration(
         candidate_current=candidate,
         missing_evidence=missing,
         warnings=warnings,
-        review_required=metadata.review_required,
+        review_required=review_required,
         backup_path=backup_path,
     )
     _write_json(artifact_path, payload)
     return _result_from_payload(
         payload,
         artifact_path=artifact_path,
-        reason="current_temporal_migration_review_required" if metadata.review_required else "current_temporal_migration_ready",
+        reason="current_temporal_migration_review_required" if review_required else "current_temporal_migration_ready",
     )
+
+
+def _safe_legacy_temporal_metadata_apply(
+    *,
+    source: dict[str, Any],
+    candidate: dict[str, Any],
+    missing: tuple[str, ...],
+    metadata: CurrentTemporalMetadata,
+) -> bool:
+    if not metadata.legacy_as_of_used or missing:
+        return False
+    if candidate.get("current_position_status") != FreshnessStatus.READY.value:
+        return False
+    if candidate.get("current_valuation_status") != FreshnessStatus.READY.value:
+        return False
+    for field in ("cash", "buying_power", "market_value", "total_equity"):
+        if source.get(field) != candidate.get(field):
+            return False
+    source_positions = list(source.get("positions") or [])
+    candidate_positions = list(candidate.get("positions") or [])
+    if len(source_positions) != len(candidate_positions):
+        return False
+    for before, after in zip(source_positions, candidate_positions):
+        for field in ("symbol", "quantity", "average_price", "cost_basis"):
+            if before.get(field) != after.get(field):
+                return False
+    return True
 
 
 def write_current_temporal_state(path: Path, payload: dict[str, Any]) -> Path:

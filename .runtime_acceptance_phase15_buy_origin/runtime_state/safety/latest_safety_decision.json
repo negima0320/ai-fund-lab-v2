@@ -1,0 +1,17 @@
+{
+  "block_buy": false,
+  "block_sell": false,
+  "block_submit": false,
+  "business_date": "2026-07-14",
+  "decision": "ALLOW",
+  "emergency_stop": false,
+  "expires_at": "2026-07-14T15:00:00+09:00",
+  "generated_at": "2026-07-14T08:00:00+09:00",
+  "halt_runtime": false,
+  "reason": "phase15by acceptance fixture safety allow",
+  "review_required": false,
+  "runtime_mode": "demo",
+  "safety_decision_id": "phase15by-nextday-safety-allow",
+  "safety_policy_version": "safety_operation_guard_v1",
+  "safety_source": ".runtime_acceptance_phase15_buy_origin/runtime_state/safety/latest_safety_decision.json"
+}

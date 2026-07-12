@@ -1,0 +1,83 @@
+{
+  "as_of": "2026-07-13",
+  "asset_state_id": "asset-df34c0c699aec4b0",
+  "business_date": "2026-07-14",
+  "buying_power": 900000.0,
+  "buying_power_confirmed": true,
+  "buying_power_unknown": false,
+  "cash": 900000.0,
+  "cash_confirmed": true,
+  "cash_unknown": false,
+  "created_at": "2026-07-13",
+  "current_position_status": "READY",
+  "current_position_temporal_evidence": {
+    "actual_date": "2026-07-13",
+    "artifact_path": "",
+    "comparison_contract": "current_position_state_contract",
+    "expected_date": "2026-07-14",
+    "expires_at": "",
+    "generated_at": "",
+    "reason": "current_position_ready_no_fill_carry_allowed",
+    "source": "current",
+    "status": "READY"
+  },
+  "current_positions_unknown": false,
+  "current_state_confirmed_empty": false,
+  "current_valuation_status": "READY",
+  "current_valuation_temporal_evidence": {
+    "actual_date": "2026-07-14",
+    "artifact_path": "",
+    "comparison_contract": "current_valuation_source_market_date",
+    "expected_date": "2026-07-14",
+    "expires_at": "",
+    "generated_at": "",
+    "reason": "current_valuation_evidence_ready",
+    "source": "current",
+    "status": "READY"
+  },
+  "derived_position_state_as_of": "2026-07-13",
+  "derived_valuation_as_of": "2026-07-14",
+  "environment": "demo",
+  "generated_from": [
+    "ledger-position-1b5bd8bc2635b6f6"
+  ],
+  "last_execution_date": "2026-07-13",
+  "last_reconciled_at": "2026-07-13",
+  "legacy_as_of_used": true,
+  "legacy_migration_status": "LEGACY_TEMPORAL_METADATA_APPLIED",
+  "market_value": 100000.0,
+  "no_fill": true,
+  "position_state_as_of": "2026-07-13",
+  "position_state_source": "runtime_owned_execution_ledger",
+  "positions": [
+    {
+      "as_of": "2026-07-13T09:10:00+09:00",
+      "average_price": 1000.0,
+      "cost_basis": 100000.0,
+      "market_value": 100000.0,
+      "quantity": 100.0,
+      "source": "runtime_v2_runtime_owned_fill_projection",
+      "symbol": "7203",
+      "unrealized_pnl": 0.0
+    }
+  ],
+  "production_equivalent": false,
+  "review_required": false,
+  "runtime_evaluation_capital": 1000000.0,
+  "runtime_owned_projection": {
+    "broker_cash_copied": false,
+    "cash_policy": "runtime_evaluation_capital_plus_runtime_owned_execution_cash_effect",
+    "position_policy": "runtime_submit_accepted_and_orderlist_filled_and_ledger_position_matched",
+    "unrelated_demo_positions_copied": false
+  },
+  "schema_version": "runtime_v2_current_temporal_v1",
+  "source": "runtime_v2_runtime_owned_fill_projection",
+  "source_market_date": "2026-07-14",
+  "temporal_schema_version": "runtime_v2_current_temporal_v1",
+  "temporal_status": "READY",
+  "total_equity": 1000000.0,
+  "updated_at": "2026-07-13",
+  "valuation_as_of": "2026-07-14",
+  "valuation_generated_at": "",
+  "valuation_source": "market_evidence"
+}

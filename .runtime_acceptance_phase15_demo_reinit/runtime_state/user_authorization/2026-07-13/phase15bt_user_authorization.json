@@ -1,0 +1,21 @@
+{
+  "authorization_id": "user-auth-phase15bt-56ebea4e14ffe736",
+  "authorization_source": "current_conversation_explicit_approval",
+  "authorized_at": "2026-07-12T01:27:39.676485+00:00",
+  "authorized_by": "human_operator",
+  "broker_write_authorized": true,
+  "environment": "demo",
+  "expires_at": "2026-07-13T15:00:00+09:00",
+  "explicit_approval_text": "デモ環境なので、この内容でBroker Writeを進めてよい。",
+  "issue_code": "6501",
+  "limit_price": null,
+  "order_type": "MARKET",
+  "price_condition": "MARKET",
+  "production_write_authorized": false,
+  "quantity": 100,
+  "request_hash": "sha256:56ebea4e14ffe7369f133260645720c49303711b74c21960973e833016b37f70",
+  "schema_version": "phase15bt_user_authorization_v1",
+  "side": "SELL",
+  "target_session": "2026-07-13",
+  "time_in_force": "DAY"
+}

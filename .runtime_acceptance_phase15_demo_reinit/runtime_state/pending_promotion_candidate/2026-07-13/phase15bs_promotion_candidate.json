@@ -1,0 +1,32 @@
+{
+  "apply_executed": false,
+  "apply_requested": false,
+  "approval_hash": "sha256:2df8bca441ca117a85490e6ebefd42ceac77206374623dbf66edc0f67190b224",
+  "approval_id": "human-approval-phase15bs-2df8bca441ca117a",
+  "approval_path": ".runtime_acceptance_phase15_demo_reinit/runtime_state/human_approval/2026-07-13/phase15bs_human_approval_candidate.json",
+  "broker_capability_hash": "sha256:1897197e8d7cd2c4d43303b43181f27f71021abbfafdfecc07ea579237e18ad1",
+  "broker_snapshot_hash": "sha256:d2efda2ee44545cac03dd69374df9b4e57b43c406c7fd89cc027deca112d0735",
+  "broker_snapshot_id": ".runtime_acceptance_phase15_demo_reinit/runtime_state/broker_readonly/2026-07-13/tachibana_snapshot.json",
+  "broker_write_performed": false,
+  "business_date": "2026-07-13",
+  "candidate_id": "promotion-candidate-phase15bs-d3e630ac6b055a99",
+  "generated_at": "2026-07-12T09:05:00+09:00",
+  "pending_slot_before": "EMPTY",
+  "policy_hash": "sha256:7a70b1ebd5c7ae47be1759e7aa3a0890fa33f3f91c0bd5807a2ff298e0f9f562",
+  "promotion_allowed": true,
+  "promotion_status": "READY",
+  "review_scenario_hash": "sha256:edc92f45718b264561f3d3528dcca7d7004cd50cb30d9495db8555e08a324b8e",
+  "safety_decision_id": "runtime-safety-decision-039a75054a94403a",
+  "schema_version": "runtime_v2_submit_pending_promotion_candidate_v1",
+  "submit_executed": false,
+  "target_session": "2026-07-13",
+  "validation": {
+    "approval_hash": "PASS",
+    "broker_capability_hash": "PASS",
+    "broker_snapshot_id": "PASS",
+    "pending_slot_empty": "PASS",
+    "policy_hash": "PASS",
+    "safety_decision_id": "PASS",
+    "target_session": "PASS"
+  }
+}

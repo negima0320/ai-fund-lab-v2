@@ -15,6 +15,7 @@ def run_runtime_v2_execution_readonly_snapshot(
     snapshot_path: Path,
     report_path: Path,
     settings: BrokerSettings | None = None,
+    source: str = "runtime_v2_execution_readonly",
 ) -> Any:
     settings = settings or load_broker_settings()
     if mode == "demo":
@@ -24,9 +25,8 @@ def run_runtime_v2_execution_readonly_snapshot(
         run_enabled=True,
         report_filename=report_path.name,
         snapshot_path=snapshot_path,
-        source="runtime_v2_execution_readonly",
+        source=source,
         settings=settings,
         symbols=(),
         include_quotes=False,
     )
-

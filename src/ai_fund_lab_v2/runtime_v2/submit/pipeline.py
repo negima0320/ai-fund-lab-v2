@@ -20,7 +20,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
-from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicy,
@@ -165,7 +165,10 @@ def run_submit_pipeline(
     base_url = settings.base_url.rstrip("/")
     base_url_is_demo = base_url == DEMO_BASE_URL
     base_url_is_production = base_url == PROD_BASE_URL
-    pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
+    pending_read = read_pending_order_plan_path(
+        path=runtime_root_path / "pending_order_plan" / "pending_order_plan.json",
+        environment=mode,
+    )
     if not pending_read.valid or pending_read.plan is None:
         return _blocked_result(
             reason="pending current is missing or invalid: " + ",".join(pending_read.errors),
@@ -361,13 +364,28 @@ def run_submit_pipeline(
     orders_path = runtime_root_path / "persistent_ledger" / "orders.jsonl"
     if ledger_records:
         _append_ledger_order_records(orders_path, ledger_records)
-        pending = replace(pending, state=PendingPlanState.SUBMITTED, updated_at=_utc_now())
-        pending = consume_pending_plan(
-            pending,
-            consume_reason=_consume_reason(item_results),
-            submitted_order_ids=tuple(result.broker_order_id_hash for result in item_results if result.submitted),
-            ledger_order_record_ids=tuple(result.ledger_order_record_id for result in item_results if result.submitted),
-        )
+        submitted_order_ids = tuple(result.broker_order_id_hash for result in item_results if result.submitted)
+        ledger_order_record_ids = tuple(result.ledger_order_record_id for result in item_results if result.submitted)
+        if any(result.unknown for result in item_results):
+            pending = replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=_utc_now())
+        elif any(result.rejected or result.blocked for result in item_results):
+            pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=_utc_now())
+        else:
+            consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
+            pending = replace(
+                pending,
+                items=tuple(
+                    replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
+                    for item in pending.items
+                ),
+            )
+            pending = replace(pending, state=PendingPlanState.SUBMITTED, updated_at=_utc_now())
+            pending = consume_pending_plan(
+                pending,
+                consume_reason=_consume_reason(item_results),
+                submitted_order_ids=submitted_order_ids,
+                ledger_order_record_ids=ledger_order_record_ids,
+            )
         write_pending_order_plan(Path(pending_read.path), pending)
 
     submitted_count = sum(1 for result in item_results if result.submitted)
@@ -403,7 +421,7 @@ def run_submit_pipeline(
         rejected_count=rejected_count,
         unknown_count=unknown_count,
         blocked_count=blocked_count,
-        pending_consumed=bool(ledger_records),
+        pending_consumed=bool(getattr(pending.consume, "consumed", False)),
         submitted_order_ids=tuple(result.broker_order_id_hash for result in item_results if result.submitted),
         ledger_order_record_ids=tuple(result.ledger_order_record_id for result in item_results if result.submitted),
         submitted_symbols=tuple(result.symbol for result in item_results if result.submitted),
@@ -460,6 +478,7 @@ def _approval_from_pending(pending: PendingOrderPlan) -> ApprovalArtifact:
         pending_policy_hash=pending.approval.pending_policy_hash,
         safety_decision_id=pending.approval.safety_decision_id,
         safety_policy_version=pending.approval.safety_policy_version,
+        approved_order_conditions=pending.approval.approved_order_conditions,
     )
 
 

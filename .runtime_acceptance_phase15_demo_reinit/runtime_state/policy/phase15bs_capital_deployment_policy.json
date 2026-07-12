@@ -1,0 +1,25 @@
+{
+  "allowed_order_types": [
+    "MARKET"
+  ],
+  "allowed_time_in_force": [
+    "DAY"
+  ],
+  "buy_notional_policy": "buy path not selected for Phase15-BS",
+  "cash_buffer": 0.05,
+  "evaluation_capital": 1000000,
+  "manual_review_threshold": {
+    "buy_amount": null,
+    "sell_liquidation_amount": null
+  },
+  "max_buy_order_amount": null,
+  "max_exposure": 850000,
+  "max_position_weight": 0.5,
+  "max_positions": 20,
+  "max_sell_liquidation_amount": null,
+  "min_order_amount": 0,
+  "policy_source": ".runtime_acceptance_phase15_demo_reinit/runtime_state/policy/phase15bs_capital_deployment_policy.json",
+  "policy_version": "phase15bs_demo_write_acceptance_policy_v1",
+  "sell_liquidation_policy": "demo_preloaded_acceptance_exception_sell_6501_quantity_100_only",
+  "target_investment_ratio": 0.85
+}

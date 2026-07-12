@@ -36,6 +36,13 @@ class BrokerAccountSnapshot:
 class BrokerBalanceSnapshot:
     broker: str = "tachibana"
     source: str = "mock"
+    provider: str = "tachibana"
+    adapter: str = ""
+    transport: str = ""
+    data_origin: str = "UNKNOWN"
+    fixture_used: bool = False
+    mock_used: bool = False
+    read_only: bool = True
     as_of: str = field(default_factory=utc_now_iso)
     currency: str = "JPY"
     cash_available: Decimal = Decimal("0")
@@ -56,6 +63,13 @@ class BrokerBalanceSnapshot:
 class BrokerPositionSnapshot:
     broker: str = "tachibana"
     source: str = "mock"
+    provider: str = "tachibana"
+    adapter: str = ""
+    transport: str = ""
+    data_origin: str = "UNKNOWN"
+    fixture_used: bool = False
+    mock_used: bool = False
+    read_only: bool = True
     as_of: str = field(default_factory=utc_now_iso)
     account_type: str = "cash"
     issue_code: str = ""
@@ -77,6 +91,13 @@ class BrokerPositionSnapshot:
 class BrokerOrderSnapshot:
     broker: str = "tachibana"
     source: str = "mock"
+    provider: str = "tachibana"
+    adapter: str = ""
+    transport: str = ""
+    data_origin: str = "UNKNOWN"
+    fixture_used: bool = False
+    mock_used: bool = False
+    read_only: bool = True
     as_of: str = field(default_factory=utc_now_iso)
     order_id: str = ""
     issue_code: str = ""
@@ -101,6 +122,13 @@ class BrokerOrderSnapshot:
 class BrokerExecutionSnapshot:
     broker: str = "moomoo"
     source: str = "mock"
+    provider: str = "tachibana"
+    adapter: str = ""
+    transport: str = ""
+    data_origin: str = "UNKNOWN"
+    fixture_used: bool = False
+    mock_used: bool = False
+    read_only: bool = True
     as_of: str = field(default_factory=utc_now_iso)
     execution_id: str = ""
     order_id: str = ""
