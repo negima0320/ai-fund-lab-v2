@@ -21,6 +21,7 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
 )
 from ai_fund_lab_v2.runtime_v2.current_state.temporal import build_current_temporal_candidate
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import resolve_buy_ai_model_paths
+from ai_fund_lab_v2.runtime_v2.buy_ai.producer import _isolated_test_artifact_paths_allowed
 from ai_fund_lab_v2.runtime_v2.position_management.producer import (
     validate_position_management_input_contract,
 )
@@ -275,6 +276,7 @@ def evaluate_runtime_data_readiness(
     candidate_model_path_resolved, opportunity_model_path_resolved = resolve_buy_ai_model_paths(
         candidate_model_path=candidate_model_path,
         opportunity_model_path=opportunity_model_path,
+        allow_isolated_test_paths=_isolated_test_artifact_paths_allowed(Path(runtime_root), candidate_model_path, opportunity_model_path, None),
     )
     candidate_status = _candidate_pre_inference_status(
         scope=readiness_scope,

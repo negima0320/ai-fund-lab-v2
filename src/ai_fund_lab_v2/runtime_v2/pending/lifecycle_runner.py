@@ -353,7 +353,7 @@ def _stale_reasons(*, payload: dict[str, Any], business_date: str, transitioned_
     if str(payload.get("target_session_date") or "") < business_date:
         reasons.append("target_session_date_elapsed")
     approval_expires_at = _approval_expires_at(payload)
-    if approval_expires_at and approval_expires_at <= transitioned_at:
+    if approval_expires_at and _expired(approval_expires_at, transitioned_at):
         reasons.append("approval_expired")
     if _consumed(payload):
         return []
@@ -436,6 +436,26 @@ def _approval_expires_at(payload: dict[str, Any]) -> str:
     approval = payload.get("approval") or {}
     constraints = payload.get("submit_constraints") or {}
     return str(approval.get("approval_expires_at") or constraints.get("expires_at") or payload.get("approval_expires_at") or "")
+
+
+def _expired(expires_at: str, transitioned_at: str) -> bool:
+    expires = _parse_datetime(expires_at)
+    transitioned = _parse_datetime(transitioned_at)
+    if expires is None or transitioned is None:
+        return expires_at <= transitioned_at
+    return expires <= transitioned
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _consumed(payload: dict[str, Any]) -> bool:

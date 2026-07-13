@@ -3,23 +3,23 @@
 ## Audit Result
 
 - status: complete
-- readiness_status: `READY_FOR_FULL_CONTROLLED_FEATURE_GENERATION`
+- readiness_status: `READY_FOR_LARGER_CONTROLLED_BATCH`
 - summary: `reports/candidate_ai/full_range/phase4v_post_expansion_readiness_summary.json`
 
 ## Summary
 
 - status: READY
-- readiness_status: READY_FOR_FULL_CONTROLLED_FEATURE_GENERATION
+- readiness_status: READY_FOR_LARGER_CONTROLLED_BATCH
 - data_source_type: mock
-- completed_chunk_count: 4
+- completed_chunk_count: 6
 - failed_chunk_count: 0
-- remaining_missing_chunk_count: 0
-- total_feature_rows: 120
-- eligible_count: 120
-- excluded_count: 0
-- code_count: 30
-- date_min: 2026-03-31
-- date_max: 2026-06-01
+- remaining_missing_chunk_count: 137
+- total_feature_rows: 180
+- eligible_count: 0
+- excluded_count: 180
+- code_count: 180
+- date_min: 2026-06-26
+- date_max: 2026-06-26
 - schema_validation_all_ok: True
 - leakage_audit_all_ok: True
 - runtime_free_space_sufficient: True

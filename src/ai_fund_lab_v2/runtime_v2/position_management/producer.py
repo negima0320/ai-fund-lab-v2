@@ -21,6 +21,10 @@ from ai_fund_lab_v2.position_management_ai.inference import (
     MODEL_VERSION,
     run_position_management_inference,
 )
+from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
+    RuntimeArtifactLookupHalt,
+    resolve_position_management_policy_artifacts,
+)
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision
 
 
@@ -114,6 +118,30 @@ def produce_position_management_decisions(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     holding_path = artifact_dir / "current_holdings_snapshot.csv"
     artifact_path = artifact_dir / "position_management_decisions.json"
+    try:
+        pm_artifacts = resolve_position_management_policy_artifacts()
+        pm_artifacts.require_member("RUNTIME_ADAPTER")
+    except RuntimeArtifactLookupHalt as exc:
+        payload = _artifact_payload(
+            business_date=business_date,
+            runtime_id=runtime_id,
+            mode=mode,
+            feature_date=resolved_feature_date,
+            generated_at=generated_at,
+            holding_path=holding_path,
+            opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
+            feature_path=Path(feature_path) if feature_path else Path(""),
+            inference_output_path=artifact_dir / "position_management_inference.parquet",
+            action_csv_path=artifact_dir / "position_management_actions.csv",
+            summary_path=artifact_dir / "position_management_inference_summary.json",
+            audit_path=artifact_dir / "position_management_inference_audit.json",
+            status="HALT",
+            reason=str(exc),
+            decisions=(),
+            input_contract={"pm_input_schema_status": "HALT", "pm_review_reason": str(exc)},
+        )
+        _write_json(artifact_path, payload)
+        return _result_from_payload(payload, artifact_path=artifact_path, sell_exit_decisions=())
     current_path = root / "persistent_ledger" / "state.json"
     current = _read_json(current_path)
     contract = _validate_pm_input_contract(

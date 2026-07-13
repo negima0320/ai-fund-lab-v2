@@ -9,16 +9,16 @@
 
 ## Batch Readiness Summary
 
-- chunk_count: 4
-- date_chunk_count: 4
-- code_chunk_count: 1
-- input_row_count: 1980
-- estimated_feature_row_count: 1980
-- estimated_output_size_bytes: 1013760
+- chunk_count: 9
+- date_chunk_count: 1
+- code_chunk_count: 9
+- input_row_count: 84307
+- estimated_feature_row_count: 84307
+- estimated_output_size_bytes: 43165184
 - runtime_free_space_sufficient: True
 - completed_chunk_count: 0
 - failed_chunk_count: 0
-- missing_chunk_count: 4
+- missing_chunk_count: 9
 - partial_tmp_warning_count: 0
 - manifest_inconsistency_count: 0
 

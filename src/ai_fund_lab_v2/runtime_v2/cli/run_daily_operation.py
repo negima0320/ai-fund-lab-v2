@@ -17,6 +17,10 @@ from ai_fund_lab_v2.operations.market_calendar import resolve_operation_date
 from ai_fund_lab_v2.runtime_v2.orchestrator.models import RuntimeRunRequest
 from ai_fund_lab_v2.runtime_v2.orchestrator.orchestrator import RuntimeOrchestrator
 from ai_fund_lab_v2.runtime_v2.broker_readonly.refresh import run_broker_readonly_refresh
+from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
+    RuntimeArtifactLookupHalt,
+    resolve_runtime_capital_policy_path,
+)
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import produce_buy_ai_decisions
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
 from ai_fund_lab_v2.runtime_v2.current_state.temporal import run_current_temporal_migration
@@ -101,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings: list[str] = []
     final_state = "UNKNOWN"
     exit_code = EXIT_SUCCESS
+    capital_deployment_policy_path: Path | None = None
     capital_policy_manifest = missing_policy_manifest_fields(
         None,
         reason="POLICY_NOT_EVALUATED",
@@ -158,14 +163,18 @@ def main(argv: list[str] | None = None) -> int:
             exit_code = EXIT_REVIEW_REQUIRED
             final_state = "REVIEW_REQUIRED"
             warnings.append(override_reason)
-        capital_policy_manifest = _load_capital_policy_manifest(args.capital_deployment_policy)
+        capital_policy_manifest = _load_capital_policy_manifest(
+            args.capital_deployment_policy,
+            runtime_root=Path(args.runtime_root),
+        )
         if capital_policy_manifest["capital_deployment_policy_loaded"]:
-            capital_deployment_policy = load_capital_deployment_policy(Path(args.capital_deployment_policy))
+            capital_deployment_policy_path = Path(capital_policy_manifest["capital_deployment_policy_path"])
+            capital_deployment_policy = load_capital_deployment_policy(capital_deployment_policy_path)
         stages.append(
             _stage(
                 "capital_deployment_policy",
                 "PASS" if capital_policy_manifest["capital_deployment_policy_loaded"] else "REVIEW_REQUIRED",
-                "Explicit Capital Deployment Policy evaluated.",
+                "Registry-resolved Capital Deployment Policy evaluated.",
                 capital_policy_manifest,
             )
         )
@@ -326,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                 business_date=business_date,
                 mode=args.mode,
                 action=args.pending_action,
+                now=evaluation_time,
             )
             pending_lifecycle_manifest = dict(pending_lifecycle_result.manifest_fields)
             stages.append(
@@ -437,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
                 pm_opportunity_path=args.pm_opportunity_path,
                 pm_feature_path=args.pm_feature_path,
                 allow_non_trading_day_demo=args.allow_non_trading_day_demo,
+                now=evaluation_time,
             )
             data_readiness_manifest = data_readiness_result.to_manifest_fields()
             stages.append(
@@ -467,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
                 opportunity_model_path=args.opportunity_model_path,
                 opportunity_training_metrics_path=args.opportunity_training_metrics_path,
                 selected_rank_limit=args.max_orders,
+                now=evaluation_time,
             )
             buy_ai_manifest = buy_ai_result.to_manifest_fields()
             stages.append(
@@ -477,7 +489,11 @@ def main(argv: list[str] | None = None) -> int:
                     buy_ai_manifest,
                 )
             )
-            if buy_ai_result.status == "REVIEW_REQUIRED":
+            if buy_ai_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(f"buy ai halt: {buy_ai_result.reason}")
+            elif buy_ai_result.status == "REVIEW_REQUIRED":
                 exit_code = EXIT_REVIEW_REQUIRED
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(f"buy ai review required: {buy_ai_result.reason}")
@@ -525,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                 feature_date=args.feature_date,
                 opportunity_path=args.pm_opportunity_path,
                 feature_path=args.pm_feature_path,
+                now=evaluation_time,
             )
             position_management_manifest = pm_result.to_manifest_fields()
             stages.append(
@@ -578,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
                 business_date=business_date,
                 mode=args.mode,
                 feature_date=args.feature_date or business_date,
+                now=evaluation_time,
             )
             sell_hold_review_only_manifest = dict(review_only_result.to_stage_details())
             stages.append(
@@ -608,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
                 mode=args.mode,
-                capital_deployment_policy_path=Path(args.capital_deployment_policy),
+                capital_deployment_policy_path=capital_deployment_policy_path,
                 now=evaluation_time,
             )
             pending_promotion_manifest = dict(promotion_result.to_stage_details())
@@ -641,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
                 mode=args.mode,
-                capital_deployment_policy_path=Path(args.capital_deployment_policy),
+                capital_deployment_policy_path=capital_deployment_policy_path,
                 promotion_candidate_path=Path(args.promotion_candidate_path) if args.promotion_candidate_path else None,
                 now=evaluation_time,
             )
@@ -676,8 +694,9 @@ def main(argv: list[str] | None = None) -> int:
                 mode=args.mode,
                 submit_enabled=_as_bool(args.submit_enabled),
                 job=args.job,
-                capital_deployment_policy_path=args.capital_deployment_policy,
+                capital_deployment_policy_path=capital_deployment_policy_path,
                 safety_decision=runtime_safety_decision,
+                now=evaluation_time,
             )
             submit_guard_policy = dict(submit_result.submit_guard_policy)
             submit_policy_consistency = dict(submit_result.submit_policy_consistency)
@@ -740,6 +759,7 @@ def main(argv: list[str] | None = None) -> int:
                 operations_root=Path(args.feature_root).parent,
                 allow_api_fetch=_as_bool(args.market_refresh_allow_api_fetch),
                 mode=args.mode,
+                now=evaluation_time,
             )
             market_evidence_manifest = {
                 "market_evidence_status": market_refresh_result.market_evidence_status,
@@ -1284,18 +1304,38 @@ def _readiness_scope_for_args(args: argparse.Namespace) -> str:
     return "morning"
 
 
-def _load_capital_policy_manifest(policy_path: str | None) -> dict[str, Any]:
-    if not policy_path:
+def _load_capital_policy_manifest(policy_path: str | None, *, runtime_root: Path) -> dict[str, Any]:
+    if _isolated_runtime_root(runtime_root) and policy_path:
+        try:
+            return load_capital_deployment_policy(Path(policy_path)).to_manifest_fields() | {
+                "capital_deployment_policy_authority": "ISOLATED_TEST_DIAGNOSTIC",
+            }
+        except CapitalDeploymentPolicyError as exc:
+            if "missing" in str(exc).lower():
+                return missing_policy_manifest_fields(policy_path, reason="POLICY_MISSING:" + str(exc))
+            return invalid_policy_manifest_fields(policy_path, reason="POLICY_INVALID:" + str(exc))
+    try:
+        resolved_policy_path = resolve_runtime_capital_policy_path(policy_path)
+    except RuntimeArtifactLookupHalt as exc:
         return missing_policy_manifest_fields(
             policy_path,
-            reason="POLICY_MISSING:--capital-deployment-policy is required",
+            reason="REGISTRY_POLICY_LOOKUP_HALT:" + str(exc),
         )
     try:
-        return load_capital_deployment_policy(Path(policy_path)).to_manifest_fields()
+        return load_capital_deployment_policy(resolved_policy_path).to_manifest_fields() | {
+            "capital_deployment_policy_authority": "ARTIFACT_REGISTRY",
+        }
     except CapitalDeploymentPolicyError as exc:
         if "missing" in str(exc).lower():
-            return missing_policy_manifest_fields(policy_path, reason="POLICY_MISSING:" + str(exc))
-        return invalid_policy_manifest_fields(policy_path, reason="POLICY_INVALID:" + str(exc))
+            return missing_policy_manifest_fields(resolved_policy_path, reason="POLICY_MISSING:" + str(exc))
+        return invalid_policy_manifest_fields(resolved_policy_path, reason="POLICY_INVALID:" + str(exc))
+
+
+def _isolated_runtime_root(runtime_root: Path) -> bool:
+    try:
+        return runtime_root.resolve() != Path(".runtime").resolve()
+    except FileNotFoundError:
+        return runtime_root != Path(".runtime")
 
 
 def _safety_stage_status(decision: Any) -> str:

@@ -1507,33 +1507,165 @@ Monitoring / Recovery / Runbook
 
 はPhase15完了条件ではなく、Operational Boundary / Production Enablementとして残す。
 
-次フェーズは新Runtime作成ではなく、受け入れ済みRuntime v2を固定Engineとして使うHistorical Runtime Paper Testとする。
+次フェーズは新Runtime作成ではなく、受け入れ済みRuntime v2を固定Engineとして使う。ただしPhase16-AからPhase16-Gまでの監査により、本番運用へ進むためにはHistorical Runtime Test専用ではない恒久的な運用データ基盤を完成させる必要が確認された。
 
 ```text
-Phase16-A Historical Runtime Paper Test Contract
-Phase16-B 5 Business Day Smoke
-Phase16-C 20 Business Day Paper Test
-Phase16-D 1-Year Runtime Paper Test
-Phase16-E Performance and Failure Attribution
-Phase16-F AI / Policy / Safety / PM / Feature Improvement
-Phase16-G 1-Year Revalidation
-Phase16-H 5-Year Runtime Paper Test
-Phase16-I Final Performance Review
+Phase16:
+Operational Data Foundation
+
+Japanese:
+運用データ基盤整備
+
+Subtitle:
+Canonical Data, Feature, AI Artifact, and Runtime Input Foundation
+
+Phase17:
+Historical Runtime v2 Performance Test
 ```
 
 Phase16開始位置。
 
 ```text
 Current Prefix:
-Phase16-A Historical Runtime Paper Test Contract
+Phase16-I Operational Data Foundation Purpose and Goal Definition
 
 Phase16 Purpose:
-Historical Runtime Paper Test
+Production、Demo、Paper、Historicalが同一のCanonical Data Contract、Feature Producer、Feature Schema、AI Artifact、AI Decision Contract、Runtime v2 Mainlineを利用できる恒久的な運用データ基盤を完成させる。
+
+Japanese Purpose:
+運用データ基盤整備
+
+Top-Level System Purpose:
+AI Fund Lab v2の最上位目的は、安心・安全に継続運用できる日本株自動売買システムを作り、最終的にProduction運用すること。
+
+Return Target:
+年率50%
+
+Priority:
+安全性
+↓
+正確性
+↓
+継続運用性
+↓
+監査可能性
+↓
+説明可能性
+↓
+収益性
+
+Prohibited for Return Improvement:
+収益向上のために安全性を下げる
+収益向上のためにRuntime Authorityを曖昧にする
+収益向上のためにCanonical Data Contractを破る
+バックテスト結果へ過剰適合する
 
 Runtime Policy:
 Runtime v2を固定Engineとして使用する。
 
-Primary Improvement Targets:
+Runtime Root:
+通常Runtime root `.runtime` を使用する。
+
+Runtime Paths:
+通常固定Pathを使用する。
+
+Phase16-specific Runtime Root:
+PROHIBITED
+
+Phase16-specific Current / Ledger / Pending / Mainline:
+PROHIBITED
+
+Historical Performance Test:
+PROHIBITED in Phase16
+
+Historical Runtime Test Position:
+Historical Runtime Testは目的ではなく、本番運用へ進むための品質確認手段の一つである。
+
+Operational Data Foundation Scope:
+Phase16で整備するデータ基盤は、
+Historical Runtime Test専用ではない。
+
+Production、Demo、Paper、Historicalが
+共通利用するOperational Data Foundationである。
+
+Historical Runtime Testは、
+本番運用へ進むための品質確認手段の一つである。
+
+Performance Improvement / Revenue Optimization:
+PROHIBITED in Phase16
+
+Canonical Data Policy:
+Production / Demo / Paper / Historicalが同一のCanonical Data Contract、同一Feature Producer、同一Feature Schema、同一AI Artifact、同一AI Decision Contract、同一Runtime v2 Mainlineを使用できる状態を完成させる。
+
+Historical-only / Backtest-only / Phase16-only Source of Truth:
+PROHIBITED
+
+Canonical Logical Layers:
+J-Quants Raw
+↓
+Canonical Market Data
+↓
+Canonical Feature Producer
+↓
+Feature Artifact
+↓
+Candidate AI / Opportunity AI / Position Management
+↓
+AI Decision Artifact
+↓
+Policy / Safety / Planning / Pending / Submit / Execution / Ledger / Current / Report
+
+Phase Artifact Promotion:
+PROHIBITED without explicit migration design and acceptance.
+
+Phase-numbered artifacts:
+phase4*
+phase5*
+phase6*
+phase9*
+
+must be classified as Training Artifact, Historical Evidence, Accepted Model Artifact, Legacy Artifact, or Canonical Candidate before use.
+
+.runtime/phase9/canonical_data/normalized_daily_quotes/data.parquet:
+Content is confirmed as Canonical normalized OHLCV.
+Permanent path remains migration-design required because the path is phase-numbered.
+
+AI Retraining:
+PROHIBITED
+
+Prohibited AI Actions:
+Candidate retraining
+Opportunity retraining
+PM change
+Threshold optimization
+Feature change
+Backtest-result tuning
+Model switch
+
+Allowed AI Freeze Actions:
+Model Freeze Manifest
+Runtime loaded path freeze
+Model hash recording
+Feature schema hash recording
+Opportunity metrics path freeze
+PM code-policy hash freeze
+
+Backtest Result Feedback:
+PROHIBITED
+
+Tachibana API / Demo Trading / Production Trading:
+OUT_OF_SCOPE
+
+Public Blog / LINE / Discord:
+OUT_OF_SCOPE
+
+Runtime Internal Report:
+REQUIRED
+
+Historical Simulated Broker:
+REQUIRED
+
+Deferred Phase17 Improvement Targets:
 Candidate AI
 Opportunity AI
 Position Management AI
@@ -1543,8 +1675,168 @@ Safety
 Capital Allocation
 
 Runtime Core Bug Policy:
-Historical ReplayでRuntime Core bugがEvidence付きで見つかった場合のみ、
+Phase16 readinessでRuntime Core bugがEvidence付きで見つかった場合のみ、
 Performance改善とは分離してRuntime修正として扱う。
+
+Initial Runtime Reset:
+Reset / Backup / Restore mechanism is REQUIRED by a reviewed post Phase16-O implementation phase.
+Execution reset is performed before Phase17-A, not during Phase16-H.
+
+Final Production Preparation Reset:
+REQUIRED after Phase17 historical test evidence preservation.
+
+Runtime Bug Fix:
+ALLOWED_ONLY_WITH_EVIDENCE
+
+Runtime Bug Fix Required Evidence:
+Contract unchanged
+Authority unchanged
+State transition unchanged
+Normal mainline unchanged
+Default behavior unchanged
+Performance logic unchanged
+If any item is NO, stop as design change.
+```
+
+Phase16新工程。
+
+```text
+Phase16-H Scope Revision and Canonical Data Foundation
+Phase16-I Operational Data Foundation Purpose and Goal Definition
+Phase16-J Operational Data Architecture Contract
+Phase16-K AI Artifact Registry and Capital Allocation Contract Design
+Phase16-L Artifact Physical Path, Registry Integration, and Migration Sequence Design
+Phase16-M Operational Data Foundation Executive Architecture Review
+Phase16-N Executive Architecture Review Minor Amendment Closure
+Phase16-O Operational Lifecycle, State Reset Boundary, and Environment Transition Contract
+Post Phase16-O Reviewed Sequence TBD: Canonical Market Data Foundation
+Post Phase16-O Reviewed Sequence TBD: Calendar / Listed / Corporate Action Foundation
+Post Phase16-O Reviewed Sequence TBD: Feature Producer Connection from Canonical Data
+Post Phase16-O Reviewed Sequence TBD: AI Model and Policy Freeze
+Post Phase16-O Reviewed Sequence TBD: Operational Backup / Reset / Restore
+Post Phase16-O Reviewed Sequence TBD: Historical Broker Boundary
+Post Phase16-O Reviewed Sequence TBD: Point-in-time Guard
+Post Phase16-O Reviewed Sequence TBD: Operational Data Foundation Readiness Acceptance
+Phase16 Final Review and Phase17 Handoff
+```
+
+Phase16完了条件。
+
+```text
+Operational Data Architecture Contract accepted
+Canonical Raw SoT確定
+Canonical Normalized SoT確定
+Trading Calendar Source accepted
+Listed Issues Source accepted
+Corporate Action方針確定
+Canonical Feature Producer接続
+Feature Schema unchanged and accepted
+AI / Policy Freeze Manifest accepted
+AI Artifact Registry Contract accepted
+Registry Event Schema accepted
+Acceptance Report Schema accepted
+Regression Evidence Schema accepted
+Validation Result Schema accepted
+Review Approval Schema accepted
+Lifecycle transition validation accepted
+Model / Metrics Artifact Set accepted
+PM Code Policy freeze contract accepted
+Capital Allocation Contract accepted
+Decision Artifact hash contract accepted
+Silent fallback prohibited
+Permanent Artifact Path Contract accepted
+Registry Integration Contract accepted
+Artifact Migration Sequence accepted
+Backward Compatibility accepted
+Rollback accepted
+Regression Gate accepted
+Legacy Artifact Policy accepted
+Runtime input boundary accepted
+Backup / Reset / Restore完成
+Historical Broker境界完成
+Point-in-time Guard完成
+Phase artifact dependency removed from Runtime inputs
+No Phase16-specific active Runtime root
+No Historical-specific Canonical Source
+No AI retraining
+No Runtime design change
+Historical Runtime Readiness Acceptance PASS
+Phase17 Handoff complete
+```
+
+Phase16-A〜Gの扱い。
+
+```text
+Phase16-A Initial Historical Runtime Test Design
+Phase16-B Prerequisite Audit
+Phase16-C Temporal Bug Audit
+Phase16-D Temporal Bug Fix
+Phase16-E Prerequisite Re-Audit
+Phase16-F AI State and Data Lineage Audit
+Phase16-G Canonical Historical Data Audit
+```
+
+これらはPhase16方針変更のEvidenceとして保持する。
+
+Phase17。
+
+```text
+Phase17 Purpose:
+Historical Runtime v2 Performance Test
+
+Phase17-A 5 Business Day Smoke
+Phase17-B 20 Business Day Continuity Test
+Phase17-C 1-Year Performance Test
+Phase17-D Performance Attribution
+Phase17-E AI / Policy / Safety / PM / Capital Allocation Improvement Design
+Phase17-F 1-Year Revalidation
+Phase17-G 2021-07 to Latest Full Historical Test
+Phase17 Final Performance Review
+
+Phase17 Metrics:
+Annual Return
+Total Return
+Maximum Drawdown
+Profit Factor
+Win Rate
+Exposure
+Cash Utilization
+Turnover
+Average Holding Period
+Safety Impact
+Candidate Attribution
+Opportunity Attribution
+PM Attribution
+Capital Allocation Attribution
+Runtime Integrity
+```
+
+Phase18。
+
+```text
+Broker-connected Continuous Operation Test
+
+Scope:
+立花証券Demo
+毎日運用
+Broker-connected multi-day
+Notification Delivery
+Recovery
+Monitoring
+```
+
+Phase19。
+
+```text
+Production Enablement
+
+Scope:
+Production credentials
+Production account reconciliation
+Production Broker Write
+Emergency operation
+Production runbook
+Production unlock
 ```
 
 ---

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,7 @@ def run_runtime_v2_market_refresh_pipeline(
     allow_api_fetch: bool = False,
     fetcher: Any | None = None,
     mode: str = "demo",
+    now: datetime | None = None,
 ) -> RuntimeV2MarketRefreshResult:
     """Run market refresh and require actual feature artifacts for business_date."""
 
@@ -106,6 +108,7 @@ def run_runtime_v2_market_refresh_pipeline(
         latest_available_market_date=contract.latest_available_market_date,
         mode=mode,
         provider_status=_provider_status_from_market_refresh(result),
+        now=now,
     )
     generated = contract.generated_feature_artifacts
     missing = contract.missing_feature_artifacts

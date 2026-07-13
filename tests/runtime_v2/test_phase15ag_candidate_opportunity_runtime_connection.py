@@ -38,6 +38,7 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
     candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
     opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    opportunity_metrics_path = _write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)
 
     result = produce_buy_ai_decisions(
         runtime_root=runtime_root,
@@ -46,6 +47,7 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
         feature_date=FEATURE_DATE,
         candidate_model_path=candidate_model_path,
         opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=opportunity_metrics_path,
         selected_rank_limit=2,
     )
     candidate = json.loads(Path(result.candidate_artifact_path).read_text(encoding="utf-8"))
@@ -61,12 +63,106 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
     assert signals[0].symbol == "7203"
 
 
+def test_phase16aq_missing_opportunity_metrics_halts_without_phase5e_fallback(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=_write_opportunity_model(tmp_path / "opportunity_model.pkl"),
+    )
+    opportunity = json.loads(Path(result.opportunity_artifact_path).read_text(encoding="utf-8"))
+
+    assert result.status == "HALT"
+    assert result.reason == "opportunity_metrics_artifact_not_supplied"
+    assert opportunity["status"] == "HALT"
+    assert opportunity["halt_reason"] == "opportunity_metrics_artifact_not_supplied"
+    assert opportunity["metrics_validation"]["phase5e_fallback_used"] is False
+    assert "reports/opportunity_ai/phase5e" not in json.dumps(opportunity).lower()
+
+
+def test_phase16aq_phase5e_metrics_path_is_rejected(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    phase5e_metrics = _write_opportunity_metrics(
+        tmp_path / "reports" / "opportunity_ai" / "phase5e" / "opportunity_training_metrics.json",
+        opportunity_model_path,
+    )
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=phase5e_metrics,
+    )
+
+    assert result.status == "HALT"
+    assert result.reason == "opportunity_phase5e_metrics_rejected"
+
+
+def test_phase16aq_wrong_metrics_hash_is_rejected(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    metrics_path = _write_opportunity_metrics(
+        tmp_path / "opportunity_training_metrics.json",
+        opportunity_model_path,
+        extra={"model_artifact_hash": "sha256:" + ("0" * 64)},
+    )
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=metrics_path,
+    )
+
+    assert result.status == "HALT"
+    assert result.reason == "opportunity_metrics_model_hash_mismatch"
+
+
+def test_phase16aq_wrong_artifact_set_is_rejected(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl", artifact_set_id="set-a")
+    metrics_path = _write_opportunity_metrics(
+        tmp_path / "opportunity_training_metrics.json",
+        opportunity_model_path,
+        artifact_set_id="set-b",
+    )
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=metrics_path,
+    )
+
+    assert result.status == "HALT"
+    assert result.reason == "opportunity_model_metrics_artifact_set_mismatch"
+
+
 def test_phase15ag_morning_cli_uses_opportunity_artifact_not_feature_row_signal(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
     candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
     opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    opportunity_metrics_path = _write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)
 
     exit_code = main(
         [
@@ -100,6 +196,8 @@ def test_phase15ag_morning_cli_uses_opportunity_artifact_not_feature_row_signal(
             str(candidate_model_path),
             "--opportunity-model-path",
             str(opportunity_model_path),
+            "--opportunity-training-metrics-path",
+            str(opportunity_metrics_path),
         ]
     )
     manifest = _latest_manifest(runtime_root)
@@ -172,6 +270,7 @@ def test_phase15ag_report_and_notification_include_buy_ai_summary(tmp_path):
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
     candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
     opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    opportunity_metrics_path = _write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)
     main(
         [
             "--mode",
@@ -204,6 +303,8 @@ def test_phase15ag_report_and_notification_include_buy_ai_summary(tmp_path):
             str(candidate_model_path),
             "--opportunity-model-path",
             str(opportunity_model_path),
+            "--opportunity-training-metrics-path",
+            str(opportunity_metrics_path),
         ]
     )
 
@@ -346,16 +447,38 @@ def _write_candidate_model(path: Path) -> Path:
     return path
 
 
-def _write_opportunity_model(path: Path) -> Path:
+def _write_opportunity_model(path: Path, *, artifact_set_id: str = "") -> Path:
+    payload = {
+        "model": OpportunityFixtureModel(),
+        "feature_columns": ["feature__candidate_score"],
+        "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
+        "model_version": "opportunity_model_phase15ag_fixture",
+    }
+    if artifact_set_id:
+        payload["artifact_set_id"] = artifact_set_id
     _write_pickle(
         path,
-        {
-            "model": OpportunityFixtureModel(),
-            "feature_columns": ["feature__candidate_score"],
-            "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
-            "model_version": "opportunity_model_phase15ag_fixture",
-        },
+        payload,
     )
+    return path
+
+
+def _write_opportunity_metrics(
+    path: Path,
+    model_path: Path,
+    *,
+    artifact_set_id: str = "phase15ag_fixture_set",
+    extra: dict | None = None,
+) -> Path:
+    payload = {
+        "status": "PASS",
+        "readiness_status": "READY",
+        "model_artifact_path": str(model_path),
+        "artifact_set_id": artifact_set_id,
+        "feature_columns": ["feature__candidate_score"],
+    }
+    payload.update(extra or {})
+    _write_json(path, payload)
     return path
 
 

@@ -12,12 +12,12 @@
 - readiness_status: READY_TO_IMPLEMENT_ISOLATED_REAL_RUNTIME_NORMALIZED_REBUILD
 - raw_daily_quotes_detected: True
 - raw_input_path: .runtime/data/raw/jquants/equities_bars_daily/data.parquet
-- raw_row_count: 4449
-- raw_code_count: 4449
+- raw_row_count: 88930
+- raw_code_count: 4456
 - raw_date_min: 2026-06-01
-- raw_date_max: 2026-06-01
+- raw_date_max: 2026-06-26
 - existing_normalized_data_source_type: mock
-- existing_normalized_row_count: 1980
+- existing_normalized_row_count: 84307
 - would_overwrite_mock_history: True
 - isolated_output_path: .runtime/data/raw_normalized_real_runtime/jquants/equities_bars_daily/data.parquet
 - schema_mapping_defined: True

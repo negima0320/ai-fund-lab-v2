@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_registry_checkpoint.schema.json",
+  "title": "Artifact Registry Checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "checkpoint_id",
+    "created_at",
+    "event_log_path",
+    "event_log_hash",
+    "event_count",
+    "last_event_id",
+    "materialized_index_path",
+    "materialized_index_hash",
+    "entry_count",
+    "schema_versions",
+    "validation_result",
+    "previous_checkpoint_ref",
+    "created_by",
+    "checkpoint_hash",
+    "authority_change"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "artifact_registry_checkpoint.v1" },
+    "checkpoint_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "event_log_path": { "type": "string" },
+    "event_log_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "event_count": { "type": "integer", "minimum": 0 },
+    "last_event_id": { "type": ["string", "null"] },
+    "materialized_index_path": { "type": "string" },
+    "materialized_index_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "entry_count": { "type": "integer", "minimum": 0 },
+    "schema_versions": { "type": "object", "additionalProperties": { "type": "string" } },
+    "validation_result": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "HALT"] },
+    "previous_checkpoint_ref": { "type": ["string", "null"] },
+    "created_by": { "type": "string" },
+    "checkpoint_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "authority_change": { "const": false }
+  }
+}

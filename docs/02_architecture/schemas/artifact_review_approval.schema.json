@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_review_approval.schema.json",
+  "title": "Artifact Review Approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "approval_id",
+    "approval_type",
+    "subject_ref",
+    "reviewer_id",
+    "reviewer_role",
+    "decision",
+    "approved_at",
+    "evidence_refs",
+    "conditions",
+    "expires_at",
+    "supersedes_approval_id"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "artifact_review_approval.v1" },
+    "approval_id": { "type": "string" },
+    "approval_type": {
+      "type": "string",
+      "enum": ["HUMAN_REVIEW", "ARCHITECTURE_ACCEPTANCE", "REGRESSION_ACCEPTANCE", "RELEASE_APPROVAL"]
+    },
+    "approval_role": {
+      "type": ["string", "null"],
+      "enum": ["HUMAN_REVIEW", "ARCHITECTURE_ACCEPTANCE", "REGRESSION_ACCEPTANCE", "RELEASE_APPROVAL", null]
+    },
+    "subject_type": { "type": ["string", "null"], "enum": ["ARTIFACT_SET", "ARTIFACT", "REGRESSION_EVIDENCE", null] },
+    "subject_ref": { "type": "string" },
+    "artifact_set_type": {
+      "type": ["string", "null"],
+      "enum": [
+        "CANDIDATE_AI_SET",
+        "OPPORTUNITY_AI_SET",
+        "POSITION_MANAGEMENT_POLICY_SET",
+        "CAPITAL_ALLOCATION_POLICY_SET",
+        "FEATURE_SCHEMA_SET",
+        "SAFETY_POLICY_SET",
+        "CANDIDATE_ACCEPTED_SET",
+        "OPPORTUNITY_ACCEPTED_SET",
+        "PM_ACCEPTED_SET",
+        null
+      ]
+    },
+    "reviewer_id": { "type": "string" },
+    "reviewer_role": { "type": "string" },
+    "reviewed_hash": { "type": ["string", "null"], "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" },
+    "decision": { "type": "string", "enum": ["APPROVED", "REJECTED", "REVIEW_REQUIRED"] },
+    "approved_at": { "type": ["string", "null"], "format": "date-time" },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "conditions": { "type": "array", "items": { "type": "string" } },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" },
+    "supersedes_approval_id": { "type": ["string", "null"] }
+  }
+}

@@ -137,10 +137,12 @@ def run_submit_pipeline(
     capital_deployment_policy_path: Path | str | None = None,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
+    now: datetime | None = None,
 ) -> SubmitPipelineResult:
     """Submit all approved Pending items through the Runtime v2 submit path."""
 
     runtime_root_path = Path(runtime_root)
+    timestamp = _iso(now)
     _reject_mode_rooted_runtime_root(runtime_root_path)
     if job != "submit" or not submit_enabled:
         return _blocked_result(
@@ -333,6 +335,7 @@ def run_submit_pipeline(
             command=preflight.command,
             submit_result=submit_result,
             broker_order_id=broker_order_id,
+            created_at=timestamp,
         )
         if submit_result.submitted:
             ledger_records.append(ledger_record)
@@ -367,9 +370,9 @@ def run_submit_pipeline(
         submitted_order_ids = tuple(result.broker_order_id_hash for result in item_results if result.submitted)
         ledger_order_record_ids = tuple(result.ledger_order_record_id for result in item_results if result.submitted)
         if any(result.unknown for result in item_results):
-            pending = replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=_utc_now())
+            pending = replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=timestamp)
         elif any(result.rejected or result.blocked for result in item_results):
-            pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=_utc_now())
+            pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=timestamp)
         else:
             consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
             pending = replace(
@@ -379,7 +382,7 @@ def run_submit_pipeline(
                     for item in pending.items
                 ),
             )
-            pending = replace(pending, state=PendingPlanState.SUBMITTED, updated_at=_utc_now())
+            pending = replace(pending, state=PendingPlanState.SUBMITTED, updated_at=timestamp)
             pending = consume_pending_plan(
                 pending,
                 consume_reason=_consume_reason(item_results),
@@ -558,6 +561,7 @@ def _ledger_order_record(
     command: RuntimeV2SubmitCommand,
     submit_result: RuntimeV2SubmitResult,
     broker_order_id: str,
+    created_at: str,
 ) -> LedgerOrderRecord:
     record_id = "ledger-order-submit-" + _short_hash(command.command_id)
     return LedgerOrderRecord(
@@ -566,7 +570,7 @@ def _ledger_order_record(
         schema_version="1",
         environment=command.environment,
         source="runtime_v2_submit_pipeline",
-        created_at=_utc_now(),
+        created_at=created_at,
         dedup_key=f"runtime_v2_submit:{command.command_id}",
         review_required=submit_result.review_required,
         production_equivalent=command.environment == "production",
@@ -1174,6 +1178,10 @@ def _optional_float(value: Any) -> float | None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _iso(value: datetime | None) -> str:
+    return (value or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
 
 
 def _reject_mode_rooted_runtime_root(root: Path) -> None:

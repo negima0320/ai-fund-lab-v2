@@ -13,14 +13,14 @@
 - selected_data_source_type: mock
 - mock_history_detected: True
 - real_runtime_history_detected: False
-- date_min: 2026-03-02
-- date_max: 2026-06-01
-- business_day_count: 66
-- code_count: 30
-- row_count: 1980
-- codes_with_60_business_day_lookback: 30
-- codes_without_60_business_day_lookback: 0
-- estimated_chunk_count: 4
+- date_min: 2026-06-01
+- date_max: 2026-06-26
+- business_day_count: 20
+- code_count: 4280
+- row_count: 84307
+- codes_with_60_business_day_lookback: 0
+- codes_without_60_business_day_lookback: 4280
+- estimated_chunk_count: 143
 - runtime_free_space_sufficient: True
 
 ## Checks

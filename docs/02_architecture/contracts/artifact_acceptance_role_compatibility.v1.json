@@ -1,0 +1,211 @@
+{
+  "schema_version": "artifact_acceptance_role_compatibility.v1",
+  "created_for_phase": "Phase16-AJ",
+  "schema_versioning_classification": "pre-Acceptance v1 hardening",
+  "approval_roles": [
+    "HUMAN_REVIEW",
+    "ARCHITECTURE_ACCEPTANCE",
+    "REGRESSION_ACCEPTANCE",
+    "RELEASE_APPROVAL"
+  ],
+  "same_reviewer_allowed": true,
+  "role_omission_allowed": false,
+  "production_multi_reviewer_policy": "DEFERRED_TO_RELEASE_POLICY",
+  "artifact_set_types": {
+    "CANDIDATE_AI_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "MODEL",
+        "MODEL_MANIFEST",
+        "FEATURE_SCHEMA",
+        "TRAINING_METADATA",
+        "TRAINING_DATA_LINEAGE",
+        "VALIDATION_EVIDENCE",
+        "METRICS_EVIDENCE",
+        "CONSUMER_COMPATIBILITY"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true
+    },
+    "OPPORTUNITY_AI_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "MODEL",
+        "METRICS",
+        "FEATURE_SCHEMA",
+        "TRAINING_METADATA",
+        "TRAINING_DATA_LINEAGE",
+        "VALIDATION_EVIDENCE",
+        "CONSUMER_COMPATIBILITY"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true,
+      "same_set_constraints": [
+        "MODEL",
+        "METRICS"
+      ]
+    },
+    "POSITION_MANAGEMENT_POLICY_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "CODE_POLICY",
+        "RUNTIME_ADAPTER",
+        "POLICY_VERSION",
+        "FEATURE_VERSION",
+        "BEHAVIOR_CONTRACT",
+        "REGRESSION_EVIDENCE",
+        "CONSUMER_COMPATIBILITY"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true,
+      "same_set_constraints": [
+        "CODE_POLICY",
+        "RUNTIME_ADAPTER"
+      ]
+    },
+    "CAPITAL_ALLOCATION_POLICY_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "POLICY",
+        "POLICY_SCHEMA",
+        "POLICY_VERSION",
+        "VALIDATION_EVIDENCE",
+        "REGRESSION_EVIDENCE",
+        "CONSUMER_COMPATIBILITY"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true,
+      "same_set_constraints": [
+        "POLICY",
+        "POLICY_SCHEMA"
+      ]
+    },
+    "FEATURE_SCHEMA_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "FEATURE_SCHEMA",
+        "POINT_IN_TIME_EVIDENCE",
+        "CONSUMER_COMPATIBILITY",
+        "SCHEMA_VALIDATION_EVIDENCE"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true
+    },
+    "SAFETY_POLICY_SET": {
+      "set_authority_scope": "SET_LEVEL",
+      "required_member_roles": [
+        "POLICY",
+        "POLICY_SCHEMA",
+        "POLICY_VERSION",
+        "VALIDATION_EVIDENCE",
+        "REGRESSION_EVIDENCE",
+        "CONSUMER_COMPATIBILITY"
+      ],
+      "required_roles": [
+        "HUMAN_REVIEW",
+        "ARCHITECTURE_ACCEPTANCE",
+        "REGRESSION_ACCEPTANCE",
+        "RELEASE_APPROVAL"
+      ],
+      "optional_roles": [],
+      "forbidden_roles": [],
+      "runtime_use_eligible_requires_set_acceptance": true
+    }
+  },
+  "legacy_aliases": {
+    "CANDIDATE_ACCEPTED_SET": "CANDIDATE_AI_SET",
+    "OPPORTUNITY_ACCEPTED_SET": "OPPORTUNITY_AI_SET",
+    "PM_ACCEPTED_SET": "POSITION_MANAGEMENT_POLICY_SET"
+  },
+  "role_aliases": {
+    "model": "MODEL",
+    "manifest": "MODEL_MANIFEST",
+    "metrics": "METRICS",
+    "feature_schema": "FEATURE_SCHEMA",
+    "training_metadata": "TRAINING_METADATA",
+    "training_data_lineage": "TRAINING_DATA_LINEAGE",
+    "validation_evidence": "VALIDATION_EVIDENCE",
+    "metrics_evidence": "METRICS_EVIDENCE",
+    "consumer_compatibility": "CONSUMER_COMPATIBILITY",
+    "code_policy": "CODE_POLICY",
+    "runtime_adapter": "RUNTIME_ADAPTER",
+    "policy_version": "POLICY_VERSION",
+    "feature_version": "FEATURE_VERSION",
+    "behavior_contract": "BEHAVIOR_CONTRACT",
+    "regression_evidence": "REGRESSION_EVIDENCE",
+    "policy_artifact": "POLICY",
+    "policy": "POLICY",
+    "policy_schema": "POLICY_SCHEMA",
+    "point_in_time_evidence": "POINT_IN_TIME_EVIDENCE",
+    "schema_validation_evidence": "SCHEMA_VALIDATION_EVIDENCE"
+  },
+  "runtime_eligibility_preconditions": [
+    "event_type=ARTIFACT_ACCEPTED",
+    "new_status=ACCEPTED",
+    "set_authority_scope=SET_LEVEL",
+    "Artifact Set complete",
+    "member hash match",
+    "member schema hash match",
+    "Evidence Bundle complete",
+    "four approval roles present",
+    "Regression PASS",
+    "Consumer Compatibility PASS",
+    "Point-in-time PASS",
+    "Release Approval valid",
+    "not LEGACY",
+    "not REVOKED",
+    "not REJECTED"
+  ],
+  "cross_field_rules": [
+    "set_type_required_member_roles_match",
+    "set_type_required_approval_roles_match",
+    "approval_subject_refs_match_artifact_set",
+    "evidence_bundle_subject_refs_match_artifact_set",
+    "acceptance_report_set_hash_matches_manifest",
+    "regression_evidence_set_hash_matches_manifest",
+    "member_hashes_match_manifest",
+    "member_schema_hashes_match_manifest",
+    "opportunity_model_metrics_same_set",
+    "pm_code_policy_adapter_same_set",
+    "capital_allocation_policy_schema_same_set",
+    "runtime_use_eligible_requires_all_preconditions",
+    "replacement_stage_ordering",
+    "rollback_requires_new_evidence",
+    "revoked_instance_cannot_be_accepted"
+  ]
+}

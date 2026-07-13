@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_registry_index.schema.json",
+  "title": "Materialized Artifact Registry Index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "event_log_path",
+    "event_log_hash",
+    "event_count",
+    "last_event_id",
+    "entry_count",
+    "entries",
+    "index_hash",
+    "derived_from_event_log",
+    "builder_version"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "artifact_registry_index.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "event_log_path": { "type": "string", "minLength": 1 },
+    "event_log_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "event_count": { "type": "integer", "minimum": 0 },
+    "last_event_id": { "type": ["string", "null"] },
+    "entry_count": { "type": "integer", "minimum": 0 },
+    "entries": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "logical_artifact_id",
+          "active_artifact_instance_id",
+          "artifact_type",
+          "component",
+          "current_status",
+          "runtime_use_eligible",
+          "physical_path",
+          "content_hash",
+          "schema_hash",
+          "artifact_set_id",
+          "accepted_event_id",
+          "accepted_at",
+          "accepted_by",
+          "legacy_instances",
+          "revoked_instances",
+          "last_event_id",
+          "last_updated_at",
+          "derived_from_event_log"
+        ],
+        "properties": {
+          "schema_version": { "type": "string", "const": "artifact_registry_entry.v1" },
+          "logical_artifact_id": { "type": "string", "minLength": 1 },
+          "active_artifact_instance_id": { "type": ["string", "null"] },
+          "artifact_type": { "type": "string" },
+          "component": { "type": "string" },
+          "current_status": { "type": "string", "enum": ["DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED"] },
+          "runtime_use_eligible": { "type": "boolean" },
+          "physical_path": { "type": ["string", "null"] },
+          "content_hash": { "type": ["string", "null"] },
+          "schema_hash": { "type": ["string", "null"] },
+          "artifact_set_id": { "type": ["string", "null"] },
+          "accepted_event_id": { "type": ["string", "null"] },
+          "accepted_at": { "type": ["string", "null"], "format": "date-time" },
+          "accepted_by": { "type": ["string", "null"] },
+          "legacy_instances": { "type": "array", "items": { "type": "string" } },
+          "revoked_instances": { "type": "array", "items": { "type": "string" } },
+          "last_event_id": { "type": "string", "minLength": 1 },
+          "last_updated_at": { "type": "string", "format": "date-time" },
+          "derived_from_event_log": { "const": true }
+        }
+      }
+    },
+    "index_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "derived_from_event_log": { "const": true },
+    "builder_version": { "type": "string", "minLength": 1 }
+  }
+}

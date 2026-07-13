@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -55,6 +56,52 @@ def test_phase14e17_submit_pipeline_submits_all_approved_pending_items(tmp_path)
     assert all(order["raw_request_saved"] is False for order in (updated,))
 
 
+def test_phase16d_submit_pipeline_uses_explicit_now_for_pending_and_ledger_timestamps(tmp_path):
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    evaluation_time = datetime.fromisoformat("2026-07-08T09:00:00+09:00")
+
+    first = _run_single_submit(tmp_path / "run-1", policy_path=policy_path, evaluation_time=evaluation_time)
+    second = _run_single_submit(tmp_path / "run-2", policy_path=policy_path, evaluation_time=evaluation_time)
+
+    expected = "2026-07-08T00:00:00+00:00"
+    assert first["pending"]["updated_at"] == expected
+    assert second["pending"]["updated_at"] == expected
+    assert first["orders"][0]["created_at"] == expected
+    assert first["orders"][0]["recorded_at"] == expected
+    assert second["orders"][0]["created_at"] == expected
+    assert second["orders"][0]["recorded_at"] == expected
+    assert first["orders"] == second["orders"]
+    assert first["result"].submitted_count == 1
+    assert first["result"].pending_consumed is True
+
+
+def test_phase16d_submit_pipeline_default_now_preserves_normal_operation_timestamp(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_asset_state(runtime_root)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    pending = _approved_pending(("65220",), policy_path=policy_path)
+    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    updated = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+    orders = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+
+    assert result.status == "PASS"
+    assert updated["updated_at"].endswith("+00:00")
+    assert orders[0]["created_at"].endswith("+00:00")
+    assert orders[0]["recorded_at"] == orders[0]["created_at"]
+
+
 def test_phase14e17_submit_pipeline_blocks_demo_9000_series_before_submit(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_asset_state(runtime_root)
@@ -96,8 +143,10 @@ def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tm
     _write_asset_state(runtime_root)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", _approved_pending(("7203",)))
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    captured = {}
 
     def fake_submit_pipeline(**kwargs):
+        captured.update(kwargs)
         return SubmitPipelineResult(
             status="PASS",
             reason="submitted",
@@ -149,6 +198,8 @@ def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tm
             "submit",
             "--business-date",
             "2026-07-08",
+            "--evaluation-time",
+            "2026-07-08T09:00:00+09:00",
             "--submit-enabled",
             "true",
             "--notification-mode",
@@ -175,6 +226,7 @@ def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tm
     submit_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_v2_submit_pipeline")
 
     assert exit_code == 0
+    assert captured["now"].isoformat() == "2026-07-08T00:00:00+00:00"
     assert submit_stage["status"] == "PASS"
     assert submit_stage["details"]["submitted_count"] == 1
     assert manifest["prohibited_actions"]["demo_submit_executed"] is True
@@ -302,6 +354,31 @@ def _demo_settings() -> BrokerSettings:
         base_url="https://demo-kabuka.e-shiten.jp/e_api_v4r9",
         second_password_file="/tmp/phase14e17-second-password",
     )
+
+
+def _run_single_submit(root_parent: Path, *, policy_path: Path, evaluation_time: datetime) -> dict:
+    runtime_root = _runtime_root(root_parent)
+    _write_asset_state(runtime_root)
+    pending = _approved_pending(("65220",), policy_path=policy_path)
+    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+        now=evaluation_time,
+    )
+
+    return {
+        "result": result,
+        "pending": json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8")),
+        "orders": _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl"),
+    }
 
 
 def _write_policy(path: Path) -> Path:

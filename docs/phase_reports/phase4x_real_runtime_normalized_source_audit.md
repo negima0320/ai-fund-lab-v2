@@ -18,13 +18,13 @@
 - fixture_detected: False
 - selected_data_source_type: real_raw_jquants
 - raw_date_min: 2026-06-01
-- raw_date_max: 2026-06-01
-- raw_row_count: 4449
-- raw_code_count: 4449
-- normalized_date_min: 2026-03-02
-- normalized_date_max: 2026-06-01
-- normalized_row_count: 1980
-- normalized_code_count: 30
+- raw_date_max: 2026-06-26
+- raw_row_count: 88930
+- raw_code_count: 4456
+- normalized_date_min: 2026-06-01
+- normalized_date_max: 2026-06-26
+- normalized_row_count: 84307
+- normalized_code_count: 4280
 - safe_rebuild_possible: True
 - would_overwrite_mock_history: True
 

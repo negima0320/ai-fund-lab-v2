@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_acceptance_evidence_bundle.schema.json",
+  "title": "Artifact Acceptance Evidence Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_bundle_id",
+    "artifact_set_id",
+    "artifact_set_type",
+    "artifact_set_manifest_ref",
+    "acceptance_report_ref",
+    "regression_evidence_ref",
+    "approval_refs",
+    "source_lineage_ref",
+    "freeze_manifest_ref",
+    "consumer_compatibility_ref",
+    "rollback_target_ref",
+    "evidence_hashes",
+    "created_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "artifact_acceptance_evidence_bundle.v1" },
+    "evidence_bundle_id": { "type": "string", "minLength": 1 },
+    "artifact_set_id": { "type": "string", "minLength": 1 },
+    "artifact_set_type": {
+      "type": "string",
+      "enum": [
+        "CANDIDATE_AI_SET",
+        "OPPORTUNITY_AI_SET",
+        "POSITION_MANAGEMENT_POLICY_SET",
+        "CAPITAL_ALLOCATION_POLICY_SET",
+        "FEATURE_SCHEMA_SET",
+        "SAFETY_POLICY_SET"
+      ]
+    },
+    "artifact_set_manifest_ref": { "type": "string", "minLength": 1 },
+    "acceptance_report_ref": { "type": "string", "minLength": 1 },
+    "regression_evidence_ref": { "type": "string", "minLength": 1 },
+    "approval_refs": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "approval_ref", "approval_hash", "subject_ref", "reviewer_id", "decision"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["HUMAN_REVIEW", "ARCHITECTURE_ACCEPTANCE", "REGRESSION_ACCEPTANCE", "RELEASE_APPROVAL"]
+          },
+          "approval_ref": { "type": "string", "minLength": 1 },
+          "approval_hash": { "type": "string", "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" },
+          "subject_ref": { "type": "string", "minLength": 1 },
+          "reviewer_id": { "type": "string", "minLength": 1 },
+          "decision": { "type": "string", "enum": ["APPROVED", "REJECTED", "REVIEW_REQUIRED"] }
+        }
+      }
+    },
+    "source_lineage_ref": { "type": "string", "minLength": 1 },
+    "freeze_manifest_ref": { "type": "string", "minLength": 1 },
+    "consumer_compatibility_ref": { "type": "string", "minLength": 1 },
+    "rollback_target_ref": { "type": ["string", "null"] },
+    "evidence_hashes": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_registry_event.schema.json",
+  "title": "Artifact Registry Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "event_schema_version",
+    "event_created_at",
+    "actor_type",
+    "actor_id",
+    "authority_ref",
+    "logical_artifact_id",
+    "artifact_instance_id",
+    "artifact_type",
+    "component",
+    "artifact_version",
+    "previous_status",
+    "new_status",
+    "runtime_use_eligible",
+    "physical_path",
+    "content_hash",
+    "schema_version",
+    "schema_hash",
+    "artifact_set_id",
+    "business_date",
+    "feature_date",
+    "as_of",
+    "producer",
+    "producer_version",
+    "consumer_compatibility",
+    "source_refs",
+    "source_hashes",
+    "point_in_time_status",
+    "retention_class",
+    "path_classification",
+    "migration_status",
+    "review_ref",
+    "regression_ref",
+    "acceptance_report_ref",
+    "reason",
+    "supersedes_event_id",
+    "previous_physical_path",
+    "new_physical_path"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "ARTIFACT_DISCOVERED",
+        "ARTIFACT_VALIDATED",
+        "REVIEW_REQUIRED",
+        "ARTIFACT_ACCEPTED",
+        "ARTIFACT_LEGACY",
+        "ARTIFACT_REVOKED",
+        "ARTIFACT_REPLACED",
+        "PATH_REGISTERED",
+        "PATH_MIGRATED",
+        "ELIGIBILITY_CHANGED",
+        "CHECKPOINT_CREATED"
+      ]
+    },
+    "event_schema_version": { "const": "artifact_registry_event.v1" },
+    "event_created_at": { "type": "string", "format": "date-time" },
+    "actor_type": {
+      "type": "string",
+      "enum": ["HUMAN", "VALIDATION_TOOL", "INVENTORY_TOOL", "REGISTRY_SERVICE", "RELEASE_PROCESS"]
+    },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "authority_ref": { "type": ["string", "null"] },
+    "logical_artifact_id": { "type": ["string", "null"] },
+    "artifact_instance_id": { "type": ["string", "null"] },
+    "artifact_type": { "type": ["string", "null"] },
+    "component": { "type": ["string", "null"] },
+    "artifact_version": { "type": ["string", "null"] },
+    "previous_status": {
+      "type": ["string", "null"],
+      "enum": ["DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED", null]
+    },
+    "new_status": {
+      "type": ["string", "null"],
+      "enum": ["DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED", null]
+    },
+    "runtime_use_eligible": { "type": "boolean" },
+    "physical_path": { "type": ["string", "null"] },
+    "content_hash": { "type": ["string", "null"], "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" },
+    "schema_version": { "type": ["string", "null"] },
+    "schema_hash": { "type": ["string", "null"], "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" },
+    "artifact_set_id": { "type": ["string", "null"] },
+    "artifact_set_type": {
+      "type": ["string", "null"],
+      "enum": [
+        "CANDIDATE_AI_SET",
+        "OPPORTUNITY_AI_SET",
+        "POSITION_MANAGEMENT_POLICY_SET",
+        "CAPITAL_ALLOCATION_POLICY_SET",
+        "FEATURE_SCHEMA_SET",
+        "SAFETY_POLICY_SET",
+        "CANDIDATE_ACCEPTED_SET",
+        "OPPORTUNITY_ACCEPTED_SET",
+        "PM_ACCEPTED_SET",
+        null
+      ]
+    },
+    "business_date": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "feature_date": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "as_of": { "type": ["string", "null"] },
+    "producer": { "type": ["string", "null"] },
+    "producer_version": { "type": ["string", "null"] },
+    "consumer_compatibility": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["consumer", "compatible", "reason"],
+        "properties": {
+          "consumer": { "type": "string" },
+          "compatible": { "type": "boolean" },
+          "reason": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "source_refs": { "type": "array", "items": { "type": "string" } },
+    "source_hashes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "hash"],
+        "properties": {
+          "ref": { "type": "string" },
+          "hash": { "type": ["string", "null"], "pattern": "^(sha256:[0-9a-f]{64}|[0-9a-f]{64})$" }
+        }
+      }
+    },
+    "point_in_time_status": {
+      "type": ["string", "null"],
+      "enum": ["PASS", "REVIEW_REQUIRED", "HALT", "NOT_APPLICABLE", null]
+    },
+    "retention_class": { "type": ["string", "null"] },
+    "path_classification": { "type": ["string", "null"] },
+    "migration_status": { "type": ["string", "null"] },
+    "review_ref": { "type": ["string", "null"] },
+    "regression_ref": { "type": ["string", "null"] },
+    "acceptance_report_ref": { "type": ["string", "null"] },
+    "evidence_bundle_ref": { "type": ["string", "null"] },
+    "consumer_compatibility_ref": { "type": ["string", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "supersedes_event_id": { "type": ["string", "null"] },
+    "previous_physical_path": { "type": ["string", "null"] },
+    "new_physical_path": { "type": ["string", "null"] },
+    "replacement_operation_id": { "type": ["string", "null"] },
+    "replacement_from_ref": { "type": ["string", "null"] },
+    "replacement_to_ref": { "type": ["string", "null"] },
+    "replacement_stage": {
+      "type": ["string", "null"],
+      "enum": ["NEW_VALIDATED", "NEW_ACCEPTED_INELIGIBLE", "OLD_LEGACY", "NEW_ELIGIBLE", "INDEX_BUILT", "CHECKPOINTED", null]
+    },
+    "rollback_operation_id": { "type": ["string", "null"] },
+    "rollback_target_ref": { "type": ["string", "null"] },
+    "new_acceptance_report_ref": { "type": ["string", "null"] },
+    "new_regression_ref": { "type": ["string", "null"] },
+    "new_approval_refs": { "type": "array", "items": { "type": "string" } },
+    "revoke_reason": { "type": ["string", "null"] },
+    "affected_consumers": { "type": "array", "items": { "type": "string" } },
+    "replacement_ref": { "type": ["string", "null"] },
+    "runtime_fail_closed_required": { "type": ["boolean", "null"] },
+    "incident_ref": { "type": ["string", "null"] }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/artifact_validation_result.schema.json",
+  "title": "Artifact Validation Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "validation_id",
+    "validated_at",
+    "subject_type",
+    "subject_ref",
+    "validator_version",
+    "validated_schema_version",
+    "overall_result",
+    "failure_class",
+    "checks",
+    "errors",
+    "warnings",
+    "evidence_refs",
+    "recommended_action"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "artifact_validation_result.v1" },
+    "validation_id": { "type": "string", "minLength": 1 },
+    "validated_at": { "type": "string", "format": "date-time" },
+    "subject_type": { "type": "string", "minLength": 1 },
+    "subject_ref": { "type": "string", "minLength": 1 },
+    "validator_version": { "type": "string", "minLength": 1 },
+    "validated_schema_version": { "type": ["string", "null"] },
+    "overall_result": {
+      "type": "string",
+      "enum": ["PASS", "PASS_WITH_WARNINGS", "REVIEW_REQUIRED", "FAIL"]
+    },
+    "failure_class": {
+      "type": "string",
+      "enum": ["NONE", "VALIDATION_ERROR", "REVIEW_REQUIRED", "HALT"]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_id",
+          "check_type",
+          "result",
+          "severity",
+          "message",
+          "field_path",
+          "evidence_ref"
+        ],
+        "properties": {
+          "check_id": { "type": "string", "minLength": 1 },
+          "check_type": { "type": "string", "minLength": 1 },
+          "result": { "type": "string", "enum": ["PASS", "WARN", "FAIL", "SKIPPED"] },
+          "severity": { "type": "string", "enum": ["INFO", "WARNING", "ERROR", "CRITICAL"] },
+          "message": { "type": "string" },
+          "field_path": { "type": ["string", "null"] },
+          "evidence_ref": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "recommended_action": { "type": ["string", "null"] }
+  }
+}

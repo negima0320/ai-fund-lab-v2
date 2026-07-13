@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
@@ -60,6 +61,7 @@ def test_phase15ar_data_readiness_pending_ready_after_expiration(tmp_path):
         business_date=BUSINESS_DATE,
         mode="demo",
         readiness_scope="sell_planning",
+        now=_now(),
     )
 
     assert result.status == "READY"
@@ -109,6 +111,7 @@ def test_phase15ar_unknown_submit_risk_keeps_data_readiness_review_required(tmp_
         business_date=BUSINESS_DATE,
         mode="demo",
         readiness_scope="sell_planning",
+        now=_now(),
     )
 
     assert result.status == "REVIEW_REQUIRED"
@@ -132,6 +135,51 @@ def test_phase15ar_valid_today_approved_pending_noop(tmp_path):
     assert result.reason == "active_pending_not_stale"
     assert slot["state"] == "APPROVED"
     assert result.manifest_fields["idempotent_noop"] is True
+
+
+def test_phase16d_historical_evaluation_time_prevents_wall_clock_expiration(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_pending(runtime_root, pending_plan_id="pending-2021", target_date="2021-07-05")
+    evaluation_time = datetime.fromisoformat("2021-07-05T09:00:00+09:00")
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date="2021-07-05",
+        mode="demo",
+        action="review",
+        now=evaluation_time,
+    )
+
+    slot = _load_json(pending_path)
+
+    assert result.status == "NOOP"
+    assert result.reason == "active_pending_not_stale"
+    assert result.manifest_fields["transitioned_at"] == evaluation_time.astimezone(timezone.utc).isoformat()
+    assert slot["state"] == "APPROVED"
+    assert slot["approval"]["approval_expires_at"] == "2021-07-05T15:00:00+09:00"
+
+
+def test_phase16d_historical_evaluation_time_expires_after_approval_deadline(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_pending(runtime_root, pending_plan_id="pending-2021-expired", target_date="2021-07-05")
+    evaluation_time = datetime.fromisoformat("2021-07-05T16:00:00+09:00")
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date="2021-07-05",
+        mode="demo",
+        action="review",
+        now=evaluation_time,
+    )
+
+    slot = _load_json(pending_path)
+    history = _load_json(Path(result.manifest_fields["history_path"]))
+
+    assert result.status == "EXPIRED"
+    assert result.reason == "approval_expired"
+    assert result.manifest_fields["transitioned_at"] == evaluation_time.astimezone(timezone.utc).isoformat()
+    assert slot["status"] == "EMPTY"
+    assert history["transitioned_at"] == evaluation_time.astimezone(timezone.utc).isoformat()
 
 
 def test_phase15ar_empty_slot_is_reader_valid_and_noop(tmp_path):
@@ -168,6 +216,7 @@ def test_phase15ar_empty_slot_is_reader_valid_and_noop(tmp_path):
 def test_phase15ar_cli_manifest_report_notification_include_lifecycle(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_pending(runtime_root, pending_plan_id="pending-cli", target_date=TARGET_DATE)
+    evaluation_time = "2026-07-10T02:03:04+00:00"
 
     exit_code = main(
         [
@@ -179,6 +228,8 @@ def test_phase15ar_cli_manifest_report_notification_include_lifecycle(tmp_path):
             "review",
             "--business-date",
             BUSINESS_DATE,
+            "--evaluation-time",
+            evaluation_time,
             "--runtime-root",
             str(runtime_root),
             "--reports-root",
@@ -199,6 +250,7 @@ def test_phase15ar_cli_manifest_report_notification_include_lifecycle(tmp_path):
     assert exit_code == 0
     assert manifest["pending_lifecycle_status"] == "EXPIRED"
     assert manifest["new_state"] == "EXPIRED"
+    assert manifest["transitioned_at"] == evaluation_time
     assert report["pending_lifecycle"]["pending_lifecycle_status"] == "EXPIRED"
     assert notification["pending_lifecycle_status"] == "EXPIRED"
     assert notification["notification_sent"] is False
@@ -263,11 +315,16 @@ def _runtime_root(tmp_path: Path) -> Path:
     _write_json(
         root / "runtime_state" / "current_state.json",
         {
-            "schema_version": "1",
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
+            "business_date": BUSINESS_DATE,
+            "generated_at": BUSINESS_DATE + "T00:00:00Z",
             "runtime_id": "runtime-v2-demo",
             "run_id": "phase15ar-test",
             "state": "CURRENT_STATE_LOADED",
+            "safety_state": "NORMAL",
             "environment": "demo",
+            "source": "phase15ar_fixture",
             "updated_at": BUSINESS_DATE + "T00:00:00Z",
         },
     )

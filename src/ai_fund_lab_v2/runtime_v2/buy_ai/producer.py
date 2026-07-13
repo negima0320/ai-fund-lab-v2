@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,11 @@ from scripts.run_phase4bg_formal_candidate_inference import (
 )
 
 from ai_fund_lab_v2.opportunity_ai.inference import run_opportunity_inference
+from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
+    RuntimeArtifactLookupHalt,
+    require_diagnostic_path_matches_registry,
+    resolve_runtime_artifact_set,
+)
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal
 
 
@@ -33,6 +39,7 @@ OPPORTUNITY_ARTIFACT_SCHEMA_VERSION = "runtime_v2_opportunity_ranking_v1"
 BUY_AI_INFERENCE_VERSION = "candidate_opportunity_ai_regular_path_v1"
 DEFAULT_CANDIDATE_MODEL_PATH = Path(".runtime/candidate_ai/models/phase4bf_formal_candidate_model.pkl")
 DEFAULT_OPPORTUNITY_MODEL_PATH = Path("reports/opportunity_ai/phase5p/models/opportunity_model.pkl")
+PROHIBITED_OPPORTUNITY_PHASE5E_METRICS_PATH = Path("reports/opportunity_ai/phase5e/opportunity_training_metrics.json")
 
 
 @dataclass(frozen=True)
@@ -112,9 +119,55 @@ def produce_buy_ai_decisions(
     feature_dir = Path(feature_root) / feature_date
     candidate_feature_path = feature_dir / "candidate_features.parquet"
     opportunity_feature_path = feature_dir / "opportunity_feature_input.parquet"
-    resolved_candidate_model_path, resolved_opportunity_model_path = resolve_buy_ai_model_paths(
-        candidate_model_path=candidate_model_path,
-        opportunity_model_path=opportunity_model_path,
+    try:
+        artifact_paths = resolve_buy_ai_artifact_paths(
+            candidate_model_path=candidate_model_path,
+            opportunity_model_path=opportunity_model_path,
+            opportunity_training_metrics_path=opportunity_training_metrics_path,
+            allow_isolated_test_paths=_isolated_test_artifact_paths_allowed(root, candidate_model_path, opportunity_model_path, opportunity_training_metrics_path),
+        )
+    except RuntimeArtifactLookupHalt as exc:
+        halt_payload = _candidate_payload(
+            business_date=business_date,
+            feature_date=feature_date,
+            runtime_id=runtime_id,
+            generated_at=generated_at,
+            model_version="",
+            status="HALT",
+            reason=str(exc),
+            feature_path=candidate_feature_path,
+            model_path=None,
+            artifact_path=candidate_artifact_path,
+            rows=(),
+        )
+        _write_json(candidate_artifact_path, halt_payload)
+        _write_json(opportunity_artifact_path, _empty_opportunity_payload(
+            business_date=business_date,
+            runtime_id=runtime_id,
+            feature_date=feature_date,
+            generated_at=generated_at,
+            status="HALT",
+            reason=str(exc),
+            candidate_artifact_path=candidate_artifact_path,
+            opportunity_feature_path=opportunity_feature_path,
+            review_reason=str(exc),
+        ))
+        return _result(
+            status="HALT",
+            reason=str(exc),
+            business_date=business_date,
+            runtime_id=runtime_id,
+            feature_date=feature_date,
+            generated_at=generated_at,
+            candidate_payload=halt_payload,
+            opportunity_payload=_read_json(opportunity_artifact_path),
+            opportunity_artifact_path=opportunity_artifact_path,
+            ai_signals=(),
+        )
+
+    resolved_candidate_model_path, resolved_opportunity_model_path = (
+        artifact_paths["candidate_model"],
+        artifact_paths["opportunity_model"],
     )
 
     candidate_payload = _produce_candidate_artifact(
@@ -158,14 +211,14 @@ def produce_buy_ai_decisions(
         candidate_artifact_path=candidate_artifact_path,
         opportunity_feature_path=opportunity_feature_path,
         opportunity_model_path=resolved_opportunity_model_path,
-        opportunity_training_metrics_path=Path(opportunity_training_metrics_path) if opportunity_training_metrics_path else None,
+        opportunity_training_metrics_path=artifact_paths["opportunity_metrics"],
         artifact_path=opportunity_artifact_path,
         business_date=business_date,
         feature_date=feature_date,
         runtime_id=runtime_id,
         generated_at=generated_at,
     )
-    status = "PASS" if opportunity_payload["status"] == "PASS" else "REVIEW_REQUIRED"
+    status = "PASS" if opportunity_payload["status"] == "PASS" else str(opportunity_payload.get("status") or "REVIEW_REQUIRED")
     reason = "" if status == "PASS" else str(opportunity_payload.get("reason") or "opportunity_ai_not_ready")
     return _result(
         status=status,
@@ -188,11 +241,91 @@ def resolve_buy_ai_model_paths(
     *,
     candidate_model_path: Path | str | None = None,
     opportunity_model_path: Path | str | None = None,
+    allow_isolated_test_paths: bool = False,
 ) -> tuple[Path, Path]:
-    return (
-        Path(candidate_model_path) if candidate_model_path else DEFAULT_CANDIDATE_MODEL_PATH,
-        Path(opportunity_model_path) if opportunity_model_path else DEFAULT_OPPORTUNITY_MODEL_PATH,
+    paths = resolve_buy_ai_artifact_paths(
+        candidate_model_path=candidate_model_path,
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=None,
+        allow_isolated_test_paths=allow_isolated_test_paths,
     )
+    return (paths["candidate_model"], paths["opportunity_model"])
+
+
+def resolve_buy_ai_artifact_paths(
+    *,
+    candidate_model_path: Path | str | None = None,
+    opportunity_model_path: Path | str | None = None,
+    opportunity_training_metrics_path: Path | str | None = None,
+    allow_isolated_test_paths: bool = False,
+) -> dict[str, Path]:
+    if allow_isolated_test_paths:
+        return {
+            "candidate_model": Path(candidate_model_path) if candidate_model_path else DEFAULT_CANDIDATE_MODEL_PATH,
+            "candidate_model_manifest": Path(""),
+            "candidate_feature_schema": Path(""),
+            "opportunity_model": Path(opportunity_model_path) if opportunity_model_path else DEFAULT_OPPORTUNITY_MODEL_PATH,
+            "opportunity_metrics": Path(opportunity_training_metrics_path) if opportunity_training_metrics_path else None,  # type: ignore[dict-item]
+            "opportunity_feature_schema": Path(""),
+        }
+    candidate = resolve_runtime_artifact_set(
+        "CANDIDATE_AI_SET",
+        required_roles=(
+            "MODEL",
+            "MODEL_MANIFEST",
+            "FEATURE_SCHEMA",
+            "TRAINING_METADATA",
+            "TRAINING_DATA_LINEAGE",
+            "VALIDATION_EVIDENCE",
+            "METRICS_EVIDENCE",
+            "CONSUMER_COMPATIBILITY",
+        ),
+    )
+    opportunity = resolve_runtime_artifact_set(
+        "OPPORTUNITY_AI_SET",
+        required_roles=(
+            "MODEL",
+            "METRICS",
+            "FEATURE_SCHEMA",
+            "TRAINING_METADATA",
+            "TRAINING_DATA_LINEAGE",
+            "VALIDATION_EVIDENCE",
+            "CONSUMER_COMPATIBILITY",
+        ),
+    )
+    candidate_model = candidate.require_member("MODEL")
+    opportunity_model = opportunity.require_member("MODEL")
+    opportunity_metrics = opportunity.require_member("METRICS")
+    opportunity_schema = opportunity.require_member("FEATURE_SCHEMA")
+    require_diagnostic_path_matches_registry(candidate_model_path, candidate_model, label="candidate_model_path")
+    require_diagnostic_path_matches_registry(opportunity_model_path, opportunity_model, label="opportunity_model_path")
+    if opportunity_training_metrics_path is not None and _is_prohibited_phase5e_metrics_path(Path(opportunity_training_metrics_path)):
+        raise RuntimeArtifactLookupHalt("Opportunity Phase5-E metrics artifact is prohibited for Runtime use.")
+    require_diagnostic_path_matches_registry(opportunity_training_metrics_path, opportunity_metrics, label="opportunity_training_metrics_path")
+    if opportunity_model.artifact_set_id != opportunity_metrics.artifact_set_id:
+        raise RuntimeArtifactLookupHalt("Opportunity model and metrics are not from the same Registry Artifact Set.")
+    return {
+        "candidate_model": candidate_model.physical_path,
+        "candidate_model_manifest": candidate.require_member("MODEL_MANIFEST").physical_path,
+        "candidate_feature_schema": candidate.require_member("FEATURE_SCHEMA").physical_path,
+        "opportunity_model": opportunity_model.physical_path,
+        "opportunity_metrics": opportunity_metrics.physical_path,
+        "opportunity_feature_schema": opportunity_schema.physical_path,
+    }
+
+
+def _isolated_test_artifact_paths_allowed(
+    runtime_root: Path,
+    candidate_model_path: Path | str | None,
+    opportunity_model_path: Path | str | None,
+    opportunity_training_metrics_path: Path | str | None,
+) -> bool:
+    if not any((candidate_model_path, opportunity_model_path, opportunity_training_metrics_path)):
+        return False
+    try:
+        return runtime_root.resolve() != Path(".runtime").resolve()
+    except OSError:
+        return True
 
 
 def load_ai_planning_signals_from_opportunity_artifact(
@@ -421,6 +554,28 @@ def _produce_opportunity_artifact(
         _write_json(artifact_path, payload)
         return payload
     model_payload = _read_pickle(opportunity_model_path)
+    metrics_validation = _validate_opportunity_metrics_artifact(
+        model_path=opportunity_model_path,
+        model_payload=model_payload,
+        metrics_path=opportunity_training_metrics_path,
+    )
+    if metrics_validation["status"] != "PASS":
+        payload = _empty_opportunity_payload(
+            business_date=business_date,
+            runtime_id=runtime_id,
+            feature_date=feature_date,
+            generated_at=generated_at,
+            status="HALT",
+            reason=str(metrics_validation["reason"]),
+            candidate_artifact_path=candidate_artifact_path,
+            opportunity_feature_path=opportunity_feature_path,
+            model_version=str(model_payload.get("model_version") or ""),
+            review_reason=str(metrics_validation["reason"]),
+        )
+        payload["halt_reason"] = str(metrics_validation["reason"])
+        payload["metrics_validation"] = metrics_validation
+        _write_json(artifact_path, payload)
+        return payload
     schema_evidence = _opportunity_schema_evidence(
         candidate_artifact_path=candidate_artifact_path,
         opportunity_feature_path=opportunity_feature_path,
@@ -446,7 +601,7 @@ def _produce_opportunity_artifact(
         candidate_path=candidate_artifact_path,
         feature_path=opportunity_feature_path,
         model_path=opportunity_model_path,
-        training_metrics_path=opportunity_training_metrics_path or Path("reports/opportunity_ai/phase5e/opportunity_training_metrics.json"),
+        training_metrics_path=opportunity_training_metrics_path,
         output_dir=artifact_path.parent,
         created_at=generated_at,
         inference_run_id=runtime_id,
@@ -498,12 +653,169 @@ def _produce_opportunity_artifact(
         "reason": "",
         "candidate_artifact_path": str(candidate_artifact_path),
         "opportunity_feature_path": str(opportunity_feature_path),
+        "opportunity_training_metrics_path": str(opportunity_training_metrics_path),
+        "metrics_validation": metrics_validation,
         **_opportunity_schema_payload_fields(schema_evidence),
         "ranking_count": len(rows),
         "rankings": rows,
     }
     _write_json(artifact_path, payload)
     return payload
+
+
+def _validate_opportunity_metrics_artifact(
+    *,
+    model_path: Path,
+    model_payload: dict[str, Any],
+    metrics_path: Path | None,
+) -> dict[str, Any]:
+    if metrics_path is None:
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_artifact_not_supplied",
+            "Opportunity metrics artifact not supplied. Formal Registry artifact required. Phase5-E fallback prohibited.",
+            metrics_path=None,
+            model_path=model_path,
+        )
+    if _is_prohibited_phase5e_metrics_path(metrics_path):
+        return _opportunity_metrics_halt(
+            "opportunity_phase5e_metrics_rejected",
+            "Opportunity Phase5-E metrics artifact is prohibited for Runtime use.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+        )
+    if not metrics_path.is_file():
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_artifact_missing",
+            "Opportunity metrics artifact path does not exist.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+        )
+    try:
+        metrics_payload = _read_json(metrics_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_artifact_invalid_json",
+            f"Opportunity metrics artifact is not readable JSON: {exc}",
+            metrics_path=metrics_path,
+            model_path=model_path,
+        )
+    model_hash = _file_sha256(model_path)
+    metrics_hash = _file_sha256(metrics_path)
+    model_set_id = _artifact_set_id(model_payload)
+    metrics_set_id = _artifact_set_id(metrics_payload)
+    if model_set_id and metrics_set_id and model_set_id != metrics_set_id:
+        return _opportunity_metrics_halt(
+            "opportunity_model_metrics_artifact_set_mismatch",
+            "Opportunity model and metrics artifacts are not from the same Artifact Set.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+            model_hash=model_hash,
+            metrics_hash=metrics_hash,
+            model_artifact_set_id=model_set_id,
+            metrics_artifact_set_id=metrics_set_id,
+        )
+    metrics_model_path = _payload_path(metrics_payload, "model_artifact_path", "opportunity_model_path", "model_path")
+    if metrics_model_path and not _same_artifact_path(metrics_model_path, model_path):
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_model_path_mismatch",
+            "Opportunity metrics artifact points to a different model artifact.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+            model_hash=model_hash,
+            metrics_hash=metrics_hash,
+            metrics_model_path=metrics_model_path,
+        )
+    metrics_model_hash = _payload_hash(metrics_payload, "model_artifact_hash", "opportunity_model_hash", "model_hash")
+    if metrics_model_hash and metrics_model_hash != model_hash:
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_model_hash_mismatch",
+            "Opportunity metrics artifact model hash does not match the supplied model artifact.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+            model_hash=model_hash,
+            metrics_hash=metrics_hash,
+            metrics_model_hash=metrics_model_hash,
+        )
+    metrics_feature_columns = [str(column) for column in metrics_payload.get("feature_columns") or ()]
+    model_feature_columns = [str(column) for column in model_payload.get("feature_columns") or ()]
+    if metrics_feature_columns and model_feature_columns and metrics_feature_columns != model_feature_columns:
+        return _opportunity_metrics_halt(
+            "opportunity_metrics_feature_schema_mismatch",
+            "Opportunity metrics artifact feature schema does not match the supplied model artifact.",
+            metrics_path=metrics_path,
+            model_path=model_path,
+            model_hash=model_hash,
+            metrics_hash=metrics_hash,
+            metrics_feature_column_count=len(metrics_feature_columns),
+            model_feature_column_count=len(model_feature_columns),
+        )
+    return {
+        "status": "PASS",
+        "reason": "",
+        "model_path": str(model_path),
+        "metrics_path": str(metrics_path),
+        "model_hash": model_hash,
+        "metrics_hash": metrics_hash,
+        "model_artifact_set_id": model_set_id,
+        "metrics_artifact_set_id": metrics_set_id,
+        "phase5e_fallback_used": False,
+        "consumer_compatibility": "model_metrics_pair_validated_before_opportunity_inference",
+    }
+
+
+def _opportunity_metrics_halt(
+    code: str,
+    message: str,
+    *,
+    metrics_path: Path | None,
+    model_path: Path,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "status": "HALT",
+        "reason": code,
+        "message": message,
+        "model_path": str(model_path),
+        "metrics_path": str(metrics_path or ""),
+        "phase5e_fallback_used": False,
+        **extra,
+    }
+
+
+def _is_prohibited_phase5e_metrics_path(path: Path) -> bool:
+    text = path.as_posix().lower()
+    return "reports/opportunity_ai/phase5e/opportunity_training_metrics.json" in text or (
+        "phase5e" in text and path.name == PROHIBITED_OPPORTUNITY_PHASE5E_METRICS_PATH.name
+    )
+
+
+def _artifact_set_id(payload: dict[str, Any]) -> str:
+    for key in ("artifact_set_id", "opportunity_artifact_set_id", "artifact_set"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _payload_path(payload: dict[str, Any], *keys: str) -> Path | None:
+    for key in keys:
+        value = payload.get(key)
+        if value:
+            return Path(str(value))
+    return None
+
+
+def _same_artifact_path(left: Path, right: Path) -> bool:
+    return left == right or left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def _payload_hash(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value:
+            text = str(value)
+            return text.removeprefix("sha256:")
+    return ""
 
 
 def _candidate_payload(
@@ -846,6 +1158,14 @@ def _read_pickle(path: Path) -> dict[str, Any]:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _write_json(path: Path, payload: Any) -> None:

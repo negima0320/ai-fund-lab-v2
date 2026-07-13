@@ -16,11 +16,11 @@
 - default_mock_path_unchanged: True
 - mock_history_overwritten: False
 - promotion_performed: False
-- row_count: 4231
-- code_count: 4231
+- row_count: 84307
+- code_count: 4280
 - date_min: 2026-06-01
-- date_max: 2026-06-01
-- business_day_count: 1
+- date_max: 2026-06-26
+- business_day_count: 20
 - schema_mapping_status: OK
 - coverage_status_detail: isolated rebuild success but insufficient for 60-day Candidate feature generation
 

@@ -104,6 +104,11 @@ def test_phase15ao_opportunity_prefixed_artifact_column_stops_before_inference(t
             tmp_path / "opportunity_model.pkl",
             ["feature__candidate_score", "feature__price_momentum_return_20d"],
         ),
+        opportunity_training_metrics_path=_write_opportunity_metrics(
+            tmp_path / "opportunity_training_metrics.json",
+            tmp_path / "opportunity_model.pkl",
+            feature_columns=["feature__candidate_score", "feature__price_momentum_return_20d"],
+        ),
     )
     opportunity = _read_json(result.opportunity_artifact_path)
 
@@ -130,6 +135,11 @@ def test_phase15ao_opportunity_missing_required_feature_does_not_nan_continue(tm
         opportunity_model_path=_write_opportunity_model(
             tmp_path / "opportunity_model.pkl",
             ["feature__candidate_score", "feature__price_momentum_return_60d"],
+        ),
+        opportunity_training_metrics_path=_write_opportunity_metrics(
+            tmp_path / "opportunity_training_metrics.json",
+            tmp_path / "opportunity_model.pkl",
+            feature_columns=["feature__candidate_score", "feature__price_momentum_return_60d"],
         ),
     )
     opportunity = _read_json(result.opportunity_artifact_path)
@@ -289,6 +299,19 @@ def _write_opportunity_model(path: Path, feature_columns: list[str] | None = Non
             "feature_columns": feature_columns or ["feature__candidate_score"],
             "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
             "model_version": "opportunity_model_phase15ao_fixture",
+        },
+    )
+    return path
+
+
+def _write_opportunity_metrics(path: Path, model_path: Path, *, feature_columns: list[str] | None = None) -> Path:
+    _write_json(
+        path,
+        {
+            "status": "PASS",
+            "readiness_status": "READY",
+            "model_artifact_path": str(model_path),
+            "feature_columns": feature_columns or ["feature__candidate_score"],
         },
     )
     return path

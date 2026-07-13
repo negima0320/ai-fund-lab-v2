@@ -135,6 +135,7 @@ def run_phase15by_buy_origin_e2e(
         feature_date=FEATURE_DATE,
         candidate_model_path=root / "runtime_state" / "buy_ai_models" / "candidate_model.pkl",
         opportunity_model_path=root / "runtime_state" / "buy_ai_models" / "opportunity_model.pkl",
+        opportunity_training_metrics_path=root / "runtime_state" / "buy_ai_models" / "opportunity_training_metrics.json",
         selected_rank_limit=1,
     )
     ai_signals = load_ai_planning_signals_from_opportunity_artifact(buy_ai.opportunity_artifact_path, selected_rank_limit=1)
@@ -497,6 +498,15 @@ def _write_buy_ai_models(root: Path) -> None:
             "feature_columns": ["feature__candidate_score"],
             "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
             "model_version": "opportunity_model_phase15by_acceptance_fixture",
+        },
+    )
+    _write_json(
+        model_dir / "opportunity_training_metrics.json",
+        {
+            "status": "PASS",
+            "readiness_status": "READY",
+            "model_artifact_path": str(model_dir / "opportunity_model.pkl"),
+            "feature_columns": ["feature__candidate_score"],
         },
     )
 
