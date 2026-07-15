@@ -6,6 +6,11 @@ import numpy as np
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
+    CANDIDATE_REQUIRED_COLUMNS,
+    OPPORTUNITY_REQUIRED_COLUMNS,
+    PM_REQUIRED_COLUMNS,
+)
 
 
 class CandidateFixtureModel:
@@ -179,7 +184,8 @@ def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9
     morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
 
     assert exit_code == 0
-    assert pending["state"] == "PENDING_APPROVAL"
+    assert pending["state"] == "EMPTY"
+    assert pending["active_pending"] is False
     assert pending["items"] == []
     assert morning_stage["status"] == "NO_SIGNAL"
     assert morning_stage["details"]["reason"] == "NO_SIGNAL:demo_capability_filtered_all_9000_series"
@@ -250,6 +256,7 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
     feature_root = _write_feature_inputs(
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         candidate_codes=("72030", "65010", "67580", "99840"),
+        position_codes=("7203",),
     )
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
@@ -365,7 +372,8 @@ def _write_fixed_current(root: Path) -> Path:
     )
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
-    _write_safety_decision(root)
+    _write_market_evidence(root, business_date="2026-07-08")
+    _write_safety_decision(root, business_date="2026-07-08")
     return root
 
 
@@ -428,47 +436,63 @@ def _write_runtime_owned_current_with_positions(root: Path) -> Path:
     )
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
-    _write_safety_decision(root)
+    _write_market_evidence(root, business_date="2026-07-09")
+    _write_safety_decision(root, business_date="2026-07-09")
     return root
 
 
-def _write_feature_inputs(root: Path, candidate_codes=("9432", "7203", "6501"), *, write_price_source: bool = True) -> Path:
+def _write_feature_inputs(
+    root: Path,
+    candidate_codes=("9432", "7203", "6501"),
+    *,
+    position_codes: tuple[str, ...] = (),
+    write_price_source: bool = True,
+) -> Path:
     feature_dir = root / "2026-07-07"
     feature_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for index, code in enumerate(candidate_codes):
-        rows.append(
-            {
-                "target_date": "2026-07-07",
-                "as_of_date": "2026-07-07",
-                "code": code,
-                "universe_eligible": True,
-                "price_momentum_return_20d": 0.90 - index * 0.10,
-                "price_momentum_return_5d": 0.50 - index * 0.05,
-                "trend_close_over_ma_20d": 0.20,
-                "volatility_return_std_20d": 0.02,
-                "volume_momentum_ratio_1d_20d": 1.2,
-                "liquidity_avg_volume_20d": 1_000_000 - index,
-                "data_until": "2026-07-07",
-            }
-        )
+        row = {column: _feature_value(column, code=code, index=index) for column in CANDIDATE_REQUIRED_COLUMNS}
+        row.update({"as_of_date": "2026-07-07", "universe_eligible": True, "data_until": "2026-07-07"})
+        rows.append(row)
     candidate = pd.DataFrame(rows)
     candidate.to_parquet(feature_dir / "candidate_features.parquet", index=False)
-    candidate.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
-    pd.DataFrame(
-        columns=[
-            "target_date",
-            "entry_date",
-            "code",
-            "holding_days",
-            "current_price",
-            "unrealized_return",
-            "feature_version",
-            "data_until",
-            "created_at",
-            "no_position_reason",
+    opportunity = pd.DataFrame(
+        [
+            {
+                **{column: _feature_value(column, code=str(row["code"]), index=index) for column in OPPORTUNITY_REQUIRED_COLUMNS},
+                "as_of_date": "2026-07-07",
+                "feature_version": "runtime_v2_opportunity_feature_input_v2_market_sector_fixture",
+                "data_until": "2026-07-07",
+                "created_at": "2026-07-08T00:00:00Z",
+            }
+            for index, row in enumerate(rows)
         ]
-    ).to_parquet(feature_dir / "position_feature_input.parquet", index=False)
+    )
+    opportunity.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    pm_rows = [
+        {
+            "target_date": "2026-07-07",
+            "position_state_as_of": "2026-07-09",
+            "entry_date": "2026-07-07",
+            "code": code,
+            "broker_issue_code": code,
+            "holding_days": 2,
+            "average_price": 3000.0,
+            "current_price": 3000.0,
+            "unrealized_return": 0.0,
+            "quantity": 100,
+            "feature_version": "runtime_v2_pm_feature_input_fixture",
+            "data_until": "2026-07-07",
+            "created_at": "2026-07-08T00:00:00Z",
+            "no_position_reason": "",
+        }
+        for code in position_codes
+    ]
+    pd.DataFrame(pm_rows, columns=[*PM_REQUIRED_COLUMNS, "no_position_reason"]).to_parquet(
+        feature_dir / "position_feature_input.parquet",
+        index=False,
+    )
     pd.DataFrame(
         [
             {
@@ -489,6 +513,32 @@ def _write_feature_inputs(root: Path, candidate_codes=("9432", "7203", "6501"), 
             ]
         ).to_parquet(price_dir / "data.parquet", index=False)
     return root
+
+
+def _feature_value(column: str, *, code: str, index: int):
+    if column == "target_date":
+        return "2026-07-07"
+    if column == "code":
+        return code
+    if column.startswith("missing_flags_") or column.endswith("_flag") or column.endswith("_context"):
+        return False
+    if column == "price_momentum_return_20d":
+        return 0.90 - index * 0.10
+    if column == "price_momentum_return_5d":
+        return 0.50 - index * 0.05
+    if column == "price_momentum_return_60d":
+        return 1.00 - index * 0.10
+    if column == "liquidity_avg_volume_20d":
+        return 1_000_000 - index
+    if column == "trend_close_over_ma_20d":
+        return 0.20
+    if column in {"trend_ma_5_20_ratio", "trend_ma_20_60_ratio"}:
+        return 1.0
+    if column == "volatility_return_std_20d":
+        return 0.02
+    if column in {"volume_momentum_ratio_1d_20d", "volume_momentum_ratio_5d"}:
+        return 1.2
+    return 0.1
 
 
 def _fixture_price(code: str) -> float:
@@ -531,11 +581,18 @@ def _write_policy(path: Path) -> Path:
 
 
 def _buy_ai_args(tmp_path: Path) -> list[str]:
+    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
+    opportunity_metrics_path = _write_opportunity_metrics(
+        tmp_path / "opportunity_training_metrics.json",
+        opportunity_model_path,
+    )
     return [
         "--candidate-model-path",
         str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
         "--opportunity-model-path",
-        str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
+        str(opportunity_model_path),
+        "--opportunity-training-metrics-path",
+        str(opportunity_metrics_path),
     ]
 
 
@@ -559,6 +616,21 @@ def _write_opportunity_model(path: Path) -> Path:
             "feature_columns": ["feature__candidate_score"],
             "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
             "model_version": "opportunity_model_phase15ag_fixture",
+            "artifact_set_id": "phase14e15_fixture_set",
+        },
+    )
+    return path
+
+
+def _write_opportunity_metrics(path: Path, model_path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "status": "PASS",
+            "readiness_status": "READY",
+            "model_artifact_path": str(model_path),
+            "artifact_set_id": "phase14e15_fixture_set",
+            "feature_columns": ["feature__candidate_score"],
         },
     )
     return path
@@ -575,7 +647,23 @@ def _write_pickle(path: Path, payload):
         pickle.dump(payload, handle)
 
 
-def _write_safety_decision(root: Path) -> Path:
+def _write_market_evidence(root: Path, *, business_date: str) -> None:
+    _write_json(
+        root / "runtime_state" / "market" / business_date / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": business_date,
+            "as_of": business_date,
+            "generated_at": f"{business_date}T00:00:00Z",
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 3,
+            "market_summary": {"source": "phase14e15_fixture"},
+        },
+    )
+
+
+def _write_safety_decision(root: Path, *, business_date: str) -> Path:
     path = root / "runtime_state" / "safety" / "latest_safety_decision.json"
     _write_json(
         path,
@@ -583,7 +671,7 @@ def _write_safety_decision(root: Path) -> Path:
             "safety_decision_id": "safety-phase14e15-allow",
             "safety_policy_version": "safety_operation_guard_v1",
             "safety_source": str(path),
-            "business_date": "2026-07-09",
+            "business_date": business_date,
             "runtime_mode": "demo",
             "decision": "ALLOW",
             "reason": "phase14e15 fixture safety allow",
@@ -593,8 +681,8 @@ def _write_safety_decision(root: Path) -> Path:
             "block_submit": False,
             "halt_runtime": False,
             "emergency_stop": False,
-            "generated_at": "2026-07-09T00:00:00+09:00",
-            "expires_at": "2026-07-10T00:00:00+09:00",
+            "generated_at": f"{business_date}T00:00:00+09:00",
+            "expires_at": f"{business_date}T23:59:59+09:00",
         },
     )
     return path

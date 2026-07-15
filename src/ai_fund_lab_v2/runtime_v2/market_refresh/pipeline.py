@@ -10,9 +10,17 @@ from typing import Any
 from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     REQUIRED_FEATURE_ARTIFACTS,
     resolve_feature_date_contract,
+    validate_feature_artifact_temporal_authority,
     write_feature_date_contract,
 )
 from ai_fund_lab_v2.runtime_v2.market_refresh.evidence import produce_market_quote_evidence
+from ai_fund_lab_v2.runtime_v2.historical_support.asof import (
+    HistoricalLogicalInput,
+    HistoricalAsOfResolution,
+    materialize_historical_logical_inputs,
+    resolve_historical_market_data_asof,
+    write_historical_asof_evidence,
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,13 @@ class RuntimeV2MarketRefreshResult:
     publication_status: str
     provider_status: str
     blocked_reasons: tuple[str, ...]
+    historical_logical_input_status: str = ""
+    historical_logical_input_manifest_path: str = ""
+    historical_logical_input_manifest_hash: str = ""
+    historical_asof_status: str = ""
+    historical_asof_reason: str = ""
+    historical_asof_evidence_path: str = ""
+    historical_asof_view: dict[str, Any] | None = None
 
     def to_stage_details(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -81,16 +96,35 @@ def run_runtime_v2_market_refresh_pipeline(
     fetcher: Any | None = None,
     mode: str = "demo",
     now: datetime | None = None,
+    runtime_test_context: dict[str, Any] | None = None,
 ) -> RuntimeV2MarketRefreshResult:
     """Run market refresh and require actual feature artifacts for business_date."""
 
     root = Path(operations_root)
+    historical_input = _materialize_historical_input_if_needed(
+        mode=mode,
+        operations_root=root,
+        business_date=business_date,
+        runtime_test_context=runtime_test_context,
+    )
     result = _run_operations_market_refresh(
         trade_date=business_date,
         root=root,
         allow_api_fetch=allow_api_fetch,
         fetcher=fetcher,
+        evidence_output_root=_market_refresh_evidence_root(runtime_test_context, business_date),
+        raw_input_root=Path(historical_input.raw_root) if historical_input is not None else None,
+        normalized_input_root=Path(historical_input.normalized_root) if historical_input is not None else None,
+        historical_logical_input_manifest=historical_input.to_payload() if historical_input is not None else None,
     )
+    historical_asof, historical_asof_path = _resolve_historical_asof_if_needed(
+        mode=mode,
+        operations_root=root,
+        business_date=business_date,
+        runtime_test_context=runtime_test_context,
+        historical_input=historical_input,
+    )
+    result = _apply_historical_asof_result(result=result, resolution=historical_asof)
     contract = resolve_feature_date_contract(
         operations_root=root,
         requested_feature_date=business_date,
@@ -100,6 +134,10 @@ def run_runtime_v2_market_refresh_pipeline(
         operations_root=root,
         requested_feature_date=business_date,
         contract=contract,
+    )
+    feature_temporal_status, feature_temporal_reasons = validate_feature_artifact_temporal_authority(
+        contract=contract,
+        business_date=business_date,
     )
     market_evidence = produce_market_quote_evidence(
         runtime_root=_runtime_root_for_operations(root),
@@ -115,21 +153,38 @@ def run_runtime_v2_market_refresh_pipeline(
     blocked = tuple(str(item) for item in result.get("blocked_reasons") or ())
     status = contract.status
     reason = contract.reason
-    if contract.status != "PASS" and result.get("status") == "BLOCK":
+    if feature_temporal_status != "PASS":
+        status = "BLOCKED"
+        reason = "TEMPORAL_CONTRACT_VIOLATION"
+        blocked = tuple(dict.fromkeys([*blocked, *feature_temporal_reasons]))
+    historical_asof_ready = historical_asof is not None and historical_asof.status == "PASS"
+    if status == "BLOCKED":
+        pass
+    elif result.get("status") == "BLOCK" and not _market_refresh_block_tolerated_by_contract(
+        result=result,
+        contract_status=contract.status,
+    ):
         status = "BLOCKED"
         reason = "market_refresh_blocked"
     elif (
         contract.status == "PASS"
         and result.get("feature_refresh_executed") is not True
         and str(result.get("feature_refresh_status") or "") != "FEATURES_READY"
+        and not historical_asof_ready
     ):
         status = "REVIEW_REQUIRED"
         reason = "feature_refresh_not_executed"
+    elif contract.status == "PASS" and historical_asof_ready:
+        status = "PASS"
+        reason = "HISTORICAL_DATA_AS_OF_READY"
     return RuntimeV2MarketRefreshResult(
         status=status,
         reason=reason,
         business_date=business_date,
         operations_root=str(root),
+        historical_logical_input_status=historical_input.status if historical_input is not None else "",
+        historical_logical_input_manifest_path=historical_input.manifest_path if historical_input is not None else "",
+        historical_logical_input_manifest_hash=historical_input.manifest_hash if historical_input is not None else "",
         allow_api_fetch=allow_api_fetch,
         jquants_api_fetch_executed=bool(result.get("jquants_api_fetch_executed")),
         canonical_normalized_updated=bool(result.get("canonical_normalized_updated")),
@@ -172,6 +227,10 @@ def run_runtime_v2_market_refresh_pipeline(
         publication_status=market_evidence.publication_status,
         provider_status=market_evidence.provider_status,
         blocked_reasons=blocked,
+        historical_asof_status=historical_asof.status if historical_asof is not None else "",
+        historical_asof_reason=historical_asof.reason if historical_asof is not None else "",
+        historical_asof_evidence_path=str(historical_asof_path or ""),
+        historical_asof_view=historical_asof.to_payload() if historical_asof is not None else None,
     )
 
 
@@ -180,6 +239,96 @@ def _run_operations_market_refresh(**kwargs) -> dict[str, Any]:
 
     module = importlib.import_module("ai_fund_lab_v2." + "operations.market_refresh")
     return module.run_operations_market_refresh(**kwargs)
+
+
+def _market_refresh_evidence_root(context: dict[str, Any] | None, business_date: str) -> Path | None:
+    if not context:
+        return None
+    root = str(context.get("evidence_root") or "")
+    job = str(context.get("job") or "market_refresh")
+    if not root:
+        return None
+    return Path(root) / "daily" / business_date / job
+
+
+def _materialize_historical_input_if_needed(
+    *,
+    mode: str,
+    operations_root: Path,
+    business_date: str,
+    runtime_test_context: dict[str, Any] | None,
+) -> HistoricalLogicalInput | None:
+    if mode != "historical":
+        return None
+    evidence_root = _market_refresh_evidence_root(runtime_test_context, business_date)
+    if evidence_root is None:
+        return None
+    return materialize_historical_logical_inputs(
+        operations_root=operations_root,
+        business_date=business_date,
+        evidence_root=evidence_root,
+        runtime_test_context=runtime_test_context,
+    )
+
+
+def _resolve_historical_asof_if_needed(
+    *,
+    mode: str,
+    operations_root: Path,
+    business_date: str,
+    runtime_test_context: dict[str, Any] | None,
+    historical_input: HistoricalLogicalInput | None = None,
+) -> tuple[HistoricalAsOfResolution | None, Path | None]:
+    if mode != "historical":
+        return None, None
+    resolution = historical_input.resolution if historical_input is not None else resolve_historical_market_data_asof(
+        operations_root=operations_root,
+        business_date=business_date,
+    )
+    evidence_root = _market_refresh_evidence_root(runtime_test_context, business_date)
+    evidence_path = None
+    if evidence_root is not None:
+        evidence_path = write_historical_asof_evidence(
+            evidence_root=evidence_root,
+            business_date=business_date,
+            resolution=resolution,
+        )
+    return resolution, evidence_path
+
+
+def _apply_historical_asof_result(
+    *,
+    result: dict[str, Any],
+    resolution: HistoricalAsOfResolution | None,
+) -> dict[str, Any]:
+    if resolution is None:
+        return result
+    updated = dict(result)
+    updated["historical_asof_view"] = resolution.to_payload()
+    if resolution.status != "PASS":
+        updated["status"] = "BLOCK"
+        updated["blocked_reasons"] = list(dict.fromkeys(list(updated.get("blocked_reasons") or []) + [resolution.reason]))
+        return updated
+    blocked = [reason for reason in updated.get("blocked_reasons") or [] if reason != "future_row_detected"]
+    updated["blocked_reasons"] = blocked
+    if not blocked:
+        updated["status"] = "PASS"
+        updated["data_quality_status"] = "PASS"
+    updated["latest_available_market_date"] = resolution.latest_available_market_date
+    updated["data_until"] = resolution.latest_available_market_date
+    updated["feature_freshness_status"] = "FEATURE_READY"
+    return updated
+
+
+def _market_refresh_block_tolerated_by_contract(*, result: dict[str, Any], contract_status: str) -> bool:
+    if contract_status != "PASS":
+        return False
+    blocked = {str(reason) for reason in result.get("blocked_reasons") or []}
+    if "future_row_detected" in blocked:
+        return False
+    if str(result.get("feature_refresh_status") or "") != "FEATURES_READY":
+        return False
+    return "data_until_before_decision_for" in blocked
 
 
 def _runtime_root_for_operations(operations_root: Path) -> Path:

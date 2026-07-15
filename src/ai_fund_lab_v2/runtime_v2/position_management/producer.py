@@ -9,6 +9,8 @@ Runtime decision artifact consumed by SELL Planning.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,10 @@ from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     RuntimeArtifactLookupHalt,
     resolve_position_management_policy_artifacts,
 )
+from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
+    load_feature_date_contract,
+    resolve_feature_date_contract,
+)
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision
 
 
@@ -40,6 +46,11 @@ OPPORTUNITY_REQUIRED_COLUMNS = (
     "buy_rank",
     "downside_risk_score",
 )
+BUY_OPPORTUNITY_SCHEMA_NAME = "runtime_v2_buy_opportunity_ranking"
+BUY_OPPORTUNITY_SCHEMA_VERSION = "runtime_v2_opportunity_ranking_v1"
+BUY_OPPORTUNITY_LEGACY_SCHEMA_VERSIONS = {"runtime_v2_opportunity_rankings_v1"}
+BUY_OPPORTUNITY_ARTIFACT_ROLE = "BUY_OPPORTUNITY_RANKING"
+PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH = "PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH"
 
 
 @dataclass(frozen=True)
@@ -108,19 +119,26 @@ def produce_position_management_decisions(
     now: datetime | None = None,
 ) -> PositionManagementRuntimeResult:
     root = Path(runtime_root)
-    if mode not in {"demo", "production"}:
-        raise ValueError("Position Management Runtime producer supports demo/production only")
+    if mode not in {"historical", "demo", "production"}:
+        raise ValueError("Position Management Runtime producer supports historical/demo/production only")
     _reject_mode_rooted_runtime_root(root)
     generated_at = _iso(now or datetime.now(timezone.utc))
     runtime_id = f"runtime-v2-position-management-{business_date}-{generated_at.replace(':', '').replace('-', '')}"
     resolved_feature_date = feature_date or business_date
+    resolved_opportunity_path, resolved_pm_feature_path = _resolve_runtime_pm_input_paths(
+        root=root,
+        business_date=business_date,
+        feature_date=resolved_feature_date,
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
     artifact_dir = root / "runtime_state" / "position_management" / business_date
     artifact_dir.mkdir(parents=True, exist_ok=True)
     holding_path = artifact_dir / "current_holdings_snapshot.csv"
     artifact_path = artifact_dir / "position_management_decisions.json"
+    pm_opportunity_context_path = artifact_dir / "position_management_opportunity_context.csv"
     try:
-        pm_artifacts = resolve_position_management_policy_artifacts()
-        pm_artifacts.require_member("RUNTIME_ADAPTER")
+        pm_runtime_adapter_authority = verify_position_management_runtime_adapter_authority()
     except RuntimeArtifactLookupHalt as exc:
         payload = _artifact_payload(
             business_date=business_date,
@@ -129,8 +147,8 @@ def produce_position_management_decisions(
             feature_date=resolved_feature_date,
             generated_at=generated_at,
             holding_path=holding_path,
-            opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
-            feature_path=Path(feature_path) if feature_path else Path(""),
+            opportunity_path=resolved_opportunity_path,
+            feature_path=resolved_pm_feature_path,
             inference_output_path=artifact_dir / "position_management_inference.parquet",
             action_csv_path=artifact_dir / "position_management_actions.csv",
             summary_path=artifact_dir / "position_management_inference_summary.json",
@@ -138,20 +156,31 @@ def produce_position_management_decisions(
             status="HALT",
             reason=str(exc),
             decisions=(),
-            input_contract={"pm_input_schema_status": "HALT", "pm_review_reason": str(exc)},
+            input_contract={
+                "pm_input_schema_status": "HALT",
+                "pm_runtime_adapter_authority_status": "HALT",
+                "pm_runtime_adapter_authority_reason": str(exc),
+                "pm_review_reason": str(exc),
+            },
         )
         _write_json(artifact_path, payload)
         return _result_from_payload(payload, artifact_path=artifact_path, sell_exit_decisions=())
     current_path = root / "persistent_ledger" / "state.json"
     current = _read_json(current_path)
+    runtime_state_path = root / "runtime_state" / "current_state.json"
+    runtime_state = _read_json(runtime_state_path) if runtime_state_path.is_file() else {}
     contract = _validate_pm_input_contract(
         current=current,
         current_path=current_path,
+        runtime_state=runtime_state,
+        runtime_state_path=runtime_state_path,
         business_date=business_date,
         feature_date=resolved_feature_date,
-        opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
-        feature_path=Path(feature_path) if feature_path else Path(""),
+        opportunity_path=resolved_opportunity_path,
+        feature_path=resolved_pm_feature_path,
     )
+    contract["pm_runtime_adapter_authority_status"] = "PASS"
+    contract["pm_runtime_adapter_authority"] = pm_runtime_adapter_authority
     if contract["pm_input_schema_status"] == "REVIEW_REQUIRED":
         payload = _artifact_payload(
             business_date=business_date,
@@ -160,8 +189,8 @@ def produce_position_management_decisions(
             feature_date=resolved_feature_date,
             generated_at=generated_at,
             holding_path=holding_path,
-            opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
-            feature_path=Path(feature_path) if feature_path else Path(""),
+            opportunity_path=resolved_opportunity_path,
+            feature_path=resolved_pm_feature_path,
             inference_output_path=artifact_dir / "position_management_inference.parquet",
             action_csv_path=artifact_dir / "position_management_actions.csv",
             summary_path=artifact_dir / "position_management_inference_summary.json",
@@ -185,8 +214,8 @@ def produce_position_management_decisions(
             feature_date=resolved_feature_date,
             generated_at=generated_at,
             holding_path=holding_path,
-            opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
-            feature_path=Path(feature_path) if feature_path else Path(""),
+            opportunity_path=resolved_opportunity_path,
+            feature_path=resolved_pm_feature_path,
             inference_output_path=artifact_dir / "position_management_inference.parquet",
             action_csv_path=artifact_dir / "position_management_actions.csv",
             summary_path=artifact_dir / "position_management_inference_summary.json",
@@ -199,7 +228,7 @@ def produce_position_management_decisions(
         _write_json(artifact_path, payload)
         return _result_from_payload(payload, artifact_path=artifact_path, sell_exit_decisions=())
 
-    if opportunity_path is None or feature_path is None:
+    if not resolved_opportunity_path.is_file() or not resolved_pm_feature_path.is_file():
         payload = _artifact_payload(
             business_date=business_date,
             runtime_id=runtime_id,
@@ -207,8 +236,8 @@ def produce_position_management_decisions(
             feature_date=resolved_feature_date,
             generated_at=generated_at,
             holding_path=holding_path,
-            opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
-            feature_path=Path(feature_path) if feature_path else Path(""),
+            opportunity_path=resolved_opportunity_path,
+            feature_path=resolved_pm_feature_path,
             inference_output_path=artifact_dir / "position_management_inference.parquet",
             action_csv_path=artifact_dir / "position_management_actions.csv",
             summary_path=artifact_dir / "position_management_inference_summary.json",
@@ -220,11 +249,16 @@ def produce_position_management_decisions(
         )
         _write_json(artifact_path, payload)
         return _result_from_payload(payload, artifact_path=artifact_path, sell_exit_decisions=())
+    _write_pm_opportunity_context(
+        source_path=resolved_opportunity_path,
+        output_path=pm_opportunity_context_path,
+        feature_date=resolved_feature_date,
+    )
 
     inference = run_position_management_inference(
         holding_path=holding_path,
-        opportunity_path=Path(opportunity_path),
-        feature_path=Path(feature_path),
+        opportunity_path=pm_opportunity_context_path,
+        feature_path=resolved_pm_feature_path,
         output_dir=artifact_dir,
         created_at=generated_at,
         inference_run_id=runtime_id,
@@ -240,8 +274,8 @@ def produce_position_management_decisions(
         feature_date=resolved_feature_date,
         generated_at=generated_at,
         holding_path=holding_path,
-        opportunity_path=Path(opportunity_path),
-        feature_path=Path(feature_path),
+        opportunity_path=resolved_opportunity_path,
+        feature_path=resolved_pm_feature_path,
         inference_output_path=artifact_dir / "position_management_inference.parquet",
         action_csv_path=artifact_dir / "position_management_actions.csv",
         summary_path=artifact_dir / "position_management_inference_summary.json",
@@ -259,6 +293,89 @@ def produce_position_management_decisions(
     )
 
 
+def _resolve_runtime_pm_input_paths(
+    *,
+    root: Path,
+    business_date: str,
+    feature_date: str,
+    opportunity_path: Path | str | None,
+    feature_path: Path | str | None,
+) -> tuple[Path, Path]:
+    resolved_opportunity = (
+        Path(opportunity_path)
+        if opportunity_path
+        else root / "runtime_state" / "buy_ai" / feature_date / "opportunity_rankings.json"
+    )
+    if feature_path:
+        resolved_feature = Path(feature_path)
+    else:
+        operations_root = root / "operations"
+        contract = load_feature_date_contract(
+            operations_root=operations_root,
+            requested_feature_date=business_date,
+        )
+        if contract is None:
+            contract = resolve_feature_date_contract(
+                operations_root=operations_root,
+                requested_feature_date=feature_date,
+                persist_consumer_readiness=False,
+            )
+        generated = dict(contract.generated_feature_artifacts)
+        resolved_feature = Path(
+            generated.get("position_feature_input.parquet")
+            or contract.feature_artifact_dir
+        )
+        if resolved_feature.is_dir() or resolved_feature.suffix != ".parquet":
+            resolved_feature = Path(contract.feature_artifact_dir) / "position_feature_input.parquet"
+    return resolved_opportunity, resolved_feature
+
+
+def verify_position_management_runtime_adapter_authority(
+    pm_artifacts: Any | None = None,
+    *,
+    executing_source_path: Path | str | None = None,
+    repo_root: Path | str | None = None,
+) -> dict[str, Any]:
+    artifacts = pm_artifacts or resolve_position_management_policy_artifacts()
+    adapter = artifacts.require_member("RUNTIME_ADAPTER")
+    repo = _runtime_source_repo_root(repo_root)
+    accepted_path = _canonical_repo_relative_path(Path(adapter.physical_path), repo_root=repo, label="accepted path")
+    actual_path = Path(executing_source_path) if executing_source_path is not None else Path(__file__)
+    actual_identity = _runtime_adapter_source_identity(actual_path, repo_root=repo)
+    if accepted_path != actual_identity["repo_relative_path"]:
+        raise RuntimeArtifactLookupHalt(
+            f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: accepted path {accepted_path} does not match executing source {actual_identity['repo_relative_path']}"
+        )
+    actual_hash = actual_identity["content_hash"]
+    if actual_hash != adapter.content_hash:
+        raise RuntimeArtifactLookupHalt(
+            f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: accepted hash {adapter.content_hash} does not match executing source hash {actual_hash}"
+        )
+    raw_resolver_result = getattr(artifacts, "raw_resolver_result", {})
+    _validate_pm_adapter_resolver_result(raw_resolver_result)
+    adapter_raw = _raw_member_for_role(raw_resolver_result, "RUNTIME_ADAPTER")
+    authority_mode = str(adapter_raw.get("authority_mode") or "ACCEPTED_CURRENT_PATH")
+    return {
+        "authority_mode": authority_mode,
+        "accepted_current_path": adapter_raw.get("accepted_current_path", authority_mode == "ACCEPTED_CURRENT_PATH"),
+        "accepted_path": accepted_path,
+        "executing_source_path": actual_identity["repo_relative_path"],
+        "accepted_hash": adapter.content_hash,
+        "executing_source_hash": actual_hash,
+        "hash_algorithm": "sha256",
+        "hash_materials": ["runtime_adapter_source_bytes"],
+        "hash_contract": "sha256 over the canonical runtime adapter source file bytes; source comments are included; absolute paths, cwd, timestamps, cache files, pyc files, and generated artifacts are excluded",
+        "canonical_identity": {
+            "path_contract": "repo_relative_posix_path",
+            "repo_relative_path": actual_identity["repo_relative_path"],
+            "checkout_location_independent": True,
+        },
+        "artifact_set_id": adapter.artifact_set_id,
+        "artifact_instance_id": getattr(artifacts, "artifact_instance_id", ""),
+        "accepted_event_id": getattr(artifacts, "accepted_event_id", ""),
+    }
+
+
 def load_sell_exit_decisions_from_pm_artifact(path: Path | str) -> tuple[SellExitDecision, ...]:
     payload = _read_json(Path(path))
     if payload.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
@@ -270,6 +387,8 @@ def validate_position_management_input_contract(
     *,
     current: dict[str, Any],
     current_path: Path | str,
+    runtime_state: dict[str, Any] | None = None,
+    runtime_state_path: Path | str | None = None,
     business_date: str,
     feature_date: str,
     opportunity_path: Path | str | None,
@@ -284,6 +403,8 @@ def validate_position_management_input_contract(
     return _validate_pm_input_contract(
         current=current,
         current_path=Path(current_path),
+        runtime_state=runtime_state or {},
+        runtime_state_path=Path(runtime_state_path) if runtime_state_path else Path(""),
         business_date=business_date,
         feature_date=feature_date,
         opportunity_path=Path(opportunity_path) if opportunity_path else Path(""),
@@ -500,6 +621,8 @@ def _validate_pm_input_contract(
     *,
     current: dict[str, Any],
     current_path: Path,
+    runtime_state: dict[str, Any] | None,
+    runtime_state_path: Path,
     business_date: str,
     feature_date: str,
     opportunity_path: Path,
@@ -517,12 +640,22 @@ def _validate_pm_input_contract(
     current_updated_at = str(current.get("updated_at") or "")
     current_position_status = str(current.get("current_position_status") or "")
     current_valuation_status = str(current.get("current_valuation_status") or "")
+    historical_empty_current_authority = _historical_empty_current_authority_ready(
+        current=current,
+        runtime_state=runtime_state or {},
+        business_date=business_date,
+    )
+    if historical_empty_current_authority:
+        current_as_of = business_date
+        current_updated_at = current_updated_at or str((runtime_state or {}).get("generated_at") or f"{business_date}T00:00:00+00:00")
+        current_position_status = "READY"
+        current_valuation_status = "READY"
     temporal_schema = bool(current.get("temporal_schema_version"))
     temporal_current_ready = (
         temporal_schema
         and current_position_status in {"READY", "VALID_CARRYOVER"}
         and current_valuation_status in {"READY", "VALID_CARRYOVER"}
-    )
+    ) or historical_empty_current_authority
     if not temporal_current_ready and (current_as_of != business_date or not current_updated_at):
         stale_artifacts.append("current")
     for position in positions:
@@ -579,17 +712,26 @@ def _validate_pm_input_contract(
         "schema_version": PM_INPUT_SCHEMA_VERSION,
         "pm_input_schema_status": "REVIEW_REQUIRED" if review_required else "READY",
         "pm_current_source": str(current_path),
+        "pm_runtime_state_source": str(runtime_state_path),
         "pm_current_as_of": current_as_of,
-        "pm_position_state_as_of": str(current.get("position_state_as_of") or ""),
-        "pm_valuation_as_of": str(current.get("valuation_as_of") or ""),
+        "pm_position_state_as_of": business_date if historical_empty_current_authority else str(current.get("position_state_as_of") or ""),
+        "pm_valuation_as_of": business_date if historical_empty_current_authority else str(current.get("valuation_as_of") or ""),
         "pm_current_position_status": current_position_status,
         "pm_current_valuation_status": current_valuation_status,
+        "pm_historical_empty_current_authority": "runtime_state_current_state" if historical_empty_current_authority else "",
         "pm_current_freshness": "STALE" if "current" in stale_artifacts else "FRESH",
         "pm_feature_source": str(feature_path),
         "pm_feature_row_count": feature_status["row_count"],
         "pm_feature_date": feature_date,
         "pm_opportunity_source": str(opportunity_path),
         "pm_opportunity_status": opportunity_status["status"],
+        "pm_opportunity_contract_schema": opportunity_status.get("schema_name") or "",
+        "pm_opportunity_artifact_role": opportunity_status.get("artifact_role") or "",
+        "pm_opportunity_row_universe": opportunity_status.get("row_universe") or "",
+        "pm_opportunity_ranked_symbol_count": opportunity_status.get("ranked_symbol_count", 0),
+        "pm_opportunity_unranked_symbols": opportunity_status.get("unranked_symbols") or [],
+        "pm_opportunity_missing_symbol_semantics": opportunity_status.get("missing_symbol_semantics") or "",
+        "pm_opportunity_empty_semantics": opportunity_status.get("empty_semantics") or "",
         "pm_missing_fields": sorted(set(missing_fields)),
         "pm_missing_symbols": sorted(set(symbol for symbol in missing_symbols if symbol)),
         "pm_stale_artifacts": sorted(set(stale_artifacts)),
@@ -635,12 +777,11 @@ def _pm_feature_status(
     date_rows = frame[frame["target_date"] == feature_date].copy()
     stale = bool(len(frame) and date_rows.empty)
     if not current_has_positions:
-        has_no_position_reason = "no_position_reason" in columns
         return {
-            "review_required": len(frame) == 0 and not has_no_position_reason,
-            "reason": "pm_no_position_reason_missing" if len(frame) == 0 and not has_no_position_reason else "",
+            "review_required": False,
+            "reason": "",
             "row_count": len(date_rows),
-            "missing_fields": [] if has_no_position_reason else ["pm_feature.no_position_reason"],
+            "missing_fields": [],
             "missing_symbols": [],
             "stale": stale,
         }
@@ -701,7 +842,16 @@ def _pm_opportunity_status(
     current_has_positions: bool,
 ) -> dict[str, Any]:
     if not current_has_positions:
-        return {"review_required": False, "reason": "", "status": "NOT_REQUIRED", "missing_fields": [], "missing_symbols": [], "stale": False}
+        return {
+            "review_required": False,
+            "reason": "",
+            "status": "NOT_REQUIRED",
+            "missing_fields": [],
+            "missing_symbols": [],
+            "stale": False,
+            "unranked_symbols": [],
+            "missing_symbol_semantics": "not_required_without_current_positions",
+        }
     if not opportunity_path or not opportunity_path.is_file():
         return {
             "review_required": True,
@@ -710,47 +860,220 @@ def _pm_opportunity_status(
             "missing_fields": ["pm_opportunity_source"],
             "missing_symbols": [],
             "stale": False,
+            "unranked_symbols": [],
+            "missing_symbol_semantics": "artifact_missing",
         }
-    if opportunity_path.suffix == ".json":
-        payload = _read_json(opportunity_path)
-        status = str(payload.get("status") or "")
-        review_required = bool(payload.get("review_required")) or status in {"REVIEW_REQUIRED", "BLOCKED", "HALT"}
-        rows = payload.get("rankings") or payload.get("rows") or []
-        model_version_missing = not bool(payload.get("model_version"))
-        generated_missing = not bool(payload.get("generated_at"))
-        feature_date_value = str(payload.get("feature_date") or feature_date)
-        missing_fields = []
-        if model_version_missing:
-            missing_fields.append("opportunity.model_version")
-        if generated_missing:
-            missing_fields.append("opportunity.generated_at")
-        frame = pd.DataFrame(rows)
-        reason = "pm_opportunity_review_required" if review_required else ""
-    else:
-        frame = _read_table(opportunity_path)
-        status = "READY"
-        review_required = False
-        missing_fields = []
-        feature_date_value = feature_date
-        reason = ""
+    try:
+        contract = _pm_opportunity_contract(opportunity_path=opportunity_path, feature_date=feature_date)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {
+            "review_required": True,
+            "reason": "pm_opportunity_contract_mismatch",
+            "status": "HALT",
+            "missing_fields": [f"opportunity.contract:{exc}"],
+            "missing_symbols": [],
+            "stale": False,
+            "unranked_symbols": [],
+            "missing_symbol_semantics": "contract_halt",
+        }
+    frame = contract["frame"]
+    status = contract["status"]
+    review_required = contract["review_required"]
+    missing_fields = list(contract["missing_fields"])
+    feature_date_value = str(contract["feature_date"])
+    reason = str(contract["reason"])
     columns = set(str(column) for column in frame.columns)
     missing_fields.extend(f"opportunity.{column}" for column in OPPORTUNITY_REQUIRED_COLUMNS if column not in columns)
     stale = feature_date_value != feature_date
     missing_symbols: list[str] = []
+    unranked_symbols: list[str] = []
     if not frame.empty and {"target_date", "code"}.issubset(columns):
         filtered = frame[frame["target_date"].astype(str) == feature_date]
         covered = set(filtered["code"].astype(str))
-        missing_symbols = [symbol for symbol in held_symbols if symbol not in covered]
+        unranked_symbols = [symbol for symbol in held_symbols if symbol not in covered]
+    elif held_symbols and not missing_fields and not review_required:
+        unranked_symbols = list(held_symbols)
     elif held_symbols:
         missing_symbols = list(held_symbols)
+    normalized_status = "REVIEW_REQUIRED" if review_required else "READY" if status in {"", "PASS"} else status
     return {
         "review_required": bool(review_required or missing_fields or missing_symbols or stale),
         "reason": reason or ("pm_opportunity_contract_mismatch" if missing_fields or missing_symbols or stale else ""),
-        "status": "REVIEW_REQUIRED" if review_required else status or "READY",
+        "status": normalized_status,
         "missing_fields": missing_fields,
         "missing_symbols": missing_symbols,
         "stale": stale,
+        "schema_name": contract.get("schema_name") or "",
+        "artifact_role": contract.get("artifact_role") or "",
+        "row_universe": contract.get("row_universe") or "",
+        "ranked_symbol_count": int(contract.get("ranked_symbol_count") or 0),
+        "unranked_symbols": unranked_symbols,
+        "missing_symbol_semantics": "symbol_not_ranked_is_valid_pm_context_default" if unranked_symbols and not missing_symbols else "",
+        "empty_semantics": contract.get("empty_semantics") or "",
     }
+
+
+def _pm_opportunity_contract(*, opportunity_path: Path, feature_date: str) -> dict[str, Any]:
+    if opportunity_path.suffix == ".json":
+        payload = _read_json(opportunity_path)
+        schema_version = str(payload.get("schema_version") or "")
+        status = str(payload.get("status") or "")
+        if schema_version == "" and status in {"REVIEW_REQUIRED", "BLOCKED", "HALT"}:
+            return {
+                "status": "REVIEW_REQUIRED" if status != "HALT" else "HALT",
+                "reason": "pm_opportunity_review_required",
+                "review_required": True,
+                "missing_fields": [],
+                "feature_date": str(payload.get("feature_date") or feature_date),
+                "frame": pd.DataFrame(columns=OPPORTUNITY_REQUIRED_COLUMNS),
+                "schema_name": "",
+                "artifact_role": "",
+                "row_universe": "review_required_legacy_payload",
+                "ranked_symbol_count": 0,
+                "empty_semantics": "",
+            }
+        schema_name = str(payload.get("schema_name") or BUY_OPPORTUNITY_SCHEMA_NAME)
+        artifact_role = str(payload.get("artifact_role") or BUY_OPPORTUNITY_ARTIFACT_ROLE)
+        producer = str(payload.get("producer") or "Runtime v2 BUY AI Producer")
+        if schema_version != BUY_OPPORTUNITY_SCHEMA_VERSION and schema_version not in BUY_OPPORTUNITY_LEGACY_SCHEMA_VERSIONS:
+            raise ValueError("unsupported opportunity schema_version")
+        if schema_name != BUY_OPPORTUNITY_SCHEMA_NAME:
+            raise ValueError("unsupported opportunity schema_name")
+        if artifact_role != BUY_OPPORTUNITY_ARTIFACT_ROLE:
+            raise ValueError("wrong opportunity artifact_role")
+        if producer != "Runtime v2 BUY AI Producer":
+            raise ValueError("producer identity mismatch")
+        business_date = str(payload.get("business_date") or "")
+        payload_feature_date = str(payload.get("feature_date") or "")
+        if business_date and business_date != feature_date:
+            raise ValueError("business date mismatch")
+        if payload_feature_date != feature_date:
+            raise ValueError("target date mismatch")
+        review_required = bool(payload.get("review_required")) or status in {"REVIEW_REQUIRED", "BLOCKED", "HALT"}
+        missing_fields: list[str] = []
+        if not payload.get("model_version"):
+            missing_fields.append("opportunity.model_version")
+        if not payload.get("generated_at"):
+            missing_fields.append("opportunity.generated_at")
+        rows_payload = payload.get("rankings")
+        if rows_payload is None:
+            rows_payload = payload.get("rows")
+        if not isinstance(rows_payload, list):
+            raise ValueError("opportunity rankings must be a list")
+        rows = [_canonical_pm_opportunity_row(row, default_target_date=feature_date) for row in rows_payload]
+        frame = pd.DataFrame(rows, columns=OPPORTUNITY_REQUIRED_COLUMNS + ("risk_guard_status", "candidate_score", "candidate_rank", "buy_reason"))
+        _validate_pm_opportunity_frame(frame, feature_date=feature_date)
+        empty_semantics = "no_buy_signal_confirmed_empty" if status in {"PASS", "READY"} and frame.empty else ""
+        return {
+            "status": status,
+            "reason": "pm_opportunity_review_required" if review_required else "",
+            "review_required": review_required,
+            "missing_fields": missing_fields,
+            "feature_date": payload_feature_date,
+            "frame": frame,
+            "schema_name": schema_name,
+            "artifact_role": artifact_role,
+            "row_universe": "ranked_buy_candidates_only",
+            "ranked_symbol_count": len(frame),
+            "empty_semantics": empty_semantics,
+        }
+    frame = _read_table(opportunity_path)
+    _validate_pm_opportunity_frame(frame, feature_date=feature_date)
+    return {
+        "status": "READY",
+        "reason": "",
+        "review_required": False,
+        "missing_fields": [],
+        "feature_date": feature_date,
+        "frame": frame,
+        "schema_name": "runtime_v2_pm_opportunity_context",
+        "artifact_role": "PM_OPPORTUNITY_CONTEXT",
+        "row_universe": "pm_opportunity_context",
+        "ranked_symbol_count": len(frame),
+        "empty_semantics": "confirmed_empty" if frame.empty else "",
+    }
+
+
+def _canonical_pm_opportunity_row(row: Any, *, default_target_date: str) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise ValueError("opportunity row must be an object")
+    code = _normalize_runtime_symbol(row.get("code") or row.get("symbol") or row.get("issue_code"))
+    target_date = str(row.get("target_date") or row.get("feature_date") or default_target_date)
+    rank = _int_rank(row.get("buy_rank") if row.get("buy_rank") not in (None, "") else row.get("rank"))
+    expected_edge = _finite_float(row.get("expected_edge_score") if row.get("expected_edge_score") not in (None, "") else row.get("opportunity_score"))
+    downside = _finite_float(row.get("downside_risk_score"))
+    candidate_score = row.get("candidate_score")
+    candidate_rank = row.get("candidate_rank")
+    return {
+        "target_date": target_date,
+        "code": code,
+        "expected_edge_score": expected_edge,
+        "buy_rank": rank,
+        "downside_risk_score": downside,
+        "risk_guard_status": str(row.get("risk_guard_status") or ""),
+        "candidate_score": _finite_float(candidate_score) if candidate_score not in (None, "") else 0.0,
+        "candidate_rank": _int_rank(candidate_rank) if candidate_rank not in (None, "") else 999999,
+        "buy_reason": str(row.get("buy_reason") or row.get("reason") or ""),
+    }
+
+
+def _validate_pm_opportunity_frame(frame: pd.DataFrame, *, feature_date: str) -> None:
+    columns = set(str(column) for column in frame.columns)
+    missing = [column for column in OPPORTUNITY_REQUIRED_COLUMNS if column not in columns]
+    if missing:
+        raise ValueError("required opportunity fields missing: " + ",".join(missing))
+    if frame.empty:
+        return
+    normalized = frame.copy()
+    normalized["target_date"] = normalized["target_date"].astype(str)
+    normalized["code"] = normalized["code"].map(_normalize_runtime_symbol)
+    wrong_date = normalized[normalized["target_date"] != feature_date]
+    if not wrong_date.empty:
+        raise ValueError("target date mismatch")
+    if normalized.duplicated(["target_date", "code"]).any():
+        raise ValueError("duplicate symbol")
+    for column in ("expected_edge_score", "downside_risk_score"):
+        values = pd.to_numeric(normalized[column], errors="coerce")
+        if values.isna().any() or not all(pd.Series(values).map(lambda value: math.isfinite(float(value)))):
+            raise ValueError(f"non-finite score: {column}")
+    ranks = pd.to_numeric(normalized["buy_rank"], errors="coerce")
+    if ranks.isna().any() or (ranks < 1).any() or (ranks.astype(int) != ranks).any():
+        raise ValueError("invalid rank")
+
+
+def _write_pm_opportunity_context(*, source_path: Path, output_path: Path, feature_date: str) -> Path:
+    contract = _pm_opportunity_contract(opportunity_path=source_path, feature_date=feature_date)
+    frame = contract["frame"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(output_path, index=False)
+    return output_path
+
+
+def _normalize_runtime_symbol(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text or not text.isalnum() or len(text) not in {4, 5}:
+        raise ValueError("invalid symbol identity")
+    return text
+
+
+def _finite_float(value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("non-finite score") from exc
+    if not math.isfinite(result):
+        raise ValueError("non-finite score")
+    return result
+
+
+def _int_rank(value: Any) -> int:
+    try:
+        rank = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid rank") from exc
+    if rank < 1:
+        raise ValueError("invalid rank")
+    return rank
 
 
 def _pm_review_reason(
@@ -775,6 +1098,28 @@ def _pm_review_reason(
     if not current_has_positions:
         return ""
     return "pm_input_contract_review_required"
+
+
+def _historical_empty_current_authority_ready(
+    *,
+    current: dict[str, Any],
+    runtime_state: dict[str, Any],
+    business_date: str,
+) -> bool:
+    positions = [item for item in current.get("positions") or () if float(item.get("quantity") or 0) > 0]
+    if positions:
+        return False
+    if str(current.get("environment") or "") != "historical":
+        return False
+    if not bool(current.get("current_state_confirmed_empty")):
+        return False
+    if str(runtime_state.get("business_date") or "") != business_date:
+        return False
+    if str(runtime_state.get("state") or "") != "CURRENT_STATE_LOADED":
+        return False
+    if str(runtime_state.get("environment") or runtime_state.get("runtime_mode") or "") != "historical":
+        return False
+    return True
 
 
 def _read_table(path: Path) -> pd.DataFrame:
@@ -832,6 +1177,75 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _runtime_adapter_source_identity(path: Path, *, repo_root: Path) -> dict[str, str]:
+    source = path.resolve()
+    if not source.is_file():
+        raise RuntimeArtifactLookupHalt(f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: executing source file missing: {source}")
+    relative = _canonical_repo_relative_path(source, repo_root=repo_root, label="executing source")
+    return {
+        "repo_relative_path": relative,
+        "content_hash": _sha256_file(source),
+    }
+
+
+def _canonical_repo_relative_path(path: Path, *, repo_root: Path, label: str) -> str:
+    if path == Path(".") or str(path).strip() in {"", "."}:
+        raise RuntimeArtifactLookupHalt(f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: {label} cannot be empty or '.'")
+    if path.is_absolute():
+        try:
+            relative = path.resolve().relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise RuntimeArtifactLookupHalt(
+                f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: {label} is outside repository root: {path}"
+            ) from exc
+    else:
+        relative = path
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        raise RuntimeArtifactLookupHalt(f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: {label} must be a repository-relative artifact path")
+    return relative.as_posix()
+
+
+def _runtime_source_repo_root(repo_root: Path | str | None) -> Path:
+    if repo_root is not None:
+        return Path(repo_root).resolve()
+    return Path(__file__).resolve().parents[4]
+
+
+def _validate_pm_adapter_resolver_result(resolver_result: dict[str, Any]) -> None:
+    if not resolver_result:
+        return
+    schema_version = resolver_result.get("schema_version")
+    if schema_version not in {None, "artifact_registry_resolver_result.v1"}:
+        raise RuntimeArtifactLookupHalt(f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: unsupported resolver schema_version: {schema_version}")
+    members = resolver_result.get("members")
+    if members is None:
+        return
+    adapter_members = [
+        member
+        for member in members
+        if str(member.get("member_role") or member.get("role") or "") == "RUNTIME_ADAPTER"
+    ]
+    if len(adapter_members) != 1:
+        raise RuntimeArtifactLookupHalt(
+            f"{PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH}: expected exactly one RUNTIME_ADAPTER authority, found {len(adapter_members)}"
+        )
+
+
+def _raw_member_for_role(resolver_result: dict[str, Any], role: str) -> dict[str, Any]:
+    for member in resolver_result.get("members") or []:
+        if str(member.get("member_role") or member.get("role") or "") == role:
+            return dict(member)
+    return {}
 
 
 def _iso(value: datetime) -> str:

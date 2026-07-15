@@ -52,8 +52,8 @@ def project_runtime_owned_fills_to_current(
     Ledger Position records define valuation evidence.
     """
 
-    if mode not in {"demo", "production"}:
-        raise ValueError("runtime-owned fill projection supports demo/production only")
+    if mode not in {"demo", "historical", "production"}:
+        raise ValueError("runtime-owned fill projection supports demo/historical/production only")
     root = Path(runtime_root)
     _reject_mode_rooted_runtime_root(root)
     ledger_dir = root / "persistent_ledger"
@@ -133,7 +133,7 @@ def project_runtime_owned_fills_to_current(
         market_value=market_value,
         total_equity=projected_total_equity,
         review_required=False,
-        production_equivalent=False if mode == "demo" else True,
+        production_equivalent=mode == "production",
         current_state_confirmed_empty=False,
         current_positions_unknown=False,
         cash_unknown=False,

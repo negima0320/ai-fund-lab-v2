@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,7 @@ from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalDecision, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, build_approval_request
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
-from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
@@ -65,6 +65,155 @@ class SellPlanningPipelineResult:
         return payload
 
 
+@dataclass(frozen=True)
+class SellPlanningCapabilityDecision:
+    status: str
+    reason: str
+    runtime_mode: str
+    broker_environment: str
+    historical_replay: bool
+    simulation: bool
+    broker_write: bool
+    external_delivery: bool
+    tachibana_demo_write: bool
+    tachibana_production_write: bool
+    submit_enabled: bool
+    runtime_test_run_id_present: bool
+    runtime_test_profile_id: str
+    runtime_test_evidence_root_present: bool
+    allowed_processing: tuple[str, ...]
+    prohibited_external_effects: tuple[str, ...]
+    failed_checks: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["allowed_processing"] = list(self.allowed_processing)
+        payload["prohibited_external_effects"] = list(self.prohibited_external_effects)
+        payload["failed_checks"] = list(self.failed_checks)
+        return payload
+
+
+HISTORICAL_ALLOWED_SELL_PLANNING_PROCESSING: tuple[str, ...] = (
+    "data_readiness",
+    "position_management_ai",
+    "sell_planning",
+    "historical_approval_policy",
+    "pending_continuity_check",
+    "run_scoped_evidence",
+)
+
+HISTORICAL_PROHIBITED_SELL_PLANNING_EXTERNAL_EFFECTS: tuple[str, ...] = (
+    "tachibana_demo_api_write",
+    "tachibana_production_api_write",
+    "broker_order_api_call",
+    "demo_submit",
+    "production_submit",
+    "external_notification_delivery",
+    "line_send",
+    "discord_send",
+    "production_access",
+)
+
+
+def evaluate_sell_planning_capability(
+    *,
+    mode: str,
+    context: dict[str, Any] | None = None,
+) -> SellPlanningCapabilityDecision:
+    if mode in {"demo", "production"}:
+        return SellPlanningCapabilityDecision(
+            status="PASS",
+            reason=f"{mode}_sell_planning_capability_ready",
+            runtime_mode=mode,
+            broker_environment=str((context or {}).get("broker_environment") or ("tachibana_demo" if mode == "demo" else "tachibana_production")),
+            historical_replay=False,
+            simulation=False,
+            broker_write=bool((context or {}).get("broker_write")),
+            external_delivery=bool((context or {}).get("external_delivery")),
+            tachibana_demo_write=bool((context or {}).get("tachibana_demo_write")),
+            tachibana_production_write=bool((context or {}).get("tachibana_production_write")),
+            submit_enabled=bool((context or {}).get("submit_enabled")),
+            runtime_test_run_id_present=bool((context or {}).get("runtime_test_run_id")),
+            runtime_test_profile_id=str((context or {}).get("runtime_test_profile_id") or ""),
+            runtime_test_evidence_root_present=bool((context or {}).get("runtime_test_evidence_root")),
+            allowed_processing=("common_runtime_sell_planning_core",),
+            prohibited_external_effects=(),
+        )
+    if mode != "historical" or not context:
+        return _sell_planning_capability_block(
+            mode=mode,
+            context=context or {},
+            reason="historical_sell_planning_capability_context_missing" if mode == "historical" else "unsupported_runtime_mode_for_sell_planning",
+            failed_checks=("environment_capability_context_present",) if mode == "historical" else ("runtime_mode_supported",),
+        )
+    checks = {
+        "runtime_mode_historical": str(context.get("runtime_mode") or mode) == "historical",
+        "historical_replay_true": bool(context.get("historical_replay")) is True,
+        "broker_environment_historical_simulated": str(context.get("broker_environment") or "") == "historical_simulated",
+        "simulation_true": bool(context.get("simulation")) is True,
+        "broker_write_false": bool(context.get("broker_write")) is False,
+        "external_delivery_false": bool(context.get("external_delivery")) is False,
+        "tachibana_demo_write_false": bool(context.get("tachibana_demo_write")) is False,
+        "tachibana_production_write_false": bool(context.get("tachibana_production_write")) is False,
+        "submit_enabled_false": bool(context.get("submit_enabled")) is False,
+    }
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    if failed:
+        return _sell_planning_capability_block(
+            mode=mode,
+            context=context,
+            reason="historical_sell_planning_capability_fail_closed:" + ",".join(failed),
+            failed_checks=failed,
+        )
+    return SellPlanningCapabilityDecision(
+        status="PASS",
+        reason="historical_sell_planning_capability_ready",
+        runtime_mode="historical",
+        broker_environment="historical_simulated",
+        historical_replay=True,
+        simulation=True,
+        broker_write=False,
+        external_delivery=False,
+        tachibana_demo_write=False,
+        tachibana_production_write=False,
+        submit_enabled=False,
+        runtime_test_run_id_present=bool(str(context.get("runtime_test_run_id") or "")),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root_present=bool(str(context.get("runtime_test_evidence_root") or "")),
+        allowed_processing=HISTORICAL_ALLOWED_SELL_PLANNING_PROCESSING,
+        prohibited_external_effects=HISTORICAL_PROHIBITED_SELL_PLANNING_EXTERNAL_EFFECTS,
+    )
+
+
+def _sell_planning_capability_block(
+    *,
+    mode: str,
+    context: dict[str, Any] | None,
+    reason: str,
+    failed_checks: tuple[str, ...],
+) -> SellPlanningCapabilityDecision:
+    context = context or {}
+    return SellPlanningCapabilityDecision(
+        status="BLOCKED",
+        reason=reason,
+        runtime_mode=str(context.get("runtime_mode") or mode),
+        broker_environment=str(context.get("broker_environment") or ""),
+        historical_replay=bool(context.get("historical_replay")),
+        simulation=bool(context.get("simulation")),
+        broker_write=bool(context.get("broker_write")),
+        external_delivery=bool(context.get("external_delivery")),
+        tachibana_demo_write=bool(context.get("tachibana_demo_write")),
+        tachibana_production_write=bool(context.get("tachibana_production_write")),
+        submit_enabled=bool(context.get("submit_enabled")),
+        runtime_test_run_id_present=bool(str(context.get("runtime_test_run_id") or "")),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root_present=bool(str(context.get("runtime_test_evidence_root") or "")),
+        allowed_processing=(),
+        prohibited_external_effects=HISTORICAL_PROHIBITED_SELL_PLANNING_EXTERNAL_EFFECTS if mode == "historical" else (),
+        failed_checks=failed_checks,
+    )
+
+
 def run_sell_planning_pending_pipeline(
     *,
     runtime_root: Path | str,
@@ -74,6 +223,7 @@ def run_sell_planning_pending_pipeline(
     max_orders: int | None = None,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
+    environment_capability_context: dict[str, Any] | None = None,
 ) -> SellPlanningPipelineResult:
     """Build SELL OrderPlan/Approval/Pending from Current positions only.
 
@@ -81,8 +231,12 @@ def run_sell_planning_pending_pipeline(
     ``exit_decisions``; BUY candidates are never accepted as SELL sources.
     """
 
-    if mode not in {"demo", "production"}:
-        raise ValueError("sell planning pipeline supports demo/production only")
+    capability_decision = evaluate_sell_planning_capability(
+        mode=mode,
+        context=environment_capability_context,
+    )
+    if capability_decision.status != "PASS":
+        raise ValueError(capability_decision.reason)
     runtime_root_path = Path(runtime_root)
     _reject_mode_rooted_runtime_root(runtime_root_path)
     target_session_date = business_date
@@ -98,6 +252,7 @@ def run_sell_planning_pending_pipeline(
             business_date=business_date,
             target_session_date=target_session_date,
             environment=mode,
+            environment_capability_context=environment_capability_context,
             reason=safety_reason,
             current_position_count=0,
             current_exposure=0.0,
@@ -117,6 +272,7 @@ def run_sell_planning_pending_pipeline(
             business_date=business_date,
             target_session_date=target_session_date,
             environment=mode,
+            environment_capability_context=environment_capability_context,
             reason="NO_SIGNAL:current_position_missing",
             current_position_count=0,
             current_exposure=current_exposure,
@@ -130,6 +286,7 @@ def run_sell_planning_pending_pipeline(
             business_date=business_date,
             target_session_date=target_session_date,
             environment=mode,
+            environment_capability_context=environment_capability_context,
             reason="NO_SIGNAL:exit_ai_no_sell_signal",
             current_position_count=len(current_positions),
             current_exposure=current_exposure,
@@ -179,6 +336,12 @@ def run_sell_planning_pending_pipeline(
         intended_submit_date=target_session_date,
         target_session_date=target_session_date,
         items=pending_items,
+    )
+    pending = _attach_historical_safety_authority(
+        pending=pending,
+        business_date=business_date,
+        safety_decision=runtime_safety_decision,
+        environment_capability_context=environment_capability_context,
     )
     approved_item_ids = tuple(item.pending_item_id for item in pending.items)
     if approved_item_ids:
@@ -232,6 +395,7 @@ def _write_no_signal_pending(
     business_date: str,
     target_session_date: str,
     environment: str,
+    environment_capability_context: dict[str, Any] | None,
     reason: str,
     current_position_count: int,
     current_exposure: float,
@@ -267,16 +431,28 @@ def _write_no_signal_pending(
         items=(),
     )
     if safety_decision is not None:
-        from dataclasses import replace
-
         pending = replace(
             pending,
             safety_context=_safety_context_payload(safety_decision),
             safety_decision_id=safety_decision.safety_decision_id,
             safety_policy_version=safety_decision.safety_policy_version,
         )
+    pending = _attach_historical_safety_authority(
+        pending=pending,
+        business_date=business_date,
+        safety_decision=safety_decision,
+        environment_capability_context=environment_capability_context,
+    )
+    if not pending.items and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
+        pending = replace(pending, state=PendingPlanState.EMPTY)
     pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
+    if pending.state == PendingPlanState.EMPTY:
+        pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+        pending_payload["status"] = "EMPTY"
+        pending_payload["active_pending"] = False
+        pending_payload["no_action_reason"] = reason
+        pending_path.write_text(_json_dumps(pending_payload), encoding="utf-8")
     return SellPlanningPipelineResult(
         status=status,
         reason=reason,
@@ -291,6 +467,37 @@ def _write_no_signal_pending(
         selected_symbols=(),
         current_exposure=current_exposure,
         **_result_safety_fields(safety_decision),
+    )
+
+
+def _attach_historical_safety_authority(
+    *,
+    pending,
+    business_date: str,
+    safety_decision: RuntimeSafetyDecision | None,
+    environment_capability_context: dict[str, Any] | None,
+):
+    if safety_decision is None or str(safety_decision.decision or "").upper() != "ALLOW":
+        return pending
+    context = environment_capability_context or {}
+    if str(context.get("runtime_mode") or "") != "historical":
+        return pending
+    safety_context = {
+        **_safety_context_payload(safety_decision),
+        "safety_authority": "historical_initial_no_external_effect",
+        "safety_business_date": business_date,
+    }
+    if context.get("runtime_test_run_id"):
+        safety_context["runtime_test_run_id"] = str(context.get("runtime_test_run_id") or "")
+    if context.get("runtime_test_profile_id"):
+        safety_context["runtime_test_profile_id"] = str(context.get("runtime_test_profile_id") or "")
+    if context.get("runtime_test_evidence_root"):
+        safety_context["runtime_test_evidence_root"] = str(context.get("runtime_test_evidence_root") or "")
+    return replace(
+        pending,
+        safety_context=safety_context,
+        safety_decision_id=safety_decision.safety_decision_id,
+        safety_policy_version=safety_decision.safety_policy_version,
     )
 
 

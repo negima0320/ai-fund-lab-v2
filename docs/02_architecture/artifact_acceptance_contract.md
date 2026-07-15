@@ -88,6 +88,7 @@ Rules:
 - `LEGACY -> ACCEPTED` is allowed only for rollback through a new acceptance event and regression gate.
 - Status changes are append-only events. Registry event deletion is prohibited.
 - Physical file replacement in-place is prohibited for accepted artifacts. A new file hash means a new artifact instance.
+- A Limited Registry Recovery Transaction is not ordinary acceptance, replacement, rollback, or revoke. It is permitted only under the Registry recovery contract when incomplete acceptance-attempt events were never used as Runtime authority and the removed event bodies remain permanently auditable.
 
 ## Acceptance Authority
 
@@ -133,6 +134,22 @@ Exceptions:
 - Runtime authority state such as Current, Ledger, Pending, Execution, and Runtime State is not governed as an accepted AI artifact. These remain Runtime authorities.
 - Safety decisions may be consumed under their separate freshness and safety contract, but if registered as artifacts they still must not claim `ACCEPTED` without this workflow.
 - Emergency operator intervention may stop Runtime from using an artifact, but cannot promote another artifact to `ACCEPTED` without a follow-up acceptance event.
+
+### ACCEPTED_CURRENT_PATH Authority Mode
+
+`ACCEPTED_CURRENT_PATH` is allowed only when the permanent Runtime execution source path itself is the accepted artifact member. It is not a test-only shortcut and it is not a manual Registry override.
+
+Required acceptance evidence:
+
+- physical source path
+- git commit
+- SHA-256 content hash
+- schema or source classification evidence
+- behavior/regression evidence
+- consumer compatibility evidence
+- release approval
+
+Runtime preflight must compare the accepted physical path and accepted content hash with the actual executing source before use. A path or hash mismatch must halt with a fail-closed Runtime artifact lookup error. Source changes require a new acceptance event and a new active artifact set; the previous accepted set must become `LEGACY` through the append-only replacement workflow. The same accepted authority applies to Historical, Demo, and Production consumers.
 
 ## Acceptance Criteria
 
@@ -192,6 +209,7 @@ Required to accept:
 
 - PM code-policy source hash verified.
 - Runtime adapter source hash verified.
+- If `RUNTIME_ADAPTER` uses `ACCEPTED_CURRENT_PATH`, the accepted source path must be the actual Runtime PM producer source, and Runtime must hash-check it before PM inference.
 - Code-policy manifest hash is stable.
 - Producer is PM code acceptance and Runtime adapter acceptance.
 - Consumers are PM Producer and Sell Planning.

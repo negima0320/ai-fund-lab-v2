@@ -36,6 +36,8 @@ The Index Builder must not:
 - repair, delete, truncate, reorder, or edit Event Log lines;
 - modify Current, Ledger, Pending, Runtime State, Feature, AI, Planning, Submit, or Broker state.
 
+Exception boundary: a Limited Registry Recovery Transaction may replace the Event Log bytes only when the recovery transaction is approved under `artifact_registry_event_and_acceptance_evidence_contract.md`, the removed events were never Runtime authority, a full pre-recovery backup is retained, and the Index and Checkpoint are rebuilt from the recovered Event Log by formal tools. The Index Builder must not decide or perform this recovery; it may only validate and replay the resulting Event Log.
+
 ## Full Event Log Validation
 
 Replay must be preceded by full validation of every Event Log byte and every event row. Validation result classes are:

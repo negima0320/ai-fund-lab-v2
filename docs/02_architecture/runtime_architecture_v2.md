@@ -2262,6 +2262,24 @@ pending_temporal_status
 
 ## 23. 禁止事項
 
+## Phase17-G 追補: Submit Guard Environment Matrix
+
+Runtime v2 Submit Guard は、Demo 専用 guard ではなく、Runtime Environment Matrix を確認する正規 guard として扱う。
+
+| runtime environment | pending environment | run type | broker environment | adapter | broker write | external delivery |
+|---|---|---|---|---|---:|---:|
+| `demo` | `demo` | `DEMO` | `tachibana_demo` | Demo submit adapter | true | environment policy に従う |
+| `historical` | `historical` | `HISTORICAL` | `historical_simulated` | `HistoricalSubmitAdapter` | false | false |
+| `production` | `production` | `PRODUCTION` | `tachibana_production` | Production submit adapter | explicit production acceptance required | production policy に従う |
+
+Environment Matrix は Submit Guard の先頭で確認する。Matrix 不一致、adapter 不一致、`broker_write` 不一致、`external_delivery` 不一致、または Historical の `business_date` / `evaluation_time` 欠落は fail closed とする。
+
+`broker_write=false` は Runtime Submit / Execution / Ledger / Current の通常 mainline を停止する意味ではない。外部 Broker API への write delivery を禁止する意味であり、Historical では `HistoricalSubmitAdapter` と `HistoricalExecutionSnapshotProvider` が Runtime v2 の通常 Submit Guard、Execution Processor、Ledger、Current Apply に接続する。
+
+Historical は Runtime v2 の正式 environment である。ただし Current / Ledger / Pending / Runtime State は mode-rooted path へ分岐しない。Current object path は通常 `.runtime/...` に固定し、`--mode historical` と environment evidence で実行境界を識別する。
+
+Phase17-G の Historical Fill Model は 5BD Historical Runtime Smoke Test 用の最小実行仮定である。Market order は対象営業日の Canonical OHLCV `Open` を fill price とし、PIT manifest hash、Listed Issues PIT universe、Corporate Action no-impact guard、duplicate submit evidence、cash / quantity guard を必須 evidence とする。Fees、tax、slippage、partial fill、long-term performance 用の厳密 execution model は 20BD 以降の別 acceptance とする。
+
 Runtime Architecture v2 の設計および Phase13 design-only 作業では、以下を禁止する。
 
 - 実装変更

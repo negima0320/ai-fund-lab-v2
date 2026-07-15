@@ -110,6 +110,120 @@ Phase16-specific or Phase17-specific Runtime roots, Current paths, Ledger paths,
 
 Evidence backup paths may be created for preservation, but they are not Runtime roots and must not be used as the active Runtime input.
 
+## Phase17-B1I-A Historical Environment Composition Amendment
+
+Historical Runtime execution is a formal Runtime environment composition, not an alternate mainline and not the standalone simulation harness.
+
+Formal identity:
+
+```text
+run_type=HISTORICAL
+runtime_mode=historical
+broker_environment=historical_simulated
+runtime_root=.runtime
+external_delivery=false
+broker_write=false
+```
+
+The official CLI mode is:
+
+```text
+--mode historical
+```
+
+`--mode simulation` is not a formal Runtime environment. If retained for older fixtures, it must remain a compatibility-only alias or test fixture label and must fail closed in operational Runtime composition.
+
+Historical mode requires explicit temporal identity:
+
+```text
+--business-date
+--evaluation-time
+```
+
+Fallback to wall-clock current date or current time is prohibited for historical execution.
+
+Historical composition selects only:
+
+- `HistoricalSubmitAdapter`
+- `HistoricalExecutionSnapshotProvider`
+
+Historical composition must not instantiate Tachibana Demo submit adapters, Tachibana Production submit adapters, or Tachibana Broker ReadOnly snapshot providers. Submit Guard and Execution Processor remain the normal Runtime v2 guard/processor boundaries and must not be bypassed.
+
+External effects are disabled:
+
+```text
+tachibana_readonly=false
+tachibana_demo_write=false
+tachibana_production_write=false
+notification_delivery=false
+discord_send=false
+line_send=false
+blog_publish=false
+external_delivery=false
+broker_write=false
+```
+
+Historical manifests must include:
+
+```text
+run_type
+runtime_mode
+broker_environment
+simulation=true
+historical_replay=true
+broker_write=false
+production_equivalent=false
+acceptance_only=false
+external_delivery=false
+runtime_root
+environment_id
+run_id
+business_date
+evaluation_time
+```
+
+Until the Historical Broker fill model is separately accepted, Historical Submit and Historical Execution must fail closed with `NOT_IMPLEMENTED_BLOCKING` and must not create accepted fills, mutate Current, consume Pending, or write broker-equivalent external effects.
+
+## Phase17-G Historical Submit Guard And Fill Model Amendment
+
+Phase17-G accepts a limited Historical Submit Guard and Historical Fill Model for the 5BD Historical Runtime Smoke Test only.
+
+This amendment does not create a Historical-only Runtime, Feature Producer, Current, Ledger, Pending, Runtime State, Submit path, or Execution Processor. Historical execution must still enter through Runtime v2 Mainline and the normal Submit Guard.
+
+Submit Guard Environment Matrix:
+
+| environment | required pending | required adapter | broker write | external delivery | result |
+|---|---|---|---:|---:|---|
+| Demo | `demo` | Demo submit adapter | true | allowed by Demo policy | normal Demo guard |
+| Historical | `historical` | `HistoricalSubmitAdapter` | false | false | allowed only after common Approval / Policy / Safety / Pending / Duplicate / Temporal / Cash / Quantity guards pass |
+| Production | `production` | Production submit adapter | explicit acceptance only | production policy | fail closed without production acceptance |
+
+Historical `broker_write=false` means no external broker write, no Tachibana Demo write, no Tachibana Production write, no raw request/response/secret persistence, and no external delivery. It does not mean the Runtime mainline is bypassed or acceptance-only. Accepted Historical evidence may be consumed by the normal Execution Processor as a simulated broker snapshot.
+
+Accepted 5BD smoke fill rule:
+
+- Order type: `MARKET` only.
+- Fill date: `target_session_date == business_date`.
+- Fill time: session open evidence timestamp, represented as `09:00:00+09:00`.
+- Fill price: Canonical normalized OHLCV `Open` for `(business_date, symbol)`.
+- Source authority: 5BD PIT manifest source hash plus Canonical OHLCV hash match.
+- Universe authority: Listed Issues PIT membership as of business date.
+- Corporate action guard: raw OHLCV `AdjFactor == 1.0` for the business date, otherwise halt.
+- Lot / trading unit: use explicit `listed_info.trading_unit` when present; otherwise rely on existing Runtime Pending / Approval / Broker Capability quantity authority and record `ACCEPTED_EXISTING_RUNTIME_QUANTITY_AUTHORITY`. The model must not invent an unconditional 100-share rule.
+- Duplicate prevention: deterministic historical order and execution identities; existing evidence path blocks resubmit.
+- BUY cash and SELL quantity remain normal Runtime Submit Guard responsibilities.
+
+Out of scope for this accepted 5BD smoke model:
+
+- fees
+- tax
+- slippage
+- partial fill
+- non-market limit-order execution rule
+- full long-term official performance execution model
+
+If any of the required PIT source, universe, Corporate Action no-impact, market price, or environment matrix evidence is missing or inconsistent, Historical Submit must fail closed before accepted fill evidence is created.
+
 ## Reset Policy
 
 Before Phase17 execution starts, Phase16 readiness must provide a formal mechanism to reset the normal Runtime state to:
@@ -547,3 +661,13 @@ Required before Phase17-A:
 - Public report / notification payload optionality decision.
 - Accepted model artifact manifest freeze.
 - Historical period readiness audit.
+
+## Phase17-M Amendment: As-of Consumer Wiring
+
+Historical as-of resolution is not sufficient as evidence-only output. Historical Market Refresh, Data Readiness, Feature Refresh, and Feature Artifact resolution must consume an accepted logical as-of input for the replay business date.
+
+Allowed implementation forms include a run-scoped verified derived logical input, a data resolver with an explicit `as_of` cutoff, or a formally materialized PIT view. In every case, the logical input must retain physical source path/hash, cutoff, logical max date, future rows excluded count, run identity, and manifest hash. The physical canonical source must not be truncated, deleted, copied back, or overwritten.
+
+Feature artifacts are temporally valid only when the artifact date is not later than the selected Feature Date and not later than the consumer business date. A future artifact existing in the repository is not a failure by itself; using it as consumer input for an earlier historical business date is a temporal contract violation.
+
+Historical Runtime Test run entry requires all target business dates to have `PASS` Feature Date Contracts from the normal contract authority. Profile expected dates are comparison values only and must never act as Feature Date authority.

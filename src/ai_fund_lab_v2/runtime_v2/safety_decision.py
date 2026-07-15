@@ -99,7 +99,7 @@ def safety_allows_action(decision: RuntimeSafetyDecision, *, action: str, side: 
         return False, "BLOCKED", decision.reason or "safety decision blocked"
     scoped = _scoped_permission(decision, action=action, side=side)
     if scoped:
-        if scoped in {"ALLOWED", "ALLOWED_FOR_REVIEW", "ALLOWED_FOR_ACCEPTANCE"}:
+        if scoped in {"ALLOWED", "ALLOWED_FOR_REVIEW", "ALLOWED_FOR_ACCEPTANCE", "ALLOWED_FOR_REPLAY"}:
             return True, "PASS", decision.reason or f"safety action scope {scoped.lower()}"
         if scoped == "REVIEW_REQUIRED":
             return False, "REVIEW_REQUIRED", decision.reason or "safety action scope review required"

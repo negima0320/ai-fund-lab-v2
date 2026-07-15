@@ -138,6 +138,169 @@ class MorningPipelineResult:
         return payload
 
 
+@dataclass(frozen=True)
+class MorningCapabilityDecision:
+    status: str
+    reason: str
+    runtime_mode: str
+    broker_environment: str
+    historical_replay: bool
+    simulation: bool
+    broker_write: bool
+    external_delivery: bool
+    tachibana_demo_write: bool
+    tachibana_production_write: bool
+    submit_enabled: bool
+    runtime_test_run_id_present: bool
+    runtime_test_profile_id: str
+    runtime_test_evidence_root_present: bool
+    allowed_processing: tuple[str, ...]
+    prohibited_external_effects: tuple[str, ...]
+    failed_checks: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["allowed_processing"] = list(self.allowed_processing)
+        payload["prohibited_external_effects"] = list(self.prohibited_external_effects)
+        payload["failed_checks"] = list(self.failed_checks)
+        return payload
+
+
+HISTORICAL_ALLOWED_MORNING_PROCESSING: tuple[str, ...] = (
+    "data_readiness",
+    "candidate_ai",
+    "opportunity_ai",
+    "capital_allocation",
+    "buy_planning",
+    "historical_approval_policy",
+    "pending_generation",
+    "historical_execution_handoff",
+    "run_scoped_evidence",
+)
+
+HISTORICAL_PROHIBITED_MORNING_EXTERNAL_EFFECTS: tuple[str, ...] = (
+    "tachibana_demo_api_write",
+    "tachibana_production_api_write",
+    "broker_order_api_call",
+    "demo_submit",
+    "production_submit",
+    "external_notification_delivery",
+    "line_send",
+    "discord_send",
+    "broker_snapshot_external_update",
+    "jquants_api_fetch",
+    "production_access",
+)
+
+
+def evaluate_morning_capability(
+    *,
+    mode: str,
+    context: dict[str, Any] | None = None,
+) -> MorningCapabilityDecision:
+    """Resolve Morning capability from environment composition, not mode name alone."""
+
+    if mode in {"demo", "production"}:
+        return MorningCapabilityDecision(
+            status="PASS",
+            reason=f"{mode}_morning_capability_ready",
+            runtime_mode=mode,
+            broker_environment=str((context or {}).get("broker_environment") or ("tachibana_demo" if mode == "demo" else "tachibana_production")),
+            historical_replay=False,
+            simulation=False,
+            broker_write=bool((context or {}).get("broker_write")),
+            external_delivery=bool((context or {}).get("external_delivery")),
+            tachibana_demo_write=bool((context or {}).get("tachibana_demo_write")),
+            tachibana_production_write=bool((context or {}).get("tachibana_production_write")),
+            submit_enabled=bool((context or {}).get("submit_enabled")),
+            runtime_test_run_id_present=bool((context or {}).get("runtime_test_run_id")),
+            runtime_test_profile_id=str((context or {}).get("runtime_test_profile_id") or ""),
+            runtime_test_evidence_root_present=bool((context or {}).get("runtime_test_evidence_root")),
+            allowed_processing=("common_runtime_morning_core",),
+            prohibited_external_effects=(),
+        )
+    if mode != "historical":
+        return _morning_capability_block(
+            mode=mode,
+            context=context,
+            reason="unsupported_runtime_mode_for_morning",
+            failed_checks=("runtime_mode_supported",),
+        )
+    if not context:
+        return _morning_capability_block(
+            mode=mode,
+            context={},
+            reason="historical_morning_capability_context_missing",
+            failed_checks=("environment_capability_context_present",),
+        )
+    checks = {
+        "runtime_mode_historical": str(context.get("runtime_mode") or mode) == "historical",
+        "historical_replay_true": bool(context.get("historical_replay")) is True,
+        "broker_environment_historical_simulated": str(context.get("broker_environment") or "") == "historical_simulated",
+        "simulation_true": bool(context.get("simulation")) is True,
+        "broker_write_false": bool(context.get("broker_write")) is False,
+        "external_delivery_false": bool(context.get("external_delivery")) is False,
+        "tachibana_demo_write_false": bool(context.get("tachibana_demo_write")) is False,
+        "tachibana_production_write_false": bool(context.get("tachibana_production_write")) is False,
+        "submit_enabled_false": bool(context.get("submit_enabled")) is False,
+    }
+    failed = tuple(name for name, passed in checks.items() if not passed)
+    if failed:
+        return _morning_capability_block(
+            mode=mode,
+            context=context,
+            reason="historical_morning_capability_fail_closed:" + ",".join(failed),
+            failed_checks=failed,
+        )
+    return MorningCapabilityDecision(
+        status="PASS",
+        reason="historical_morning_capability_ready",
+        runtime_mode="historical",
+        broker_environment="historical_simulated",
+        historical_replay=True,
+        simulation=True,
+        broker_write=False,
+        external_delivery=False,
+        tachibana_demo_write=False,
+        tachibana_production_write=False,
+        submit_enabled=False,
+        runtime_test_run_id_present=bool(str(context.get("runtime_test_run_id") or "")),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root_present=bool(str(context.get("runtime_test_evidence_root") or "")),
+        allowed_processing=HISTORICAL_ALLOWED_MORNING_PROCESSING,
+        prohibited_external_effects=HISTORICAL_PROHIBITED_MORNING_EXTERNAL_EFFECTS,
+    )
+
+
+def _morning_capability_block(
+    *,
+    mode: str,
+    context: dict[str, Any] | None,
+    reason: str,
+    failed_checks: tuple[str, ...],
+) -> MorningCapabilityDecision:
+    context = context or {}
+    return MorningCapabilityDecision(
+        status="BLOCKED",
+        reason=reason,
+        runtime_mode=str(context.get("runtime_mode") or mode),
+        broker_environment=str(context.get("broker_environment") or ""),
+        historical_replay=bool(context.get("historical_replay")),
+        simulation=bool(context.get("simulation")),
+        broker_write=bool(context.get("broker_write")),
+        external_delivery=bool(context.get("external_delivery")),
+        tachibana_demo_write=bool(context.get("tachibana_demo_write")),
+        tachibana_production_write=bool(context.get("tachibana_production_write")),
+        submit_enabled=bool(context.get("submit_enabled")),
+        runtime_test_run_id_present=bool(str(context.get("runtime_test_run_id") or "")),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root_present=bool(str(context.get("runtime_test_evidence_root") or "")),
+        allowed_processing=(),
+        prohibited_external_effects=HISTORICAL_PROHIBITED_MORNING_EXTERNAL_EFFECTS if mode == "historical" else (),
+        failed_checks=failed_checks,
+    )
+
+
 def run_morning_ai_planning_pending_pipeline(
     *,
     runtime_root: Path | str,
@@ -151,6 +314,7 @@ def run_morning_ai_planning_pending_pipeline(
     safety_decision: RuntimeSafetyDecision | None = None,
     ai_signals: tuple[AIPlanningSignal, ...] | None = None,
     buy_ai_context: dict[str, Any] | None = None,
+    environment_capability_context: dict[str, Any] | None = None,
 ) -> MorningPipelineResult:
     """Connect feature input to Planning, Approval, and Current Pending.
 
@@ -158,8 +322,12 @@ def run_morning_ai_planning_pending_pipeline(
     canonical Pending Current and derived morning artifacts.
     """
 
-    if mode not in {"demo", "production"}:
-        raise ValueError("morning pipeline supports demo/production capability only")
+    capability_decision = evaluate_morning_capability(
+        mode=mode,
+        context=environment_capability_context,
+    )
+    if capability_decision.status != "PASS":
+        raise ValueError(capability_decision.reason)
 
     runtime_root_path = Path(runtime_root)
     _reject_mode_rooted_runtime_root(runtime_root_path)
@@ -182,6 +350,8 @@ def run_morning_ai_planning_pending_pipeline(
     if not safety_allowed:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -203,6 +373,8 @@ def run_morning_ai_planning_pending_pipeline(
     if policy is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -246,6 +418,8 @@ def run_morning_ai_planning_pending_pipeline(
     if evaluation_capital is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -262,6 +436,8 @@ def run_morning_ai_planning_pending_pipeline(
     if planning_budget <= 0 or effective_order_limit <= 0 or per_order_budget <= 0:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -278,6 +454,8 @@ def run_morning_ai_planning_pending_pipeline(
     if feature_contract.status != "PASS":
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -298,6 +476,8 @@ def run_morning_ai_planning_pending_pipeline(
     if ai_signals is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -317,6 +497,8 @@ def run_morning_ai_planning_pending_pipeline(
     if not candidate_rows:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -335,6 +517,8 @@ def run_morning_ai_planning_pending_pipeline(
     if price_source is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -393,6 +577,8 @@ def run_morning_ai_planning_pending_pipeline(
         )
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
             business_date=business_date,
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
@@ -461,6 +647,12 @@ def run_morning_ai_planning_pending_pipeline(
         items=pending_items,
     )
     pending = replace(pending, feature_date_contract=_feature_contract_payload(feature_contract))
+    pending = _attach_historical_safety_authority(
+        pending=pending,
+        business_date=business_date,
+        safety_decision=runtime_safety_decision,
+        environment_capability_context=environment_capability_context,
+    )
     approved_item_ids = tuple(item.pending_item_id for item in pending.items)
     approval_path = _morning_artifact_dir(runtime_root_path, business_date) / "approval_artifact.json"
     if approved_item_ids:
@@ -570,6 +762,8 @@ def _pending_from_items(
 def _write_no_signal_pending(
     *,
     runtime_root: Path,
+    environment: str,
+    environment_capability_context: dict[str, Any] | None,
     business_date: str,
     feature_date: str,
     feature_contract: FeatureDateContract,
@@ -597,7 +791,7 @@ def _write_no_signal_pending(
     order_plan_payload = {
         "schema_version": "1",
         "order_plan_id": f"order-plan-morning-no-signal-{business_date}",
-        "environment": "demo",
+        "environment": environment,
         "business_date": business_date,
         "target_session_date": target_session_date,
         "status": "NO_ACTION",
@@ -624,7 +818,7 @@ def _write_no_signal_pending(
         order_plan_id=order_plan_payload["order_plan_id"],
         source_order_plan_path=str(order_plan_path),
         source_order_plan_hash=_hash(order_plan_path.read_text(encoding="utf-8")),
-        environment="demo",
+        environment=environment,
         business_date=business_date,
         target_session_date=target_session_date,
         items=(),
@@ -645,12 +839,26 @@ def _write_no_signal_pending(
             policy_source=str(policy_context.get("policy_source") or ""),
             pending_policy_hash=_policy_hash(policy_context),
         )
+    pending = _attach_historical_safety_authority(
+        pending=pending,
+        business_date=business_date,
+        safety_decision=safety_decision,
+        environment_capability_context=environment_capability_context,
+    )
     if status == "REVIEW_REQUIRED":
         pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED)
     elif status == "BLOCKED":
         pending = replace(pending, state=PendingPlanState.BLOCKED)
+    elif not pending.items:
+        pending = replace(pending, state=PendingPlanState.EMPTY)
     pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
+    if pending.state == PendingPlanState.EMPTY:
+        pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+        pending_payload["status"] = "EMPTY"
+        pending_payload["active_pending"] = False
+        pending_payload["no_action_reason"] = reason
+        pending_path.write_text(_json_dumps(pending_payload), encoding="utf-8")
     return MorningPipelineResult(
         status=status,
         reason=reason,
@@ -694,6 +902,37 @@ def _write_no_signal_pending(
         budget_excluded_count=budget_excluded_count,
         **_result_policy_fields(policy_context),
         **_result_safety_fields(safety_decision),
+    )
+
+
+def _attach_historical_safety_authority(
+    *,
+    pending,
+    business_date: str,
+    safety_decision: RuntimeSafetyDecision | None,
+    environment_capability_context: dict[str, Any] | None,
+):
+    if safety_decision is None or str(safety_decision.decision or "").upper() != "ALLOW":
+        return pending
+    context = environment_capability_context or {}
+    if str(context.get("runtime_mode") or "") != "historical":
+        return pending
+    safety_context = {
+        **_safety_context_payload(safety_decision),
+        "safety_authority": "historical_initial_no_external_effect",
+        "safety_business_date": business_date,
+    }
+    if context.get("runtime_test_run_id"):
+        safety_context["runtime_test_run_id"] = str(context.get("runtime_test_run_id") or "")
+    if context.get("runtime_test_profile_id"):
+        safety_context["runtime_test_profile_id"] = str(context.get("runtime_test_profile_id") or "")
+    if context.get("runtime_test_evidence_root"):
+        safety_context["runtime_test_evidence_root"] = str(context.get("runtime_test_evidence_root") or "")
+    return replace(
+        pending,
+        safety_context=safety_context,
+        safety_decision_id=safety_decision.safety_decision_id,
+        safety_policy_version=safety_decision.safety_policy_version,
     )
 
 

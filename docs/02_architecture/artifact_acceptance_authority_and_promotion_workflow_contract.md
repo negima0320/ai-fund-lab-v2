@@ -472,6 +472,9 @@ Because JSONL cannot atomically append multiple events as one transaction, the s
 - no step may leave two active Runtime-eligible artifacts for the same logical artifact and consumer;
 - if a partial sequence exists, Runtime lookup must fail closed until Index and Checkpoint validate a single eligible artifact;
 - operator recovery appends the missing lifecycle/eligibility event and rebuilds derived views.
+- every acceptance attempt must use a unique `transaction_id`, `attempt_id`, and permanent evidence path namespace;
+- evidence bundle, manifest, report, approval, compatibility, lineage, and freeze paths must not be reused across attempts or source hashes;
+- before append, the writer or acceptance script must preflight that the Event Log, Index, and Checkpoint match and that no referenced evidence path is already bound to another event fingerprint or artifact set hash.
 
 If future schema supports an atomic replacement event, it may combine old deactivation and new activation, but it must still be replayable from the Event Log.
 
@@ -572,6 +575,12 @@ Required recovery:
 2. Regenerate Checkpoint.
 3. If Checkpoint failure repeats, operator review is required.
 4. Runtime lookup remains fail-closed if Checkpoint is required for Runtime eligibility.
+
+### Incomplete acceptance transaction with reused evidence paths
+
+If an acceptance attempt writes events whose evidence paths are then reused or overwritten before a coherent transaction reaches a stable accepted state, the normal recovery is to stop Runtime lookup, preserve the pre-recovery Event Log bytes, inventory the partial events, and obtain Human Review plus Architecture Acceptance before any Event Log recovery. A Limited Registry Recovery Transaction may be approved only if the partial events were never used as Runtime authority and all removed event bodies remain preserved in permanent evidence.
+
+Direct manual rewrite remains prohibited for normal operation. A future Recovery CLI must generate the recovery plan, backup, removed-event inventory, before/after hashes, and approval record before replacing Event Log bytes, then run Full Log validation, Index build, Checkpoint, exactly-one-active-set validation, and Runtime authority preflight.
 
 ## Test Plan
 

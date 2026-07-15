@@ -25,9 +25,14 @@ from ai_fund_lab_v2.runtime_v2.execution.ledger_projection import (
     project_order_to_ledger_record,
     project_position_to_ledger_record,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExecutionRecord
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
+    is_mode_rooted_runtime_root,
+    reject_mode_rooted_runtime_root,
+)
 from ai_fund_lab_v2.runtime_v2.reconcile.reconciler import run_reconciliation
 
 
@@ -105,14 +110,24 @@ def run_execution_readonly_pipeline(
     OrderList/Position/Cash evidence policy is satisfied.
     """
 
-    if mode not in {"demo", "production"}:
+    if mode == "historical":
+        if not isinstance(snapshot_provider, HistoricalExecutionSnapshotProvider):
+            return _result(
+                status="HALT",
+                reason="historical execution requires HistoricalExecutionSnapshotProvider from environment composition",
+                runtime_root=Path(runtime_root),
+            )
+    elif mode not in {"demo", "production"}:
         return _result(
             status="BLOCKED",
             reason="execution readonly supports demo/production only",
             runtime_root=Path(runtime_root),
     )
     runtime_root_path = Path(runtime_root)
-    _reject_mode_rooted_runtime_root(runtime_root_path)
+    try:
+        _reject_mode_rooted_runtime_root(runtime_root_path)
+    except ValueError as exc:
+        return _result(status="HALT", reason=str(exc), runtime_root=runtime_root_path)
     try:
         demo_fallback_authority = load_demo_execution_fallback_authority(
             demo_execution_fallback_authority_path,
@@ -195,7 +210,6 @@ def run_execution_readonly_pipeline(
     )
     cash_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "cash.jsonl", ledger_cash)
 
-    asset_state = _read_asset_state(runtime_root_path / "persistent_ledger" / "state.json")
     asset_policy = "broker_position_cash_evidence_recorded_only"
     asset_current_written = False
     runtime_owned_projection_status = "NOT_EXECUTED"
@@ -215,20 +229,6 @@ def run_execution_readonly_pipeline(
     runtime_state_version = ""
     execution_references: tuple[str, ...] = ()
 
-    pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
-    reconciliation = run_reconciliation(
-        mode=mode,
-        environment=mode,
-        business_date=business_date,
-        pending_plan=pending_read.plan if pending_read.valid else None,
-        ledger_orders=ledger_orders,
-        ledger_executions=ledger_executions,
-        broker_orders=bundle.orders,
-        broker_executions=bundle.executions,
-        broker_positions=bundle.positions,
-        broker_cash=bundle.cash,
-        asset_state=asset_state,
-    )
     ledger_events = _execution_acceptance_events(
         mode=mode,
         as_of=as_of,
@@ -245,12 +245,6 @@ def run_execution_readonly_pipeline(
     if acceptance["status"] != "PASS":
         status = "REVIEW_REQUIRED"
         reason = str(acceptance["reason"])
-    if reconciliation.findings and status == "PASS" and mode != "demo":
-        status = "REVIEW_REQUIRED"
-        reason = f"reconciliation findings={len(reconciliation.findings)}"
-    reconcile_status = "PASS" if not reconciliation.findings else "REVIEW_REQUIRED"
-    if reconciliation.findings and status == "PASS" and mode == "demo":
-        reconcile_status = "PASS_WITH_WARNINGS"
 
     if status == "PASS":
         projection = project_runtime_owned_fills_to_current(
@@ -293,6 +287,28 @@ def run_execution_readonly_pipeline(
             current_version = current_apply.current_version
             runtime_state_path = current_apply.runtime_state_path
             runtime_state_version = current_apply.runtime_state_version
+
+    asset_state = _read_asset_state(runtime_root_path / "persistent_ledger" / "state.json")
+    pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
+    reconciliation = run_reconciliation(
+        mode=mode,
+        environment=mode,
+        business_date=business_date,
+        pending_plan=pending_read.plan if pending_read.valid else None,
+        ledger_orders=ledger_orders,
+        ledger_executions=ledger_executions,
+        broker_orders=bundle.orders,
+        broker_executions=bundle.executions,
+        broker_positions=bundle.positions,
+        broker_cash=bundle.cash,
+        asset_state=asset_state,
+    )
+    if reconciliation.findings and status == "PASS" and mode != "demo":
+        status = "REVIEW_REQUIRED"
+        reason = f"reconciliation findings={len(reconciliation.findings)}"
+    reconcile_status = "PASS" if not reconciliation.findings else "REVIEW_REQUIRED"
+    if reconciliation.findings and status == "PASS" and mode == "demo":
+        reconcile_status = "PASS_WITH_WARNINGS"
 
     return ExecutionReadOnlyPipelineResult(
         status=status,
@@ -740,19 +756,11 @@ def _default_snapshot_provider() -> Callable[..., Any]:
 
 
 def _reject_mode_rooted_runtime_root(path: Path) -> None:
-    if _is_mode_rooted_runtime_path(path):
-        raise ValueError("Runtime v2 execution job must use fixed Current path, not mode-rooted path")
+    reject_mode_rooted_runtime_root(path)
 
 
 def _is_mode_rooted_runtime_path(path: Path) -> bool:
-    parts = path.parts
-    runtime_modes = {"production", "demo", "simulation", "backtest"}
-    return any(
-        part == ".runtime"
-        and index + 1 < len(parts)
-        and parts[index + 1] in runtime_modes
-        for index, part in enumerate(parts)
-    )
+    return is_mode_rooted_runtime_root(path)
 
 
 def _result(

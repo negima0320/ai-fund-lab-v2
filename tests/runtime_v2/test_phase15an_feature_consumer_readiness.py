@@ -6,6 +6,7 @@ import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
     CANDIDATE_REQUIRED_COLUMNS,
+    OPPORTUNITY_REQUIRED_COLUMNS,
     validate_feature_consumer_readiness,
 )
 from ai_fund_lab_v2.runtime_v2.market_refresh.pipeline import run_runtime_v2_market_refresh_pipeline
@@ -162,7 +163,7 @@ def _write_feature_artifacts(
     if drop_candidate_column:
         candidate.pop(drop_candidate_column)
     candidate.update(extra_candidate_columns or {})
-    opportunity = dict(row)
+    opportunity = {column: _value_for_column(column, feature_date) for column in OPPORTUNITY_REQUIRED_COLUMNS}
     opportunity.update(extra_opportunity_columns or {})
     pd.DataFrame([candidate]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
     pd.DataFrame([opportunity]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)

@@ -234,6 +234,60 @@ def test_phase15aq_scope_does_not_require_candidate_for_sell_planning(tmp_path):
     assert "candidate_model" not in result.payload["missing_evidence"]
 
 
+def test_phase17r_historical_data_readiness_uses_contract_and_historical_scope(tmp_path):
+    business_date = "2026-07-06"
+    runtime_root = _runtime_root(tmp_path, business_date=business_date, current_as_of="2026-07-14", mode="historical")
+    feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=business_date)
+    _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date="2026-07-14")
+    _write_feature_date_contract(runtime_root, business_date=business_date, selected_feature_date=business_date)
+    _write_safety_decision(runtime_root, business_date="2026-07-10", mode="historical")
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        readiness_scope="morning",
+        feature_root=feature_root,
+        candidate_model_path=_write_file(tmp_path / "candidate.pkl"),
+        opportunity_model_path=_write_file(tmp_path / "opportunity.pkl"),
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "phase17r",
+    )
+
+    assert result.status == "READY"
+    assert result.payload["acceptance_scope"] == "historical_replay"
+    assert result.payload["runtime_environment_status"] == "READY"
+    assert result.payload["components"]["runtime_environment"]["reason"] == "historical_replay_environment_ready"
+    assert result.payload["selected_feature_date"] == business_date
+    assert result.payload["components"]["feature"]["readiness_artifact_path"].endswith(f"{business_date}.json")
+    assert result.payload["current_actual_as_of"] == business_date
+    assert result.payload["components"]["safety"]["reason"] == "historical_neutral_no_event_safety_ready"
+    assert "runtime_acceptance_requires_demo_mode" not in result.payload["halt_reasons"]
+    assert not (runtime_root / "runtime_state" / "data_readiness" / business_date / "data_readiness.json").exists()
+    assert result.artifact_path.endswith("/daily/2026-07-06/data_readiness/data_readiness.json")
+
+
+def test_phase17r_historical_missing_feature_contract_is_review_required(tmp_path):
+    business_date = "2026-07-06"
+    runtime_root = _runtime_root(tmp_path, business_date=business_date, current_as_of=business_date, mode="historical")
+    feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=business_date)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        readiness_scope="morning",
+        feature_root=feature_root,
+        feature_date=business_date,
+        candidate_model_path=_write_file(tmp_path / "candidate.pkl"),
+        opportunity_model_path=_write_file(tmp_path / "opportunity.pkl"),
+        broker_environment="historical_simulated",
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "historical_feature_date_contract_missing" in result.payload["review_reasons"]
+
+
 def test_phase15aq_stale_approved_pending_is_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path, business_date=BUSINESS_DATE, current_as_of=BUSINESS_DATE)
     _write_json(
@@ -360,12 +414,28 @@ def _candidate_row(symbol: str, feature_date: str) -> dict:
         "target_date": feature_date,
         "code": symbol,
         "liquidity_avg_volume_20d": 1_000_000,
+        "market_breadth_20d": 0.5,
+        "market_breadth_5d": 0.5,
+        "market_downtrend_context": 0.0,
+        "market_downtrend_flag": False,
+        "market_ma_5_20_ratio": 1.0,
+        "market_return_20d": 0.02,
+        "market_return_5d": 0.01,
+        "market_risk_flag": False,
+        "market_volatility_20d": 0.02,
         "missing_flags_insufficient_history": False,
         "missing_flags_price": False,
         "missing_flags_volume": False,
         "price_momentum_return_20d": 0.1,
         "price_momentum_return_5d": 0.05,
         "price_momentum_return_60d": 0.2,
+        "sector_breadth_20d": 0.5,
+        "sector_momentum_flag": True,
+        "sector_rank_20d": 1,
+        "sector_return_20d": 0.03,
+        "sector_return_5d": 0.01,
+        "sector_weak_flag": False,
+        "stock_vs_sector_return_20d": 0.01,
         "trend_close_over_ma_20d": 1.0,
         "trend_ma_20_60_ratio": 1.0,
         "trend_ma_5_20_ratio": 1.0,
@@ -467,6 +537,37 @@ def _write_safety_decision(root: Path, *, business_date: str, mode: str) -> None
             "emergency_stop": False,
             "generated_at": business_date + "T00:00:00+09:00",
             "expires_at": business_date + "T23:59:59+09:00",
+        },
+    )
+
+
+def _write_feature_date_contract(root: Path, *, business_date: str, selected_feature_date: str) -> None:
+    path = root / "operations" / "feature_date_contract" / f"{business_date}.json"
+    _write_json(
+        path,
+        {
+            "status": "PASS",
+            "reason": "requested_feature_artifacts_available",
+            "requested_feature_date": business_date,
+            "selected_feature_date": selected_feature_date,
+            "latest_available_market_date": selected_feature_date,
+            "carryover_used": selected_feature_date != business_date,
+            "carryover_reason": "",
+            "freshness_lag_business_days": 0,
+            "freshness_limit_business_days": 1,
+            "feature_artifact_dir": str(root / "operations" / "feature_artifacts" / selected_feature_date),
+            "generated_feature_artifacts": {},
+            "missing_feature_artifacts": [],
+            "requested_feature_artifact_dir": str(root / "operations" / "feature_artifacts" / business_date),
+            "requested_missing_feature_artifacts": [],
+            "price_source_alignment": "selected_feature_date",
+            "consumer_ready": True,
+            "candidate_schema_status": "READY",
+            "candidate_missing_columns": [],
+            "opportunity_schema_status": "READY",
+            "pm_schema_status": "READY",
+            "consumer_readiness_artifact_path": str(root / "operations" / "feature_consumer_readiness" / f"{selected_feature_date}.json"),
+            "contract_artifact_path": str(path),
         },
     )
 

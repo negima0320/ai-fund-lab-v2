@@ -1,0 +1,259 @@
+{
+  "schema_version": "runtime_test_specification_v1",
+  "version": "1.1",
+  "date": "2026-07-14",
+  "status": "ACCEPTED",
+  "final_judgment": "RUNTIME_TEST_SPECIFICATION_EXECUTION_PROCEDURE_ACCEPTED",
+  "authority": [
+    "Project-wide Runtime Test Standard",
+    "Test Scope Authority",
+    "Test Validity Authority",
+    "Test Acceptance Authority",
+    "Environment Difference Authority"
+  ],
+  "system_under_test": {
+    "runtime": "Normal Runtime v2",
+    "runtime_root": ".runtime",
+    "forbidden_runtime_roots": [
+      ".runtime/demo",
+      ".runtime/production",
+      ".runtime/historical",
+      ".runtime/simulation",
+      ".runtime/backtest"
+    ],
+    "must_use": [
+      "normal CLI / mainline",
+      "normal Current",
+      "normal Ledger",
+      "normal Pending",
+      "normal Runtime State",
+      "normal Feature Producer",
+      "normal Feature Schema",
+      "normal Candidate AI",
+      "normal Opportunity AI",
+      "normal PM",
+      "normal Safety",
+      "normal Policy",
+      "normal Capital Allocation",
+      "normal Approval",
+      "normal Submit Guard",
+      "normal Submit Pipeline",
+      "normal Execution Processor",
+      "normal Registry Resolver",
+      "normal Accepted Artifact Authority"
+    ]
+  },
+  "environments": {
+    "historical": {
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime",
+      "broker_environment": "historical_simulated",
+      "broker_write": false,
+      "external_delivery": false,
+      "approved_differences": [
+        "Historical Clock",
+        "Canonical Data as-of",
+        "PIT Manifest",
+        "HistoricalSubmitAdapter",
+        "HistoricalExecutionSnapshotProvider",
+        "External effect blocking",
+        "Smoke-limited execution assumption",
+        "Initial Trading State Reset"
+      ]
+    },
+    "demo": {
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime",
+      "broker_environment": "tachibana_demo",
+      "approved_differences": [
+        "Tachibana Demo API boundary",
+        "real time",
+        "Demo Broker Snapshot"
+      ]
+    },
+    "production": {
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime",
+      "broker_environment": "tachibana_production",
+      "approved_differences": [
+        "Tachibana Production API boundary",
+        "Production Broker reconciliation",
+        "Production credentials / capability / approval"
+      ]
+    }
+  },
+  "test_levels": [
+    "5BD Historical Runtime Smoke Test",
+    "20BD Historical Runtime Continuity Test",
+    "1-Year Historical Runtime Test",
+    "Full Historical Runtime Test",
+    "Tachibana Demo Operational Test",
+    "Production Readiness Test",
+    "Production Acceptance"
+  ],
+  "test_validity": {
+    "valid_conditions": [
+      "normal Runtime v2 Mainline used",
+      "no alternate path",
+      "no external effect violation",
+      "no future data",
+      "no manual state repair",
+      "no duplicate submit / execution / ledger",
+      "authority consistency",
+      "temporal consistency",
+      "state consistency",
+      "evidence completeness"
+    ],
+    "invalid_conditions": [
+      "Runtime bypass",
+      "Guard bypass",
+      "Execution bypass",
+      "Feature manual patch",
+      "Data fallback",
+      "Training Artifact fallback",
+      "State manual repair",
+      "Partial reset",
+      "Unexpected API access",
+      "Authority mismatch",
+      "Temporal violation",
+      "Test-only Runtime / State Authority"
+    ]
+  },
+  "phase17_5bd_profile": {
+    "window": {
+      "start": "2026-07-06",
+      "end": "2026-07-10"
+    },
+    "runtime_root": ".runtime",
+    "mode": "historical",
+    "broker": "historical_simulated",
+    "feature_carryover": {
+      "2026-07-08": "2026-07-07",
+      "2026-07-09": "2026-07-08"
+    },
+    "external_delivery": false,
+    "jquants_fetch": false,
+    "initial_capital_jpy": 1000000
+  },
+  "standard_execution_procedure": {
+    "authority": "Runtime Test Specification section 26",
+    "entrypoint": "PYTHONPATH=src python3 scripts/runtime_test.py <subcommand> [options]",
+    "standard_flow": [
+      "status",
+      "plan",
+      "backup",
+      "reset",
+      "run",
+      "validate",
+      "close"
+    ],
+    "failure_flow": [
+      "classify_failure",
+      "resume_if_baselines_match",
+      "rollback_if_state_validity_or_lifecycle_safety_is_uncertain",
+      "validate",
+      "evidence_freeze"
+    ],
+    "mutating_commands_require": [
+      "--confirm",
+      "--yes-i-understand-this-mutates-trading-state"
+    ],
+    "commands": {
+      "status": {
+        "state_change": false,
+        "responsibility": "read-only Runtime Test state summary"
+      },
+      "plan": {
+        "state_change": false,
+        "responsibility": "execution plan, dates, job sequence, evidence paths, commands"
+      },
+      "backup": {
+        "state_change": true,
+        "responsibility": "backup resettable Trading State"
+      },
+      "reset": {
+        "state_change": true,
+        "responsibility": "all-or-nothing initial Trading State setup"
+      },
+      "run": {
+        "state_change": true,
+        "responsibility": "invoke normal Runtime v2 CLI by business date and job"
+      },
+      "validate": {
+        "state_change": false,
+        "responsibility": "validate state, temporal, authority, and evidence consistency"
+      },
+      "resume": {
+        "state_change": true,
+        "responsibility": "continue from last valid checkpoint without skipping failed jobs"
+      },
+      "rollback": {
+        "state_change": true,
+        "responsibility": "restore full resettable Trading State bundle"
+      },
+      "close": {
+        "state_change": false,
+        "responsibility": "freeze final evidence and judgments"
+      }
+    },
+    "exit_codes": {
+      "0": "PASS",
+      "10": "REVIEW_REQUIRED",
+      "20": "BLOCKED",
+      "30": "HALT",
+      "40": "VALIDATION_FAILURE",
+      "50": "ROLLBACK_FAILURE",
+      "60": "INVALID_ARGUMENT",
+      "70": "PRECONDITION_FAILURE",
+      "80": "TEST_INVALID",
+      "90": "INTERNAL_ERROR"
+    },
+    "test_invalid_conditions": [
+      "Future Data",
+      "Manual Repair",
+      "State Repair",
+      "Authority mismatch",
+      "Runtime bypass",
+      "Guard bypass",
+      "Unexpected API access",
+      "Feature patch",
+      "Partial reset",
+      "Partial restore"
+    ]
+  },
+  "acceptance_gates": {
+    "PROJECT_WIDE_SCOPE": "PASS",
+    "PHASE_INDEPENDENT": "PASS",
+    "RUNTIME_V2_IS_SYSTEM_UNDER_TEST": "PASS",
+    "ENVIRONMENT_DIFFERENCES_EXPLICIT": "PASS",
+    "TEST_LEVELS_DEFINED": "PASS",
+    "STATE_LIFECYCLE_DEFINED": "PASS",
+    "DATA_PIT_CONTRACT_DEFINED": "PASS",
+    "EXECUTION_MODELS_DEFINED": "PASS",
+    "ENTRY_GATES_DEFINED": "PASS",
+    "TEST_VALIDITY_DEFINED": "PASS",
+    "ACCEPTANCE_CRITERIA_DEFINED": "PASS",
+    "REGRESSION_POLICY_DEFINED": "PASS",
+    "EVIDENCE_REQUIREMENTS_DEFINED": "PASS",
+    "DEMO_EXCEPTION_DEFINED": "PASS",
+    "PRODUCTION_RULES_DEFINED": "PASS",
+    "NON_GOALS_DEFINED": "PASS",
+    "PHASE17_5BD_PROFILE_INCLUDED": "PASS",
+    "CONTRACT_REFERENCES_COMPLETE": "PASS",
+    "NO_CONTRACT_CONTRADICTION": "PASS",
+    "NO_RUNTIME_CHANGE": "PASS",
+    "STANDARD_PROCEDURE_DEFINED": "PASS",
+    "COMMAND_SEQUENCE_DEFINED": "PASS",
+    "ALL_TEST_LEVELS_DEFINED": "PASS",
+    "ROLLBACK_DEFINED": "PASS",
+    "COMMAND_REFERENCE_COMPLETE": "PASS",
+    "NO_SPEC_CONTRADICTION": "PASS"
+  },
+  "contract_alignment": {
+    "status": "NO_CONTRACT_CONTRADICTION",
+    "contract_meaning_changed": false,
+    "alignment_required": []
+  },
+  "recommended_next_prefix": "Phase17-L",
+  "recommended_next_work_name": "Historical Runtime 5BD Smoke Test Command Execution"
+}

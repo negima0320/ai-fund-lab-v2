@@ -70,6 +70,26 @@ Index must be rebuilt from the Event Log before use
 
 Event deletion, mutation, or in-place correction is prohibited. Corrections are represented by superseding events.
 
+## Limited Registry Recovery Transaction
+
+Normal operation must never delete, edit, truncate, reorder, or rewrite the append-only Event Log. A recovery transaction is a narrow exception for an acceptance transaction that failed before it became operational authority. It is not a convenience repair and it must not hide history.
+
+Recovery is permitted only when every condition below is true:
+
+- the affected events belong to a single incomplete or failed acceptance transaction;
+- the affected events were not used as Runtime authority by Production, Demo, Historical, or Paper execution;
+- no downstream operational run, resolver result, decision, planning output, submit output, or checkpoint used the removed acceptance as authority;
+- a complete byte-for-byte backup of the pre-recovery Event Log exists;
+- every removed event ID, event hash, event body, source ref, and reason is preserved in permanent recovery evidence;
+- the recovery plan and incident report are written before continued work;
+- derived Index and Checkpoint are rebuilt by formal tools from the post-recovery Event Log;
+- exactly one active runtime-eligible artifact set remains for the logical authority;
+- Human Review and Architecture Acceptance approve the recovery report.
+
+Recovery is prohibited when any removed event was used as Runtime authority, when the backup is incomplete, when the removal crosses multiple unrelated transactions, when a later accepted event depends on the removed event, or when the operator cannot prove the current Registry state by replay from the Event Log.
+
+The recovery evidence bundle must include incident report, recovery transaction manifest, removed event inventory, before/after Event Store hash manifest, runtime usage audit, current Registry validation report, recovery approval record, and prevention plan.
+
 ## Schema Files
 
 | Schema | Path |

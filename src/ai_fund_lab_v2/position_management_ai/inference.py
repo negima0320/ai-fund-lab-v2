@@ -73,8 +73,13 @@ FORBIDDEN_FEATURE_TERMS = (
     "future_profit",
     "future_sell_price",
     "future_best_price",
+    "realized_future_return",
     "backtest",
     "paper_trading",
+    "paper_ledger_pnl",
+    "test_verdict",
+    "audit_verdict",
+    "runtime_test",
     "annual_return",
     "final_assets",
     "cash",
@@ -84,6 +89,42 @@ FORBIDDEN_FEATURE_TERMS = (
     "order",
     "broker",
 )
+
+POSITION_METADATA_ONLY_COLUMNS = {
+    "as_of_date",
+    "broker_issue_code",
+    "code",
+    "created_at",
+    "data_until",
+    "entry_date",
+    "feature_set_name",
+    "feature_version",
+    "no_position_reason",
+    "position_state_as_of",
+    "source_snapshot_id",
+    "target_date",
+}
+
+POSITION_OPERATIONAL_STATE_COLUMNS = {
+    "average_price",
+    "current_price",
+    "current_return",
+    "entry_price",
+    "holding_days",
+    "market_value",
+    "peak_return",
+    "position_size",
+    "quantity",
+    "unrealized_return",
+    "valuation_as_of",
+}
+
+POSITION_STRING_MODEL_FEATURE_COLUMNS = {
+    "buy_reason",
+    "calibration_policy_name",
+    "no_buy_reason",
+    "risk_guard_status",
+}
 
 OUTPUT_COLUMNS = (
     "target_date",
@@ -237,7 +278,15 @@ def build_position_feature_frame(
 
     holding_part = holding[[column for column in HOLDING_COLUMNS if column in holding.columns]]
     opportunity_part = opportunity[[column for column in OPPORTUNITY_COLUMNS if column in opportunity.columns]]
-    jq_feature_columns = [column for column in feature.columns if column not in FEATURE_META_COLUMNS]
+    jq_feature_columns = [
+        column
+        for column in feature.columns
+        if column not in FEATURE_META_COLUMNS
+        and (
+            classify_position_field(column, model_input=True)["field_classification"] == "model_feature"
+            or classify_position_field(column, model_input=True)["field_classification"].startswith("forbidden_")
+        )
+    ]
     feature_part = feature[["target_date", "code"] + optional_columns(feature, ("as_of_date", "feature_version")) + jq_feature_columns].rename(
         columns={column: f"feature__{column}" for column in jq_feature_columns}
     )
@@ -505,15 +554,21 @@ def calculate_reduce_score(frame: pd.DataFrame) -> pd.Series:
 def audit_position_feature_frame(frame: pd.DataFrame, *, input_holding_count: int, created_at: str | None = None) -> dict[str, Any]:
     created_at = created_at or now_utc()
     feature_columns = [column for column in frame.columns if str(column).startswith("feature__")]
+    field_classification = {str(column): classify_position_field(str(column), model_input=_is_pm_model_input_column(str(column))) for column in frame.columns}
     forbidden_feature_columns = [
-        column for column in feature_columns if is_forbidden_position_feature_column(column.replace("feature__", "", 1))
+        column for column in feature_columns if field_classification[str(column)]["field_classification"].startswith("forbidden_")
     ]
     forbidden_input_columns = [
-        column for column in frame.columns if is_forbidden_position_feature_column(str(column)) and not str(column).startswith("feature__")
+        column
+        for column in frame.columns
+        if field_classification[str(column)]["field_classification"].startswith("forbidden_")
+        and not str(column).startswith("feature__")
     ]
     label_columns = [column for column in frame.columns if str(column).startswith("label__")]
     as_of_violations = count_as_of_date_violations(frame)
-    leakage_ok = not (forbidden_feature_columns or forbidden_input_columns or label_columns or as_of_violations)
+    malformed_numeric_columns = malformed_position_numeric_columns(frame, field_classification)
+    leakage_ok = not (forbidden_feature_columns or forbidden_input_columns or label_columns or as_of_violations or malformed_numeric_columns)
+    classification_counts = _classification_counts(field_classification)
     return {
         "phase": PHASE,
         "created_at": created_at,
@@ -521,6 +576,14 @@ def audit_position_feature_frame(frame: pd.DataFrame, *, input_holding_count: in
         "joined_row_count": int(len(frame)),
         "join_success_rate": rate(len(frame), input_holding_count),
         "feature_column_count": len(feature_columns),
+        "field_classification_contract": "position_management_runtime_field_classification_v1",
+        "field_classification_counts": classification_counts,
+        "metadata_only_columns": sorted(
+            column for column, item in field_classification.items() if item["field_classification"] == "metadata_only"
+        ),
+        "operational_state_columns": sorted(
+            column for column, item in field_classification.items() if item["field_classification"] == "operational_state"
+        ),
         "forbidden_feature_column_count": len(forbidden_feature_columns),
         "forbidden_feature_columns": forbidden_feature_columns,
         "forbidden_input_column_count": len(forbidden_input_columns),
@@ -533,6 +596,8 @@ def audit_position_feature_frame(frame: pd.DataFrame, *, input_holding_count: in
             ]
         ),
         "label_column_count": len(label_columns),
+        "malformed_numeric_column_count": len(malformed_numeric_columns),
+        "malformed_numeric_columns": malformed_numeric_columns,
         "as_of_date_violation_count": as_of_violations,
         "broker_api_executed": False,
         "order_executed": False,
@@ -584,6 +649,7 @@ def build_summary(
         "forbidden_input_column_count": int(audit.get("forbidden_input_column_count", 0)),
         "future_feature_column_count": int(audit.get("future_feature_column_count", 0)),
         "label_column_count": int(audit.get("label_column_count", 0)),
+        "malformed_numeric_column_count": int(audit.get("malformed_numeric_column_count", 0)),
         "as_of_date_violation_count": int(audit.get("as_of_date_violation_count", 0)),
         "leakage_audit_status": audit.get("leakage_audit_status", "NOT_RUN"),
         "inference_executed": status == "OK",
@@ -628,6 +694,8 @@ def _blocked_result(
         "forbidden_input_columns": [],
         "future_feature_column_count": 0,
         "label_column_count": 0,
+        "malformed_numeric_column_count": 0,
+        "malformed_numeric_columns": [],
         "as_of_date_violation_count": 0,
         "leakage_audit_status": "NOT_RUN",
         "readiness_status": readiness_status,
@@ -658,6 +726,91 @@ def is_forbidden_position_feature_column(column: str) -> bool:
     if normalized.startswith(FORBIDDEN_FEATURE_PREFIXES):
         return True
     return contains_any(normalized, FORBIDDEN_FEATURE_TERMS)
+
+
+def classify_position_field(column: str, *, model_input: bool) -> dict[str, str]:
+    normalized = column.strip().lower().replace("-", "_")
+    base = normalized.replace("feature__", "", 1) if normalized.startswith("feature__") else normalized
+    if normalized.startswith("label__"):
+        return {
+            "field": column,
+            "field_classification": "forbidden_training_signal",
+            "reason": "label field must not flow into PM inference input",
+        }
+    if base in POSITION_METADATA_ONLY_COLUMNS:
+        return {
+            "field": column,
+            "field_classification": "metadata_only",
+            "reason": "runtime identity, schema, path, date, or symbol metadata; not a scoring feature",
+        }
+    if not model_input and base.startswith(("runtime_test_", "runtime_mode", "profile_id", "artifact_path", "source_path")):
+        return {
+            "field": column,
+            "field_classification": "metadata_only",
+            "reason": "runtime evidence metadata only; not a scoring feature",
+        }
+    if base in POSITION_OPERATIONAL_STATE_COLUMNS:
+        return {
+            "field": column,
+            "field_classification": "operational_state",
+            "reason": "current position state required for live PM sell/hold decisions",
+        }
+    if base.startswith(FORBIDDEN_FEATURE_PREFIXES):
+        return {
+            "field": column,
+            "field_classification": "forbidden_future_signal",
+            "reason": "future or label-derived signal",
+        }
+    if contains_any(base, FORBIDDEN_FEATURE_TERMS):
+        return {
+            "field": column,
+            "field_classification": "forbidden_training_signal" if model_input else "forbidden_runtime_signal",
+            "reason": "forbidden outcome, test, audit, broker, order, cash, portfolio, or paper-trading signal",
+        }
+    return {
+        "field": column,
+        "field_classification": "model_feature" if model_input else "metadata_only",
+        "reason": "model feature" if model_input else "non-feature runtime field",
+    }
+
+
+def _is_pm_model_input_column(column: str) -> bool:
+    normalized = column.strip().lower().replace("-", "_")
+    if normalized.startswith("feature__"):
+        return True
+    return normalized in {
+        "buy_rank",
+        "downside_risk_score",
+        "expected_edge_score",
+        "risk_guard_status",
+    }
+
+
+def _classification_counts(field_classification: dict[str, dict[str, str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in field_classification.values():
+        key = item["field_classification"]
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def malformed_position_numeric_columns(frame: pd.DataFrame, field_classification: dict[str, dict[str, str]]) -> list[str]:
+    malformed: list[str] = []
+    for column, item in field_classification.items():
+        base = column.strip().lower().replace("-", "_").replace("feature__", "", 1)
+        if item["field_classification"] not in {"model_feature", "operational_state"}:
+            continue
+        if base in POSITION_STRING_MODEL_FEATURE_COLUMNS:
+            continue
+        if column not in frame.columns:
+            continue
+        series = frame[column]
+        nonempty = series[~series.isna()]
+        if nonempty.empty:
+            continue
+        if pd.to_numeric(nonempty, errors="coerce").isna().any():
+            malformed.append(column)
+    return sorted(malformed)
 
 
 def normalize_range(values: pd.Series, lower: float, upper: float) -> pd.Series:

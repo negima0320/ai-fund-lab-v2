@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 
-CANONICAL_SCHEMA_VERSION = "runtime_v2_feature_contract_v1"
+CANONICAL_SCHEMA_VERSION = "runtime_v2_feature_contract_v2"
 
 CANDIDATE_REQUIRED_COLUMNS: tuple[str, ...] = (
     "target_date",
@@ -30,7 +30,45 @@ CANDIDATE_REQUIRED_COLUMNS: tuple[str, ...] = (
     "volume_momentum_ratio_5d",
 )
 
-OPPORTUNITY_REQUIRED_COLUMNS: tuple[str, ...] = CANDIDATE_REQUIRED_COLUMNS
+OPPORTUNITY_MODEL_DECISION_COLUMNS: tuple[str, ...] = (
+    "feature__candidate_rank",
+    "feature__candidate_reason",
+    "feature__candidate_score",
+)
+
+OPPORTUNITY_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "target_date",
+    "code",
+    "liquidity_avg_volume_20d",
+    "market_breadth_20d",
+    "market_breadth_5d",
+    "market_downtrend_context",
+    "market_downtrend_flag",
+    "market_ma_5_20_ratio",
+    "market_return_20d",
+    "market_return_5d",
+    "market_risk_flag",
+    "market_volatility_20d",
+    "missing_flags_insufficient_history",
+    "missing_flags_price",
+    "missing_flags_volume",
+    "price_momentum_return_20d",
+    "price_momentum_return_5d",
+    "price_momentum_return_60d",
+    "sector_breadth_20d",
+    "sector_momentum_flag",
+    "sector_rank_20d",
+    "sector_return_20d",
+    "sector_return_5d",
+    "sector_weak_flag",
+    "stock_vs_sector_return_20d",
+    "trend_close_over_ma_20d",
+    "trend_ma_20_60_ratio",
+    "trend_ma_5_20_ratio",
+    "volatility_return_std_20d",
+    "volume_momentum_ratio_1d_20d",
+    "volume_momentum_ratio_5d",
+)
 
 PM_REQUIRED_COLUMNS: tuple[str, ...] = (
     "target_date",
@@ -72,6 +110,14 @@ def _dtype_map(columns: tuple[str, ...]) -> dict[str, str]:
             if column in {"target_date", "code"}
             else "bool"
             if column.startswith("missing_flags_")
+            or column
+            in {
+                "market_downtrend_context",
+                "market_downtrend_flag",
+                "market_risk_flag",
+                "sector_momentum_flag",
+                "sector_weak_flag",
+            }
             else "float"
         )
         for column in columns
@@ -125,6 +171,7 @@ class ConsumerSchemaResult:
     alias_mismatches: dict[str, str] | None = None
     row_count: int | None = None
     reason: str = ""
+    evidence: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -132,6 +179,7 @@ class ConsumerSchemaResult:
         payload["missing_columns"] = list(self.missing_columns)
         payload["unexpected_prefixed_columns"] = list(self.unexpected_prefixed_columns)
         payload["alias_mismatches"] = dict(self.alias_mismatches or {})
+        payload["evidence"] = dict(self.evidence or {})
         return payload
 
 
@@ -308,16 +356,20 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         )
     frame = pd.read_parquet(artifact_path)
     columns = tuple(str(column) for column in frame.columns)
-    current_position_count = _current_position_count(runtime_root)
+    current_authority = _current_authority(runtime_root)
+    current_position_count = int(current_authority.get("current_position_count") or 0)
     has_no_position_reason = "no_position_reason" in columns
     required_columns = PM_REQUIRED_COLUMNS if current_position_count > 0 else ("target_date", "code")
     missing = tuple(column for column in required_columns if column not in columns)
-    if current_position_count > 0 and missing:
+    if current_authority.get("current_authority_status") != "READY":
+        status = "REVIEW_REQUIRED"
+        reason = str(current_authority.get("reason") or "current_authority_not_ready")
+    elif current_position_count > 0 and missing:
         status = "REVIEW_REQUIRED"
         reason = "required_pm_feature_columns_missing"
     elif current_position_count > 0 and len(frame) == 0:
         status = "REVIEW_REQUIRED"
-        reason = "pm_feature_empty_with_current_positions"
+        reason = "position_feature_current_output_mismatch"
     elif current_position_count == 0 and len(frame) == 0 and not has_no_position_reason:
         status = "REVIEW_REQUIRED"
         reason = "pm_feature_empty_without_no_position_reason"
@@ -327,6 +379,9 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
     else:
         status = "READY"
         reason = "consumer_schema_ready"
+    feature_target_date = _feature_target_date(frame)
+    position_state_as_of = str(current_authority.get("current_position_state_as_of") or "")
+    no_fill_carry_used = bool(position_state_as_of and feature_target_date and position_state_as_of < feature_target_date)
     return ConsumerSchemaResult(
         name="pm",
         schema_name="runtime_v2_pm_feature_input",
@@ -337,16 +392,77 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         missing_columns=missing,
         row_count=len(frame),
         reason=reason,
+        evidence={
+            **current_authority,
+            "feature_target_date": _feature_target_date(frame),
+            "input_symbol_count": current_position_count,
+            "matched_symbol_count": int(len(frame)),
+            "unmatched_symbols": [],
+            "output_row_count": int(len(frame)),
+            "no_fill_carry_used": no_fill_carry_used,
+            "reason": reason,
+        },
     )
 
 
-def _current_position_count(runtime_root: Path) -> int:
-    current_path = runtime_root / "persistent_ledger" / "state.json"
+def _current_authority(runtime_root: Path) -> dict[str, Any]:
+    runtime_state_path = runtime_root / "runtime_state" / "current_state.json"
+    runtime_state = _read_json_or_empty(runtime_state_path)
+    source = str(runtime_state.get("asset_state_source") or "persistent_ledger/state.json").strip()
+    source_path = Path(source) if source else Path("persistent_ledger/state.json")
+    current_path = source_path if source_path.is_absolute() else runtime_root / source_path
     if not current_path.is_file():
-        return 0
-    try:
-        payload = json.loads(current_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return 0
+        return {
+            "current_authority_status": "MISSING",
+            "current_authority_path": str(current_path),
+            "current_position_count": 0,
+            "current_position_state_as_of": "",
+            "no_fill_carry_used": False,
+            "reason": "current_authority_missing_asset_sot",
+        }
+    payload = _read_json_or_empty(current_path)
     positions = payload.get("positions")
-    return len(positions) if isinstance(positions, list) else 0
+    if payload.get("current_positions_unknown") is True or not isinstance(positions, list):
+        return {
+            "current_authority_status": "UNKNOWN",
+            "current_authority_path": str(current_path),
+            "current_position_count": 0,
+            "current_position_state_as_of": "",
+            "no_fill_carry_used": False,
+            "reason": "current_positions_unknown",
+        }
+    position_state_as_of = str(payload.get("position_state_as_of") or payload.get("business_date") or payload.get("as_of") or "")
+    if not positions and payload.get("current_state_confirmed_empty") is not True:
+        return {
+            "current_authority_status": "UNKNOWN",
+            "current_authority_path": str(current_path),
+            "current_position_count": 0,
+            "current_position_state_as_of": position_state_as_of[:10],
+            "no_fill_carry_used": False,
+            "reason": "current_positions_unknown",
+        }
+    return {
+        "current_authority_status": "READY",
+        "current_authority_path": str(current_path),
+        "current_position_count": len(positions),
+        "current_position_state_as_of": position_state_as_of[:10],
+        "no_fill_carry_used": False,
+        "reason": "current_authority_ready",
+    }
+
+
+def _read_json_or_empty(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _feature_target_date(frame: pd.DataFrame) -> str:
+    if "target_date" not in frame.columns or frame.empty:
+        return ""
+    values = [str(value) for value in frame["target_date"].dropna().astype(str).tolist() if value]
+    return max(values) if values else ""

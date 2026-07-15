@@ -14,6 +14,7 @@ from ai_fund_lab_v2.runtime_v2.buy_ai.producer import (
     produce_buy_ai_decisions,
 )
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import OPPORTUNITY_REQUIRED_COLUMNS
 from ai_fund_lab_v2.runtime_v2.report.public_report_writer import generate_public_report_from_current
 
 
@@ -130,6 +131,67 @@ def test_phase16aq_wrong_metrics_hash_is_rejected(tmp_path):
 
     assert result.status == "HALT"
     assert result.reason == "opportunity_metrics_model_hash_mismatch"
+
+
+def test_phase17t_legacy_metrics_model_path_with_same_sha256_is_accepted(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    opportunity_model_path = _write_opportunity_model(tmp_path / ".runtime" / "artifacts" / "opportunity" / "model.pkl")
+    legacy_model_path = tmp_path / "reports" / "opportunity_ai" / "phase5p" / "models" / "opportunity_model.pkl"
+    legacy_model_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_model_path.write_bytes(opportunity_model_path.read_bytes())
+    metrics_path = _write_opportunity_metrics(
+        tmp_path / ".runtime" / "artifacts" / "opportunity" / "metrics.json",
+        legacy_model_path,
+    )
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=metrics_path,
+    )
+    opportunity = json.loads(Path(result.opportunity_artifact_path).read_text(encoding="utf-8"))
+
+    assert result.status == "PASS"
+    assert opportunity["metrics_validation"]["metrics_model_path"] == str(legacy_model_path)
+    assert opportunity["metrics_validation"]["metrics_model_path_hash"]
+    assert (
+        opportunity["metrics_validation"]["metrics_model_path_authority"]
+        == "legacy_metrics_path_content_matches_runtime_model"
+    )
+
+
+def test_phase17t_legacy_metrics_model_path_with_different_sha256_still_halts(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    opportunity_model_path = _write_opportunity_model(tmp_path / ".runtime" / "artifacts" / "opportunity" / "model.pkl")
+    legacy_model_path = _write_opportunity_model(
+        tmp_path / "reports" / "opportunity_ai" / "phase5p" / "models" / "opportunity_model.pkl",
+        artifact_set_id="different-set",
+    )
+    metrics_path = _write_opportunity_metrics(
+        tmp_path / ".runtime" / "artifacts" / "opportunity" / "metrics.json",
+        legacy_model_path,
+    )
+
+    result = produce_buy_ai_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        feature_root=feature_root,
+        feature_date=FEATURE_DATE,
+        candidate_model_path=_write_candidate_model(tmp_path / "candidate_model.pkl"),
+        opportunity_model_path=opportunity_model_path,
+        opportunity_training_metrics_path=metrics_path,
+    )
+    opportunity = json.loads(Path(result.opportunity_artifact_path).read_text(encoding="utf-8"))
+
+    assert result.status == "HALT"
+    assert result.reason == "opportunity_metrics_model_path_mismatch"
+    assert opportunity["metrics_validation"]["metrics_model_path_hash"]
 
 
 def test_phase16aq_wrong_artifact_set_is_rejected(tmp_path):
@@ -376,7 +438,8 @@ def _write_feature_inputs(root: Path) -> Path:
         _feature_row("9432", 0.50, 150.0),
     ]
     pd.DataFrame(rows).to_parquet(feature_dir / "candidate_features.parquet", index=False)
-    pd.DataFrame(rows).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    opportunity_rows = [_opportunity_feature_row(row) for row in rows]
+    pd.DataFrame(opportunity_rows).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
     pd.DataFrame(
         columns=[
             "target_date",
@@ -433,6 +496,27 @@ def _feature_row(code: str, momentum: float, price: float) -> dict:
         "missing_flags_volume": False,
         "price": price,
     }
+
+
+def _opportunity_feature_row(candidate_row: dict) -> dict:
+    row = {
+        "target_date": candidate_row["target_date"],
+        "as_of_date": candidate_row["as_of_date"],
+        "code": candidate_row["code"],
+        "created_at": BUSINESS_DATE + "T00:00:00Z",
+        "data_until": FEATURE_DATE,
+        "feature_version": "runtime_v2_opportunity_feature_input_v2_market_sector_fixture",
+    }
+    for column in OPPORTUNITY_REQUIRED_COLUMNS:
+        if column in {"target_date", "code"}:
+            row[column] = candidate_row[column]
+        elif column in candidate_row:
+            row[column] = candidate_row[column]
+        elif column.endswith("_flag") or column.endswith("_context"):
+            row[column] = False
+        else:
+            row[column] = 0.1
+    return row
 
 
 def _write_candidate_model(path: Path) -> Path:

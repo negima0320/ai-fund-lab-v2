@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-ALLOWED_MODES = frozenset({"production", "demo", "simulation", "backtest"})
-ALLOWED_ENVIRONMENTS = frozenset({"production", "demo", "simulation", "backtest"})
+ALLOWED_MODES = frozenset({"production", "demo", "simulation", "backtest", "historical"})
+ALLOWED_ENVIRONMENTS = frozenset({"production", "demo", "simulation", "backtest", "historical"})
+MODE_ROOTED_RUNTIME_MODES = frozenset({"production", "demo", "simulation", "backtest", "historical"})
+MODE_ROOTED_RUNTIME_ROOT_FORBIDDEN = "MODE_ROOTED_RUNTIME_ROOT_FORBIDDEN"
 
 CURRENT_OBJECT_PATHS = {
     "runtime_state": Path("runtime_state/current_state.json"),
@@ -40,6 +42,26 @@ def resolve_current_path(mode: str, environment: str, object_type: str) -> Path:
     except KeyError as exc:
         raise ValueError(f"unsupported current object_type: {object_type}") from exc
     return Path(".runtime") / relative_path
+
+
+def is_mode_rooted_runtime_root(path: Path | str) -> bool:
+    """Return true when a runtime root points inside ``.runtime/<mode>``."""
+
+    normalized = Path(path).expanduser().resolve(strict=False)
+    parts = normalized.parts
+    return any(
+        part == ".runtime"
+        and index + 1 < len(parts)
+        and parts[index + 1] in MODE_ROOTED_RUNTIME_MODES
+        for index, part in enumerate(parts)
+    )
+
+
+def reject_mode_rooted_runtime_root(path: Path | str) -> None:
+    if is_mode_rooted_runtime_root(path):
+        raise ValueError(
+            f"{MODE_ROOTED_RUNTIME_ROOT_FORBIDDEN}: Runtime root must be fixed .runtime, not .runtime/<mode>"
+        )
 
 
 def resolve_history_path(

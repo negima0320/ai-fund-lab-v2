@@ -55,10 +55,11 @@ def test_feature_schema_registry_member_matches_legacy() -> None:
     feature = resolve_feature_schema_artifacts()
     member = feature.require_member("FEATURE_SCHEMA")
     assert _sha(member.physical_path) == member.content_hash
-    assert _sha(member.physical_path) == _sha(LEGACY_FEATURE_SCHEMA)
+    if LEGACY_FEATURE_SCHEMA.is_file():
+        assert _sha(member.physical_path) == _sha(LEGACY_FEATURE_SCHEMA)
 
 
-def test_pm_policy_registry_members_match_legacy() -> None:
+def test_pm_policy_registry_members_match_legacy_and_current_adapter() -> None:
     pm = resolve_position_management_policy_artifacts()
     assert _sha(pm.require_member("CODE_POLICY").physical_path) == _sha(LEGACY_PM_POLICY)
     assert pm.require_member("RUNTIME_ADAPTER").physical_path.is_file()

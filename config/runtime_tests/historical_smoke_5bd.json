@@ -1,0 +1,84 @@
+{
+  "profile_version": "runtime_test_profile_v1",
+  "profile_id": "historical-smoke",
+  "profile_name": "historical-smoke",
+  "test_level": "Level 1: 5BD Historical Runtime Smoke Test",
+  "official_status": "accepted_smoke_profile",
+  "window": {
+    "date_from": "2026-07-06",
+    "date_to": "2026-07-10"
+  },
+  "business_days": 5,
+  "runtime_root": ".runtime",
+  "mode": "historical",
+  "broker_environment": "historical_simulated",
+  "initial_state": {
+    "cash": 1000000,
+    "buying_power": 1000000,
+    "positions": 0,
+    "pending": 0,
+    "open_orders": 0,
+    "executions": 0,
+    "realized_pnl": 0,
+    "unrealized_pnl": 0,
+    "currency": "JPY"
+  },
+  "job_sequence": [
+    "market_refresh",
+    "data_readiness",
+    "morning",
+    "sell_planning",
+    "submit",
+    "execution",
+    "current_valuation_refresh",
+    "runtime_state_refresh"
+  ],
+  "evaluation_times": {
+    "market_refresh": "08:00:00+09:00",
+    "data_readiness": "08:05:00+09:00",
+    "morning": "08:30:00+09:00",
+    "sell_planning": "08:40:00+09:00",
+    "submit": "08:45:00+09:00",
+    "execution": "15:30:00+09:00",
+    "current_valuation_refresh": "15:35:00+09:00",
+    "runtime_state_refresh": "15:40:00+09:00"
+  },
+  "accepted_feature_dates": {
+    "2026-07-06": "2026-07-06",
+    "2026-07-07": "2026-07-07",
+    "2026-07-08": "2026-07-08",
+    "2026-07-09": "2026-07-08",
+    "2026-07-10": "2026-07-10"
+  },
+  "external_effect_policy": {
+    "external_delivery": false,
+    "notification_mode": "payload-only",
+    "jquants_fetch": false,
+    "broker_write": false,
+    "tachibana_api": false
+  },
+  "fill_model": {
+    "smoke_limited_execution_model": true,
+    "official_long_term_performance_model": false,
+    "order_type": "MARKET",
+    "price_source": "canonical_normalized_ohlcv_open",
+    "fees": 0,
+    "tax": 0,
+    "slippage": 0,
+    "partial_fill": false
+  },
+  "rollback_policy": {
+    "rollback_on_failure": true,
+    "partial_restore_prohibited": true,
+    "restore_operational_foundation": false
+  },
+  "acceptance_gates": [
+    "NORMAL_RUNTIME_V2_CLI_USED",
+    "NO_ALTERNATE_RUNTIME",
+    "NORMAL_RUNTIME_ROOT",
+    "EXTERNAL_EFFECTS_DISABLED",
+    "DATA_PIT_MANIFEST_READY",
+    "RESET_READY",
+    "ROLLBACK_READY"
+  ]
+}

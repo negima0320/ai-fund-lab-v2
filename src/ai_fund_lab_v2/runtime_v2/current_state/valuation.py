@@ -16,6 +16,7 @@ from ai_fund_lab_v2.runtime_v2.current_state.temporal import (
     build_current_temporal_candidate,
     write_current_temporal_state,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.asof import SUPPORTED_ASOF_SCHEMA_VERSIONS
 from ai_fund_lab_v2.runtime_v2.temporal import (
     FreshnessStatus,
     evaluate_current_position_freshness,
@@ -102,6 +103,8 @@ def build_current_valuation_candidate(
     runtime_root: Path | str,
     business_date: str,
     now: datetime | None = None,
+    market_evidence_path: Path | str | None = None,
+    allow_legacy_temporal_current: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], tuple[str, ...], tuple[str, ...]]:
     root = Path(runtime_root)
     current_path = root / "persistent_ledger" / "state.json"
@@ -112,16 +115,22 @@ def build_current_valuation_candidate(
         current_payload=current_payload,
         now=now,
     )
-    if metadata.legacy_as_of_used or metadata.review_required:
+    legacy_allowed = allow_legacy_temporal_current and not missing_evidence
+    if (metadata.legacy_as_of_used and not legacy_allowed) or (metadata.review_required and not legacy_allowed):
         return temporal_current, {}, tuple(missing_evidence), tuple((*warnings, "current_temporal_migration_required_before_valuation"))
-    market_path, market = _load_market_evidence(root)
+    positions = [_normalize_position(position) for position in temporal_current.get("positions") or []]
+    runtime_positions = [position for position in positions if not _is_broker_only_position(position)]
+    market_path, market = _load_market_evidence(
+        root,
+        market_evidence_path=market_evidence_path,
+        business_date=business_date,
+        required_symbols={_symbol(position) for position in runtime_positions if _symbol(position)},
+    )
     market_date = str(market.get("market_date") or market.get("latest_available_market_date") or "")
     freshness = str(market.get("market_freshness_status") or market.get("market_status") or "")
     if freshness == "DATA_NOT_YET_AVAILABLE":
         return temporal_current, market, ("market_data_not_yet_available",), warnings
     quotes = dict(market.get("quotes") or {})
-    positions = [_normalize_position(position) for position in temporal_current.get("positions") or []]
-    runtime_positions = [position for position in positions if not _is_broker_only_position(position)]
     validation_status, validation_reasons = validate_current_valuation_input(current=temporal_current, market_evidence=market)
     if validation_status != "READY":
         return temporal_current, market, tuple(validation_reasons), warnings
@@ -214,6 +223,11 @@ def run_current_valuation_refresh(
     business_date: str,
     apply_current_valuation: bool = False,
     now: datetime | None = None,
+    market_evidence_path: Path | str | None = None,
+    safety_authority: dict[str, Any] | None = None,
+    runtime_test_context: dict[str, Any] | None = None,
+    environment_context: dict[str, Any] | None = None,
+    allow_legacy_temporal_current: bool = False,
 ) -> CurrentValuationRefreshResult:
     root = Path(runtime_root)
     generated_at = _iso(now)
@@ -224,6 +238,8 @@ def run_current_valuation_refresh(
             runtime_root=root,
             business_date=business_date,
             now=now,
+            market_evidence_path=market_evidence_path,
+            allow_legacy_temporal_current=allow_legacy_temporal_current,
         )
     except ValueError as exc:
         payload = _artifact_payload(
@@ -245,9 +261,32 @@ def run_current_valuation_refresh(
         )
         _write_json(artifact_path, payload)
         return _result_from_payload(payload, artifact_path=artifact_path)
-    market_path, _ = _load_market_evidence(root) if market else ("", {})
+    market_path, _ = (
+        _load_market_evidence(
+            root,
+            market_evidence_path=market_evidence_path,
+            business_date=business_date,
+            required_symbols={_symbol(position) for position in candidate.get("positions") or [] if _symbol(position)},
+        )
+        if market
+        else ("", {})
+    )
+    authority_reasons = _authority_review_reasons(
+        business_date=business_date,
+        candidate_current=candidate,
+        market_evidence_path=str(market_path),
+        market_date=str(market.get("market_date") or ""),
+        safety_authority=safety_authority,
+        runtime_test_context=runtime_test_context,
+        environment_context=environment_context,
+    )
+    if authority_reasons:
+        missing = tuple((*missing, *authority_reasons))
     missing_symbols = _missing_symbols_from_reasons(missing)
-    status = "READY" if not missing and not warnings else "REVIEW_REQUIRED"
+    position_count = len(candidate.get("positions") or [])
+    valued_position_count = _valued_position_count(candidate)
+    valuation_incomplete = valued_position_count != position_count and not candidate.get("no_position")
+    status = "READY" if not missing and not warnings and not valuation_incomplete else "REVIEW_REQUIRED"
     reason = "current_valuation_ready" if status == "READY" else "current_valuation_review_required"
     if candidate.get("no_position"):
         status = "READY"
@@ -340,7 +379,7 @@ def _artifact_payload(
         "no_position": bool(candidate_current.get("no_position")),
         "no_position_reason": candidate_current.get("no_position_reason") or "",
         "position_count": len(candidate_current.get("positions") or []),
-        "valued_position_count": len(candidate_current.get("positions") or []) if status == "READY" else 0,
+        "valued_position_count": _valued_position_count(candidate_current),
         "missing_symbols": list(missing_symbols),
         "missing_evidence": list(missing_evidence),
         "warnings": list(warnings),
@@ -383,7 +422,26 @@ def _result_from_payload(payload: dict[str, Any], *, artifact_path: Path) -> Cur
     )
 
 
-def _load_market_evidence(root: Path) -> tuple[Path | str, dict[str, Any]]:
+def _load_market_evidence(
+    root: Path,
+    *,
+    market_evidence_path: Path | str | None = None,
+    business_date: str = "",
+    required_symbols: set[str] | None = None,
+) -> tuple[Path | str, dict[str, Any]]:
+    if market_evidence_path:
+        path = Path(market_evidence_path)
+        payload = _read_json(path)
+        if payload.get("schema_version") in SUPPORTED_ASOF_SCHEMA_VERSIONS:
+            return path, _market_evidence_from_historical_asof_view(
+                path=path,
+                payload=payload,
+                business_date=business_date or str(payload.get("business_date") or ""),
+                required_symbols=required_symbols or set(),
+            )
+        if path.name == "historical_asof_view.json" or "authorities" in payload:
+            raise ValueError(f"unsupported historical_asof_view schema_version: {payload.get('schema_version') or '<missing>'}")
+        return path, payload
     latest = root / "runtime_state" / "market" / "latest.json"
     if latest.is_file():
         payload = _read_json(latest)
@@ -394,6 +452,118 @@ def _load_market_evidence(root: Path) -> tuple[Path | str, dict[str, Any]]:
     if not candidates:
         raise ValueError("market_evidence missing")
     return candidates[-1], _read_json(candidates[-1])
+
+
+def _market_evidence_from_historical_asof_view(
+    *,
+    path: Path,
+    payload: dict[str, Any],
+    business_date: str,
+    required_symbols: set[str],
+) -> dict[str, Any]:
+    if str(payload.get("status") or "") != "PASS":
+        return _market_review_payload(path=path, business_date=business_date, reason="historical_asof_view_not_pass")
+    if str(payload.get("business_date") or "") != business_date:
+        return _market_review_payload(path=path, business_date=business_date, reason="historical_asof_view_business_date_mismatch")
+    authority = next(
+        (
+            dict(entry)
+            for entry in payload.get("authorities") or []
+            if str(entry.get("authority") or "") == "normalized_ohlcv" and str(entry.get("status") or "") == "PASS"
+        ),
+        {},
+    )
+    source_path = Path(str(authority.get("physical_source_path") or ""))
+    if not authority or not source_path.is_file():
+        return _market_review_payload(path=path, business_date=business_date, reason="historical_normalized_ohlcv_missing")
+    quotes, missing = _quotes_from_parquet(source_path=source_path, market_date=business_date, required_symbols=required_symbols)
+    quote_payload = {quote["symbol"]: quote for quote in quotes}
+    quote_status = "READY" if not missing and quote_payload else "REVIEW_REQUIRED"
+    if not required_symbols and not quote_payload:
+        quote_status = "NOT_REQUIRED"
+    return {
+        "schema_version": "runtime_v2_market_evidence_v1",
+        "runtime_business_date": business_date,
+        "market_date": business_date,
+        "latest_expected_trading_date": business_date,
+        "latest_available_market_date": str(payload.get("latest_available_market_date") or business_date),
+        "market_status": "READY",
+        "market_freshness_status": "READY",
+        "quote_status": quote_status,
+        "quotes": quote_payload,
+        "historical_asof_view_path": str(path),
+        "historical_market_authority": "normalized_ohlcv",
+        "historical_market_source_path": str(source_path),
+        "missing_symbols": sorted(missing),
+    }
+
+
+def _market_review_payload(*, path: Path, business_date: str, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_v2_market_evidence_v1",
+        "runtime_business_date": business_date,
+        "market_date": business_date,
+        "latest_available_market_date": business_date,
+        "market_status": "REVIEW_REQUIRED",
+        "market_freshness_status": "REVIEW_REQUIRED",
+        "quote_status": "REVIEW_REQUIRED",
+        "quotes": {},
+        "historical_asof_view_path": str(path),
+        "reason": reason,
+    }
+
+
+def _quotes_from_parquet(*, source_path: Path, market_date: str, required_symbols: set[str]) -> tuple[list[dict[str, Any]], set[str]]:
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return [], set(required_symbols)
+    if frame.empty:
+        return [], set(required_symbols)
+    date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
+    code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
+    close_column = _first_column(frame, ("close", "Close", "AdjustmentClose", "adjustment_close", "price"))
+    if not date_column or not code_column or not close_column:
+        return [], set(required_symbols)
+    rows = frame[frame[date_column].astype(str) == market_date].copy()
+    if rows.empty:
+        return [], set(required_symbols)
+    quotes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows.to_dict(orient="records"):
+        symbol = _normalize_symbol(str(row.get(code_column) or ""))
+        if not symbol or required_symbols and symbol not in required_symbols:
+            continue
+        price = row.get(close_column)
+        if price is None:
+            continue
+        quotes.append(
+            {
+                "symbol": symbol,
+                "price": float(price),
+                "price_type": "jquants_daily_quote",
+                "market_date": market_date,
+                "observed_at": market_date,
+                "source": str(source_path),
+                "freshness_status": "READY",
+                "adjusted": str(close_column).lower().startswith("adjust"),
+            }
+        )
+        seen.add(symbol)
+    return quotes, set(required_symbols) - seen
+
+
+def _first_column(frame: Any, candidates: tuple[str, ...]) -> str:
+    columns = {str(column): str(column) for column in frame.columns}
+    lower = {str(column).lower(): str(column) for column in frame.columns}
+    for candidate in candidates:
+        if candidate in columns:
+            return columns[candidate]
+        if candidate.lower() in lower:
+            return lower[candidate.lower()]
+    return ""
 
 
 def _write_valuation_history(*, root: Path, valuation_as_of: str, candidate: dict[str, Any], market: dict[str, Any]) -> Path:
@@ -479,14 +649,95 @@ def _sum_unrealized(positions: list[dict[str, Any]]) -> float:
     return sum(float(position.get("unrealized_pnl") or 0) for position in positions)
 
 
+def _valued_position_count(candidate_current: dict[str, Any]) -> int:
+    count = 0
+    for position in candidate_current.get("positions") or []:
+        if (
+            str(position.get("valuation_as_of") or "")
+            and str(position.get("source_market_date") or "")
+            and str(position.get("valuation_source") or "")
+            and position.get("market_value") is not None
+        ):
+            count += 1
+    return count
+
+
+def _authority_review_reasons(
+    *,
+    business_date: str,
+    candidate_current: dict[str, Any],
+    market_evidence_path: str,
+    market_date: str,
+    safety_authority: dict[str, Any] | None,
+    runtime_test_context: dict[str, Any] | None,
+    environment_context: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if candidate_current.get("positions") and not market_evidence_path:
+        reasons.append("current_valuation_market_evidence_path_missing")
+    if candidate_current.get("positions") and not market_date:
+        reasons.append("current_valuation_market_date_missing")
+    if market_date and market_date != business_date and str(candidate_current.get("current_valuation_status") or "") == "READY":
+        reasons.append("current_valuation_market_date_mismatch")
+    if runtime_test_context:
+        reasons.extend(
+            _historical_runtime_context_reasons(
+                business_date=business_date,
+                runtime_test_context=runtime_test_context,
+                environment_context=environment_context or {},
+                safety_authority=safety_authority or {},
+            )
+        )
+    return tuple(sorted(set(reasons)))
+
+
+def _historical_runtime_context_reasons(
+    *,
+    business_date: str,
+    runtime_test_context: dict[str, Any],
+    environment_context: dict[str, Any],
+    safety_authority: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    if str(runtime_test_context.get("business_date") or "") != business_date:
+        reasons.append("runtime_test_business_date_mismatch")
+    run_id = str(runtime_test_context.get("run_id") or "")
+    evidence_root = str(runtime_test_context.get("evidence_root") or "")
+    if not run_id or not evidence_root or run_id not in evidence_root:
+        reasons.append("runtime_test_evidence_identity_missing")
+    if not bool(environment_context.get("historical_replay")):
+        reasons.append("historical_replay_capability_missing")
+    if bool(environment_context.get("broker_write")):
+        reasons.append("historical_broker_write_not_blocked")
+    if bool(environment_context.get("external_delivery")):
+        reasons.append("historical_external_delivery_not_blocked")
+    if str(safety_authority.get("safety_status") or "") != "PASS":
+        reasons.append("historical_safety_authority_missing")
+    if str(safety_authority.get("safety_policy_version") or "") != "historical_replay_neutral_safety_v1":
+        reasons.append("historical_safety_policy_version_missing")
+    if str(safety_authority.get("safety_source") or "") != "data_readiness_historical_temporal_authority":
+        reasons.append("historical_safety_source_missing")
+    permissions = dict(safety_authority.get("safety_action_permissions") or {})
+    if str(permissions.get("broker_write") or "") != "BLOCKED":
+        reasons.append("historical_safety_broker_write_not_blocked")
+    return reasons
+
+
 def _missing_symbols_from_reasons(reasons: tuple[str, ...]) -> tuple[str, ...]:
     symbols = [
         reason
         for reason in reasons
         if reason
         and not reason.startswith("current_valuation_")
+        and not reason.startswith("historical_")
+        and not reason.startswith("runtime_test_")
         and reason
-        not in {"market_status_not_allowed", "quote_status_not_allowed", "current_temporal_schema_required"}
+        not in {
+            "market_status_not_allowed",
+            "quote_status_not_allowed",
+            "current_temporal_schema_required",
+            "current_valuation_market_date_mismatch",
+        }
         and ":" not in reason
     ]
     return tuple(sorted(set(symbols)))

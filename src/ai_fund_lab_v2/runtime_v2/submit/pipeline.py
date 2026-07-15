@@ -29,13 +29,22 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     load_capital_deployment_policy,
     missing_policy_manifest_fields,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
     RuntimeSafetyDecision,
     load_runtime_safety_decision,
     safety_allows_action,
 )
+from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
+    is_mode_rooted_runtime_root,
+    reject_mode_rooted_runtime_root,
+)
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
-from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, RuntimeV2SubmitResult
+from ai_fund_lab_v2.runtime_v2.submit.models import (
+    RuntimeV2SubmitCommand,
+    RuntimeV2SubmitResult,
+    SubmitEnvironmentGuardContext,
+)
 
 DEMO_BASE_URL = "https://demo-kabuka.e-shiten.jp/e_api_v4r9"
 PROD_BASE_URL = "https://kabuka.e-shiten.jp/e_api_v4r9"
@@ -134,6 +143,7 @@ def run_submit_pipeline(
     job: str,
     settings: Any | None = None,
     adapter: RuntimeV2SubmitAdapter | None = None,
+    environment_context: SubmitEnvironmentGuardContext | None = None,
     capital_deployment_policy_path: Path | str | None = None,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
@@ -143,13 +153,23 @@ def run_submit_pipeline(
 
     runtime_root_path = Path(runtime_root)
     timestamp = _iso(now)
-    _reject_mode_rooted_runtime_root(runtime_root_path)
+    try:
+        _reject_mode_rooted_runtime_root(runtime_root_path)
+    except ValueError as exc:
+        return _blocked_result(reason=str(exc), runtime_root=runtime_root_path, status="HALT")
     if job != "submit" or not submit_enabled:
         return _blocked_result(
             reason="submit-enabled true is required and allowed only for submit job",
             runtime_root=runtime_root_path,
         )
-    if mode != "demo":
+    if mode == "historical":
+        if not isinstance(adapter, HistoricalSubmitAdapter):
+            return _blocked_result(
+                reason="historical submit requires HistoricalSubmitAdapter from environment composition",
+                runtime_root=runtime_root_path,
+                status="HALT",
+            )
+    elif mode != "demo":
         return _blocked_result(reason="production submit is prohibited in Phase14-E17", runtime_root=runtime_root_path)
     policy, policy_manifest, policy_error = _resolve_capital_deployment_policy(
         capital_deployment_policy=capital_deployment_policy,
@@ -163,10 +183,16 @@ def run_submit_pipeline(
             submit_guard_policy=policy_manifest,
         )
 
-    settings = settings or _load_broker_settings()
-    base_url = settings.base_url.rstrip("/")
-    base_url_is_demo = base_url == DEMO_BASE_URL
-    base_url_is_production = base_url == PROD_BASE_URL
+    if mode == "historical":
+        settings_environment = "historical"
+        base_url_is_demo = False
+        base_url_is_production = False
+    else:
+        settings = settings or _load_broker_settings()
+        settings_environment = settings.environment
+        base_url = settings.base_url.rstrip("/")
+        base_url_is_demo = base_url == DEMO_BASE_URL
+        base_url_is_production = base_url == PROD_BASE_URL
     pending_read = read_pending_order_plan_path(
         path=runtime_root_path / "pending_order_plan" / "pending_order_plan.json",
         environment=mode,
@@ -206,7 +232,15 @@ def run_submit_pipeline(
         business_date=business_date,
         mode=mode,
     )
-    submit_adapter = adapter or _build_tachibana_demo_submit_adapter(settings)
+    submit_adapter = adapter if mode == "historical" else adapter or _build_tachibana_demo_submit_adapter(settings)
+    guard_context = environment_context or _default_environment_context(
+        mode=mode,
+        pending_environment=mode,
+        adapter=submit_adapter,
+        broker_write=mode == "demo",
+        business_date=business_date,
+        now=timestamp,
+    )
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
 
@@ -215,6 +249,8 @@ def run_submit_pipeline(
         sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
         broker_available_evidence = (
             _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
+            if item.side == "SELL" and mode != "historical"
+            else _historical_available_quantity_evidence(item=item, current_quantity=sell_position_quantity)
             if item.side == "SELL"
             else BrokerAvailableQuantityEvidence(checked=False, source="")
         )
@@ -258,7 +294,7 @@ def run_submit_pipeline(
             approval_artifact=approval,
             approved_item_id=approved_item_id,
             existing_order_dedup_keys=existing_dedup_keys,
-            environment=settings.environment,
+            environment=settings_environment,
             base_url_is_demo=base_url_is_demo,
             base_url_is_production=base_url_is_production,
             live_order_allowed=True,
@@ -266,6 +302,7 @@ def run_submit_pipeline(
             broker_available_quantity=broker_available_evidence.quantity,
             source_current_path="pending_order_plan/pending_order_plan.json",
             broker_capability=get_broker_capability(mode),
+            environment_context=guard_context,
         )
         if not preflight.allowed or preflight.command is None:
             guard_evidence = {
@@ -418,7 +455,7 @@ def run_submit_pipeline(
         pending_plan_id=pending.pending_plan_id,
         pending_path=str(pending_read.path),
         orders_ledger_path=str(orders_path),
-        demo_submit_executed=submitted_count > 0,
+        demo_submit_executed=submitted_count > 0 and mode == "demo",
         submitted_count=submitted_count,
         accepted_count=accepted_count,
         rejected_count=rejected_count,
@@ -458,6 +495,56 @@ def _pending_submit_guard(pending: PendingOrderPlan, *, business_date: str) -> s
     if set(pending.approved_item_ids) != {item.pending_item_id for item in pending.items if item.approved}:
         return "approved item ids mismatch"
     return ""
+
+
+def _default_environment_context(
+    *,
+    mode: str,
+    pending_environment: str,
+    adapter: RuntimeV2SubmitAdapter,
+    broker_write: bool,
+    business_date: str,
+    now: str,
+) -> SubmitEnvironmentGuardContext:
+    if mode == "historical" and isinstance(adapter, HistoricalSubmitAdapter):
+        diagnostic = adapter.diagnostic()
+        return SubmitEnvironmentGuardContext(
+            runtime_environment="historical",
+            pending_environment=pending_environment,
+            run_type="HISTORICAL",
+            broker_environment=str(diagnostic.get("broker_environment") or "historical_simulated"),
+            adapter_type=type(adapter).__name__,
+            broker_write=False,
+            external_delivery=False,
+            business_date=business_date,
+            evaluation_time=str(diagnostic.get("evaluation_time") or now),
+            production_acceptance=False,
+        )
+    if mode == "demo":
+        return SubmitEnvironmentGuardContext(
+            runtime_environment="demo",
+            pending_environment=pending_environment,
+            run_type="DEMO",
+            broker_environment="tachibana_demo",
+            adapter_type="DemoSubmitAdapter",
+            broker_write=broker_write,
+            external_delivery=False,
+            business_date=business_date,
+            evaluation_time=now,
+            production_acceptance=False,
+        )
+    return SubmitEnvironmentGuardContext(
+        runtime_environment=mode,
+        pending_environment=pending_environment,
+        run_type=mode.upper(),
+        broker_environment="tachibana_production" if mode == "production" else "",
+        adapter_type=type(adapter).__name__,
+        broker_write=broker_write,
+        external_delivery=False,
+        business_date=business_date,
+        evaluation_time=now,
+        production_acceptance=False,
+    )
 
 
 def _approval_from_pending(pending: PendingOrderPlan) -> ApprovalArtifact:
@@ -824,6 +911,43 @@ def _broker_available_quantity_evidence(
     )
 
 
+def _historical_available_quantity_evidence(
+    *,
+    item: Any,
+    current_quantity: float | None,
+) -> BrokerAvailableQuantityEvidence:
+    normalized = _broker_issue_code_for_item(item)
+    if normalized.get("status") != "PASS":
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source="historical_runtime_owned_current",
+            symbol=str(item.symbol),
+            reason=str(normalized.get("reason") or "issue code normalization failed"),
+        )
+    if current_quantity is None:
+        return BrokerAvailableQuantityEvidence(
+            checked=False,
+            source="historical_runtime_owned_current",
+            symbol=str(item.symbol),
+            issue_code=str(normalized["broker_issue_code"]),
+            review_required=False,
+            production_equivalent=False,
+            reason="historical current quantity missing",
+        )
+    return BrokerAvailableQuantityEvidence(
+        checked=True,
+        source="historical_runtime_owned_current",
+        quantity=float(current_quantity),
+        symbol=str(item.symbol),
+        issue_code=str(normalized["broker_issue_code"]),
+        review_required=False,
+        production_equivalent=False,
+        total_quantity=float(current_quantity),
+        restricted_quantity=0.0,
+        reason="historical runtime-owned current quantity used as available quantity",
+    )
+
+
 def _broker_issue_code_for_item(item: Any) -> dict[str, Any]:
     try:
         normalized = normalize_broker_issue_code(item.symbol, listed_info=item.listed_info)
@@ -1185,20 +1309,11 @@ def _iso(value: datetime | None) -> str:
 
 
 def _reject_mode_rooted_runtime_root(root: Path) -> None:
-    text = str(root)
-    if text.endswith("/demo") or "/demo/" in text:
-        raise ValueError("mode-rooted Current path is not allowed")
+    reject_mode_rooted_runtime_root(root)
 
 
 def _is_mode_rooted_runtime_path(path: Path) -> bool:
-    parts = path.parts
-    runtime_modes = {"production", "demo", "simulation", "backtest"}
-    return any(
-        part == ".runtime"
-        and index + 1 < len(parts)
-        and parts[index + 1] in runtime_modes
-        for index, part in enumerate(parts)
-    )
+    return is_mode_rooted_runtime_root(path)
 
 
 def _load_broker_settings() -> Any:

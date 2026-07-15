@@ -56,7 +56,7 @@ def resolve_runtime_artifact_set(
     resolver: RegistryArtifactResolver | None = None,
     repo_root: Path | str | None = None,
 ) -> RuntimeArtifactSet:
-    repo = Path(repo_root) if repo_root is not None else Path.cwd()
+    repo = Path(repo_root) if repo_root is not None else _default_repo_root()
     try:
         result = (resolver or RegistryArtifactResolver(repo_root=repo)).resolve(artifact_set_type)
     except RegistryArtifactResolveHalt as exc:
@@ -153,6 +153,10 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _validate_capital_policy_version(policy: RuntimeArtifactMember, version: RuntimeArtifactMember) -> None:

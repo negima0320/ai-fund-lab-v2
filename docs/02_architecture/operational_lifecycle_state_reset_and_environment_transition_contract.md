@@ -185,6 +185,96 @@ Allowed `run_type` values:
 
 Mode differences must be represented by environment/run metadata, not by separate Registries or separate Runtime mainlines.
 
+## Historical Runtime Environment Composition
+
+Historical Runtime Test is represented by environment/run metadata and a broker-boundary composition. It must not create a Historical-only Runtime root, Current, Ledger, Pending, Registry, State Machine, Submit path, Execution Processor, or mainline.
+
+Formal Historical identity:
+
+```text
+run_type=HISTORICAL
+runtime_mode=historical
+broker_environment=historical_simulated
+runtime_root=.runtime
+external_delivery=false
+broker_write=false
+```
+
+The official operator-facing Runtime mode is:
+
+```text
+--mode historical
+```
+
+`--mode simulation` is not a formal lifecycle environment. If present for test fixtures or compatibility, operational composition must reject it and direct operators to `--mode historical`.
+
+Historical environment composition requirements:
+
+- `business_date` is explicit.
+- `evaluation_time` is explicit.
+- `broker_environment` is `historical_simulated`.
+- `external_delivery` is false.
+- `broker_write` is false.
+- Runtime root remains `.runtime`.
+- Submit adapter is `HistoricalSubmitAdapter`.
+- Execution snapshot provider is `HistoricalExecutionSnapshotProvider`.
+
+External effects are prohibited:
+
+```text
+tachibana_readonly=false
+tachibana_demo_write=false
+tachibana_production_write=false
+notification_delivery=false
+discord_send=false
+line_send=false
+blog_publish=false
+external_delivery=false
+broker_write=false
+```
+
+Historical run manifests must include:
+
+```text
+run_type
+runtime_mode
+broker_environment
+simulation
+historical_replay
+broker_write
+production_equivalent
+acceptance_only
+external_delivery
+runtime_root
+environment_id
+run_id
+business_date
+evaluation_time
+```
+
+Fail-closed behavior:
+
+| Condition | Behavior |
+|---|---:|
+| Missing `business_date` or `evaluation_time` | `HALT` or configuration error; do not run. |
+| `broker_environment` is not `historical_simulated` | `HALT` or configuration error; do not run. |
+| External delivery or broker write requested | `HALT` or configuration error; do not run. |
+| Historical Submit adapter is missing | `HALT`; do not submit. |
+| Historical Execution snapshot provider is missing | `HALT`; do not ingest broker snapshot. |
+| Historical fill model is not accepted | `NOT_IMPLEMENTED_BLOCKING`; do not create accepted fills. |
+| Phase17-G 5BD smoke fill model is accepted and PIT / OHLCV / Listed Issues / Corporate Action no-impact evidence passes | Allow normal Runtime Submit Guard, Historical adapter, Execution Processor, Ledger, and Current Apply to proceed inside Historical environment only. |
+| Phase17-G 5BD smoke fill evidence is incomplete or inconsistent | `HALT` or `REVIEW_REQUIRED`; do not create accepted fills. |
+
+Demo and Production compositions remain unchanged. Demo uses `tachibana_demo`; Production uses `tachibana_production`. Cross-composing Historical adapter/provider with Demo or Production is prohibited.
+
+Phase17-G accepted Historical execution remains lifecycle-isolated:
+
+- `broker_write=false` prohibits external broker writes only.
+- Runtime v2 Submit Guard, Execution Processor, Ledger, Current, Pending, Registry, and Acceptance remain the normal mainline.
+- Historical submission evidence is stored as simulated broker evidence and must not become Demo or Production trading authority.
+- Current / Ledger / Pending paths must not become `.runtime/historical/...`; `historical` is a mode/environment identity, not a separate Current root.
+- Demo and Production transition still require normal Backup / Reset / Restore gates and must not inherit Historical Trading State.
+
 ## Run Identity
 
 Required run fields:

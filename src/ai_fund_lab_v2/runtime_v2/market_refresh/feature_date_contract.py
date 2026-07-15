@@ -64,6 +64,7 @@ def resolve_feature_date_contract(
     requested_feature_date: str,
     latest_available_market_date: str = "",
     freshness_limit_business_days: int = 1,
+    persist_consumer_readiness: bool = True,
 ) -> FeatureDateContract:
     root = Path(operations_root)
     requested_artifacts, requested_missing = _artifact_status(root, requested_feature_date)
@@ -72,10 +73,11 @@ def resolve_feature_date_contract(
             operations_root=root,
             feature_date=requested_feature_date,
         )
-        readiness_path = write_feature_consumer_readiness(
-            operations_root=root,
+        readiness_path = _consumer_readiness_path(
+            root=root,
             feature_date=requested_feature_date,
             readiness=readiness,
+            persist=persist_consumer_readiness,
         )
         if readiness.status != "READY":
             return _with_readiness(
@@ -173,10 +175,11 @@ def resolve_feature_date_contract(
         operations_root=root,
         feature_date=latest,
     )
-    readiness_path = write_feature_consumer_readiness(
-        operations_root=root,
+    readiness_path = _consumer_readiness_path(
+        root=root,
         feature_date=latest,
         readiness=readiness,
+        persist=persist_consumer_readiness,
     )
     if readiness.status != "READY":
         return _with_readiness(
@@ -276,6 +279,24 @@ def load_feature_date_contract(
     )
 
 
+def validate_feature_artifact_temporal_authority(
+    *,
+    contract: FeatureDateContract,
+    business_date: str,
+) -> tuple[str, tuple[str, ...]]:
+    violations: list[str] = []
+    selected = contract.selected_feature_date
+    if selected and selected > business_date:
+        violations.append("selected_feature_date_after_business_date")
+    for name, path_text in sorted(contract.generated_feature_artifacts.items()):
+        artifact_date = _artifact_date_from_path(path_text)
+        if artifact_date and selected and artifact_date > selected:
+            violations.append(f"artifact_date_after_selected_feature_date:{name}:{artifact_date}>{selected}")
+        if artifact_date and artifact_date > business_date:
+            violations.append(f"artifact_date_after_business_date:{name}:{artifact_date}>{business_date}")
+    return ("PASS" if not violations else "HALT", tuple(violations))
+
+
 def _with_readiness(
     contract: FeatureDateContract,
     readiness: FeatureConsumerReadiness,
@@ -306,6 +327,22 @@ def _with_readiness(
         consumer_readiness_artifact_path=str(readiness_path),
         contract_artifact_path=contract.contract_artifact_path,
     )
+
+
+def _consumer_readiness_path(
+    *,
+    root: Path,
+    feature_date: str,
+    readiness: FeatureConsumerReadiness,
+    persist: bool,
+) -> Path:
+    if persist:
+        return write_feature_consumer_readiness(
+            operations_root=root,
+            feature_date=feature_date,
+            readiness=readiness,
+        )
+    return root / "feature_consumer_readiness" / f"{feature_date}.json"
 
 
 def _artifact_status(root: Path, feature_date: str) -> tuple[dict[str, str], tuple[str, ...]]:
@@ -378,3 +415,14 @@ def _business_day_lag(start: str, end: str) -> int | None:
         if current.weekday() < 5:
             lag += 1
     return lag
+
+
+def _artifact_date_from_path(path_text: str) -> str:
+    for part in Path(path_text).parts:
+        if len(part) == 10 and part[4] == "-" and part[7] == "-":
+            try:
+                date.fromisoformat(part)
+            except ValueError:
+                continue
+            return part
+    return ""

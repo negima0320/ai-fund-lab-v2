@@ -32,10 +32,13 @@ from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     resolve_runtime_artifact_set,
 )
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal
+from ai_fund_lab_v2.runtime_v2.storage.json_safe import dumps_json_safe
 
 
 CANDIDATE_ARTIFACT_SCHEMA_VERSION = "runtime_v2_candidate_decision_v1"
 OPPORTUNITY_ARTIFACT_SCHEMA_VERSION = "runtime_v2_opportunity_ranking_v1"
+OPPORTUNITY_ARTIFACT_SCHEMA_NAME = "runtime_v2_buy_opportunity_ranking"
+OPPORTUNITY_ARTIFACT_ROLE = "BUY_OPPORTUNITY_RANKING"
 BUY_AI_INFERENCE_VERSION = "candidate_opportunity_ai_regular_path_v1"
 DEFAULT_CANDIDATE_MODEL_PATH = Path(".runtime/candidate_ai/models/phase4bf_formal_candidate_model.pkl")
 DEFAULT_OPPORTUNITY_MODEL_PATH = Path("reports/opportunity_ai/phase5p/models/opportunity_model.pkl")
@@ -595,6 +598,7 @@ def _produce_opportunity_artifact(
             model_version=str(model_payload.get("model_version") or ""),
             schema_evidence=schema_evidence,
         )
+        payload["metrics_validation"] = metrics_validation
         _write_json(artifact_path, payload)
         return payload
     result = run_opportunity_inference(
@@ -624,26 +628,39 @@ def _produce_opportunity_artifact(
         return payload
     rows = []
     for row in result.output.sort_values(["buy_rank", "code"]).to_dict("records"):
+        expected_edge_score = _required_float(row.get("expected_edge_score"), field_name="expected_edge_score")
+        buy_rank = _required_rank(row.get("buy_rank"), field_name="buy_rank")
+        downside_risk_score = _required_float(row.get("downside_risk_score"), field_name="downside_risk_score")
         rows.append(
             {
+                "schema_name": OPPORTUNITY_ARTIFACT_SCHEMA_NAME,
+                "artifact_role": OPPORTUNITY_ARTIFACT_ROLE,
                 "business_date": business_date,
+                "target_date": feature_date,
                 "runtime_id": runtime_id,
                 "model_version": row.get("model_version"),
                 "feature_date": feature_date,
+                "code": str(row.get("code") or ""),
                 "symbol": str(row.get("code") or ""),
-                "opportunity_score": float(row.get("expected_edge_score") or 0.0),
-                "rank": int(row.get("buy_rank") or 0),
-                "expected_return": float(row.get("expected_edge_score") or 0.0),
-                "confidence": _confidence_from_rank(int(row.get("buy_rank") or 999999)),
+                "expected_edge_score": expected_edge_score,
+                "opportunity_score": expected_edge_score,
+                "buy_rank": buy_rank,
+                "rank": buy_rank,
+                "expected_return": expected_edge_score,
+                "confidence": _confidence_from_rank(buy_rank),
                 "reason": str(row.get("buy_reason") or "opportunity_ai_ranked"),
                 "generated_at": generated_at,
                 "candidate_score": float(row.get("candidate_score") or 0.0),
                 "candidate_rank": int(row.get("candidate_rank") or 0),
-                "downside_risk_score": float(row.get("downside_risk_score") or 0.0),
+                "downside_risk_score": downside_risk_score,
             }
         )
     payload = {
+        "schema_name": OPPORTUNITY_ARTIFACT_SCHEMA_NAME,
         "schema_version": OPPORTUNITY_ARTIFACT_SCHEMA_VERSION,
+        "artifact_role": OPPORTUNITY_ARTIFACT_ROLE,
+        "producer": "Runtime v2 BUY AI Producer",
+        "producer_version": BUY_AI_INFERENCE_VERSION,
         "business_date": business_date,
         "runtime_id": runtime_id,
         "model_version": str(result.summary.get("model_version") or ""),
@@ -715,17 +732,27 @@ def _validate_opportunity_metrics_artifact(
             metrics_artifact_set_id=metrics_set_id,
         )
     metrics_model_path = _payload_path(metrics_payload, "model_artifact_path", "opportunity_model_path", "model_path")
-    if metrics_model_path and not _same_artifact_path(metrics_model_path, model_path):
-        return _opportunity_metrics_halt(
-            "opportunity_metrics_model_path_mismatch",
-            "Opportunity metrics artifact points to a different model artifact.",
-            metrics_path=metrics_path,
-            model_path=model_path,
-            model_hash=model_hash,
-            metrics_hash=metrics_hash,
-            metrics_model_path=metrics_model_path,
-        )
     metrics_model_hash = _payload_hash(metrics_payload, "model_artifact_hash", "opportunity_model_hash", "model_hash")
+    metrics_model_path_authority = "path_matches_runtime_model"
+    metrics_model_path_hash = ""
+    if metrics_model_path and not _same_artifact_path(metrics_model_path, model_path):
+        if metrics_model_path.is_file():
+            metrics_model_path_hash = _file_sha256(metrics_model_path)
+        if metrics_model_hash and metrics_model_hash == model_hash:
+            metrics_model_path_authority = "legacy_metrics_path_hash_matches_runtime_model"
+        elif metrics_model_path_hash and metrics_model_path_hash == model_hash:
+            metrics_model_path_authority = "legacy_metrics_path_content_matches_runtime_model"
+        else:
+            return _opportunity_metrics_halt(
+                "opportunity_metrics_model_path_mismatch",
+                "Opportunity metrics artifact points to a different model artifact.",
+                metrics_path=metrics_path,
+                model_path=model_path,
+                model_hash=model_hash,
+                metrics_hash=metrics_hash,
+                metrics_model_path=metrics_model_path,
+                metrics_model_path_hash=metrics_model_path_hash,
+            )
     if metrics_model_hash and metrics_model_hash != model_hash:
         return _opportunity_metrics_halt(
             "opportunity_metrics_model_hash_mismatch",
@@ -758,6 +785,9 @@ def _validate_opportunity_metrics_artifact(
         "metrics_hash": metrics_hash,
         "model_artifact_set_id": model_set_id,
         "metrics_artifact_set_id": metrics_set_id,
+        "metrics_model_path": str(metrics_model_path or ""),
+        "metrics_model_path_hash": metrics_model_path_hash,
+        "metrics_model_path_authority": metrics_model_path_authority,
         "phase5e_fallback_used": False,
         "consumer_compatibility": "model_metrics_pair_validated_before_opportunity_inference",
     }
@@ -908,7 +938,11 @@ def _empty_opportunity_payload(
         feature_date=feature_date,
     )
     return {
+        "schema_name": OPPORTUNITY_ARTIFACT_SCHEMA_NAME,
         "schema_version": OPPORTUNITY_ARTIFACT_SCHEMA_VERSION,
+        "artifact_role": OPPORTUNITY_ARTIFACT_ROLE,
+        "producer": "Runtime v2 BUY AI Producer",
+        "producer_version": BUY_AI_INFERENCE_VERSION,
         "business_date": business_date,
         "runtime_id": runtime_id,
         "model_version": model_version,
@@ -1041,27 +1075,43 @@ def _opportunity_schema_evidence(
     feature_present = {
         column if column.startswith("feature__") else f"feature__{column}"
         for column in artifact_columns
-        if column not in {"target_date", "code", "as_of_date", "feature_version"}
+        if column not in {"target_date", "code", "as_of_date", "feature_version", "created_at", "data_until"}
     }
     present = tuple(sorted(candidate_present | feature_present))
     missing = tuple(column for column in feature_columns if column not in set(present))
-    status = "READY" if feature_columns and not missing and not prefixed_artifact_columns else "REVIEW_REQUIRED"
+    model_artifact_columns = tuple(
+        _strip_feature_prefix(column)
+        for column in feature_columns
+        if column not in {"feature__candidate_rank", "feature__candidate_reason", "feature__candidate_score"}
+    )
+    artifact_model_columns = tuple(column for column in artifact_columns if column in set(model_artifact_columns))
+    column_order_status = "MATCH" if artifact_model_columns == model_artifact_columns else "MISMATCH"
+    status = (
+        "READY"
+        if feature_columns and not missing and not prefixed_artifact_columns and column_order_status == "MATCH"
+        else "REVIEW_REQUIRED"
+    )
     if not feature_columns:
         reason = "opportunity_model_feature_columns_missing"
     elif prefixed_artifact_columns:
         reason = "opportunity_feature_prefix_policy_violation"
     elif missing:
         reason = "opportunity_feature_schema_mismatch"
+    elif column_order_status != "MATCH":
+        reason = "opportunity_feature_column_order_mismatch"
     else:
         reason = ""
     return {
         "schema_status": status,
-        "schema_version": "runtime_v2_opportunity_feature_input_v1",
+        "schema_version": "runtime_v2_opportunity_feature_input_v2",
         "feature_date": feature_date,
         "model_version": str(model_payload.get("model_version") or ""),
         "artifact_path": str(opportunity_feature_path),
         "required_columns": list(feature_columns),
         "present_columns": list(present),
+        "required_artifact_columns": list(model_artifact_columns),
+        "present_artifact_columns": list(artifact_model_columns),
+        "column_order_status": column_order_status,
         "missing_columns": list(missing),
         "unexpected_columns": list(prefixed_artifact_columns),
         "alias_risks": {},
@@ -1150,6 +1200,30 @@ def _confidence_from_rank(rank: int) -> float:
     return round(max(0.0, min(1.0, 1.0 - (rank - 1) / 50.0)), 6)
 
 
+def _required_float(value: Any, *, field_name: str) -> float:
+    if value in (None, ""):
+        raise ValueError(f"opportunity output missing required field: {field_name}")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"opportunity output invalid numeric field: {field_name}") from exc
+    if pd.isna(result):
+        raise ValueError(f"opportunity output invalid numeric field: {field_name}")
+    return result
+
+
+def _required_rank(value: Any, *, field_name: str) -> int:
+    if value in (None, ""):
+        raise ValueError(f"opportunity output missing required field: {field_name}")
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"opportunity output invalid rank field: {field_name}") from exc
+    if result < 1:
+        raise ValueError(f"opportunity output invalid rank field: {field_name}")
+    return result
+
+
 def _read_pickle(path: Path) -> dict[str, Any]:
     with path.open("rb") as handle:
         payload = pickle.load(handle)
@@ -1170,7 +1244,7 @@ def _file_sha256(path: Path) -> str:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(dumps_json_safe(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _iso(value: datetime) -> str:

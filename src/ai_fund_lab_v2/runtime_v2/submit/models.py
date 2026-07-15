@@ -11,6 +11,20 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class SubmitEnvironmentGuardContext:
+    runtime_environment: str
+    pending_environment: str
+    run_type: str
+    broker_environment: str
+    adapter_type: str
+    broker_write: bool
+    external_delivery: bool
+    business_date: str
+    evaluation_time: str
+    production_acceptance: bool = False
+
+
+@dataclass(frozen=True)
 class RuntimeV2SubmitCommand:
     command_id: str
     environment: str

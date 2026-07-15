@@ -16,6 +16,7 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPl
 from ai_fund_lab_v2.runtime_v2.submit.models import (
     RuntimeV2SubmitCommand,
     RuntimeV2SubmitPreflightResult,
+    SubmitEnvironmentGuardContext,
 )
 
 
@@ -33,6 +34,7 @@ def run_submit_preflight(
     broker_available_quantity: float | None = None,
     source_current_path: str = "pending_order_plan/pending_order_plan.json",
     broker_capability: BrokerCapability | None = None,
+    environment_context: SubmitEnvironmentGuardContext | None = None,
 ) -> RuntimeV2SubmitPreflightResult:
     """Validate Runtime v2 submit guards and build a submit command."""
 
@@ -49,6 +51,7 @@ def run_submit_preflight(
         broker_available_quantity=broker_available_quantity,
         source_current_path=source_current_path,
         broker_capability=broker_capability,
+        environment_context=environment_context,
     )
     if blocked_reason:
         return RuntimeV2SubmitPreflightResult(
@@ -115,12 +118,19 @@ def _blocked_reason(
     broker_available_quantity: float | None,
     source_current_path: str,
     broker_capability: BrokerCapability | None,
+    environment_context: SubmitEnvironmentGuardContext | None,
 ) -> str:
     capability = broker_capability or get_broker_capability(environment)
-    if environment != "demo" or pending_plan.environment != "demo":
-        return "environment guard failure"
-    if not base_url_is_demo or base_url_is_production:
-        return "demo-only guard failure"
+    environment_reason = _environment_matrix_block_reason(
+        pending_plan=pending_plan,
+        environment=environment,
+        base_url_is_demo=base_url_is_demo,
+        base_url_is_production=base_url_is_production,
+        live_order_allowed=live_order_allowed,
+        environment_context=environment_context,
+    )
+    if environment_reason:
+        return environment_reason
     if not live_order_allowed:
         return "live order disabled"
     if source_current_path != "pending_order_plan/pending_order_plan.json":
@@ -169,6 +179,80 @@ def _blocked_reason(
         if item.quantity > broker_available_quantity:
             return "sell quantity exceeds available quantity"
     return ""
+
+
+def _environment_matrix_block_reason(
+    *,
+    pending_plan: PendingOrderPlan,
+    environment: str,
+    base_url_is_demo: bool,
+    base_url_is_production: bool,
+    live_order_allowed: bool,
+    environment_context: SubmitEnvironmentGuardContext | None,
+) -> str:
+    context = environment_context or SubmitEnvironmentGuardContext(
+        runtime_environment=environment,
+        pending_environment=pending_plan.environment,
+        run_type=environment.upper(),
+        broker_environment="tachibana_demo" if environment == "demo" else "",
+        adapter_type="DemoSubmitAdapter" if environment == "demo" else "",
+        broker_write=bool(live_order_allowed and environment == "demo"),
+        external_delivery=False,
+        business_date=pending_plan.target_session_date,
+        evaluation_time=pending_plan.target_session_date,
+        production_acceptance=False,
+    )
+    if context.runtime_environment != environment:
+        return "environment matrix guard failure: runtime environment mismatch"
+    if context.pending_environment != pending_plan.environment:
+        return "environment matrix guard failure: pending environment mismatch"
+    if environment == "demo":
+        if pending_plan.environment != "demo":
+            return "environment guard failure"
+        if context.run_type != "DEMO":
+            return "environment matrix guard failure: demo run_type mismatch"
+        if context.broker_environment != "tachibana_demo":
+            return "environment matrix guard failure: demo broker_environment mismatch"
+        if context.adapter_type not in {"DemoSubmitAdapter", "TachibanaDemoSubmitAdapter", "RuntimeV2DemoSubmitAdapter"}:
+            return "environment matrix guard failure: demo adapter mismatch"
+        if not context.broker_write:
+            return "environment matrix guard failure: demo broker_write must be true for submit"
+        if not base_url_is_demo or base_url_is_production:
+            return "demo-only guard failure"
+        return ""
+    if environment == "historical":
+        if pending_plan.environment != "historical":
+            return "environment matrix guard failure: historical pending environment mismatch"
+        if context.run_type != "HISTORICAL":
+            return "environment matrix guard failure: historical run_type mismatch"
+        if context.broker_environment != "historical_simulated":
+            return "environment matrix guard failure: historical broker_environment mismatch"
+        if context.adapter_type != "HistoricalSubmitAdapter":
+            return "environment matrix guard failure: historical adapter mismatch"
+        if context.broker_write:
+            return "environment matrix guard failure: historical broker_write must be false"
+        if context.external_delivery:
+            return "environment matrix guard failure: historical external_delivery must be false"
+        if not context.business_date:
+            return "environment matrix guard failure: historical business_date missing"
+        if not context.evaluation_time:
+            return "environment matrix guard failure: historical evaluation_time missing"
+        return ""
+    if environment == "production":
+        if pending_plan.environment != "production":
+            if environment_context is None:
+                return "environment guard failure"
+            return "environment matrix guard failure: production pending environment mismatch"
+        if not context.production_acceptance:
+            return "production submit requires explicit production acceptance"
+        if context.run_type != "PRODUCTION":
+            return "environment matrix guard failure: production run_type mismatch"
+        if context.broker_environment != "tachibana_production":
+            return "environment matrix guard failure: production broker_environment mismatch"
+        if context.adapter_type != "ProductionSubmitAdapter":
+            return "environment matrix guard failure: production adapter mismatch"
+        return ""
+    return "environment guard failure"
 
 
 def _approval_expired_for_target_session(expires_at: str, target_session_date: str) -> bool:

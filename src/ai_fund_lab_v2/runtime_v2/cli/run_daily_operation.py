@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import traceback
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,10 @@ from ai_fund_lab_v2.runtime_v2.current_state.valuation import run_current_valuat
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import (
     run_execution_readonly_pipeline,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
+    EnvironmentCompositionError,
+    resolve_environment_composition,
+)
 from ai_fund_lab_v2.runtime_v2.market_refresh.pipeline import (
     run_runtime_v2_market_refresh_pipeline,
 )
@@ -36,9 +41,11 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     resolve_feature_date_contract,
 )
 from ai_fund_lab_v2.runtime_v2.planning.morning_pipeline import (
+    evaluate_morning_capability,
     run_morning_ai_planning_pending_pipeline,
 )
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
+    evaluate_sell_planning_capability,
     run_sell_planning_pending_pipeline,
 )
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle_runner import run_pending_lifecycle_review
@@ -59,12 +66,16 @@ from ai_fund_lab_v2.runtime_v2.review_only.sell_hold_morning import (
 )
 from ai_fund_lab_v2.runtime_v2.runtime_state import produce_runtime_operation_state
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
+    RuntimeSafetyDecision,
     load_runtime_safety_decision,
     safety_manifest_fields,
 )
 from ai_fund_lab_v2.runtime_v2.safety.evaluation import run_runtime_safety_evaluation
 from ai_fund_lab_v2.runtime_v2.safety.producer import produce_runtime_safety_decision
+from ai_fund_lab_v2.runtime_v2.storage.json_safe import JsonSerializationContractError
+from ai_fund_lab_v2.runtime_v2.storage.path_resolver import reject_mode_rooted_runtime_root
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
+from ai_fund_lab_v2.runtime_v2.submit.models import SubmitEnvironmentGuardContext
 
 EXIT_SUCCESS = 0
 EXIT_BLOCKED = 10
@@ -129,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     current_valuation_manifest: dict[str, Any] = {}
     broker_readonly_manifest: dict[str, Any] = {}
     runtime_state_manifest: dict[str, Any] = {}
+    environment_composition = None
+    environment_manifest: dict[str, Any] = {}
     non_trading_day_evidence = _non_trading_day_demo_override_evidence(args, business_date)
 
     log_path = Path(args.log_root) / business_date / f"{run_id}.log"
@@ -137,7 +150,38 @@ def main(argv: list[str] | None = None) -> int:
         _append_log(log_path, f"run_id={run_id} stage=cli_start mode={args.mode} job={args.job}")
         _validate_rehearsal_args(args)
         evaluation_time = _parse_evaluation_time(args.evaluation_time)
+        try:
+            environment_composition = resolve_environment_composition(
+                mode=args.mode,
+                runtime_root=Path(args.runtime_root),
+                broker_environment=args.broker_environment,
+                external_delivery=args.notification_mode != "payload-only",
+                broker_write=False
+                if args.mode == "historical"
+                else args.job == "submit" and _as_bool(args.submit_enabled),
+                business_date=args.business_date,
+                evaluation_time=args.evaluation_time,
+                historical_asof_view_path=_historical_asof_view_path(args=args, business_date=business_date),
+            )
+        except EnvironmentCompositionError as exc:
+            raise ValueError(str(exc)) from exc
+        composition_fields = environment_composition.manifest_fields(
+            runtime_root=Path(args.runtime_root),
+            environment_id=f"{environment_composition.runtime_mode}:{environment_composition.broker_environment}",
+            run_id=run_id,
+            business_date=business_date,
+            evaluation_time=args.evaluation_time or (evaluation_time.isoformat() if evaluation_time else ""),
+        )
+        environment_manifest = composition_fields if args.mode == "historical" else {}
         stages.append(_stage("cli_start", "PASS", "Runtime v2 daily operation CLI started."))
+        stages.append(
+            _stage(
+                "environment_composition",
+                "PASS",
+                "Runtime environment composition resolved.",
+                composition_fields,
+            )
+        )
         stages.append(
             _stage(
                 "operation_contract",
@@ -379,32 +423,6 @@ def main(argv: list[str] | None = None) -> int:
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(current_temporal_migration_result.reason)
 
-        if args.job == "current_valuation_refresh" and exit_code == EXIT_SUCCESS:
-            current_valuation_result = run_current_valuation_refresh(
-                runtime_root=Path(args.runtime_root),
-                business_date=business_date,
-                apply_current_valuation=args.apply_current_valuation,
-                now=evaluation_time,
-            )
-            current_valuation_manifest = dict(current_valuation_result.manifest_fields)
-            stages.append(
-                _stage(
-                    "current_valuation_refresh",
-                    current_valuation_result.status,
-                    "Current valuation-only / no-fill producer generated a valuation candidate.",
-                    current_valuation_manifest,
-                )
-            )
-            generated["current_valuation_refresh_artifact"] = current_valuation_result.artifact_path
-            if current_valuation_result.status == "HALT":
-                exit_code = EXIT_HALT
-                final_state = "HALT"
-                errors.append(current_valuation_result.reason)
-            elif current_valuation_result.status == "REVIEW_REQUIRED":
-                exit_code = EXIT_REVIEW_REQUIRED
-                final_state = "REVIEW_REQUIRED"
-                warnings.append(current_valuation_result.reason)
-
         if args.job == "broker_readonly_refresh" and exit_code == EXIT_SUCCESS:
             broker_readonly_result = run_broker_readonly_refresh(
                 runtime_root=Path(args.runtime_root),
@@ -432,24 +450,31 @@ def main(argv: list[str] | None = None) -> int:
                 warnings.append(broker_readonly_result.reason)
 
         data_readiness_result = None
-        if _data_readiness_required_for_job(args.job) and exit_code == EXIT_SUCCESS:
+        if _data_readiness_required_for_job(args.job, mode=args.mode) and exit_code == EXIT_SUCCESS:
             data_readiness_result = evaluate_runtime_data_readiness(
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
                 mode=args.mode,
                 readiness_scope=_readiness_scope_for_args(args),
                 feature_root=Path(args.feature_root),
-                feature_date=_resolve_buy_ai_feature_date(args, business_date)
-                if _readiness_scope_for_args(args) in {"morning", "morning_full", "morning_sell_hold_review_only"}
-                else args.feature_date,
+                feature_date=args.feature_date
+                if args.job == "data_readiness" or _readiness_scope_for_args(args) not in {"morning", "morning_full", "morning_sell_hold_review_only"}
+                else _resolve_buy_ai_feature_date(args, business_date),
                 candidate_model_path=args.candidate_model_path,
                 opportunity_model_path=args.opportunity_model_path,
                 pm_opportunity_path=args.pm_opportunity_path,
                 pm_feature_path=args.pm_feature_path,
                 allow_non_trading_day_demo=args.allow_non_trading_day_demo,
+                broker_environment=args.broker_environment,
+                runtime_test_evidence_root=args.runtime_test_evidence_root,
+                runtime_test_run_id=args.runtime_test_run_id,
+                runtime_test_profile_id=args.runtime_test_profile_id,
+                broker_write=False,
+                external_delivery=args.notification_mode != "payload-only",
                 now=evaluation_time,
             )
             data_readiness_manifest = data_readiness_result.to_manifest_fields()
+            data_readiness_manifest.update(_data_readiness_safety_summary_fields(data_readiness_result.payload))
             stages.append(
                 _stage(
                     "runtime_data_readiness_gate",
@@ -467,6 +492,56 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = EXIT_REVIEW_REQUIRED
                 final_state = "REVIEW_REQUIRED"
                 warnings.extend(data_readiness_result.payload.get("review_reasons") or [data_readiness_result.reason])
+        effective_safety_decision = _effective_runtime_safety_decision(
+            args=args,
+            business_date=business_date,
+            runtime_safety_decision=runtime_safety_decision,
+            data_readiness_manifest=data_readiness_manifest,
+        )
+        if effective_safety_decision is not runtime_safety_decision:
+            stages.append(
+                _stage(
+                    "historical_safety_authority",
+                    "PASS",
+                    "Historical safety authority from Data Readiness propagated to downstream Planning.",
+                    safety_manifest_fields(effective_safety_decision)
+                    | {
+                        "ignored_latest_safety_decision": data_readiness_manifest.get("data_readiness_ignored_latest_safety_decision") or "",
+                        "source_safety_decision": "data_readiness_historical_temporal_authority",
+                    },
+                )
+            )
+
+        if args.job == "current_valuation_refresh" and exit_code == EXIT_SUCCESS:
+            current_valuation_result = run_current_valuation_refresh(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                apply_current_valuation=args.apply_current_valuation,
+                now=evaluation_time,
+                market_evidence_path=_historical_asof_view_path(args=args, business_date=business_date) or None,
+                safety_authority=safety_manifest_fields(effective_safety_decision),
+                runtime_test_context=_runtime_test_context(args=args, business_date=business_date),
+                environment_context=environment_manifest,
+                allow_legacy_temporal_current=args.mode == "historical",
+            )
+            current_valuation_manifest = dict(current_valuation_result.manifest_fields)
+            stages.append(
+                _stage(
+                    "current_valuation_refresh",
+                    current_valuation_result.status,
+                    "Current valuation-only / no-fill producer generated a valuation candidate.",
+                    current_valuation_manifest,
+                )
+            )
+            generated["current_valuation_refresh_artifact"] = current_valuation_result.artifact_path
+            if current_valuation_result.status == "HALT":
+                exit_code = EXIT_HALT
+                final_state = "HALT"
+                errors.append(current_valuation_result.reason)
+            elif current_valuation_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(current_valuation_result.reason)
 
         if args.job == "morning" and exit_code == EXIT_SUCCESS:
             buy_ai_result = produce_buy_ai_decisions(
@@ -498,6 +573,27 @@ def main(argv: list[str] | None = None) -> int:
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(f"buy ai review required: {buy_ai_result.reason}")
         if args.job == "morning" and exit_code == EXIT_SUCCESS:
+            morning_capability_context = _morning_capability_context(
+                args=args,
+                environment_manifest=environment_manifest,
+            )
+            morning_capability_decision = evaluate_morning_capability(
+                mode=args.mode,
+                context=morning_capability_context,
+            )
+            stages.append(
+                _stage(
+                    "environment_capability_decision",
+                    morning_capability_decision.status,
+                    "Morning environment/capability policy evaluated before Planning.",
+                    morning_capability_decision.to_payload(),
+                )
+            )
+            if morning_capability_decision.status != "PASS":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(morning_capability_decision.reason)
+        if args.job == "morning" and exit_code == EXIT_SUCCESS:
             morning_result = run_morning_ai_planning_pending_pipeline(
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
@@ -506,9 +602,10 @@ def main(argv: list[str] | None = None) -> int:
                 feature_date=args.feature_date,
                 max_orders=args.max_orders,
                 capital_deployment_policy=capital_deployment_policy,
-                safety_decision=runtime_safety_decision,
+                safety_decision=effective_safety_decision,
                 ai_signals=buy_ai_result.ai_signals,
                 buy_ai_context=buy_ai_manifest,
+                environment_capability_context=morning_capability_context,
             )
             stages.append(
                 _stage(
@@ -534,6 +631,27 @@ def main(argv: list[str] | None = None) -> int:
                 errors.append(f"morning pipeline halted: {morning_result.reason}")
 
         if args.job == "sell_planning" and exit_code == EXIT_SUCCESS:
+            sell_capability_context = _morning_capability_context(
+                args=args,
+                environment_manifest=environment_manifest,
+            )
+            sell_capability_decision = evaluate_sell_planning_capability(
+                mode=args.mode,
+                context=sell_capability_context,
+            )
+            stages.append(
+                _stage(
+                    "environment_capability_decision",
+                    sell_capability_decision.status,
+                    "SELL Planning environment/capability policy evaluated before PM and Planning.",
+                    sell_capability_decision.to_payload(),
+                )
+            )
+            if sell_capability_decision.status != "PASS":
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(sell_capability_decision.reason)
+        if args.job == "sell_planning" and exit_code == EXIT_SUCCESS:
             pm_result = produce_position_management_decisions(
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
@@ -556,7 +674,9 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = EXIT_REVIEW_REQUIRED
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(f"position management review required: {pm_result.reason}")
-            if exit_code == EXIT_SUCCESS:
+            if pm_result.status == "NO_POSITION":
+                warnings.append("sell planning no position: existing pending continuity preserved")
+            if exit_code == EXIT_SUCCESS and pm_result.status != "NO_POSITION":
                 sell_result = run_sell_planning_pending_pipeline(
                     runtime_root=Path(args.runtime_root),
                     business_date=business_date,
@@ -564,7 +684,8 @@ def main(argv: list[str] | None = None) -> int:
                     exit_decisions=pm_result.sell_exit_decisions,
                     max_orders=args.max_orders,
                     capital_deployment_policy=capital_deployment_policy,
-                    safety_decision=runtime_safety_decision,
+                    safety_decision=effective_safety_decision,
+                    environment_capability_context=sell_capability_context,
                 )
                 stages.append(
                     _stage(
@@ -695,8 +816,17 @@ def main(argv: list[str] | None = None) -> int:
                 submit_enabled=_as_bool(args.submit_enabled),
                 job=args.job,
                 capital_deployment_policy_path=capital_deployment_policy_path,
-                safety_decision=runtime_safety_decision,
+                safety_decision=effective_safety_decision,
                 now=evaluation_time,
+                adapter=environment_composition.submit_adapter if environment_composition is not None else None,
+                environment_context=_submit_environment_context(
+                    args=args,
+                    composition=environment_composition,
+                    business_date=business_date,
+                    evaluation_time=args.evaluation_time or (evaluation_time.isoformat() if evaluation_time else ""),
+                )
+                if environment_composition is not None
+                else None,
             )
             submit_guard_policy = dict(submit_result.submit_guard_policy)
             submit_policy_consistency = dict(submit_result.submit_policy_consistency)
@@ -735,6 +865,9 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
                 mode=args.mode,
+                snapshot_provider=environment_composition.execution_snapshot_provider
+                if environment_composition is not None
+                else None,
             )
             stages.append(
                 _stage(
@@ -760,6 +893,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_api_fetch=_as_bool(args.market_refresh_allow_api_fetch),
                 mode=args.mode,
                 now=evaluation_time,
+                runtime_test_context=_runtime_test_context(args=args, business_date=business_date),
             )
             market_evidence_manifest = {
                 "market_evidence_status": market_refresh_result.market_evidence_status,
@@ -832,6 +966,7 @@ def main(argv: list[str] | None = None) -> int:
                 current_valuation_manifest=current_valuation_manifest,
                 broker_readonly_manifest=broker_readonly_manifest,
                 runtime_state_manifest=runtime_state_manifest,
+                environment_manifest=environment_manifest,
                 submit_result=submit_result if "submit_result" in locals() else None,
             ),
         )
@@ -858,6 +993,21 @@ def main(argv: list[str] | None = None) -> int:
         final_state = "BLOCKED"
         errors.append(str(exc))
         stages.append(_stage("config_guard", "BLOCKED", str(exc)))
+    except JsonSerializationContractError as exc:
+        exit_code = EXIT_UNEXPECTED_ERROR
+        final_state = "HALT"
+        errors.append(f"runtime evidence serialization error: {exc.field_path} {exc.python_type}")
+        details = _serialization_error_details(args=args, business_date=business_date, exc=exc)
+        stages.append(_stage("serialization_error", "HALT", "Runtime evidence serialization contract failed.", details))
+        _write_morning_failure_evidence(
+            args=args,
+            business_date=business_date,
+            run_id=run_id,
+            error_payload=details,
+            data_readiness_manifest=data_readiness_manifest,
+            environment_manifest=environment_manifest,
+            stack_trace=traceback.format_exc(),
+        )
     except Exception as exc:  # pragma: no cover - defensive last line of the CLI
         exit_code = EXIT_UNEXPECTED_ERROR
         final_state = "HALT"
@@ -895,9 +1045,38 @@ def main(argv: list[str] | None = None) -> int:
         current_valuation_manifest=current_valuation_manifest,
         broker_readonly_manifest=broker_readonly_manifest,
         runtime_state_manifest=runtime_state_manifest,
+        environment_manifest=environment_manifest,
         submit_result=submit_result if "submit_result" in locals() else None,
     )
     manifest_path = _write_manifest(Path(args.manifest_root), business_date, run_id, manifest)
+    if args.runtime_test_evidence_root and args.job == "morning":
+        _write_morning_manifest_evidence(
+            evidence_root=Path(args.runtime_test_evidence_root),
+            business_date=business_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+        )
+    if args.runtime_test_evidence_root and args.job == "sell_planning":
+        _write_sell_planning_manifest_evidence(
+            evidence_root=Path(args.runtime_test_evidence_root),
+            business_date=business_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+        )
+    if args.runtime_test_evidence_root and args.job == "execution":
+        _write_execution_manifest_evidence(
+            evidence_root=Path(args.runtime_test_evidence_root),
+            business_date=business_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+        )
+    if args.runtime_test_evidence_root and args.job == "current_valuation_refresh":
+        _write_current_valuation_manifest_evidence(
+            evidence_root=Path(args.runtime_test_evidence_root),
+            business_date=business_date,
+            manifest_path=manifest_path,
+            manifest=manifest,
+        )
     _append_log(log_path, f"run_id={run_id} exit_code={exit_code} manifest={manifest_path}")
     print(json.dumps({"exit_code": exit_code, "manifest": str(manifest_path)}, ensure_ascii=False))
     return exit_code
@@ -935,11 +1114,15 @@ def _build_manifest(
     current_valuation_manifest: dict[str, Any],
     broker_readonly_manifest: dict[str, Any],
     runtime_state_manifest: dict[str, Any],
+    environment_manifest: dict[str, Any],
     submit_result: Any,
 ) -> dict[str, Any]:
     return {
         "schema_version": "1",
         "run_id": run_id,
+        "runtime_test_run_id": args.runtime_test_run_id or "",
+        "runtime_test_profile_id": args.runtime_test_profile_id or "",
+        "runtime_test_evidence_root": args.runtime_test_evidence_root or "",
         "started_at": started_at,
         "finished_at": _utc_now(),
         "business_date": business_date,
@@ -968,8 +1151,10 @@ def _build_manifest(
         **current_valuation_manifest,
         **broker_readonly_manifest,
         **runtime_state_manifest,
+        **environment_manifest,
         **capital_policy_manifest,
         **safety_manifest_fields(runtime_safety_decision),
+        **_historical_safety_manifest_override(args=args, data_readiness_manifest=data_readiness_manifest),
         "submit_guard_policy": submit_guard_policy,
         "submit_policy_consistency": submit_policy_consistency,
         "submit_guard_item_evidence": submit_guard_item_evidence,
@@ -996,7 +1181,7 @@ def _build_manifest(
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("demo", "simulation", "production"), required=True)
+    parser.add_argument("--mode", choices=("demo", "historical", "simulation", "production"), required=True)
     parser.add_argument("--job", choices=ALLOWED_JOBS, default="daily_rehearsal")
     parser.add_argument(
         "--readiness-scope",
@@ -1011,6 +1196,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--pending-action", choices=("review", "expire", "cancel"), default="review")
     parser.add_argument("--business-date")
+    parser.add_argument("--broker-environment")
     parser.add_argument("--submit-enabled", choices=("true", "false"), default="false")
     parser.add_argument(
         "--notification-mode",
@@ -1041,10 +1227,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--evaluation-time")
     parser.add_argument("--apply-current-migration", action="store_true")
     parser.add_argument("--apply-current-valuation", action="store_true")
+    parser.add_argument("--runtime-test-run-id")
+    parser.add_argument("--runtime-test-profile-id")
+    parser.add_argument("--runtime-test-evidence-root")
+    parser.add_argument("--runtime-test-source-commit")
     return parser.parse_args(argv)
 
 
 def _validate_rehearsal_args(args: argparse.Namespace) -> None:
+    if args.mode == "simulation":
+        raise ValueError("simulation is not a formal Runtime environment; use --mode historical")
+    reject_mode_rooted_runtime_root(Path(args.runtime_root))
+    if args.mode == "historical":
+        if not args.business_date:
+            raise ValueError("historical mode requires --business-date")
+        if not args.evaluation_time:
+            raise ValueError("historical mode requires --evaluation-time")
+        if args.broker_environment not in {None, "historical_simulated"}:
+            raise ValueError("historical mode requires --broker-environment historical_simulated")
+        if args.notification_mode != "payload-only":
+            raise ValueError("historical mode requires --notification-mode payload-only")
+        if args.max_orders is not None and args.max_orders < 0:
+            raise ValueError("--max-orders must be non-negative")
+        return
     if args.mode == "production" and args.allow_non_trading_day_demo:
         return
     if args.job in {"safety_evaluation", "safety_refresh"} and args.mode in {"demo", "production"}:
@@ -1086,6 +1291,17 @@ def _non_trading_day_demo_override_evidence(args: argparse.Namespace, business_d
 
 
 def _non_trading_day_override_gate(args: argparse.Namespace, evidence: dict[str, Any]) -> tuple[str, str]:
+    if args.mode == "historical":
+        evidence.update(
+            {
+                "non_trading_day_demo_override": False,
+                "override_source": "not_applicable",
+                "override_reason": "historical_replay_calendar_context",
+                "production_equivalent": False,
+                "acceptance_scope": "historical_replay",
+            }
+        )
+        return "PASS", ""
     if args.mode == "production" and args.allow_non_trading_day_demo:
         evidence.update(
             {
@@ -1290,8 +1506,16 @@ def _policy_required_for_job(job: str) -> bool:
     }
 
 
-def _data_readiness_required_for_job(job: str) -> bool:
-    return job in {"data_readiness", "morning", "sell_planning", "sell_hold_review_only_morning"}
+def _data_readiness_required_for_job(job: str, *, mode: str = "") -> bool:
+    if job == "current_valuation_refresh":
+        return mode == "historical"
+    return job in {
+        "data_readiness",
+        "morning",
+        "sell_planning",
+        "sell_hold_review_only_morning",
+        "submit",
+    }
 
 
 def _readiness_scope_for_args(args: argparse.Namespace) -> str:
@@ -1299,6 +1523,8 @@ def _readiness_scope_for_args(args: argparse.Namespace) -> str:
         return args.readiness_scope
     if args.job == "sell_hold_review_only_morning":
         return "morning_sell_hold_review_only"
+    if args.job == "current_valuation_refresh":
+        return "current_valuation"
     if args.job in {"morning", "sell_planning", "submit", "execution"}:
         return args.job
     return "morning"
@@ -1376,6 +1602,698 @@ def _stage(name: str, status: str, message: str, details: dict[str, Any] | None 
     return payload
 
 
+def _data_readiness_safety_summary_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    safety = dict((payload.get("components") or {}).get("safety") or {})
+    authority = str(safety.get("historical_safety_temporal_authority") or "")
+    if not authority:
+        return {}
+    return {
+        "data_readiness_safety_authority": authority,
+        "data_readiness_safety_reason": safety.get("reason") or "",
+        "data_readiness_safety_status": safety.get("status") or "",
+        "data_readiness_ignored_latest_safety_decision": safety.get("ignored_latest_safety_decision") or "",
+    }
+
+
+def _historical_safety_manifest_override(*, args: argparse.Namespace, data_readiness_manifest: dict[str, Any]) -> dict[str, Any]:
+    authority = str(data_readiness_manifest.get("data_readiness_safety_authority") or "")
+    if args.mode != "historical" or not authority:
+        return {}
+    reason = str(data_readiness_manifest.get("data_readiness_safety_reason") or "historical_neutral_no_event_safety_ready")
+    return {
+        "safety_authority": authority,
+        "safety_decision_id": "",
+        "safety_policy_version": "historical_replay_neutral_safety_v1",
+        "safety_source": "data_readiness_historical_temporal_authority",
+        "safety_artifact_path": "",
+        "safety_decision": "NEUTRAL",
+        "safety_reason": reason,
+        "safety_status": "PASS",
+        "safety_review_required": False,
+        "safety_block_buy": False,
+        "safety_block_sell": False,
+        "safety_block_submit": False,
+        "safety_halt_runtime": False,
+        "safety_emergency_stop": False,
+        "safety_generated_at": "",
+        "safety_expires_at": "",
+        "safety_action_permissions": {
+            "buy_inference": "ALLOWED_FOR_REPLAY",
+            "buy_planning": "ALLOWED_FOR_REPLAY",
+            "buy_submit": "ALLOWED_FOR_REPLAY",
+            "sell_hold_inference": "ALLOWED_FOR_REPLAY",
+            "sell_planning": "ALLOWED_FOR_REPLAY",
+            "sell_submit": "ALLOWED_FOR_REPLAY",
+            "auto_sell": "BLOCKED",
+            "human_review": "NOT_REQUIRED",
+            "broker_write": "BLOCKED",
+        },
+        "safety_human_review_artifact_refs": [],
+        "ignored_latest_safety_decision": data_readiness_manifest.get("data_readiness_ignored_latest_safety_decision") or "",
+    }
+
+
+def _effective_runtime_safety_decision(
+    *,
+    args: argparse.Namespace,
+    business_date: str,
+    runtime_safety_decision: RuntimeSafetyDecision | None,
+    data_readiness_manifest: dict[str, Any],
+) -> RuntimeSafetyDecision | None:
+    authority = str(data_readiness_manifest.get("data_readiness_safety_authority") or "")
+    if args.mode != "historical" or not authority:
+        return runtime_safety_decision
+    reason = str(data_readiness_manifest.get("data_readiness_safety_reason") or "historical_neutral_no_event_safety_ready")
+    return RuntimeSafetyDecision(
+        safety_decision_id="",
+        safety_policy_version="historical_replay_neutral_safety_v1",
+        safety_source="data_readiness_historical_temporal_authority",
+        business_date=business_date,
+        runtime_mode="historical",
+        decision="ALLOW",
+        reason=reason,
+        review_required=False,
+        block_buy=False,
+        block_sell=False,
+        block_submit=False,
+        halt_runtime=False,
+        emergency_stop=False,
+        generated_at="",
+        expires_at="",
+        safety_status="PASS",
+        action_permissions={
+            "buy_inference": "ALLOWED_FOR_REPLAY",
+            "buy_planning": "ALLOWED_FOR_REPLAY",
+            "buy_submit": "ALLOWED_FOR_REPLAY",
+            "sell_hold_inference": "ALLOWED_FOR_REPLAY",
+            "sell_planning": "ALLOWED_FOR_REPLAY",
+            "sell_submit": "ALLOWED_FOR_REPLAY",
+            "auto_sell": "BLOCKED",
+            "human_review": "NOT_REQUIRED",
+            "broker_write": "BLOCKED",
+        },
+        human_review_artifact_refs=[],
+        artifact_path="",
+    )
+
+
+def _morning_capability_context(*, args: argparse.Namespace, environment_manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "runtime_mode": environment_manifest.get("runtime_mode") or args.mode,
+        "broker_environment": environment_manifest.get("broker_environment") or args.broker_environment or args.mode,
+        "historical_replay": bool(environment_manifest.get("historical_replay")),
+        "simulation": bool(environment_manifest.get("simulation")),
+        "broker_write": bool(environment_manifest.get("broker_write")),
+        "external_delivery": bool(environment_manifest.get("external_delivery") or args.notification_mode != "payload-only"),
+        "tachibana_demo_write": bool(environment_manifest.get("tachibana_demo_write")),
+        "tachibana_production_write": bool(environment_manifest.get("tachibana_production_write")),
+        "submit_enabled": _as_bool(args.submit_enabled),
+        "runtime_test_run_id": args.runtime_test_run_id or "",
+        "runtime_test_profile_id": args.runtime_test_profile_id or "",
+        "runtime_test_evidence_root": args.runtime_test_evidence_root or "",
+    }
+
+
+def _serialization_error_details(
+    *,
+    args: argparse.Namespace,
+    business_date: str,
+    exc: JsonSerializationContractError,
+) -> dict[str, Any]:
+    payload = exc.to_payload()
+    payload.update(
+        {
+            "error_type": "TypeError",
+            "message": str(exc),
+            "job": args.job,
+            "stage": "morning",
+            "business_date": business_date,
+            "artifact_type": _artifact_type_for_field_path(exc.field_path),
+        }
+    )
+    return payload
+
+
+def _artifact_type_for_field_path(field_path: str) -> str:
+    if "metrics_validation" in field_path:
+        return "opportunity_rankings"
+    if "candidate" in field_path:
+        return "candidate_decisions"
+    return "runtime_evidence"
+
+
+def _write_morning_failure_evidence(
+    *,
+    args: argparse.Namespace,
+    business_date: str,
+    run_id: str,
+    error_payload: dict[str, Any],
+    data_readiness_manifest: dict[str, Any],
+    environment_manifest: dict[str, Any],
+    stack_trace: str,
+) -> None:
+    if not args.runtime_test_evidence_root or args.job != "morning":
+        return
+    evidence_dir = Path(args.runtime_test_evidence_root) / "daily" / business_date / "morning"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_file(
+        evidence_dir / "exception_summary.json",
+        {
+            **error_payload,
+            "run_id": run_id,
+            "runtime_test_run_id": args.runtime_test_run_id or "",
+            "internal_stack_trace": stack_trace,
+        },
+    )
+    _write_json_file(evidence_dir / "data_readiness_reference.json", data_readiness_manifest)
+    _write_json_file(evidence_dir / "environment_composition.json", environment_manifest)
+    feature_contract = data_readiness_manifest.get("feature_date_contract") if isinstance(data_readiness_manifest.get("feature_date_contract"), dict) else {}
+    _write_json_file(
+        evidence_dir / "selected_feature_contract.json",
+        {
+            "selected_feature_date": data_readiness_manifest.get("selected_feature_date") or "",
+            "feature_date_contract_path": feature_contract.get("contract_artifact_path") or "",
+        },
+    )
+
+
+def _write_morning_manifest_evidence(
+    *,
+    evidence_root: Path,
+    business_date: str,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    evidence_dir = evidence_root / "daily" / business_date / "morning"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_file(
+        evidence_dir / "morning_manifest.json",
+        {
+            "source_manifest_path": str(manifest_path),
+            "manifest": manifest,
+        },
+    )
+    stages = list(manifest.get("stages") or [])
+    capability = _stage_details(stages, "environment_capability_decision")
+    _write_json_file(
+        evidence_dir / "environment_capability_decision.json",
+        capability
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "environment_capability_decision_stage_not_reached",
+        },
+    )
+    planning = _stage_details(stages, "morning_ai_planning_pending_pipeline")
+    _write_json_file(
+        evidence_dir / "planning_evidence.json",
+        planning
+        or {
+            "status": "NOT_EXECUTED",
+            "reason": _final_reason(
+                errors=list(manifest.get("errors") or []),
+                warnings=list(manifest.get("warnings") or []),
+            )
+            or "planning_stage_not_reached",
+        },
+    )
+    pending_path = str((planning or {}).get("pending_path") or "")
+    _write_json_file(
+        evidence_dir / "pending_generation_evidence.json",
+        {
+            "status": (planning or {}).get("status") or "NOT_EXECUTED",
+            "reason": (planning or {}).get("reason") or ("pending_generation_stage_not_reached" if not planning else ""),
+            "pending_path": pending_path,
+            "pending_path_written": bool(pending_path and Path(pending_path).is_file()),
+            "pending_plan_id": (planning or {}).get("pending_plan_id") or "",
+        },
+    )
+    prohibited = dict(manifest.get("prohibited_actions") or {})
+    _write_json_file(
+        evidence_dir / "external_effect_audit.json",
+        {
+            "status": "PASS"
+            if not any(
+                bool(prohibited.get(key))
+                for key in (
+                    "demo_submit_executed",
+                    "production_order_executed",
+                    "notification_sent",
+                    "phase9_runtime_called",
+                    "phase9_writer_called",
+                    "mode_rooted_current_used",
+                )
+            )
+            else "REVIEW_REQUIRED",
+            "broker_order_api_calls": 0,
+            "notification_delivery_calls": 0,
+            "jquants_fetch_calls": 0,
+            "production_access": bool(manifest.get("mode") == "production"),
+            "demo_submit": bool(prohibited.get("demo_submit_executed")),
+            "prohibited_actions": prohibited,
+        },
+    )
+
+
+def _write_sell_planning_manifest_evidence(
+    *,
+    evidence_root: Path,
+    business_date: str,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    evidence_dir = evidence_root / "daily" / business_date / "sell_planning"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stages = list(manifest.get("stages") or [])
+    capability = _stage_details(stages, "environment_capability_decision")
+    pm = _stage_details(stages, "position_management_ai_runtime_producer")
+    sell = _stage_details(stages, "sell_planning_pending_pipeline")
+    readiness = _stage_details(stages, "runtime_data_readiness_gate")
+    reason = _final_reason(
+        errors=list(manifest.get("errors") or []),
+        warnings=list(manifest.get("warnings") or []),
+    )
+    _write_json_file(
+        evidence_dir / "sell_planning_manifest.json",
+        {
+            "source_manifest_path": str(manifest_path),
+            "manifest": manifest,
+        },
+    )
+    _write_json_file(
+        evidence_dir / "environment_capability_decision.json",
+        capability
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "environment_capability_decision_stage_not_reached",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "data_readiness_authority.json",
+        {
+            "status": readiness.get("status") or manifest.get("data_readiness_status") or "NOT_EVALUATED",
+            "reason": readiness.get("reason") or manifest.get("data_readiness_reason") or reason,
+            "data_readiness_artifact_path": manifest.get("data_readiness_artifact_path") or "",
+            "safety_authority": manifest.get("data_readiness_safety_authority") or "",
+            "ignored_latest_safety_decision": manifest.get("data_readiness_ignored_latest_safety_decision") or "",
+            "review_reasons": manifest.get("data_readiness_review_reasons") or [],
+            "halt_reasons": manifest.get("data_readiness_halt_reasons") or [],
+        },
+    )
+    _write_json_file(
+        evidence_dir / "position_management_evidence.json",
+        pm
+        or {
+            "status": "NOT_EXECUTED",
+            "reason": reason or "position_management_stage_not_reached",
+        },
+    )
+    pending_path = str((sell or {}).get("pending_path") or "")
+    _write_json_file(
+        evidence_dir / "pending_continuity_evidence.json",
+        {
+            "status": (sell or pm or {}).get("status") or "NOT_EXECUTED",
+            "reason": (sell or pm or {}).get("reason") or reason or "sell_planning_stage_not_reached",
+            "pending_path": pending_path,
+            "pending_path_written_by_sell_planning": bool(sell and pending_path and Path(pending_path).is_file()),
+            "no_position_preserved_existing_pending": bool(pm.get("status") == "NO_POSITION" and not sell),
+            "pending_plan_id": (sell or {}).get("pending_plan_id") or "",
+        },
+    )
+    prohibited = dict(manifest.get("prohibited_actions") or {})
+    _write_json_file(
+        evidence_dir / "external_effect_audit.json",
+        {
+            "status": "PASS"
+            if not any(
+                bool(prohibited.get(key))
+                for key in (
+                    "demo_submit_executed",
+                    "production_order_executed",
+                    "notification_sent",
+                    "phase9_runtime_called",
+                    "phase9_writer_called",
+                    "mode_rooted_current_used",
+                )
+            )
+            else "REVIEW_REQUIRED",
+            "broker_order_api_calls": 0,
+            "notification_delivery_calls": 0,
+            "production_access": bool(manifest.get("mode") == "production"),
+            "prohibited_actions": prohibited,
+        },
+    )
+
+
+def _write_execution_manifest_evidence(
+    *,
+    evidence_root: Path,
+    business_date: str,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    evidence_dir = evidence_root / "daily" / business_date / "execution"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stages = list(manifest.get("stages") or [])
+    execution = _stage_details(stages, "runtime_v2_execution_readonly_pipeline")
+    environment = _stage_details(stages, "environment_composition")
+    reason = _final_reason(
+        errors=list(manifest.get("errors") or []),
+        warnings=list(manifest.get("warnings") or []),
+    )
+    _write_json_file(
+        evidence_dir / "execution_manifest.json",
+        {
+            "source_manifest_path": str(manifest_path),
+            "manifest": manifest,
+        },
+    )
+    _write_json_file(
+        evidence_dir / "environment_capability_decision.json",
+        environment
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "environment_composition_stage_not_reached",
+        },
+    )
+    prohibited = dict(manifest.get("prohibited_actions") or {})
+    _write_json_file(
+        evidence_dir / "external_effect_audit.json",
+        {
+            "status": "PASS"
+            if not any(
+                bool(prohibited.get(key))
+                for key in (
+                    "demo_submit_executed",
+                    "production_order_executed",
+                    "notification_sent",
+                    "phase9_runtime_called",
+                    "phase9_writer_called",
+                    "mode_rooted_current_used",
+                )
+            )
+            else "REVIEW_REQUIRED",
+            "broker_order_api_calls": 0,
+            "notification_delivery_calls": 0,
+            "jquants_fetch_calls": 0,
+            "production_access": bool(manifest.get("mode") == "production"),
+            "broker_write": bool(environment.get("broker_write")),
+            "external_delivery": bool(environment.get("external_delivery")),
+            "historical_replay": bool(environment.get("historical_replay")),
+            "simulation": bool(environment.get("simulation")),
+            "prohibited_actions": prohibited,
+        },
+    )
+    _write_json_file(
+        evidence_dir / "submitted_order_authority.json",
+        {
+            "status": execution.get("execution_acceptance_status") or execution.get("status") or "NOT_EXECUTED",
+            "reason": execution.get("execution_acceptance_reason") or reason or "execution_stage_not_reached",
+            "orders_count": execution.get("orders_count", 0),
+            "orderlist_readonly_connected": bool(execution.get("orderlist_readonly_connected")),
+            "execution_references": execution.get("execution_references") or [],
+            "runtime_test_run_id": manifest.get("runtime_test_run_id") or "",
+            "runtime_test_profile_id": manifest.get("runtime_test_profile_id") or "",
+            "business_date": manifest.get("business_date") or business_date,
+        },
+    )
+    _write_json_file(
+        evidence_dir / "historical_fill_authority.json",
+        {
+            "status": execution.get("execution_acceptance_status") or execution.get("status") or "NOT_EXECUTED",
+            "reason": execution.get("execution_acceptance_reason") or reason or "execution_stage_not_reached",
+            "snapshot_status": execution.get("snapshot_status") or "",
+            "snapshot_path": execution.get("snapshot_path") or "",
+            "report_path": execution.get("report_path") or "",
+            "execution_equivalent_count": execution.get("execution_equivalent_count", 0),
+            "order_detail_required": bool(execution.get("order_detail_required")),
+            "order_detail_status": execution.get("order_detail_status") or "",
+            "warnings": execution.get("execution_acceptance_warnings") or [],
+        },
+    )
+    _write_json_file(
+        evidence_dir / "execution_normalization_evidence.json",
+        {
+            "status": execution.get("execution_acceptance_status") or execution.get("status") or "NOT_EXECUTED",
+            "reason": execution.get("execution_acceptance_reason") or reason or "execution_stage_not_reached",
+            "orders_count": execution.get("orders_count", 0),
+            "executions_count": execution.get("executions_count", 0),
+            "positions_count": execution.get("positions_count", 0),
+            "cash_present": bool(execution.get("cash_present")),
+        },
+    )
+    _write_json_file(
+        evidence_dir / "ledger_append_evidence.json",
+        {
+            "status": "PASS" if execution.get("ledger_connected") else "NOT_EXECUTED",
+            "ledger_orders_appended": execution.get("ledger_orders_appended", 0),
+            "ledger_executions_appended": execution.get("ledger_executions_appended", 0),
+            "ledger_positions_appended": execution.get("ledger_positions_appended", 0),
+            "ledger_cash_appended": execution.get("ledger_cash_appended", 0),
+            "ledger_events_appended": execution.get("ledger_events_appended", 0),
+        },
+    )
+    _write_json_file(
+        evidence_dir / "current_apply_evidence.json",
+        {
+            "status": execution.get("current_apply_status") or "NOT_EXECUTED",
+            "reason": execution.get("current_apply_reason") or "",
+            "runtime_owned_projection_status": execution.get("runtime_owned_projection_status") or "NOT_EXECUTED",
+            "runtime_owned_projection_reason": execution.get("runtime_owned_projection_reason") or "",
+            "asset_current_written": bool(execution.get("asset_current_written")),
+            "current_hash": execution.get("current_hash") or "",
+            "current_version": execution.get("current_version") or "",
+            "runtime_state_path": execution.get("runtime_state_path") or "",
+            "runtime_state_version": execution.get("runtime_state_version") or "",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "pending_terminalization_evidence.json",
+        {
+            "status": "PASS" if execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"} else "NOT_CONFIRMED",
+            "pending_consumed": execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"},
+            "execution_references": execution.get("execution_references") or [],
+        },
+    )
+
+
+def _write_current_valuation_manifest_evidence(
+    *,
+    evidence_root: Path,
+    business_date: str,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+) -> None:
+    evidence_dir = evidence_root / "daily" / business_date / "current_valuation_refresh"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stages = list(manifest.get("stages") or [])
+    valuation = _stage_details(stages, "current_valuation_refresh")
+    producer_reached = bool(valuation)
+    blocking_stage = "" if producer_reached else _current_valuation_blocking_stage(manifest)
+    blocking_reason = "" if producer_reached else _final_reason(
+        errors=list(manifest.get("errors") or []),
+        warnings=list(manifest.get("warnings") or []),
+    )
+    environment = _stage_details(stages, "environment_composition")
+    safety = _stage_details(stages, "historical_safety_authority") or {
+        key: manifest.get(key)
+        for key in (
+            "safety_status",
+            "safety_decision",
+            "safety_policy_version",
+            "safety_source",
+            "safety_reason",
+            "safety_action_permissions",
+        )
+    }
+    prohibited = dict(manifest.get("prohibited_actions") or {})
+    artifact_path = str(valuation.get("current_valuation_refresh_artifact_path") or "")
+    artifact = _read_json_file(Path(artifact_path)) if artifact_path and Path(artifact_path).is_file() else {}
+    candidate = dict(artifact.get("candidate_current") or {})
+    _write_json_file(
+        evidence_dir / "current_valuation_manifest.json",
+        {
+            "source_manifest_path": str(manifest_path),
+            "execution_reached": producer_reached,
+            "blocked_before_producer": not producer_reached,
+            "blocking_stage": blocking_stage,
+            "blocking_reason": blocking_reason,
+            "manifest": manifest,
+            "artifact": artifact,
+        },
+    )
+    _write_json_file(
+        evidence_dir / "environment_capability_decision.json",
+        environment
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "environment_composition_stage_not_reached",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "safety_authority_decision.json",
+        {
+            "status": safety.get("safety_status") or safety.get("status") or "NOT_EVALUATED",
+            "safety_decision": safety.get("safety_decision") or "",
+            "safety_policy_version": safety.get("safety_policy_version") or "",
+            "safety_source": safety.get("safety_source") or safety.get("source_safety_decision") or "",
+            "safety_reason": safety.get("safety_reason") or "",
+            "safety_action_permissions": safety.get("safety_action_permissions") or {},
+            "ignored_latest_safety_decision": safety.get("ignored_latest_safety_decision") or "",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "market_evidence_authority.json",
+        {
+            "status": "PASS" if artifact.get("market_evidence_path") and artifact.get("market_date") else "NOT_EVALUATED" if not producer_reached else "REVIEW_REQUIRED",
+            "execution_reached": producer_reached,
+            "blocked_before_producer": not producer_reached,
+            "blocking_stage": blocking_stage,
+            "blocking_reason": blocking_reason,
+            "market_evidence_path": artifact.get("market_evidence_path") or "",
+            "market_date": artifact.get("market_date") or "",
+            "valuation_source": artifact.get("valuation_source") or "",
+            "missing_symbols": artifact.get("missing_symbols") or [],
+        },
+    )
+    _write_json_file(
+        evidence_dir / "valuation_input.json",
+        {
+            "source_current_path": artifact.get("source_current_path") or "",
+            "execution_reached": producer_reached,
+            "blocked_before_producer": not producer_reached,
+            "blocking_stage": blocking_stage,
+            "blocking_reason": blocking_reason,
+            "position_count": artifact.get("position_count", 0),
+            "market_evidence_path": artifact.get("market_evidence_path") or "",
+            "market_date": artifact.get("market_date") or "",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "valuation_projection.json",
+        {
+            "status": artifact.get("status") or valuation.get("status") or "NOT_EXECUTED",
+            "execution_reached": producer_reached,
+            "blocked_before_producer": not producer_reached,
+            "blocking_stage": blocking_stage,
+            "blocking_reason": blocking_reason,
+            "reason": artifact.get("reason") or valuation.get("reason") or "",
+            "position_count": artifact.get("position_count", 0),
+            "valued_position_count": artifact.get("valued_position_count", 0),
+            "previous_total_market_value": artifact.get("previous_total_market_value", 0),
+            "new_total_market_value": artifact.get("new_total_market_value", 0),
+            "cash": candidate.get("cash"),
+            "buying_power": candidate.get("buying_power"),
+            "realized_pnl": candidate.get("realized_pnl"),
+        },
+    )
+    _write_json_file(
+        evidence_dir / "valuation_apply_evidence.json",
+        {
+            "status": "NOT_EXECUTED" if not producer_reached else "PASS" if artifact.get("apply_executed") else ("DRY_RUN" if not artifact.get("apply_requested") else "NOT_APPLIED"),
+            "execution_reached": producer_reached,
+            "blocked_before_producer": not producer_reached,
+            "blocking_stage": blocking_stage,
+            "blocking_reason": blocking_reason,
+            "apply_requested": bool(artifact.get("apply_requested")),
+            "apply_executed": bool(artifact.get("apply_executed")),
+            "backup_path": artifact.get("backup_path") or "",
+            "history_path": artifact.get("history_path") or "",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "external_effect_audit.json",
+        {
+            "status": "PASS"
+            if not any(
+                bool(prohibited.get(key))
+                for key in (
+                    "demo_submit_executed",
+                    "production_order_executed",
+                    "notification_sent",
+                    "phase9_runtime_called",
+                    "phase9_writer_called",
+                    "mode_rooted_current_used",
+                )
+            )
+            else "REVIEW_REQUIRED",
+            "broker_order_api_calls": 0,
+            "notification_delivery_calls": 0,
+            "jquants_fetch_calls": 0,
+            "production_access": bool(manifest.get("mode") == "production"),
+            "broker_write": bool(environment.get("broker_write")),
+            "external_delivery": bool(environment.get("external_delivery")),
+            "historical_replay": bool(environment.get("historical_replay")),
+            "simulation": bool(environment.get("simulation")),
+            "prohibited_actions": prohibited,
+        },
+    )
+
+
+def _current_valuation_blocking_stage(manifest: dict[str, Any]) -> str:
+    if manifest.get("data_readiness_status") == "REVIEW_REQUIRED":
+        return "runtime_data_readiness_gate"
+    if manifest.get("safety_status") not in {"", None, "PASS"}:
+        return "safety_operation_guard"
+    return "pre_producer_gate"
+
+
+def _stage_details(stages: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    for stage in stages:
+        if stage.get("name") == name:
+            details = stage.get("details")
+            if isinstance(details, dict):
+                return {
+                    "status": stage.get("status") or "",
+                    "message": stage.get("message") or "",
+                    **details,
+                }
+            return {
+                "status": stage.get("status") or "",
+                "message": stage.get("message") or "",
+            }
+    return {}
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _submit_environment_context(
+    *,
+    args: argparse.Namespace,
+    composition: Any,
+    business_date: str,
+    evaluation_time: str,
+) -> SubmitEnvironmentGuardContext:
+    adapter = composition.submit_adapter
+    adapter_type = "DemoSubmitAdapter"
+    if args.mode == "historical" and adapter is not None:
+        adapter_type = type(adapter).__name__
+    elif args.mode == "production":
+        adapter_type = "ProductionSubmitAdapter"
+    return SubmitEnvironmentGuardContext(
+        runtime_environment=composition.runtime_mode,
+        pending_environment=args.mode,
+        run_type=composition.run_type,
+        broker_environment=composition.broker_environment,
+        adapter_type=adapter_type,
+        broker_write=composition.broker_write,
+        external_delivery=composition.external_delivery,
+        business_date=business_date,
+        evaluation_time=evaluation_time,
+        production_acceptance=False,
+    )
+
+
 def _base_dir_for_runtime_root(runtime_root: Path) -> Path | None:
     if runtime_root.name == ".runtime":
         return runtime_root.parent
@@ -1393,6 +2311,26 @@ def _append_log(path: Path, line: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"{_utc_now()} {line}\n")
+
+
+def _runtime_test_context(*, args: argparse.Namespace, business_date: str) -> dict[str, Any] | None:
+    if not args.runtime_test_run_id:
+        return None
+    return {
+        "run_id": args.runtime_test_run_id,
+        "profile_id": args.runtime_test_profile_id or "",
+        "evidence_root": args.runtime_test_evidence_root or "",
+        "source_commit": args.runtime_test_source_commit or "",
+        "business_date": business_date,
+        "job": args.job,
+        "environment_id": f"{args.mode}:{args.broker_environment or args.mode}",
+    }
+
+
+def _historical_asof_view_path(*, args: argparse.Namespace, business_date: str) -> str:
+    if args.mode != "historical" or not args.runtime_test_evidence_root:
+        return ""
+    return str(Path(args.runtime_test_evidence_root) / "daily" / business_date / "market_refresh" / "historical_asof_view.json")
 
 
 def _trim_generated(generated: dict[str, Any]) -> dict[str, Any]:

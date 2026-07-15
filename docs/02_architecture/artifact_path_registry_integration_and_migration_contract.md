@@ -172,6 +172,8 @@ Phase16-L does not move files. Stage 1 registers current paths. Later stages cop
 
 PM code and adapter artifacts may point to source tree file hashes rather than copied source files in the first implementation. If source snapshots are later needed, they must be immutable snapshots with hashes.
 
+For PM Runtime Adapter authority, `ACCEPTED_CURRENT_PATH` may be used when the source tree file is the permanent execution source. The accepted member must record `physical_path`, git commit, content hash, schema/source classification, regression evidence, consumer compatibility, and release approval. Runtime must verify that the accepted path is the actual executing source and that the source hash matches before PM inference. Any mismatch halts Runtime artifact lookup. Any source change requires a new acceptance; the old PM set becomes `LEGACY` through append-only Registry events. Historical, Demo, and Production PM consumers must resolve the same accepted authority.
+
 ### Decision
 
 ```text

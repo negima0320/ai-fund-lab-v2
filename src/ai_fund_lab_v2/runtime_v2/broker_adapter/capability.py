@@ -55,6 +55,20 @@ def get_broker_capability(mode: str) -> BrokerCapability:
             broker_cash_is_evidence_only=False,
             broker_positions_are_evidence_only_after_reset=False,
         )
+    if mode == "historical":
+        return BrokerCapability(
+            mode="historical",
+            supports_daily_reset=False,
+            cash_as_truth=False,
+            buying_power_as_truth=False,
+            positions_as_truth=False,
+            executions_as_truth=True,
+            order_status_as_truth=True,
+            supports_9000_series_orders=False,
+            default_evaluation_capital=1_000_000.0,
+            broker_cash_is_evidence_only=True,
+            broker_positions_are_evidence_only_after_reset=True,
+        )
     raise ValueError(f"unsupported broker capability mode: {mode}")
 
 

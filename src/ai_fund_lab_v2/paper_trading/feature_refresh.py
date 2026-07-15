@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from ai_fund_lab_v2.opportunity_ai.market_sector_completion import build_market_sector_features
 from ai_fund_lab_v2.paper_trading.canonical_data_source import DEFAULT_CONFIG_PATH, resolve_data_source
 
 
@@ -32,6 +33,38 @@ ARTIFACT_FILENAMES = {
     "position": "position_feature_input.parquet",
     "capital": "capital_policy_input.parquet",
 }
+
+OPPORTUNITY_MODEL_INPUT_COLUMNS = (
+    "liquidity_avg_volume_20d",
+    "market_breadth_20d",
+    "market_breadth_5d",
+    "market_downtrend_context",
+    "market_downtrend_flag",
+    "market_ma_5_20_ratio",
+    "market_return_20d",
+    "market_return_5d",
+    "market_risk_flag",
+    "market_volatility_20d",
+    "missing_flags_insufficient_history",
+    "missing_flags_price",
+    "missing_flags_volume",
+    "price_momentum_return_20d",
+    "price_momentum_return_5d",
+    "price_momentum_return_60d",
+    "sector_breadth_20d",
+    "sector_momentum_flag",
+    "sector_rank_20d",
+    "sector_return_20d",
+    "sector_return_5d",
+    "sector_weak_flag",
+    "stock_vs_sector_return_20d",
+    "trend_close_over_ma_20d",
+    "trend_ma_20_60_ratio",
+    "trend_ma_5_20_ratio",
+    "volatility_return_std_20d",
+    "volume_momentum_ratio_1d_20d",
+    "volume_momentum_ratio_5d",
+)
 
 REQUIRED_COLUMNS = {
     "candidate": (
@@ -67,19 +100,7 @@ REQUIRED_COLUMNS = {
         "as_of_date",
         "code",
         "feature_version",
-        "liquidity_avg_volume_20d",
-        "missing_flags_insufficient_history",
-        "missing_flags_price",
-        "missing_flags_volume",
-        "price_momentum_return_5d",
-        "price_momentum_return_20d",
-        "price_momentum_return_60d",
-        "trend_close_over_ma_20d",
-        "trend_ma_5_20_ratio",
-        "trend_ma_20_60_ratio",
-        "volatility_return_std_20d",
-        "volume_momentum_ratio_5d",
-        "volume_momentum_ratio_1d_20d",
+        *OPPORTUNITY_MODEL_INPUT_COLUMNS,
     ),
     "position": (
         "target_date",
@@ -127,6 +148,7 @@ class FeatureArtifactStatus:
     output_artifact_refs: dict[str, str] | None = None
     warnings: tuple[str, ...] = ()
     blocked_reasons: tuple[str, ...] = ()
+    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -311,7 +333,12 @@ def _execute_refresh(
         target_data_until=target_data_until,
         created_at=created_at,
     )
-    opportunity = _build_opportunity_feature_input(candidate)
+    opportunity = _build_opportunity_feature_input(
+        candidate=candidate,
+        listed=listed,
+        target_data_until=target_data_until,
+        created_at=created_at,
+    )
     position = _build_position_feature_input(
         target_data_until=target_data_until,
         created_at=created_at,
@@ -345,6 +372,7 @@ def _execute_refresh(
                 **source_refs,
                 "listed_info_row_count": str(len(listed)),
             },
+            runtime_root=runtime_root,
         )
         statuses.append(status)
     return statuses
@@ -357,6 +385,7 @@ def _audit_existing(*, target_data_until: str, feature_root: Path, source_refs: 
             path=feature_root / ARTIFACT_FILENAMES[ai_name],
             target_data_until=target_data_until,
             source_refs=source_refs,
+            runtime_root=None,
         )
         for ai_name in AI_NAMES
     ]
@@ -483,29 +512,39 @@ def _normalize_code(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _build_opportunity_feature_input(candidate: pd.DataFrame) -> pd.DataFrame:
+def _build_opportunity_feature_input(
+    *,
+    candidate: pd.DataFrame,
+    listed: pd.DataFrame,
+    target_data_until: str,
+    created_at: str,
+) -> pd.DataFrame:
     if candidate.empty:
         return pd.DataFrame(columns=list(REQUIRED_COLUMNS["opportunity"]) + ["data_until", "created_at"])
-    feature_columns = [
-        "liquidity_avg_volume_20d",
-        "missing_flags_insufficient_history",
-        "missing_flags_price",
-        "missing_flags_volume",
-        "price_momentum_return_5d",
-        "price_momentum_return_20d",
-        "price_momentum_return_60d",
-        "trend_close_over_ma_20d",
-        "trend_ma_5_20_ratio",
-        "trend_ma_20_60_ratio",
-        "volume_momentum_ratio_5d",
-        "volume_momentum_ratio_1d_20d",
-        "volatility_return_std_20d",
+    market_sector = build_market_sector_features(
+        candidate,
+        listed,
+        target_dates=[target_data_until],
+        created_at=created_at,
+    )
+    market_sector_columns = [
+        column
+        for column in OPPORTUNITY_MODEL_INPUT_COLUMNS
+        if column.startswith("market_") or column.startswith("sector_") or column == "stock_vs_sector_return_20d"
     ]
-    output = candidate[
-        ["target_date", "as_of_date", "code", "created_at", "data_until", "feature_version", *feature_columns]
-    ].copy()
-    output["feature_version"] = "runtime_v2_opportunity_feature_input_v1"
-    return output
+    output = candidate[["target_date", "as_of_date", "code", "created_at", "data_until", "feature_version"]].copy()
+    output = output.merge(
+        market_sector[["target_date", "code", *market_sector_columns]],
+        on=["target_date", "code"],
+        how="left",
+        validate="one_to_one",
+    )
+    for column in OPPORTUNITY_MODEL_INPUT_COLUMNS:
+        if column not in output.columns and column in candidate.columns:
+            output[column] = candidate[column]
+    output["feature_version"] = "runtime_v2_opportunity_feature_input_v2_market_sector"
+    ordered = ["target_date", "as_of_date", "code", "created_at", "data_until", "feature_version", *OPPORTUNITY_MODEL_INPUT_COLUMNS]
+    return output[ordered].copy()
 
 
 def _build_position_feature_input(
@@ -516,12 +555,14 @@ def _build_position_feature_input(
     quotes: pd.DataFrame,
 ) -> pd.DataFrame:
     columns = list(REQUIRED_COLUMNS["position"]) + ["no_position_reason"]
-    current = _load_current_state(runtime_root)
+    authority = _resolve_current_authority(runtime_root=runtime_root, target_data_until=target_data_until)
+    current = authority["payload"]
     positions = current.get("positions") if isinstance(current.get("positions"), list) else []
     if not positions:
         frame = pd.DataFrame(columns=columns)
         frame.attrs["target_data_until"] = target_data_until
         frame.attrs["created_at"] = created_at
+        frame.attrs["current_authority"] = authority
         return frame
     quote_by_code = _latest_quote_by_code(quotes=quotes, target_data_until=target_data_until)
     position_state_as_of = str(current.get("position_state_as_of") or current.get("business_date") or current.get("as_of") or "")
@@ -554,7 +595,9 @@ def _build_position_feature_input(
                 "no_position_reason": "",
             }
         )
-    return pd.DataFrame(rows, columns=columns)
+    frame = pd.DataFrame(rows, columns=columns)
+    frame.attrs["current_authority"] = authority
+    return frame
 
 
 def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str, created_at: str) -> pd.DataFrame:
@@ -650,17 +693,119 @@ def _candidate_exclusion_reason(insufficient_history: bool, price_missing: bool,
     return ",".join(reasons)
 
 
-def _load_current_state(runtime_root: Path | None) -> dict[str, Any]:
-    if runtime_root is None:
-        return {}
-    path = runtime_root / "persistent_ledger" / "state.json"
-    if not path.is_file():
-        return {}
+def _load_json_object(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_current_authority(*, runtime_root: Path | None, target_data_until: str) -> dict[str, Any]:
+    if runtime_root is None:
+        return _current_authority_payload(
+            status="MISSING",
+            path="",
+            payload={},
+            target_data_until=target_data_until,
+            reason="current_authority_runtime_root_missing",
+        )
+    runtime_root = Path(runtime_root)
+    runtime_state_path = runtime_root / "runtime_state" / "current_state.json"
+    runtime_state = _load_json_object(runtime_state_path) if runtime_state_path.is_file() else {}
+    source = str(runtime_state.get("asset_state_source") or "persistent_ledger/state.json").strip()
+    if not source:
+        source = "persistent_ledger/state.json"
+    source_path = Path(source)
+    path = source_path if source_path.is_absolute() else runtime_root / source_path
+    if not path.is_file():
+        return _current_authority_payload(
+            status="MISSING",
+            path=str(path),
+            payload={},
+            target_data_until=target_data_until,
+            reason="current_authority_missing_asset_sot",
+        )
+    payload = _load_json_object(path)
+    if not payload:
+        return _current_authority_payload(
+            status="UNKNOWN",
+            path=str(path),
+            payload={},
+            target_data_until=target_data_until,
+            reason="current_authority_unreadable_asset_sot",
+        )
+    positions = payload.get("positions")
+    if payload.get("current_positions_unknown") is True or not isinstance(positions, list):
+        return _current_authority_payload(
+            status="UNKNOWN",
+            path=str(path),
+            payload=payload,
+            target_data_until=target_data_until,
+            reason="current_positions_unknown",
+        )
+    position_state_as_of = str(payload.get("position_state_as_of") or payload.get("business_date") or payload.get("as_of") or "")
+    if positions and not position_state_as_of:
+        return _current_authority_payload(
+            status="REVIEW_REQUIRED",
+            path=str(path),
+            payload=payload,
+            target_data_until=target_data_until,
+            reason="current_position_state_as_of_missing",
+        )
+    if position_state_as_of and position_state_as_of[:10] > target_data_until:
+        return _current_authority_payload(
+            status="REVIEW_REQUIRED",
+            path=str(path),
+            payload=payload,
+            target_data_until=target_data_until,
+            reason="current_position_state_as_of_after_feature_target_date",
+        )
+    if not positions and payload.get("current_state_confirmed_empty") is True:
+        return _current_authority_payload(
+            status="READY",
+            path=str(path),
+            payload=payload,
+            target_data_until=target_data_until,
+            reason="position_feature_ready_confirmed_empty_current",
+        )
+    if not positions:
+        return _current_authority_payload(
+            status="UNKNOWN",
+            path=str(path),
+            payload=payload,
+            target_data_until=target_data_until,
+            reason="current_positions_unknown",
+        )
+    return _current_authority_payload(
+        status="READY",
+        path=str(path),
+        payload=payload,
+        target_data_until=target_data_until,
+        reason="position_feature_ready",
+    )
+
+
+def _current_authority_payload(
+    *,
+    status: str,
+    path: str,
+    payload: dict[str, Any],
+    target_data_until: str,
+    reason: str,
+) -> dict[str, Any]:
+    positions = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+    position_state_as_of = str(payload.get("position_state_as_of") or payload.get("business_date") or payload.get("as_of") or "")
+    return {
+        "status": status,
+        "path": path,
+        "payload": payload,
+        "position_count": len(positions),
+        "position_state_as_of": position_state_as_of[:10],
+        "feature_target_date": target_data_until,
+        "no_fill_carry_used": bool(position_state_as_of and position_state_as_of[:10] < target_data_until),
+        "reason": reason,
+    }
 
 
 def _latest_quote_by_code(*, quotes: pd.DataFrame, target_data_until: str) -> dict[str, dict[str, Any]]:
@@ -744,7 +889,14 @@ def _build_capital_policy_input(
     )
 
 
-def _inspect_artifact(*, ai_name: str, path: Path, target_data_until: str, source_refs: dict[str, str]) -> FeatureArtifactStatus:
+def _inspect_artifact(
+    *,
+    ai_name: str,
+    path: Path,
+    target_data_until: str,
+    source_refs: dict[str, str],
+    runtime_root: Path | None,
+) -> FeatureArtifactStatus:
     if not path.is_file():
         return FeatureArtifactStatus(
             ai_name=ai_name,
@@ -770,6 +922,8 @@ def _inspect_artifact(*, ai_name: str, path: Path, target_data_until: str, sourc
     future_dates = [value for value in date_values if value > target_data_until]
     blocked: list[str] = []
     warnings: list[str] = []
+    reason = "consumer_schema_ready"
+    current_authority = _resolve_current_authority(runtime_root=runtime_root, target_data_until=target_data_until) if ai_name == "position" else {}
     if missing:
         blocked.append(f"{ai_name}_required_columns_missing:{','.join(missing)}")
     if future_dates:
@@ -780,7 +934,34 @@ def _inspect_artifact(*, ai_name: str, path: Path, target_data_until: str, sourc
         blocked.append(f"{ai_name}_feature_date_missing")
     if frame.empty and ai_name != "position":
         blocked.append(f"{ai_name}_feature_empty")
-    if frame.empty and ai_name == "position":
+    if ai_name == "position":
+        current_position_count = int(current_authority.get("position_count") or 0)
+        if current_authority:
+            source_refs = {
+                **source_refs,
+                "current_authority_status": str(current_authority.get("status") or ""),
+                "current_authority_path": str(current_authority.get("path") or ""),
+                "current_position_count": str(current_position_count),
+                "current_position_state_as_of": str(current_authority.get("position_state_as_of") or ""),
+                "feature_target_date": target_data_until,
+                "no_fill_carry_used": str(bool(current_authority.get("no_fill_carry_used"))),
+                "input_symbol_count": str(current_position_count),
+                "matched_symbol_count": str(len(frame)),
+                "unmatched_symbols": "",
+                "output_row_count": str(len(frame)),
+                "position_feature_reason": str(current_authority.get("reason") or ""),
+            }
+        if str(current_authority.get("status") or "") != "READY":
+            blocked.append(str(current_authority.get("reason") or "current_authority_not_ready"))
+            reason = str(current_authority.get("reason") or "current_authority_not_ready")
+        elif current_position_count > 0 and len(frame) == 0:
+            blocked.append("position_feature_current_output_mismatch")
+            reason = "position_feature_current_output_mismatch"
+        elif current_position_count == 0 and len(frame) == 0:
+            reason = "position_feature_ready_confirmed_empty_current"
+        else:
+            reason = "position_feature_ready"
+    if frame.empty and ai_name == "position" and not blocked:
         warnings.append("position_feature_empty_no_current_positions")
     if ai_name == "candidate" and "universe_eligible" in frame.columns:
         eligible_count = int(frame["universe_eligible"].fillna(False).astype(bool).sum())
@@ -810,6 +991,7 @@ def _inspect_artifact(*, ai_name: str, path: Path, target_data_until: str, sourc
         output_artifact_refs={"artifact": str(path)},
         warnings=tuple(warnings),
         blocked_reasons=tuple(blocked),
+        reason=reason,
     )
 
 

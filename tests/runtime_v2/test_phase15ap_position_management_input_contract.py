@@ -1,16 +1,64 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from ai_fund_lab_v2.runtime_v2.artifact_lookup import RuntimeArtifactLookupHalt, RuntimeArtifactMember
+from ai_fund_lab_v2.runtime_v2.position_management import producer as pm_producer
 from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
 
 
 BUSINESS_DATE = "2026-07-09"
+PM_ADAPTER_RELATIVE_PATH = Path("src/ai_fund_lab_v2/runtime_v2/position_management/producer.py")
+
+
+class _Phase15APArtifactSet:
+    artifact_instance_id = "phase15ap.fixture.pm.runtime_adapter@sha256-current"
+    accepted_event_id = "phase15ap-fixture-accepted-current"
+
+    def __init__(self, member: RuntimeArtifactMember) -> None:
+        self.raw_resolver_result = {
+            "schema_version": "artifact_registry_resolver_result.v1",
+            "members": [
+                {
+                    "member_role": "RUNTIME_ADAPTER",
+                    "physical_path": member.physical_path.as_posix(),
+                    "content_hash": member.content_hash,
+                    "authority_mode": "ACCEPTED_CURRENT_PATH",
+                    "accepted_current_path": True,
+                }
+            ],
+        }
+        self._member = member
+
+    def require_member(self, role: str) -> RuntimeArtifactMember:
+        if role != "RUNTIME_ADAPTER":
+            raise RuntimeArtifactLookupHalt(f"required artifact member missing: POSITION_MANAGEMENT_POLICY_SET:{role}")
+        return self._member
+
+
+@pytest.fixture(autouse=True)
+def _phase15ap_current_pm_adapter_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = Path(pm_producer.__file__).resolve()
+    digest = _sha(source)
+    artifact_set = _Phase15APArtifactSet(
+        RuntimeArtifactMember(
+            member_role="RUNTIME_ADAPTER",
+            physical_path=PM_ADAPTER_RELATIVE_PATH,
+            content_hash=digest,
+            schema_hash=None,
+            artifact_type="RUNTIME_ADAPTER",
+            artifact_set_id="control.position_management.accepted_set",
+            logical_artifact_id="control.position_management.accepted_set.runtime_adapter",
+        )
+    )
+    monkeypatch.setattr(pm_producer, "resolve_position_management_policy_artifacts", lambda: artifact_set)
 
 
 def test_phase15ap_valid_pm_input_contract_allows_pm_and_sell_planning(tmp_path):
@@ -105,7 +153,7 @@ def test_phase15ap_current_empty_with_no_position_reason_is_no_position_ready(tm
     assert artifact["decision_count"] == 0
 
 
-def test_phase15ap_current_empty_without_no_position_reason_review_required(tmp_path):
+def test_phase15ap_current_empty_without_no_position_reason_is_no_position_ready(tmp_path):
     runtime_root = _runtime_root(tmp_path, positions=[])
     opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=(), include_no_position_reason=False)
 
@@ -118,9 +166,9 @@ def test_phase15ap_current_empty_without_no_position_reason_review_required(tmp_
     )
     artifact = _read_json(result.artifact_path)
 
-    assert result.status == "REVIEW_REQUIRED"
-    assert artifact["review_reason"] == "pm_no_position_reason_missing"
-    assert "pm_feature.no_position_reason" in artifact["missing_fields"]
+    assert result.status == "NO_POSITION"
+    assert artifact["input_contract"]["pm_input_schema_status"] == "READY"
+    assert artifact["missing_fields"] == []
 
 
 def test_phase15ap_opportunity_missing_review_required(tmp_path):
@@ -403,3 +451,11 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8")
+
+
+def _sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()

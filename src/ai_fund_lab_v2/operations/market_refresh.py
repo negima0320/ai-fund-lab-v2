@@ -20,13 +20,24 @@ def run_operations_market_refresh(
     from_date: str | None = None,
     fetch_mode: str = "per-date",
     fetcher: Any | None = None,
+    evidence_output_root: Path | str | None = None,
+    raw_input_root: Path | str | None = None,
+    normalized_input_root: Path | str | None = None,
+    historical_logical_input_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     paths = OperationPaths(root)
     start = from_date or _default_from_date(trade_date)
-    raw_root = paths.root / "jquants" / "raw"
-    normalized_root = paths.root / "jquants" / "raw_normalized"
-    detail_root = paths.root / "jquants" / "market_data_refresh_detail"
+    raw_root = Path(raw_input_root) if raw_input_root is not None else paths.root / "jquants" / "raw"
+    normalized_root = Path(normalized_input_root) if normalized_input_root is not None else paths.root / "jquants" / "raw_normalized"
+    evidence_root = Path(evidence_output_root) if evidence_output_root is not None else None
+    detail_root = (
+        evidence_root / "jquants" / "market_data_refresh_detail"
+        if evidence_root is not None
+        else paths.root / "jquants" / "market_data_refresh_detail"
+    )
     feature_artifact_root = paths.root / "feature_artifacts"
+    market_report_root = evidence_root / "market_refresh" if evidence_root is not None else paths.root / "market_refresh" / trade_date
+    feature_report_root = evidence_root / "feature_refresh" if evidence_root is not None else paths.root / "feature_refresh" / trade_date
     market_detail = run_market_data_refresh(
         from_date=start,
         to_date=trade_date,
@@ -38,8 +49,8 @@ def run_operations_market_refresh(
         backup_existing=False,
         fetch_mode=fetch_mode,
         fetcher=fetcher,
-        markdown_report_path=paths.dated("market_refresh", trade_date, "market_data_refresh_detail.md"),
-        json_report_path=paths.dated("market_refresh", trade_date, "market_data_refresh_detail.json"),
+        markdown_report_path=market_report_root / "market_data_refresh_detail.md",
+        json_report_path=market_report_root / "market_data_refresh_detail.json",
     )
     latest_available_market_date = _latest_available_market_date(market_detail.to_dict(), fallback=trade_date)
     feature_freshness_status = _feature_freshness_status(
@@ -50,22 +61,22 @@ def run_operations_market_refresh(
     listed_info_for_feature = _listed_info_for_feature(
         raw_root / "jquants" / "listed_issues" / "data.parquet",
         feature_date=latest_available_market_date,
-        output_path=paths.root / "feature_refresh" / trade_date / "jquants" / "listed_issues" / "listed_info_for_feature.parquet",
+        output_path=feature_report_root / "jquants" / "listed_issues" / "listed_info_for_feature.parquet",
     )
     feature_detail = run_feature_refresh(
         target_data_until=latest_available_market_date,
-        dry_run=not allow_api_fetch,
-        execute=allow_api_fetch,
+        dry_run=False,
+        execute=True,
         daily_quotes_path=normalized_root / "jquants" / "equities_bars_daily" / "data.parquet",
         listed_info_path=listed_info_for_feature,
         feature_output_root=feature_artifact_root,
-        manifest_root=paths.root / "feature_refresh_detail",
-        markdown_report_path=paths.dated("feature_refresh", trade_date, "feature_refresh_detail.md"),
-        json_report_path=paths.dated("feature_refresh", trade_date, "feature_refresh_detail.json"),
-        runtime_root=root.parent if root.name == "operations" else None,
+        manifest_root=feature_report_root / "detail",
+        markdown_report_path=feature_report_root / "feature_refresh_detail.md",
+        json_report_path=feature_report_root / "feature_refresh_detail.json",
+        runtime_root=_runtime_root_for_operations(root),
     )
     candidate = next((item for item in feature_detail.to_dict().get("artifacts", []) if item.get("ai_name") == "candidate"), {})
-    feature_marker_path = paths.dated("feature_refresh", trade_date, "latest_features.json")
+    feature_marker_path = feature_report_root / "latest_features.json"
     feature_marker = {
         "artifact_type": "latest_feature_marker",
         "business_date": trade_date,
@@ -130,6 +141,7 @@ def run_operations_market_refresh(
         "listed_info_for_feature_path": str(listed_info_for_feature),
         "market_data_refresh_detail": market_detail.to_dict(),
         "feature_refresh_detail": feature_detail.to_dict(),
+        "historical_logical_input": dict(historical_logical_input_manifest or {}),
         "created_at": utc_now_iso(),
     }
 
@@ -351,3 +363,13 @@ def _read_parquet_or_empty(path: Path):
         return pd.read_parquet(path)
     except Exception:
         return pd.DataFrame()
+
+
+def _runtime_root_for_operations(root: Path) -> Path:
+    if root.name == ".runtime":
+        return root
+    if root.name == "operations":
+        return root.parent
+    if (root / "operations").is_dir():
+        return root
+    return root.parent
