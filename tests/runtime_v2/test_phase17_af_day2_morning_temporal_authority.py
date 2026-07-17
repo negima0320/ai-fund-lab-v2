@@ -60,7 +60,7 @@ def test_phase17_af_day2_morning_accepts_previous_close_current_valuation_and_co
     assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
 
 
-def test_phase17_af_current_valuation_scope_still_requires_business_date_close(tmp_path: Path) -> None:
+def test_phase17_af_current_valuation_scope_accepts_previous_close_as_refresh_precondition(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path, valuation_as_of=PREVIOUS_TRADING_DATE)
     feature_root = _write_feature_inputs(root / "operations" / "feature_artifacts")
 
@@ -75,11 +75,14 @@ def test_phase17_af_current_valuation_scope_still_requires_business_date_close(t
         opportunity_model_path=_write_model(tmp_path / "opportunity.pkl"),
     )
 
-    assert result.status == "REVIEW_REQUIRED"
-    assert result.payload["current_valuation_status"] == "REVIEW_REQUIRED"
+    assert result.status == "READY"
+    assert result.payload["current_valuation_status"] == "READY"
     assert result.payload["current_valuation_expected_date"] == BUSINESS_DATE
+    assert result.payload["current_valuation_expected_date_policy"] == "current_valuation_refresh_precondition"
     assert result.payload["current_valuation_previous_close_carry_allowed"] is False
-    assert "current_valuation_not_ready" in result.payload["review_reasons"]
+    assert result.payload["valuation_refresh_precondition_status"] == "PASS"
+    assert result.payload["current_valuation_temporal_authority"] == "current_valuation_previous_close_ready_for_refresh"
+    assert "current_valuation_not_ready" not in result.payload["review_reasons"]
 
 
 def test_phase17_af_future_current_valuation_date_fails_closed(tmp_path: Path) -> None:

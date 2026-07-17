@@ -11,6 +11,7 @@ from tests.runtime_v2.test_phase15k_morning_policy_propagation_hidden_policy_rem
     _write_features,
     _write_policy,
 )
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 def test_phase15p_planning_source_has_no_safety_signal_placeholder_allow():
@@ -50,6 +51,7 @@ def test_phase15p_orderplan_pending_approval_preserve_runtime_safety_context(tmp
         candidate_codes=("7203", "6501"),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json", max_positions=2)
 
     assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0

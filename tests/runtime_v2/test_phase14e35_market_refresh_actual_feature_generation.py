@@ -34,6 +34,7 @@ def test_phase14e35_market_refresh_pipeline_requires_actual_feature_artifacts(tm
         }
 
     monkeypatch.setattr(market_refresh_pipeline, "_run_operations_market_refresh", fake_operations_market_refresh)
+    _write_current_authority(tmp_path / ".runtime", business_date="2026-07-08")
 
     result = run_runtime_v2_market_refresh_pipeline(
         business_date="2026-07-08",
@@ -262,6 +263,15 @@ def _write_consumer_ready_feature_artifacts(feature_dir: Path, feature_date: str
         "target_date": feature_date,
         "code": "72030",
         "liquidity_avg_volume_20d": 1_000_000.0,
+        "market_breadth_20d": 0.5,
+        "market_breadth_5d": 0.5,
+        "market_downtrend_context": 0.0,
+        "market_downtrend_flag": False,
+        "market_ma_5_20_ratio": 1.0,
+        "market_return_20d": 0.02,
+        "market_return_5d": 0.01,
+        "market_risk_flag": False,
+        "market_volatility_20d": 0.02,
         "missing_flags_insufficient_history": False,
         "missing_flags_price": False,
         "missing_flags_volume": False,
@@ -274,6 +284,13 @@ def _write_consumer_ready_feature_artifacts(feature_dir: Path, feature_date: str
         "volatility_return_std_20d": 0.02,
         "volume_momentum_ratio_1d_20d": 1.1,
         "volume_momentum_ratio_5d": 1.2,
+        "sector_breadth_20d": 0.5,
+        "sector_momentum_flag": True,
+        "sector_rank_20d": 1,
+        "sector_return_20d": 0.03,
+        "sector_return_5d": 0.01,
+        "sector_weak_flag": False,
+        "stock_vs_sector_return_20d": 0.01,
     }
     pd.DataFrame([row]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
     pd.DataFrame([row]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
@@ -307,6 +324,28 @@ def _write_consumer_ready_feature_artifacts(feature_dir: Path, feature_date: str
 def _write_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_current_authority(runtime_root: Path, *, business_date: str) -> None:
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-e35-feature",
+            "environment": "demo",
+            "business_date": business_date,
+            "as_of": business_date,
+            "positions": [],
+            "cash": 1_000_000,
+            "buying_power": 1_000_000,
+            "market_value": 0,
+            "total_equity": 1_000_000,
+            "current_state_confirmed_empty": True,
+            "current_positions_unknown": False,
+            "cash_unknown": False,
+            "buying_power_unknown": False,
+        },
+    )
 
 
 def _write_jsonl(path: Path, rows):

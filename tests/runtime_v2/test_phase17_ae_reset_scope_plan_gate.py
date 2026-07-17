@@ -66,8 +66,13 @@ def test_phase17_ae_reset_removes_stale_feature_contract_and_plan_ignores_preexi
     assert (runtime_root / "operations" / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet").exists()
     assert plan["status"] == "PASS"
     assert len(plan["business_dates"]) == 5
-    assert plan["business_dates"][1]["feature_date_evidence"]["source"] == "runtime_test_plan_preflight"
-    assert plan["business_dates"][1]["feature_date_evidence"]["contract_materialized"] is False
+    day2 = plan["business_dates"][1]["feature_date_evidence"]
+    assert day2["source"] == "runtime_test_plan_schedule_expectation"
+    assert day2["feature_date_authority_source"] == "not_yet_materialized_plan_expectation"
+    assert day2["contract_materialized"] is False
+    assert day2["materialized_contract_exists"] is False
+    assert day2["selected_feature_date"] == "2026-07-07"
+    assert day2["reason"] == "feature_date_contract_not_yet_materialized_plan_expectation_only"
 
     rollback = _call_main(
         runner,
@@ -93,11 +98,9 @@ def test_phase17_ae_plan_does_not_accept_stale_contract_as_authority_without_res
         capsys,
     )
 
-    assert plan["status"] == "PASS"
-    day2 = plan["business_dates"][1]["feature_date_evidence"]
-    assert day2["stale_existing_contract_ignored"] is True
-    assert day2["status"] == "PASS"
-    assert day2["reason"] == "runtime_test_plan_preflight_uses_profile_window_not_stale_feature_contract"
+    assert plan["status"] == "PRECONDITION_FAILURE"
+    assert "plan entry gate failed" in plan["error"]
+    assert "status_pass" in plan["error"]
 
 
 def test_phase17_ae_reset_rejects_non_historical_profile_without_deleting_demo_state(

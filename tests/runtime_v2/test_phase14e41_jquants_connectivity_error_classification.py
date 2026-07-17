@@ -111,7 +111,12 @@ def test_phase14e41_network_error_fresh_carryover_is_allowed(tmp_path, monkeypat
     def fake_operations_market_refresh(**kwargs):
         return {
             "status": "BLOCK",
-            "blocked_reasons": ["API_NETWORK_ERROR", "api_fetch_failed:JQuantsClientError", "DATA_FRESHNESS_BLOCKED"],
+            "blocked_reasons": [
+                "API_NETWORK_ERROR",
+                "api_fetch_failed:JQuantsClientError",
+                "DATA_FRESHNESS_BLOCKED",
+                "data_until_before_decision_for",
+            ],
             "jquants_api_fetch_executed": True,
             "canonical_normalized_updated": True,
             "feature_refresh_executed": True,
@@ -171,6 +176,7 @@ def test_phase14e41_network_error_stale_carryover_blocks(tmp_path, monkeypatch):
 
 
 def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
+    _write_current_authority(root.parent.parent, business_date=feature_date)
     feature_dir = root / feature_date
     feature_dir.mkdir(parents=True, exist_ok=True)
     row = {
@@ -178,6 +184,15 @@ def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
         "as_of_date": feature_date,
         "code": "72030",
         "liquidity_avg_volume_20d": 1_000_000.0,
+        "market_breadth_20d": 0.5,
+        "market_breadth_5d": 0.5,
+        "market_downtrend_context": 0.0,
+        "market_downtrend_flag": False,
+        "market_ma_5_20_ratio": 1.0,
+        "market_return_20d": 0.02,
+        "market_return_5d": 0.01,
+        "market_risk_flag": False,
+        "market_volatility_20d": 0.02,
         "missing_flags_insufficient_history": False,
         "missing_flags_price": False,
         "missing_flags_volume": False,
@@ -191,6 +206,13 @@ def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
         "volume_momentum_ratio_1d_20d": 1.1,
         "volume_momentum_ratio_5d": 1.2,
         "latest_close": 1000.0,
+        "sector_breadth_20d": 0.5,
+        "sector_momentum_flag": True,
+        "sector_rank_20d": 1,
+        "sector_return_20d": 0.03,
+        "sector_return_5d": 0.01,
+        "sector_weak_flag": False,
+        "stock_vs_sector_return_20d": 0.01,
     }
     pd.DataFrame([row]).to_parquet(feature_dir / "candidate_features.parquet", index=False)
     pd.DataFrame([row]).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
@@ -201,4 +223,31 @@ def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
     pd.DataFrame([{"target_date": feature_date, "code": "__POLICY_INPUT__"}]).to_parquet(
         feature_dir / "capital_policy_input.parquet",
         index=False,
+    )
+
+
+def _write_current_authority(runtime_root: Path, *, business_date: str) -> None:
+    path = runtime_root / "persistent_ledger" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "asset_state_id": "asset-e41-feature",
+                "environment": "demo",
+                "business_date": business_date,
+                "as_of": business_date,
+                "positions": [],
+                "cash": 1_000_000,
+                "buying_power": 1_000_000,
+                "market_value": 0,
+                "total_equity": 1_000_000,
+                "current_state_confirmed_empty": True,
+                "current_positions_unknown": False,
+                "cash_unknown": False,
+                "buying_power_unknown": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )

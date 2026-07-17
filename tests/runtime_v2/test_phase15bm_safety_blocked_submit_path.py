@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 
@@ -191,25 +192,37 @@ def test_phase15bm_order_condition_unresolved_blocks_submit_before_broker(tmp_pa
     assert pending_path.read_text(encoding="utf-8") == before_pending
 
 
-def test_phase15bm_isolated_fixture_does_not_modify_existing_runtime_root():
+def test_phase15bm_isolated_fixture_does_not_modify_existing_runtime_root(tmp_path):
     root = Path(".runtime")
-    pending_path = root / "pending_order_plan" / "pending_order_plan.json"
-    apply_candidate_path = (
-        root
-        / "runtime_state"
-        / "authoritative_pending_apply_candidate"
-        / "2026-07-10"
-        / "apply-candidate-a6d308ef3dac7170.json"
+    protected_paths = (
+        root / "pending_order_plan" / "pending_order_plan.json",
+        root / "persistent_ledger" / "state.json",
+        root / "runtime_state" / "current_state.json",
+        root / "runtime_state" / "safety" / "latest_safety_decision.json",
     )
+    before = _snapshot_paths(protected_paths)
+
+    runtime_root, policy_path = _safety_blocked_sell_runtime(tmp_path)
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=_CountingAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.submitted_count == 0
+    assert _snapshot_paths(protected_paths) == before
+
+    pending_path = root / "pending_order_plan" / "pending_order_plan.json"
     assert pending_path.is_file()
-    assert apply_candidate_path.is_file()
     pending = _read_json(pending_path)
-    candidate = _read_json(apply_candidate_path)
-    assert pending["state"] == "EMPTY"
-    assert pending["active_pending"] is False
-    assert candidate["authoritative_pending_mutated"] is False
-    assert candidate["submit_executed"] is False
-    assert candidate["broker_write_performed"] is False
+    if pending.get("state") == "EMPTY":
+        assert pending["active_pending"] is False
 
 
 def _safety_blocked_sell_runtime(tmp_path: Path) -> tuple[Path, Path]:
@@ -310,6 +323,21 @@ class _CountingAdapter:
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _snapshot_paths(paths: tuple[Path, ...]) -> dict[str, dict[str, object]]:
+    snapshot: dict[str, dict[str, object]] = {}
+    for path in paths:
+        if not path.exists():
+            snapshot[str(path)] = {"exists": False, "sha256": None, "size": None}
+            continue
+        data = path.read_bytes()
+        snapshot[str(path)] = {
+            "exists": True,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+    return snapshot
 
 
 def _write_json(path: Path, payload: dict) -> None:

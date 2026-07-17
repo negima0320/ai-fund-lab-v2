@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 class CandidateFixtureModel:
@@ -27,6 +28,7 @@ def test_phase15k_morning_uses_policy_max_positions_not_hidden_five(tmp_path):
         candidate_codes=("7203", "6501", "6758", "6861", "4452", "4502", "7011"),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json", max_positions=6)
 
     assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
@@ -48,6 +50,7 @@ def test_phase15k_morning_per_order_budget_not_capped_at_100k(tmp_path):
         candidate_codes=("7203", "6501", "6758", "6861"),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(
         tmp_path / "capital_deployment_policy.json",
         max_positions=4,
@@ -76,6 +79,7 @@ def test_phase15k_pending_and_approval_preserve_policy_context(tmp_path):
         candidate_codes=("7203", "6501"),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json", max_positions=2)
 
     assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
@@ -136,7 +140,9 @@ def _run_morning(tmp_path: Path, runtime_root: Path, feature_root: Path, policy_
             "--candidate-model-path",
             str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
             "--opportunity-model-path",
-            str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
+            str(opportunity_model_path := _write_opportunity_model(tmp_path / "opportunity_model.pkl")),
+            "--opportunity-training-metrics-path",
+            str(_write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)),
         ]
     )
 
@@ -177,9 +183,26 @@ def _write_current(root: Path) -> Path:
     )
     _write_json(root / "runtime_state" / "current_state.json", {"state": "CURRENT_STATE_LOADED", "environment": "demo"})
     _write_safety_decision(root)
+    _write_market_evidence(root)
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_market_evidence(root: Path) -> None:
+    _write_json(
+        root / "runtime_state" / "market" / "2026-07-09" / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": "2026-07-09",
+            "as_of": "2026-07-09",
+            "generated_at": "2026-07-09T00:00:00Z",
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "market_summary": {"source": "phase15k_fixture"},
+        },
+    )
 
 
 def _write_features(root: Path, *, candidate_codes: tuple[str, ...], price: float) -> Path:
@@ -201,10 +224,26 @@ def _write_features(root: Path, *, candidate_codes: tuple[str, ...], price: floa
             "volume_momentum_ratio_1d_20d": 1.2,
             "volume_momentum_ratio_5d": 1.1,
             "liquidity_avg_volume_20d": 1_000_000 - index,
+            "market_breadth_20d": 0.5,
+            "market_breadth_5d": 0.5,
+            "market_downtrend_context": 0.0,
+            "market_downtrend_flag": False,
+            "market_ma_5_20_ratio": 1.0,
+            "market_return_20d": 0.02,
+            "market_return_5d": 0.01,
+            "market_risk_flag": False,
+            "market_volatility_20d": 0.02,
             "missing_flags_insufficient_history": False,
             "missing_flags_price": False,
             "missing_flags_volume": False,
             "data_until": "2026-07-08",
+            "sector_breadth_20d": 0.5,
+            "sector_momentum_flag": True,
+            "sector_rank_20d": index + 1,
+            "sector_return_20d": 0.03,
+            "sector_return_5d": 0.01,
+            "sector_weak_flag": False,
+            "stock_vs_sector_return_20d": 0.01,
         }
         for index, code in enumerate(candidate_codes)
     ]
@@ -295,6 +334,19 @@ def _write_opportunity_model(path: Path) -> Path:
             "feature_columns": ["feature__candidate_score"],
             "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
             "model_version": "opportunity_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
+def _write_opportunity_metrics(path: Path, model_path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "status": "PASS",
+            "readiness_status": "READY",
+            "model_artifact_path": str(model_path),
+            "feature_columns": ["feature__candidate_score"],
         },
     )
     return path

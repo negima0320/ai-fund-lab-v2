@@ -152,6 +152,22 @@ def test_phase15i_cli_manifest_contains_submit_guard_policy_and_item_evidence(mo
     runtime_root = _runtime_root(tmp_path)
     _write_current_state(runtime_root, positions=[], cash=1_000_000, market_value=0)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    pending = _approved_pending(
+        (
+            _item(
+                pending_item_id="buy-1",
+                symbol="7203",
+                side="BUY",
+                quantity=100,
+                estimated_price=1000,
+                estimated_amount=100_000,
+            ),
+        ),
+        policy_path=policy_path,
+    )
+    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+    _attach_pending_safety_evidence(runtime_root, safety_decision_id="safety-phase15i-fixture")
+    _write_runtime_readiness_authorities(runtime_root, business_date="2026-07-09")
 
     def fake_submit_pipeline(**kwargs):
         return SubmitPipelineResult(
@@ -332,6 +348,16 @@ def _item(
             "product_category": "011",
             "security_type": "011",
             "current_listed": True,
+            "opportunity_buy_eligibility_status": "PASS",
+            "opportunity_buy_eligibility": "BUY_ELIGIBLE",
+            "opportunity_expected_edge_score": 0.10,
+            "opportunity_expected_return": 0.10,
+            "opportunity_no_buy_reason": "",
+            "opportunity_buy_rank": 1,
+            "opportunity_business_date": "2026-07-09",
+            "opportunity_feature_date": "2026-07-09",
+            "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+            "opportunity_eligibility_reason": "opportunity_positive_expected_edge",
         },
     )
 
@@ -357,6 +383,63 @@ def _write_current_state(root: Path, *, positions: list[dict], cash: float, mark
             "buying_power_unknown": False,
         },
     )
+
+
+def _write_runtime_readiness_authorities(root: Path, *, business_date: str) -> None:
+    _write_json(
+        root / "runtime_state" / "current_state.json",
+        {
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
+            "business_date": business_date,
+            "generated_at": business_date + "T08:30:00+09:00",
+            "updated_at": business_date + "T08:30:00+09:00",
+            "environment": "demo",
+            "runtime_mode": "demo",
+            "state": "CURRENT_STATE_LOADED",
+            "safety_state": "NORMAL",
+            "source": "phase15i_cli_fixture",
+        },
+    )
+    _write_json(
+        root / "runtime_state" / "market" / business_date / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": business_date,
+            "runtime_business_date": business_date,
+            "market_date": business_date,
+            "as_of": business_date,
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "market_summary": {"status": "READY"},
+        },
+    )
+    _write_json(
+        root / "runtime_state" / "broker_readonly" / business_date / "snapshot.json",
+        {
+            "schema_version": "runtime_v2_broker_readonly_snapshot_v1",
+            "business_date": business_date,
+            "generated_at": business_date + "T08:30:00+09:00",
+            "environment": "demo",
+            "review_required": False,
+            "positions": [],
+            "orders": [],
+            "executions": [],
+        },
+    )
+
+
+def _attach_pending_safety_evidence(root: Path, *, safety_decision_id: str) -> None:
+    path = root / "pending_order_plan" / "pending_order_plan.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["safety_decision_id"] = safety_decision_id
+    payload["safety_policy_version"] = "safety_policy_v1"
+    approval = dict(payload.get("approval") or {})
+    approval["safety_decision_id"] = safety_decision_id
+    approval["safety_policy_version"] = "safety_policy_v1"
+    payload["approval"] = approval
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _position(symbol: str, *, quantity: float, price: float) -> dict:

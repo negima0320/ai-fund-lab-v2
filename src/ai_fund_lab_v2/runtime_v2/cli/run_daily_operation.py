@@ -1155,6 +1155,7 @@ def _build_manifest(
         **capital_policy_manifest,
         **safety_manifest_fields(runtime_safety_decision),
         **_historical_safety_manifest_override(args=args, data_readiness_manifest=data_readiness_manifest),
+        **_submit_manifest_fields(submit_result),
         "submit_guard_policy": submit_guard_policy,
         "submit_policy_consistency": submit_policy_consistency,
         "submit_guard_item_evidence": submit_guard_item_evidence,
@@ -1176,6 +1177,24 @@ def _build_manifest(
             "phase_artifact_used_as_current": False,
             "mode_rooted_current_used": False,
         },
+    }
+
+
+def _submit_manifest_fields(submit_result: Any) -> dict[str, Any]:
+    if submit_result is None:
+        return {}
+    return {
+        "pending_read_valid": bool(getattr(submit_result, "pending_read_valid", False)),
+        "pending_classification": str(getattr(submit_result, "pending_classification", "") or ""),
+        "pending_active": getattr(submit_result, "pending_active", None),
+        "pending_plan_present": bool(getattr(submit_result, "pending_plan_present", False)),
+        "pending_item_count": int(getattr(submit_result, "pending_item_count", 0) or 0),
+        "no_action_reason": str(getattr(submit_result, "no_action_reason", "") or ""),
+        "submit_action": str(getattr(submit_result, "submit_action", "UNKNOWN") or "UNKNOWN"),
+        "submitted_count": int(getattr(submit_result, "submitted_count", 0) or 0),
+        "blocked_count": int(getattr(submit_result, "blocked_count", 0) or 0),
+        "review_required": bool(getattr(submit_result, "review_required", False)),
+        "halt_required": bool(getattr(submit_result, "halt_required", False)),
     }
 
 
@@ -1612,6 +1631,22 @@ def _data_readiness_safety_summary_fields(payload: dict[str, Any]) -> dict[str, 
         "data_readiness_safety_reason": safety.get("reason") or "",
         "data_readiness_safety_status": safety.get("status") or "",
         "data_readiness_ignored_latest_safety_decision": safety.get("ignored_latest_safety_decision") or "",
+        "data_readiness_safety_authority_type": safety.get("safety_authority_type") or "",
+        "data_readiness_safety_authority_business_date": safety.get("safety_authority_business_date") or "",
+        "data_readiness_safety_authority_source": safety.get("safety_authority_source") or "",
+        "data_readiness_safety_authority_policy_version": safety.get("safety_authority_policy_version") or "",
+        "data_readiness_previous_empty_pending_present": bool(safety.get("previous_empty_pending_present")),
+        "data_readiness_previous_empty_pending_ignored_as_safety_authority": bool(
+            safety.get("previous_empty_pending_ignored_as_safety_authority")
+        ),
+        "data_readiness_historical_neutral_authority_generated_or_resolved": bool(
+            safety.get("historical_neutral_authority_generated_or_resolved")
+        ),
+        "data_readiness_safety_broker_write": bool(safety.get("broker_write")),
+        "data_readiness_safety_external_delivery": bool(safety.get("external_delivery")),
+        "data_readiness_safety_runtime_test_run_id": safety.get("runtime_test_run_id") or "",
+        "data_readiness_safety_runtime_test_profile_id": safety.get("runtime_test_profile_id") or "",
+        "data_readiness_safety_runtime_test_evidence_root": safety.get("runtime_test_evidence_root") or "",
     }
 
 
@@ -2009,6 +2044,14 @@ def _write_execution_manifest_evidence(
             "status": execution.get("execution_acceptance_status") or execution.get("status") or "NOT_EXECUTED",
             "reason": execution.get("execution_acceptance_reason") or reason or "execution_stage_not_reached",
             "orders_count": execution.get("orders_count", 0),
+            "submitted_order_count": execution.get("submitted_order_count", execution.get("orders_count", 0)),
+            "orderlist_required": bool(execution.get("orderlist_required", True)),
+            "orderlist_status": execution.get("orderlist_status") or "",
+            "execution_action": execution.get("execution_action") or "",
+            "submit_action": execution.get("submit_action") or "",
+            "submit_authority_status": execution.get("submit_authority_status") or "",
+            "submit_authority_path": execution.get("submit_authority_path") or "",
+            "submit_authority_reason": execution.get("submit_authority_reason") or "",
             "orderlist_readonly_connected": bool(execution.get("orderlist_readonly_connected")),
             "execution_references": execution.get("execution_references") or [],
             "runtime_test_run_id": manifest.get("runtime_test_run_id") or "",
@@ -2024,7 +2067,11 @@ def _write_execution_manifest_evidence(
             "snapshot_status": execution.get("snapshot_status") or "",
             "snapshot_path": execution.get("snapshot_path") or "",
             "report_path": execution.get("report_path") or "",
+            "orderlist_required": bool(execution.get("orderlist_required", True)),
+            "orderlist_status": execution.get("orderlist_status") or "",
+            "execution_action": execution.get("execution_action") or "",
             "execution_equivalent_count": execution.get("execution_equivalent_count", 0),
+            "fill_count": execution.get("fill_count", execution.get("execution_equivalent_count", 0)),
             "order_detail_required": bool(execution.get("order_detail_required")),
             "order_detail_status": execution.get("order_detail_status") or "",
             "warnings": execution.get("execution_acceptance_warnings") or [],
@@ -2036,9 +2083,13 @@ def _write_execution_manifest_evidence(
             "status": execution.get("execution_acceptance_status") or execution.get("status") or "NOT_EXECUTED",
             "reason": execution.get("execution_acceptance_reason") or reason or "execution_stage_not_reached",
             "orders_count": execution.get("orders_count", 0),
+            "submitted_order_count": execution.get("submitted_order_count", execution.get("orders_count", 0)),
             "executions_count": execution.get("executions_count", 0),
             "positions_count": execution.get("positions_count", 0),
             "cash_present": bool(execution.get("cash_present")),
+            "orderlist_required": bool(execution.get("orderlist_required", True)),
+            "orderlist_status": execution.get("orderlist_status") or "",
+            "execution_action": execution.get("execution_action") or "",
         },
     )
     _write_json_file(
@@ -2069,8 +2120,20 @@ def _write_execution_manifest_evidence(
     _write_json_file(
         evidence_dir / "pending_terminalization_evidence.json",
         {
-            "status": "PASS" if execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"} else "NOT_CONFIRMED",
-            "pending_consumed": execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"},
+            "status": execution.get("pending_terminalization_status")
+            or ("PASS" if execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"} else "NOT_CONFIRMED"),
+            "pending_consumed": bool(
+                execution.get("pending_consumed")
+                if "pending_consumed" in execution
+                else execution.get("current_apply_status") in {"APPLIED", "NOOP_ALREADY_APPLIED"}
+            ),
+            "pending_mutated": bool(execution.get("pending_mutated", False)),
+            "pending_read_valid": bool(execution.get("pending_read_valid", False)),
+            "pending_classification": execution.get("pending_classification") or "",
+            "pending_active": execution.get("pending_active"),
+            "pending_plan_present": bool(execution.get("pending_plan_present", False)),
+            "pending_item_count": execution.get("pending_item_count", 0),
+            "no_action_reason": execution.get("no_action_reason") or "",
             "execution_references": execution.get("execution_references") or [],
         },
     )
@@ -2184,6 +2247,15 @@ def _write_current_valuation_manifest_evidence(
             "cash": candidate.get("cash"),
             "buying_power": candidate.get("buying_power"),
             "realized_pnl": candidate.get("realized_pnl"),
+            "valuation_refresh_precondition_status": artifact.get("valuation_refresh_precondition_status") or "",
+            "existing_valuation_as_of": artifact.get("existing_valuation_as_of") or "",
+            "previous_trading_date": artifact.get("previous_trading_date") or "",
+            "target_valuation_date": artifact.get("target_valuation_date") or "",
+            "valuation_refresh_action": artifact.get("valuation_refresh_action") or "",
+            "projection_status": artifact.get("projection_status") or "",
+            "projection_source_market_date": artifact.get("projection_source_market_date") or "",
+            "temporal_authority": artifact.get("temporal_authority") or "",
+            "temporal_reason": artifact.get("temporal_reason") or "",
         },
     )
     _write_json_file(
@@ -2198,6 +2270,11 @@ def _write_current_valuation_manifest_evidence(
             "apply_executed": bool(artifact.get("apply_executed")),
             "backup_path": artifact.get("backup_path") or "",
             "history_path": artifact.get("history_path") or "",
+            "apply_status": artifact.get("apply_status") or "",
+            "post_apply_valuation_as_of": artifact.get("post_apply_valuation_as_of") or "",
+            "post_apply_source_market_date": artifact.get("post_apply_source_market_date") or "",
+            "postcondition_status": artifact.get("postcondition_status") or "",
+            "postcondition_reason": artifact.get("postcondition_reason") or "",
         },
     )
     _write_json_file(

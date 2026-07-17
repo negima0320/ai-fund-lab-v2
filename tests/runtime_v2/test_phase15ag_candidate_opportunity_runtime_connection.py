@@ -16,6 +16,7 @@ from ai_fund_lab_v2.runtime_v2.buy_ai.producer import (
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import OPPORTUNITY_REQUIRED_COLUMNS
 from ai_fund_lab_v2.runtime_v2.report.public_report_writer import generate_public_report_from_current
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 BUSINESS_DATE = "2026-07-08"
@@ -221,6 +222,7 @@ def test_phase16aq_wrong_artifact_set_is_rejected(tmp_path):
 def test_phase15ag_morning_cli_uses_opportunity_artifact_not_feature_row_signal(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
     candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
     opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
@@ -279,6 +281,7 @@ def test_phase15ag_morning_cli_uses_opportunity_artifact_not_feature_row_signal(
 def test_phase15ag_missing_buy_ai_models_stops_before_morning_planning(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
 
     exit_code = main(
@@ -329,6 +332,7 @@ def test_phase15ag_missing_buy_ai_models_stops_before_morning_planning(tmp_path)
 def test_phase15ag_report_and_notification_include_buy_ai_summary(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
     candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
     opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")

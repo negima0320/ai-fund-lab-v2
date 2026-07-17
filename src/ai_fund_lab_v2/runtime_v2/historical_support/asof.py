@@ -12,6 +12,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
+    SELECTION_POLICY,
+    resolve_listed_issues_snapshot,
+)
+
 
 ASOF_SCHEMA_VERSION = "runtime_historical_asof_view_v1"
 LEGACY_ASOF_SCHEMA_VERSIONS = {"phase17_l_historical_asof_view_v1"}
@@ -39,6 +44,10 @@ class HistoricalAsOfAuthority:
     manifest_hash: str = ""
     expected_source_hash: str = ""
     expected_manifest_hash: str = ""
+    selected_snapshot_date: str = ""
+    selection_policy: str = ""
+    snapshot_age_days: int | None = None
+    content_hash_verified: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,18 +121,21 @@ def resolve_historical_market_data_asof(
     expected_hashes: dict[str, str] | None = None,
     manifest_refs: dict[str, str] | None = None,
     expected_manifest_hashes: dict[str, str] | None = None,
+    historical_listed_issues_snapshot_root: Path | str | None = None,
 ) -> HistoricalAsOfResolution:
     root = Path(operations_root)
     expected = expected_hashes or {}
     manifests = manifest_refs or {}
     expected_manifests = expected_manifest_hashes or {}
+    listed_snapshot_root = Path(historical_listed_issues_snapshot_root) if historical_listed_issues_snapshot_root else (
+        root / "jquants" / "historical_snapshots" / "listed_issues"
+    )
     authority_paths = {
         "normalized_ohlcv": root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
         "raw_ohlcv": root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet",
         "trading_calendar": root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet",
-        "listed_issues": root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
     }
-    authorities = tuple(
+    authorities_list = [
         _resolve_authority(
             authority=name,
             source_path=path,
@@ -133,7 +145,21 @@ def resolve_historical_market_data_asof(
             expected_manifest_hash=expected_manifests.get(name, ""),
         )
         for name, path in authority_paths.items()
-    )
+    ]
+    if (listed_snapshot_root / "index.json").is_file():
+        authorities_list.append(_resolve_listed_issues_snapshot_authority(listed_snapshot_root, business_date))
+    else:
+        authorities_list.append(
+            _resolve_authority(
+                authority="listed_issues",
+                source_path=root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+                business_date=business_date,
+                expected_source_hash=expected.get("listed_issues", ""),
+                manifest_path=manifests.get("listed_issues", ""),
+                expected_manifest_hash=expected_manifests.get("listed_issues", ""),
+            )
+        )
+    authorities = tuple(authorities_list)
     failed = [item for item in authorities if item.status != "PASS"]
     status = "PASS" if not failed else "HALT"
     reason = "historical_asof_view_ready" if status == "PASS" else "historical_asof_authority_invalid"
@@ -166,10 +192,12 @@ def materialize_historical_logical_inputs(
     business_date: str,
     evidence_root: Path | str,
     runtime_test_context: dict[str, Any] | None = None,
+    historical_listed_issues_snapshot_root: Path | str | None = None,
 ) -> HistoricalLogicalInput:
     resolution = resolve_historical_market_data_asof(
         operations_root=operations_root,
         business_date=business_date,
+        historical_listed_issues_snapshot_root=historical_listed_issues_snapshot_root,
     )
     input_root = Path(evidence_root) / "inputs" / "historical_asof" / business_date
     raw_root = input_root / "raw"
@@ -363,6 +391,65 @@ def _resolve_authority(
         manifest_hash=manifest_hash,
         expected_source_hash=expected_source_hash,
         expected_manifest_hash=expected_manifest_hash,
+    )
+
+
+def _resolve_listed_issues_snapshot_authority(snapshot_root: Path, business_date: str) -> HistoricalAsOfAuthority:
+    resolution = resolve_listed_issues_snapshot(
+        snapshot_root=snapshot_root,
+        business_date=business_date,
+        mode="historical",
+    )
+    if resolution.status != "PASS":
+        return HistoricalAsOfAuthority(
+            authority="listed_issues",
+            status="HALT",
+            reason=resolution.reason,
+            business_date=business_date,
+            physical_source_path=resolution.selected_snapshot_path,
+            physical_source_hash="",
+            physical_row_count=0,
+            physical_max_date="",
+            logical_cutoff=business_date,
+            logical_row_count=0,
+            logical_max_date="",
+            future_rows_excluded_count=0,
+            manifest_path=resolution.selected_manifest_path,
+            manifest_hash="",
+            selected_snapshot_date=resolution.selected_snapshot_date,
+            selection_policy=SELECTION_POLICY,
+            snapshot_age_days=resolution.snapshot_age_days,
+        )
+    source_path = Path(resolution.selected_snapshot_path)
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+        date_column = _date_column(tuple(str(column) for column in frame.columns))
+        dates = frame[date_column].astype(str) if date_column else []
+        physical_max = str(dates.max()) if len(frame) and date_column else resolution.selected_snapshot_date
+    except Exception:
+        frame = []
+        physical_max = resolution.selected_snapshot_date
+    return HistoricalAsOfAuthority(
+        authority="listed_issues",
+        status="PASS",
+        reason="historical_listed_issues_snapshot_authority_ready",
+        business_date=business_date,
+        physical_source_path=resolution.selected_snapshot_path,
+        physical_source_hash=resolution.selected_content_hash,
+        physical_row_count=int(len(frame)),
+        physical_max_date=physical_max,
+        logical_cutoff=business_date,
+        logical_row_count=int(len(frame)),
+        logical_max_date=resolution.selected_snapshot_date,
+        future_rows_excluded_count=0,
+        manifest_path=resolution.selected_manifest_path,
+        manifest_hash=_file_hash(Path(resolution.selected_manifest_path)),
+        selected_snapshot_date=resolution.selected_snapshot_date,
+        selection_policy=SELECTION_POLICY,
+        snapshot_age_days=resolution.snapshot_age_days,
+        content_hash_verified=resolution.content_hash_verified,
     )
 
 

@@ -360,9 +360,19 @@ def capital_allocation_regression_evidence(*, repo: Path, output_root: Path) -> 
         safety_source=planned_item.safety_source,
         safety_decision=planned_item.safety_decision,
         safety_reason=planned_item.safety_reason,
+        listed_info={
+            "code": planned_item.symbol,
+            "market": "プライム",
+            "product_category": "011",
+            "security_type": "011",
+            "current_listed": True,
+        },
     )
     guard = _submit_guard_item_evidence(
         item=pending_item,
+        runtime_root=repo / ".runtime",
+        business_date="2026-07-09",
+        mode="demo",
         policy=policy,
         current_state={
             "cash": 100000.0,

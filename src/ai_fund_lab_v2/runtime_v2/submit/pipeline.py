@@ -8,7 +8,7 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from ai_fund_lab_v2.broker.issue_code_normalizer import (
     BrokerIssueCodeNormalizationError,
@@ -16,8 +16,10 @@ from ai_fund_lab_v2.broker.issue_code_normalizer import (
 )
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
+from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
+from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
@@ -117,6 +119,15 @@ class SubmitPipelineResult:
     ledger_order_record_ids: tuple[str, ...]
     submitted_symbols: tuple[str, ...]
     item_results: tuple[SubmitItemResult, ...]
+    pending_read_valid: bool = False
+    pending_classification: str = ""
+    pending_active: bool | None = None
+    pending_plan_present: bool = False
+    pending_item_count: int = 0
+    no_action_reason: str = ""
+    submit_action: str = "UNKNOWN"
+    review_required: bool = False
+    halt_required: bool = False
     raw_request_saved: bool = False
     raw_response_saved: bool = False
     secret_saved: bool = False
@@ -197,11 +208,52 @@ def run_submit_pipeline(
         path=runtime_root_path / "pending_order_plan" / "pending_order_plan.json",
         environment=mode,
     )
-    if not pending_read.valid or pending_read.plan is None:
+    if not pending_read.valid:
         return _blocked_result(
             reason="pending current is missing or invalid: " + ",".join(pending_read.errors),
             runtime_root=runtime_root_path,
             pending_path=str(pending_read.path),
+            pending_read_valid=pending_read.valid,
+            pending_classification=pending_read.classification,
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=pending_read.plan is not None,
+            pending_item_count=_payload_item_count(pending_read.payload),
+            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+        )
+    if pending_read.classification == "EMPTY":
+        empty_reason = _validate_empty_pending_payload(
+            pending_read.payload,
+            business_date=business_date,
+            environment=mode,
+        )
+        if empty_reason:
+            return _blocked_result(
+                reason=empty_reason,
+                runtime_root=runtime_root_path,
+                pending_path=str(pending_read.path),
+                pending_read_valid=pending_read.valid,
+                pending_classification=pending_read.classification,
+                pending_active=_payload_bool(pending_read.payload, "active_pending"),
+                pending_plan_present=pending_read.plan is not None,
+                pending_item_count=_payload_item_count(pending_read.payload),
+                no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+            )
+        return _empty_pending_result(
+            runtime_root=runtime_root_path,
+            pending_path=str(pending_read.path),
+            payload=pending_read.payload,
+        )
+    if pending_read.plan is None:
+        return _blocked_result(
+            reason="pending current is missing or invalid: active pending plan missing",
+            runtime_root=runtime_root_path,
+            pending_path=str(pending_read.path),
+            pending_read_valid=pending_read.valid,
+            pending_classification=pending_read.classification,
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=False,
+            pending_item_count=_payload_item_count(pending_read.payload),
+            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
         )
     pending = pending_read.plan
     guard_reason = _pending_submit_guard(pending, business_date=business_date)
@@ -250,12 +302,19 @@ def run_submit_pipeline(
         broker_available_evidence = (
             _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
             if item.side == "SELL" and mode != "historical"
-            else _historical_available_quantity_evidence(item=item, current_quantity=sell_position_quantity)
+            else _historical_available_quantity_evidence(
+                runtime_root=runtime_root_path,
+                item=item,
+                current_quantity=sell_position_quantity,
+            )
             if item.side == "SELL"
             else BrokerAvailableQuantityEvidence(checked=False, source="")
         )
         guard_evidence = _submit_guard_item_evidence(
             item=item,
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            mode=mode,
             policy=policy,
             current_state=current_state,
             broker_position_quantity=sell_position_quantity,
@@ -466,10 +525,110 @@ def run_submit_pipeline(
         ledger_order_record_ids=tuple(result.ledger_order_record_id for result in item_results if result.submitted),
         submitted_symbols=tuple(result.symbol for result in item_results if result.submitted),
         item_results=tuple(item_results),
+        pending_read_valid=pending_read.valid,
+        pending_classification=pending_read.classification,
+        pending_active=_payload_bool(pending_read.payload, "active_pending"),
+        pending_plan_present=True,
+        pending_item_count=len(pending.items),
+        no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+        submit_action="SUBMIT" if submitted_count else "NO_SUBMIT_ATTEMPTED",
+        review_required=status == "REVIEW_REQUIRED",
+        halt_required=status == "HALT",
         submit_guard_policy=_submit_guard_policy_manifest(policy),
         submit_policy_consistency=policy_consistency,
         submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
     )
+
+
+def _empty_pending_result(
+    *,
+    runtime_root: Path,
+    pending_path: str,
+    payload: Mapping[str, Any] | None,
+) -> SubmitPipelineResult:
+    return SubmitPipelineResult(
+        status="PASS",
+        reason="pending_empty_no_action",
+        pending_plan_id=_payload_text(payload, "pending_plan_id"),
+        pending_path=pending_path,
+        orders_ledger_path=str(runtime_root / "persistent_ledger" / "orders.jsonl"),
+        demo_submit_executed=False,
+        submitted_count=0,
+        accepted_count=0,
+        rejected_count=0,
+        unknown_count=0,
+        blocked_count=0,
+        pending_consumed=False,
+        submitted_order_ids=(),
+        ledger_order_record_ids=(),
+        submitted_symbols=(),
+        item_results=(),
+        pending_read_valid=True,
+        pending_classification="EMPTY",
+        pending_active=False,
+        pending_plan_present=False,
+        pending_item_count=0,
+        no_action_reason=_payload_text(payload, "no_action_reason"),
+        submit_action="NO_ACTION",
+        review_required=False,
+        halt_required=False,
+    )
+
+
+def _validate_empty_pending_payload(
+    payload: Mapping[str, Any] | None,
+    *,
+    business_date: str,
+    environment: str,
+) -> str:
+    if not isinstance(payload, Mapping):
+        return "pending EMPTY classification payload missing"
+    if bool(payload.get("active_pending", True)):
+        return "pending EMPTY classification active_pending contradiction"
+    if str(payload.get("environment") or "") != environment:
+        return "pending EMPTY classification environment mismatch"
+    if str(payload.get("state") or payload.get("status") or "").upper() != "EMPTY":
+        return "pending EMPTY classification state mismatch"
+    items = payload.get("items")
+    if not isinstance(items, list) or items:
+        return "pending EMPTY classification requires empty items"
+    approved_item_ids = payload.get("approved_item_ids")
+    if approved_item_ids not in (None, []) and approved_item_ids != ():
+        return "pending EMPTY classification approved item ids must be empty"
+    no_action_reason = str(payload.get("no_action_reason") or "")
+    if not (
+        no_action_reason.startswith("NO_SIGNAL:")
+        or no_action_reason.startswith("NO_ACTION:")
+        or no_action_reason == "pending_empty_no_action"
+    ):
+        return "pending EMPTY classification no_action_reason missing"
+    if str(payload.get("target_session_date") or "") != business_date:
+        return "pending EMPTY classification target_session_date mismatch"
+    if str(payload.get("intended_submit_date") or "") != business_date:
+        return "pending EMPTY classification intended_submit_date mismatch"
+    safety_context = payload.get("safety_context")
+    if not isinstance(safety_context, Mapping) or not str(safety_context.get("safety_decision") or ""):
+        return "pending EMPTY classification safety authority missing"
+    return ""
+
+
+def _payload_text(payload: Mapping[str, Any] | None, key: str) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(payload.get(key) or "")
+
+
+def _payload_bool(payload: Mapping[str, Any] | None, key: str) -> bool | None:
+    if not isinstance(payload, Mapping) or key not in payload:
+        return None
+    return bool(payload.get(key))
+
+
+def _payload_item_count(payload: Mapping[str, Any] | None) -> int:
+    if not isinstance(payload, Mapping):
+        return 0
+    items = payload.get("items")
+    return len(items) if isinstance(items, list) else 0
 
 
 def _pending_submit_guard(pending: PendingOrderPlan, *, business_date: str) -> str:
@@ -913,6 +1072,7 @@ def _broker_available_quantity_evidence(
 
 def _historical_available_quantity_evidence(
     *,
+    runtime_root: Path,
     item: Any,
     current_quantity: float | None,
 ) -> BrokerAvailableQuantityEvidence:
@@ -920,32 +1080,80 @@ def _historical_available_quantity_evidence(
     if normalized.get("status") != "PASS":
         return BrokerAvailableQuantityEvidence(
             checked=False,
-            source="historical_runtime_owned_current",
+            source="historical_simulated_broker_authority",
             symbol=str(item.symbol),
             reason=str(normalized.get("reason") or "issue code normalization failed"),
         )
     if current_quantity is None:
         return BrokerAvailableQuantityEvidence(
             checked=False,
-            source="historical_runtime_owned_current",
+            source="historical_simulated_broker_authority",
             symbol=str(item.symbol),
             issue_code=str(normalized["broker_issue_code"]),
             review_required=False,
             production_equivalent=False,
             reason="historical current quantity missing",
         )
+    restricted_quantity = _historical_restricted_sell_quantity(
+        runtime_root=runtime_root,
+        symbol=str(item.symbol),
+    )
+    available_quantity = max(float(current_quantity) - restricted_quantity, 0.0)
     return BrokerAvailableQuantityEvidence(
         checked=True,
-        source="historical_runtime_owned_current",
-        quantity=float(current_quantity),
+        source="historical_simulated_broker_authority",
+        quantity=available_quantity,
         symbol=str(item.symbol),
         issue_code=str(normalized["broker_issue_code"]),
         review_required=False,
         production_equivalent=False,
         total_quantity=float(current_quantity),
-        restricted_quantity=0.0,
-        reason="historical runtime-owned current quantity used as available quantity",
+        restricted_quantity=restricted_quantity,
+        reason="historical simulated broker authority confirmed from runtime-owned Current and open SELL order ledger",
     )
+
+
+def _historical_restricted_sell_quantity(*, runtime_root: Path, symbol: str) -> float:
+    normalized_symbol = str(symbol).strip()
+    sell_order_quantity = 0.0
+    sell_execution_quantity = 0.0
+    for record in _read_jsonl_records(runtime_root / "persistent_ledger" / "orders.jsonl"):
+        if str(record.get("environment") or "") != "historical":
+            continue
+        if str(record.get("side") or "").upper() != "SELL":
+            continue
+        if str(record.get("symbol") or "").strip() != normalized_symbol:
+            continue
+        if str(record.get("status") or "").upper() in {"REJECTED", "CANCELLED", "CANCELED"}:
+            continue
+        sell_order_quantity += _float(record.get("quantity"))
+    for record in _read_jsonl_records(runtime_root / "persistent_ledger" / "executions.jsonl"):
+        if str(record.get("environment") or record.get("mode") or "") != "historical":
+            continue
+        if str(record.get("side") or "").upper() != "SELL":
+            continue
+        if str(record.get("symbol") or record.get("broker_issue_code") or "").strip() != normalized_symbol:
+            continue
+        if str(record.get("execution_status") or "").lower() not in {"filled", "partial_fill", "partially_filled"}:
+            continue
+        sell_execution_quantity += _float(record.get("filled_quantity") or record.get("quantity"))
+    return max(sell_order_quantity - sell_execution_quantity, 0.0)
+
+
+def _read_jsonl_records(path: Path) -> tuple[dict[str, Any], ...]:
+    if not path.is_file():
+        return ()
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return tuple(records)
 
 
 def _broker_issue_code_for_item(item: Any) -> dict[str, Any]:
@@ -1012,6 +1220,9 @@ def _submit_guard_policy_manifest(policy: CapitalDeploymentPolicy) -> dict[str, 
 def _submit_guard_item_evidence(
     *,
     item: Any,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
     policy: CapitalDeploymentPolicy,
     current_state: dict[str, Any],
     broker_position_quantity: float | None,
@@ -1096,6 +1307,36 @@ def _submit_guard_item_evidence(
             violated_policy_source=safety_decision.safety_source or safety_decision.artifact_path,
         )
     if side == "BUY":
+        buy_eligibility = evaluate_buy_eligibility(
+            symbol=item.symbol,
+            business_date=business_date,
+            mode=mode,
+            listed_info=item.listed_info,
+            runtime_root=runtime_root,
+            authority_source="pending_item_listed_info",
+        )
+        evidence.update(_buy_eligibility_evidence_fields(buy_eligibility.to_payload()))
+        if not buy_eligibility.eligible:
+            return _blocked_guard_evidence(
+                evidence=evidence,
+                reason=buy_eligibility.reason_code,
+                violated_policy="buy_market_status_eligibility",
+                violated_policy_source=buy_eligibility.authority_source or buy_eligibility.authority_path,
+                should_have_been_blocked_at_planning=True,
+            )
+        opportunity_eligibility = _submit_opportunity_buy_eligibility(
+            item=item,
+            business_date=business_date,
+        )
+        evidence.update(_opportunity_buy_eligibility_evidence_fields(opportunity_eligibility.to_payload()))
+        if not opportunity_eligibility.eligible:
+            return _blocked_guard_evidence(
+                evidence=evidence,
+                reason=opportunity_eligibility.reason_code,
+                violated_policy="opportunity_buy_eligibility",
+                violated_policy_source=opportunity_eligibility.opportunity_artifact_path,
+                should_have_been_blocked_at_planning=True,
+            )
         return _buy_guard_evidence(evidence=evidence, policy=policy, current_state=current_state)
     if side == "SELL":
         return _sell_guard_evidence(
@@ -1111,6 +1352,77 @@ def _submit_guard_item_evidence(
         violated_policy="supported_side",
         violated_policy_source="runtime_v2_submit_guard",
     )
+
+
+def _buy_eligibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "buy_eligibility_schema_version": str(payload.get("schema_version") or ""),
+        "buy_eligibility_status": str(payload.get("status") or ""),
+        "buy_eligibility": str(payload.get("buy_eligibility") or ""),
+        "buy_eligibility_reason_code": str(payload.get("reason_code") or ""),
+        "buy_eligibility_reason": str(payload.get("reason") or ""),
+        "buy_eligibility_authority_source": str(payload.get("authority_source") or ""),
+        "buy_eligibility_authority_path": str(payload.get("authority_path") or ""),
+        "buy_eligibility_authority_hash": str(payload.get("authority_hash") or ""),
+        "buy_eligibility_authority_as_of": str(payload.get("authority_as_of") or ""),
+        "buy_eligibility_authority_type": str(payload.get("authority_type") or ""),
+        "buy_eligibility_current_listed": payload.get("current_listed"),
+        "buy_eligibility_market_status": str(payload.get("market_status") or ""),
+        "buy_eligibility_listing_status": str(payload.get("listing_status") or ""),
+        "buy_eligibility_special_supervision_status": str(payload.get("special_supervision_status") or ""),
+        "buy_eligibility_delisting_date": str(payload.get("delisting_date") or ""),
+        "buy_eligibility_point_in_time": bool(payload.get("point_in_time")),
+        "buy_eligibility_future_authority_used": bool(payload.get("future_authority_used")),
+        "buy_eligibility_missing_authority": bool(payload.get("missing_authority")),
+        "buy_eligibility_stale_authority": bool(payload.get("stale_authority")),
+    }
+
+
+def _submit_opportunity_buy_eligibility(*, item: Any, business_date: str):
+    listed_info = item.listed_info if isinstance(item.listed_info, Mapping) else {}
+    opportunity_artifact_path = str(listed_info.get("opportunity_artifact_path") or "")
+    feature_date = str(
+        listed_info.get("opportunity_feature_date")
+        or getattr(item, "price_as_of", "")
+        or business_date
+    )
+    row = {
+        "symbol": item.symbol,
+        "business_date": str(listed_info.get("opportunity_business_date") or business_date),
+        "feature_date": feature_date,
+        "expected_edge_score": listed_info.get("opportunity_expected_edge_score"),
+        "expected_return": listed_info.get("opportunity_expected_return"),
+        "no_buy_reason": listed_info.get("opportunity_no_buy_reason"),
+        "buy_rank": listed_info.get("opportunity_buy_rank"),
+    }
+    return evaluate_opportunity_buy_eligibility(
+        symbol=item.symbol,
+        business_date=business_date,
+        feature_date=feature_date,
+        opportunity_artifact_path=opportunity_artifact_path or None,
+        opportunity_row=row if listed_info else None,
+        expected_artifact_hash=str(listed_info.get("opportunity_artifact_hash") or ""),
+        excluded_at_stage="submit_guard",
+    )
+
+
+def _opportunity_buy_eligibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "opportunity_buy_eligibility_schema_version": str(payload.get("schema_version") or ""),
+        "opportunity_buy_eligibility_status": str(payload.get("status") or ""),
+        "opportunity_buy_eligibility": str(payload.get("buy_eligibility") or ""),
+        "opportunity_buy_eligibility_reason_code": str(payload.get("reason_code") or ""),
+        "opportunity_buy_eligibility_reason": str(payload.get("reason") or ""),
+        "opportunity_expected_edge_score": payload.get("expected_edge_score"),
+        "opportunity_expected_return": payload.get("expected_return"),
+        "opportunity_no_buy_reason": str(payload.get("no_buy_reason") or ""),
+        "opportunity_buy_rank": payload.get("buy_rank"),
+        "opportunity_artifact_path": str(payload.get("opportunity_artifact_path") or ""),
+        "opportunity_artifact_hash": str(payload.get("opportunity_artifact_hash") or ""),
+        "opportunity_business_date": str(payload.get("business_date") or ""),
+        "opportunity_feature_date": str(payload.get("feature_date") or ""),
+        "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+    }
 
 
 def _buy_guard_evidence(
@@ -1162,7 +1474,10 @@ def _sell_guard_evidence(
 ) -> dict[str, Any]:
     evidence["notional_guard_source"] = policy.sell_liquidation_policy
     evidence["quantity_guard_source"] = "current_owned_quantity_and_broker_available_quantity"
-    evidence["broker_available_quantity_checked"] = evidence["broker_available_quantity_source"] == "broker_readonly"
+    evidence["broker_available_quantity_checked"] = evidence["broker_available_quantity_source"] in {
+        "broker_readonly",
+        "historical_simulated_broker_authority",
+    }
     evidence["manual_review_required"] = evidence["broker_available_quantity_review_required"]
     if broker_position_quantity is None:
         evidence["sell_quantity_guard_status"] = "CURRENT_MISSING"
@@ -1248,6 +1563,12 @@ def _blocked_result(
     status: str = "BLOCKED",
     submit_guard_policy: dict[str, Any] | None = None,
     submit_policy_consistency: dict[str, Any] | None = None,
+    pending_read_valid: bool = False,
+    pending_classification: str = "",
+    pending_active: bool | None = None,
+    pending_plan_present: bool = False,
+    pending_item_count: int = 0,
+    no_action_reason: str = "",
 ) -> SubmitPipelineResult:
     return SubmitPipelineResult(
         status=status,
@@ -1266,6 +1587,15 @@ def _blocked_result(
         ledger_order_record_ids=(),
         submitted_symbols=(),
         item_results=(),
+        pending_read_valid=pending_read_valid,
+        pending_classification=pending_classification,
+        pending_active=pending_active,
+        pending_plan_present=pending_plan_present,
+        pending_item_count=pending_item_count,
+        no_action_reason=no_action_reason,
+        submit_action="BLOCKED",
+        review_required=status == "REVIEW_REQUIRED",
+        halt_required=status == "HALT",
         submit_guard_policy=submit_guard_policy or {},
         submit_policy_consistency=submit_policy_consistency or {},
         submit_guard_item_evidence=(),

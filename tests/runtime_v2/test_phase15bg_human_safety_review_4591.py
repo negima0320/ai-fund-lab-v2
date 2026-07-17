@@ -14,9 +14,11 @@ from tests.runtime_v2.test_phase15aq_runtime_data_readiness_gate import (
     _latest_manifest,
     _runtime_root,
     _write_broker_snapshot,
+    _write_feature_inputs,
     _write_json,
     _write_policy,
 )
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 NOW = datetime(2026, 7, 8, 1, 0, tzinfo=timezone.utc)
@@ -165,11 +167,13 @@ def _review_only_runtime(
     tmp_path: Path,
     *,
     write_human_review: bool = True,
-    expires_at: str = "2026-07-12T00:00:00+00:00",
+    expires_at: str = "2026-12-31T00:00:00+00:00",
     event_id: str = "safety-event-4591",
 ) -> Path:
     runtime_root = _runtime_root(tmp_path, business_date=BUSINESS_DATE, current_as_of=BUSINESS_DATE)
     _write_broker_snapshot(runtime_root)
+    _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=FEATURE_DATE)
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     _write_feature_readiness(runtime_root)
     _write_high_risk_safety_decision(runtime_root)
     _write_safety_report(tmp_path, event_id="safety-event-4591")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -54,9 +55,23 @@ def test_opportunity_same_set_model_metrics() -> None:
 def test_feature_schema_registry_member_matches_legacy() -> None:
     feature = resolve_feature_schema_artifacts()
     member = feature.require_member("FEATURE_SCHEMA")
+    payload = json.loads(member.physical_path.read_text(encoding="utf-8"))
+
+    assert feature.artifact_set_id == "features.shared.accepted_set"
+    assert feature.artifact_set_type == "FEATURE_SCHEMA_SET"
+    assert feature.accepted_event_id
+    assert member.member_role == "FEATURE_SCHEMA"
+    assert member.physical_path.is_file()
     assert _sha(member.physical_path) == member.content_hash
+    assert payload["status"] == "READY"
+    assert payload["consumer_ready"] is True
+    assert payload["schema_version"].startswith("runtime_v2_feature_contract_")
+    assert set(payload["schemas"]) >= {"candidate", "opportunity", "pm"}
     if LEGACY_FEATURE_SCHEMA.is_file():
-        assert _sha(member.physical_path) == _sha(LEGACY_FEATURE_SCHEMA)
+        legacy = json.loads(LEGACY_FEATURE_SCHEMA.read_text(encoding="utf-8"))
+        assert legacy["status"] == payload["status"]
+        assert legacy["consumer_ready"] == payload["consumer_ready"]
+        assert set(legacy["schemas"]) >= set(payload["schemas"])
 
 
 def test_pm_policy_registry_members_match_legacy_and_current_adapter() -> None:

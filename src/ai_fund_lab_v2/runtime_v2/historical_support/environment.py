@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
+    resolve_listed_issues_snapshot,
+)
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, RuntimeV2SubmitResult
 
 
@@ -64,6 +67,7 @@ class HistoricalSubmitAdapter:
             review_required=False,
             broker_api_called=False,
             reason="historical submit adapter isolated; no external broker access",
+            response_classification=validation,
             configuration_diagnostic=self.diagnostic(),
         )
 
@@ -202,7 +206,7 @@ class HistoricalSubmitAdapter:
         trading_unit = _trading_unit_from_listed_info(command.listed_info)
         if trading_unit is not None and float(command.quantity) % trading_unit != 0:
             return _classification("HALT", "quantity does not satisfy accepted trading unit")
-        price = self._resolve_open_price(command.symbol, command.target_session_date)
+        price = self._resolve_open_price(command.symbol, command.target_session_date, command.listed_info)
         if price["status"] != "PASS":
             return price
         return {
@@ -216,7 +220,12 @@ class HistoricalSubmitAdapter:
             ),
         }
 
-    def _resolve_open_price(self, symbol: str, target_session_date: str) -> dict[str, Any]:
+    def _resolve_open_price(
+        self,
+        symbol: str,
+        target_session_date: str,
+        listed_info: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         ohlcv_path = Path(self.ohlcv_path)
         expected_hash = _expected_source_hash(Path(self.pit_manifest_path), target_session_date, "ohlcv_normalized")
         asof_expected = _expected_source_hash_from_asof_view(
@@ -230,11 +239,29 @@ class HistoricalSubmitAdapter:
         actual_hash = _sha256_file(ohlcv_path)
         if expected_hash and actual_hash != expected_hash:
             return _classification("HALT", "source hash mismatch", source_hash=actual_hash, expected_hash=expected_hash)
-        if not _symbol_in_pit_universe(Path(self.listed_issues_path), symbol, target_session_date):
-            return _classification("HALT", "symbol missing from PIT universe")
-        ca_status = _corporate_action_status(Path(self.raw_ohlcv_path), target_session_date)
+        universe = _resolve_symbol_in_pit_universe(
+            runtime_root=Path(self.runtime_root),
+            historical_asof_view_path=Path(self.historical_asof_view_path),
+            legacy_listed_path=Path(self.listed_issues_path),
+            symbol=symbol,
+            business_date=target_session_date,
+            listed_info=listed_info,
+            broker_environment=self.broker_environment,
+        )
+        if universe["status"] != "PASS":
+            return {
+                **universe,
+                "status": "HALT",
+                "submit_guard_reason": "symbol missing from PIT universe",
+            }
+        ca_status = _corporate_action_status(Path(self.raw_ohlcv_path), target_session_date, symbol)
         if ca_status != "PASS":
-            return _classification("HALT", "corporate action guard failed", corporate_action_status=ca_status)
+            return _classification(
+                "HALT",
+                "corporate action guard failed",
+                corporate_action_status=ca_status,
+                pit_universe_authority=universe,
+            )
         try:
             import pandas as pd
 
@@ -242,9 +269,13 @@ class HistoricalSubmitAdapter:
         except Exception as exc:
             return _classification("HALT", f"ohlcv source unreadable: {exc}")
         frame["Date_s"] = pd.to_datetime(frame["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        normalized_symbol = _normalize_listed_issue_code(symbol)
+        code_column = "Code" if "Code" in frame.columns else "code" if "code" in frame.columns else ""
+        if not code_column:
+            return _classification("HALT", "target session OHLCV code column missing")
         rows = frame[
             (frame["Date_s"] == target_session_date)
-            & (frame["Code"].astype(str).str.strip() == str(symbol).strip())
+            & (frame[code_column].map(_normalize_listed_issue_code) == normalized_symbol)
         ]
         if len(rows) != 1:
             return _classification("HALT", "missing or non-unique target session OHLCV row")
@@ -257,6 +288,7 @@ class HistoricalSubmitAdapter:
             "fill_price": float(value),
             "source_price_ref": f"{ohlcv_path}:{target_session_date}:{symbol}:Open",
             "source_hash": actual_hash,
+            "pit_universe_authority": universe,
         }
 
     def _submission_evidence_path(self, execution_identity: str) -> Path:
@@ -281,6 +313,7 @@ class HistoricalExecutionSnapshotProvider:
         report.parent.mkdir(parents=True, exist_ok=True)
         evidence_items = self._submission_evidence()
         cash_available = self._projected_cash_available(evidence_items)
+        positions = self._projected_position_payloads(evidence_items)
         payload = {
             "schema_version": "runtime_v2_historical_execution_snapshot_v1",
             "status": "PASS",
@@ -296,7 +329,7 @@ class HistoricalExecutionSnapshotProvider:
             "external_delivery": False,
             "orders": [_order_payload(item) for item in evidence_items],
             "executions": [_execution_payload(item) for item in evidence_items],
-            "positions": [_position_payload(item) for item in evidence_items if item.get("side") == "BUY"],
+            "positions": positions,
             "buying_power": {
                 "cash_available": str(cash_available),
                 "buying_power": str(cash_available),
@@ -325,8 +358,80 @@ class HistoricalExecutionSnapshotProvider:
     def _projected_cash_available(self, evidence_items: list[dict[str, Any]]) -> float:
         state = _read_json(Path(self.runtime_root) / "persistent_ledger" / "state.json")
         starting_cash = _number(state.get("cash") or state.get("runtime_evaluation_capital"))
-        cash_effect = sum(_number(item.get("cash_effect")) for item in evidence_items)
+        cash_effect = sum(
+            _number(item.get("cash_effect"))
+            for item in evidence_items
+            if not self._execution_already_applied(item)
+        )
         return starting_cash + cash_effect
+
+    def _projected_position_payloads(self, evidence_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        state = _read_json(Path(self.runtime_root) / "persistent_ledger" / "state.json")
+        positions: dict[str, dict[str, Any]] = {
+            str(item.get("symbol") or ""): dict(item)
+            for item in state.get("positions") or ()
+            if str(item.get("symbol") or "")
+        }
+        for item in evidence_items:
+            already_applied = self._execution_already_applied(item)
+            symbol = str(item.get("symbol") or "")
+            if not symbol:
+                continue
+            side = str(item.get("side") or "").upper()
+            quantity = _number(item.get("quantity"))
+            fill_price = _number(item.get("fill_price"))
+            current = positions.get(symbol)
+            if side == "BUY":
+                previous_quantity = _number((current or {}).get("quantity"))
+                previous_cost = previous_quantity * _number((current or {}).get("average_price"))
+                new_quantity = previous_quantity + quantity
+                average_price = (previous_cost + quantity * fill_price) / new_quantity if new_quantity else fill_price
+                positions[symbol] = {
+                    "symbol": symbol,
+                    "position_key": symbol,
+                    "quantity": new_quantity,
+                    "average_price": average_price,
+                    "market_value": new_quantity * fill_price,
+                }
+            elif side == "SELL":
+                if already_applied:
+                    continue
+                if current is None:
+                    continue
+                previous_quantity = _number(current.get("quantity"))
+                remaining = max(previous_quantity - quantity, 0.0)
+                if remaining <= 0:
+                    positions.pop(symbol, None)
+                    continue
+                average_price = _number(current.get("average_price"))
+                current_market_value = _number(current.get("market_value"))
+                market_price = current_market_value / previous_quantity if previous_quantity else fill_price
+                positions[symbol] = {
+                    "symbol": symbol,
+                    "position_key": symbol,
+                    "quantity": remaining,
+                    "average_price": average_price,
+                    "market_value": remaining * market_price,
+                }
+        return [_position_payload(item) for item in positions.values() if _number(item.get("quantity")) > 0]
+
+    def _execution_already_applied(self, item: dict[str, Any]) -> bool:
+        order_hash = _normalizer_hash_ref(item.get("order_identity"))
+        path = Path(self.runtime_root) / "persistent_ledger" / "executions.jsonl"
+        if not path.exists():
+            return False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(row.get("execution_evidence_type") or "") != "execution_equivalent":
+                continue
+            if str(row.get("source_broker_order_hash") or row.get("order_id") or "") == order_hash:
+                return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -539,6 +644,11 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _normalizer_hash_ref(value: object) -> str:
+    encoded = json.dumps(str(value), sort_keys=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return ""
@@ -588,26 +698,276 @@ def _expected_source_hash_from_asof_view(
     return ""
 
 
-def _symbol_in_pit_universe(listed_path: Path, symbol: str, business_date: str) -> bool:
+def _resolve_symbol_in_pit_universe(
+    *,
+    runtime_root: Path,
+    historical_asof_view_path: Path,
+    legacy_listed_path: Path,
+    symbol: str,
+    business_date: str,
+    listed_info: dict[str, Any] | None,
+    broker_environment: str,
+) -> dict[str, Any]:
+    source = _listed_issues_universe_source(
+        runtime_root=runtime_root,
+        historical_asof_view_path=historical_asof_view_path,
+        legacy_listed_path=legacy_listed_path,
+        business_date=business_date,
+        broker_environment=broker_environment,
+    )
+    if source["status"] != "PASS":
+        return source
+    resolution = _symbol_in_pit_universe(
+        listed_path=Path(str(source["selected_snapshot_path"])),
+        symbol=symbol,
+        business_date=business_date,
+        listed_info=listed_info,
+        source=source,
+    )
+    return resolution
+
+
+def _listed_issues_universe_source(
+    *,
+    runtime_root: Path,
+    historical_asof_view_path: Path,
+    legacy_listed_path: Path,
+    business_date: str,
+    broker_environment: str,
+) -> dict[str, Any]:
+    if broker_environment != "historical_simulated":
+        return {
+            "status": "HALT",
+            "reason": "historical PIT universe requires broker_environment=historical_simulated",
+            "pit_universe_authority_type": "UNAVAILABLE",
+        }
+    asof_authority = _listed_issues_authority_from_asof_view(historical_asof_view_path, business_date)
+    if asof_authority:
+        return asof_authority
+    snapshot_root = runtime_root / "operations" / "jquants" / "historical_snapshots" / "listed_issues"
+    if (snapshot_root / "index.json").is_file():
+        resolution = resolve_listed_issues_snapshot(
+            snapshot_root=snapshot_root,
+            business_date=business_date,
+            mode="historical",
+        )
+        if resolution.status != "PASS":
+            return {
+                "status": "HALT",
+                "reason": resolution.reason,
+                "pit_universe_authority_type": "HISTORICAL_LISTED_ISSUES_SNAPSHOT",
+                "selected_snapshot_date": resolution.selected_snapshot_date,
+                "selected_snapshot_path": resolution.selected_snapshot_path,
+                "selected_manifest_path": resolution.selected_manifest_path,
+                "selected_content_hash": resolution.selected_content_hash,
+                "selected_schema_hash": resolution.selected_schema_hash,
+                "selection_policy": resolution.selection_policy,
+                "future_snapshot_used": resolution.future_snapshot_used,
+            }
+        return {
+            "status": "PASS",
+            "reason": "historical_listed_issues_snapshot_resolved_for_submit_guard",
+            "pit_universe_authority_type": "HISTORICAL_LISTED_ISSUES_SNAPSHOT",
+            "selected_snapshot_date": resolution.selected_snapshot_date,
+            "selected_snapshot_path": resolution.selected_snapshot_path,
+            "selected_manifest_path": resolution.selected_manifest_path,
+            "selected_content_hash": resolution.selected_content_hash,
+            "selected_schema_hash": resolution.selected_schema_hash,
+            "selection_policy": resolution.selection_policy,
+            "snapshot_age_days": resolution.snapshot_age_days,
+            "future_snapshot_used": resolution.future_snapshot_used,
+            "content_hash_verified": resolution.content_hash_verified,
+        }
+    return {
+        "status": "PASS",
+        "reason": "legacy_listed_issues_path_used_for_submit_guard_fixture",
+        "pit_universe_authority_type": "LEGACY_EXPLICIT_LISTED_ISSUES_PATH",
+        "selected_snapshot_date": "",
+        "selected_snapshot_path": str(legacy_listed_path),
+        "selected_manifest_path": "",
+        "selected_content_hash": _sha256_file(legacy_listed_path),
+        "selected_schema_hash": "",
+        "selection_policy": "legacy_explicit_path",
+        "future_snapshot_used": False,
+        "content_hash_verified": bool(_sha256_file(legacy_listed_path)),
+    }
+
+
+def _listed_issues_authority_from_asof_view(asof_view_path: Path, business_date: str) -> dict[str, Any]:
+    if not asof_view_path.exists() or not asof_view_path.is_file():
+        return {}
+    try:
+        view = json.loads(asof_view_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if str(view.get("business_date") or "") != business_date:
+        return {
+            "status": "HALT",
+            "reason": "historical_asof_view_business_date_mismatch",
+            "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+            "selected_snapshot_path": "",
+        }
+    for entry in view.get("authorities") or ():
+        if str(entry.get("authority") or "") != "listed_issues":
+            continue
+        selected_path = str(entry.get("physical_source_path") or "")
+        selected_hash = str(entry.get("physical_source_hash") or "")
+        if str(entry.get("status") or "") != "PASS":
+            return {
+                "status": "HALT",
+                "reason": str(entry.get("reason") or "historical_asof_listed_issues_not_ready"),
+                "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+                "selected_snapshot_date": str(entry.get("selected_snapshot_date") or ""),
+                "selected_snapshot_path": selected_path,
+                "selected_content_hash": selected_hash,
+            }
+        actual_hash = _sha256_file(Path(selected_path))
+        if not selected_path or not Path(selected_path).is_file():
+            return {
+                "status": "HALT",
+                "reason": "historical_asof_listed_issues_path_missing",
+                "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+                "selected_snapshot_path": selected_path,
+            }
+        if selected_hash and actual_hash != selected_hash:
+            return {
+                "status": "HALT",
+                "reason": "historical_asof_listed_issues_hash_mismatch",
+                "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+                "selected_snapshot_path": selected_path,
+                "selected_content_hash": actual_hash,
+                "expected_content_hash": selected_hash,
+            }
+        selected_snapshot_date = str(entry.get("selected_snapshot_date") or entry.get("logical_max_date") or "")
+        if selected_snapshot_date and selected_snapshot_date > business_date:
+            return {
+                "status": "HALT",
+                "reason": "historical_asof_listed_issues_future_snapshot_rejected",
+                "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+                "selected_snapshot_date": selected_snapshot_date,
+                "selected_snapshot_path": selected_path,
+            }
+        return {
+            "status": "PASS",
+            "reason": "historical_asof_listed_issues_authority_resolved_for_submit_guard",
+            "pit_universe_authority_type": "HISTORICAL_ASOF_LISTED_ISSUES",
+            "selected_snapshot_date": selected_snapshot_date,
+            "selected_snapshot_path": selected_path,
+            "selected_manifest_path": str(entry.get("manifest_path") or ""),
+            "selected_content_hash": actual_hash,
+            "expected_content_hash": selected_hash,
+            "selected_schema_hash": str(entry.get("schema_hash") or ""),
+            "selection_policy": str(entry.get("selection_policy") or "latest_snapshot_not_after_business_date"),
+            "snapshot_age_days": entry.get("snapshot_age_days"),
+            "future_snapshot_used": False,
+            "content_hash_verified": bool(selected_hash and actual_hash == selected_hash),
+            "row_count": int(entry.get("physical_row_count") or 0),
+        }
+    return {}
+
+
+def _symbol_in_pit_universe(
+    *,
+    listed_path: Path,
+    symbol: str,
+    business_date: str,
+    listed_info: dict[str, Any] | None,
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_symbol = _normalize_listed_issue_code(symbol)
+    listed_info_code = _normalize_listed_issue_code((listed_info or {}).get("code") or "")
+    if listed_info_code and listed_info_code != normalized_symbol:
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "pending_listed_info_code_mismatch",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "pending_listed_info_code": listed_info_code,
+            "lineage_match": False,
+        }
     if not listed_path.exists():
-        return False
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "listed_issues_universe_path_missing",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "lineage_match": False,
+        }
     try:
         import pandas as pd
 
         frame = pd.read_parquet(listed_path)
     except Exception:
-        return False
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "listed_issues_universe_unreadable",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "lineage_match": False,
+        }
     frame = frame.copy()
     frame["Date_s"] = pd.to_datetime(frame["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     pit = frame[frame["Date_s"] <= business_date]
     if pit.empty:
-        return False
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "listed_issues_snapshot_has_no_rows_not_after_business_date",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "row_count": int(len(frame)),
+            "pit_row_count": 0,
+            "lineage_match": False,
+        }
     as_of = pit["Date_s"].max()
-    rows = frame[(frame["Date_s"] == as_of) & (frame["Code"].astype(str).str.strip() == str(symbol).strip())]
-    return not rows.empty
+    code_column = "Code" if "Code" in frame.columns else "code" if "code" in frame.columns else ""
+    if not code_column:
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "listed_issues_code_column_missing",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "row_count": int(len(frame)),
+            "pit_row_count": int(len(pit)),
+            "lineage_match": False,
+        }
+    normalized_codes = frame[code_column].map(_normalize_listed_issue_code)
+    rows = frame[(frame["Date_s"] == as_of) & (normalized_codes == normalized_symbol)]
+    if rows.empty:
+        return {
+            **source,
+            "status": "HALT",
+            "reason": "symbol_missing_from_pit_universe",
+            "requested_symbol": str(symbol),
+            "normalized_symbol": normalized_symbol,
+            "row_count": int(len(frame)),
+            "pit_row_count": int(len(pit)),
+            "resolved_as_of_date": str(as_of),
+            "lineage_match": False,
+        }
+    return {
+        **source,
+        "status": "PASS",
+        "reason": "symbol_found_in_pit_universe",
+        "requested_symbol": str(symbol),
+        "normalized_symbol": normalized_symbol,
+        "row_count": int(len(frame)),
+        "pit_row_count": int(len(pit)),
+        "resolved_as_of_date": str(as_of),
+        "matched_row_count": int(len(rows)),
+        "lineage_match": True,
+    }
 
 
-def _corporate_action_status(raw_ohlcv_path: Path, business_date: str) -> str:
+def _normalize_listed_issue_code(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _corporate_action_status(raw_ohlcv_path: Path, business_date: str, symbol: str) -> str:
     if not raw_ohlcv_path.exists():
         return "MISSING"
     try:
@@ -618,7 +978,14 @@ def _corporate_action_status(raw_ohlcv_path: Path, business_date: str) -> str:
         return "UNREADABLE"
     frame = frame.copy()
     frame["Date_s"] = pd.to_datetime(frame["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    rows = frame[frame["Date_s"] == business_date]
+    code_column = "Code" if "Code" in frame.columns else "code" if "code" in frame.columns else ""
+    if not code_column:
+        return "MISSING_CODE"
+    normalized_symbol = _normalize_listed_issue_code(symbol)
+    rows = frame[
+        (frame["Date_s"] == business_date)
+        & (frame[code_column].map(_normalize_listed_issue_code) == normalized_symbol)
+    ]
     if rows.empty:
         return "MISSING"
     if "AdjFactor" not in rows.columns:
@@ -668,12 +1035,14 @@ def _execution_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _position_payload(item: dict[str, Any]) -> dict[str, Any]:
-    market_value = float(item["fill_price"]) * float(item["quantity"])
+    quantity = float(item["quantity"])
+    average_price = float(item.get("average_price") or item.get("fill_price") or 0.0)
+    market_value = float(item.get("market_value") or average_price * quantity)
     return {
         "position_ref": f"historical-position-{item['symbol']}",
         "position_key": item["symbol"],
         "symbol": item["symbol"],
-        "quantity": item["quantity"],
-        "average_price": item["fill_price"],
+        "quantity": quantity,
+        "average_price": average_price,
         "market_value": market_value,
     }

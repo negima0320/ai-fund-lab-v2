@@ -142,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--business-days", type=int)
         sub.add_argument("--start-date")
         sub.add_argument("--date-from")
-        sub.add_argument("--date-to")
+        sub.add_argument("--date-to", dest="date_to")
+        sub.add_argument("--end-date", dest="date_to")
 
     def add_mutation_safety(sub: argparse.ArgumentParser) -> None:
         sub.add_argument("--dry-run", action="store_true")
@@ -238,14 +239,14 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
 
 
 def status(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path) -> CommandResult:
-    active_run = latest_run(evidence_root)
+    active_run = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
     payload = base_payload("status", "PASS")
     payload.update(
         {
             "runtime_root": str(runtime_root),
             "current_environment": read_environment(runtime_root),
             "active_test_run": active_run.get("run_id") if active_run else "",
-            "run_status": active_run.get("status") if active_run else "NONE",
+            "run_status": active_run.get("status") if active_run else "IDLE",
             "current_business_date": read_runtime_business_date(runtime_root),
             "completed_business_days": active_run.get("completed_business_days", []) if active_run else [],
             "next_job": active_run.get("next_job", "") if active_run else "",
@@ -287,10 +288,19 @@ def plan_command(
     )
     plan_payload["baseline_compatibility"] = baseline_compatibility
     validate_plan_entry_gate(plan_payload)
-    if args.write_evidence:
-        run_id = plan_payload["run_id"]
-        run_dir = runs_root(evidence_root) / run_id
-        write_json_atomic(run_dir / "plan.json", plan_payload)
+    try:
+        persistence = persist_runtime_test_plan(
+            evidence_root=evidence_root,
+            plan_payload=plan_payload,
+            profile_id=str(profile["profile_id"]),
+        )
+    except Exception as exc:
+        raise RuntimeTestError(
+            f"runtime test plan persistence failed: {exc}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        ) from exc
+    plan_payload["plan_persistence"] = persistence
     plan_status = "PASS" if baseline_compatibility["baseline_compatibility_status"] == "PASS" else "PLAN_REVIEW_REQUIRED"
     payload = base_payload("plan", plan_status)
     payload.update(plan_payload)
@@ -443,13 +453,24 @@ def run_command(
         for job in day["jobs"]:
             run_state["next_job"] = f"{day['business_date']}:{job['job']}"
             write_json_atomic(run_dir / "run_state.json", run_state)
-            completed = run_runtime_cli(job["command"], cwd=Path.cwd())
+            command_resolution = resolve_run_job_command(runtime_root=runtime_root, job_record=job)
+            command = command_resolution["command"]
+            completed = run_runtime_cli(command, cwd=Path.cwd())
             job_record = {
                 "business_date": day["business_date"],
                 "job": job["job"],
                 "exit_code": completed.returncode,
-                "command": job["command"],
+                "command": command,
+                "planned_command": job["command"],
+                "feature_date_command_resolution": command_resolution["resolution"],
             }
+            collect_runtime_cli_job_evidence(
+                completed=completed,
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                business_date=day["business_date"],
+                job=job["job"],
+            )
             run_state["completed_jobs"].append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
             if completed.returncode != 0:
@@ -509,6 +530,12 @@ def resume_command(
 ) -> CommandResult:
     require_historical_mutation_context(args=args, profile=profile)
     run_state = load_run_state(evidence_root, args.run_id)
+    if is_run_closed(evidence_root=evidence_root, run_id=str(args.run_id)):
+        raise RuntimeTestError(
+            f"resume rejected; run is closed: {args.run_id}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
     baseline = run_state.get("source_baseline") or {}
     current = source_baseline(runtime_root)
     mismatches = [key for key in ("source_commit", "source_dirty", "registry_hash") if baseline.get(key) != current.get(key)]
@@ -544,14 +571,25 @@ def resume_command(
                 continue
             run_state["next_job"] = f"{day['business_date']}:{job['job']}"
             write_json_atomic(run_dir / "run_state.json", run_state)
-            completed = run_runtime_cli(job["command"], cwd=Path.cwd())
+            command_resolution = resolve_run_job_command(runtime_root=runtime_root, job_record=job)
+            command = command_resolution["command"]
+            completed = run_runtime_cli(command, cwd=Path.cwd())
             job_record = {
                 "business_date": day["business_date"],
                 "job": job["job"],
                 "exit_code": completed.returncode,
-                "command": job["command"],
+                "command": command,
+                "planned_command": job["command"],
+                "feature_date_command_resolution": command_resolution["resolution"],
                 "resumed": True,
             }
+            collect_runtime_cli_job_evidence(
+                completed=completed,
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                business_date=day["business_date"],
+                job=job["job"],
+            )
             run_state.setdefault("completed_jobs", []).append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
             if completed.returncode != 0:
@@ -680,7 +718,14 @@ def build_plan(
     date_to: str | None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    dates = resolve_business_dates(profile=profile, business_days=business_days, start_date=start_date, date_from=date_from, date_to=date_to)
+    dates = resolve_business_dates(
+        profile=profile,
+        runtime_root=runtime_root,
+        business_days=business_days,
+        start_date=start_date,
+        date_from=date_from,
+        date_to=date_to,
+    )
     final_run_id = run_id or f"runtime-test-{profile['profile_id']}-{timestamp_id()}"
     days = []
     for business_date in dates:
@@ -720,6 +765,9 @@ def build_plan(
         "run_id": final_run_id,
         "profile_id": profile["profile_id"],
         "profile_hash": semantic_hash(profile),
+        "requested_start_date": dates[0] if dates else "",
+        "requested_end_date": dates[-1] if dates else "",
+        "requested_business_days": len(dates),
         "environment_id": f"{profile['mode']}:{profile['broker_environment']}",
         "runtime_root": str(runtime_root),
         "business_dates": days,
@@ -756,13 +804,19 @@ def validate_plan_entry_gate(plan_payload: dict[str, Any]) -> None:
         source = str(feature.get("source") or "")
         contract_materialized = bool(feature.get("contract_materialized"))
         contract_path = Path(str(feature.get("contract_path") or ""))
+        materialized_contract_exists = bool(contract_path.is_file())
+        plan_expectation_only = source == "runtime_test_plan_schedule_expectation"
+        normal_contract = source == "normal_feature_date_contract"
         checks = {
-            "source_runtime_test_plan_preflight": source == "runtime_test_plan_preflight",
+            "source_is_plan_expectation_or_normal_contract": plan_expectation_only or normal_contract,
             "status_pass": feature.get("status") == "PASS",
-            "contract_not_materialized": contract_materialized is False,
-            "materialized_contract_not_required": not contract_materialized or bool(contract_path.is_file()),
+            "materialized_contract_state_consistent": (
+                materialized_contract_exists if normal_contract else not materialized_contract_exists
+            )
+            and contract_materialized is normal_contract,
             "contract_hash_present": bool(feature.get("contract_hash")),
             "profile_not_authority": feature.get("profile_value_used_as_authority") is False,
+            "selected_feature_date_present": bool(selected),
             "selected_matches_profile_expected": not expected or selected == expected,
         }
         failed = [name for name, passed in checks.items() if not passed]
@@ -780,6 +834,106 @@ def validate_plan_entry_gate(plan_payload: dict[str, Any]) -> None:
             status="PRECONDITION_FAILURE",
             exit_code=EXIT_PRECONDITION_FAILURE,
         )
+
+
+def persist_runtime_test_plan(
+    *,
+    evidence_root: Path,
+    plan_payload: dict[str, Any],
+    profile_id: str,
+) -> dict[str, Any]:
+    run_id = str(plan_payload.get("run_id") or "")
+    if not run_id:
+        raise ValueError("plan run_id missing")
+    plan_path = runs_root(evidence_root) / run_id / "plan.json"
+    persistence = {
+        "status": "PENDING",
+        "path": str(plan_path),
+        "exists": False,
+        "read_back_valid": False,
+        "run_id_matches": False,
+        "profile_id_matches": False,
+        "schema_version_matches": False,
+        "source_commit_matches": False,
+        "business_dates_match": False,
+        "job_sequence_matches": False,
+        "artifact_hash": "",
+    }
+    plan_payload["plan_persistence"] = dict(persistence)
+    plan_payload["plan_persistence"]["status"] = "PASS"
+    plan_payload["plan_persistence"]["artifact_hash"] = plan_artifact_hash(plan_payload)
+    write_json_atomic(plan_path, plan_payload)
+    read_back = load_plan(plan_path)
+    validation = validate_persisted_plan(
+        expected=plan_payload,
+        actual=read_back,
+        expected_run_id=run_id,
+        expected_profile_id=profile_id,
+        plan_path=plan_path,
+    )
+    if validation["status"] != "PASS":
+        raise ValueError("plan persistence validation failed: " + json.dumps(validation, sort_keys=True))
+    plan_payload["plan_persistence"] = dict(validation)
+    plan_payload["plan_persistence"]["artifact_hash"] = plan_artifact_hash(plan_payload)
+    write_json_atomic(plan_path, plan_payload)
+    final_read_back = load_plan(plan_path)
+    final_validation = validate_persisted_plan(
+        expected=plan_payload,
+        actual=final_read_back,
+        expected_run_id=run_id,
+        expected_profile_id=profile_id,
+        plan_path=plan_path,
+    )
+    if final_validation["status"] != "PASS":
+        raise ValueError("final plan persistence validation failed: " + json.dumps(final_validation, sort_keys=True))
+    return final_validation
+
+
+def validate_persisted_plan(
+    *,
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+    expected_run_id: str,
+    expected_profile_id: str,
+    plan_path: Path,
+) -> dict[str, Any]:
+    actual_persistence = dict(actual.get("plan_persistence") or {})
+    expected_hash = plan_artifact_hash(expected)
+    actual_hash = plan_artifact_hash(actual)
+    checks = {
+        "exists": plan_path.is_file(),
+        "read_back_valid": isinstance(actual, dict),
+        "run_id_matches": str(actual.get("run_id") or "") == expected_run_id,
+        "profile_id_matches": str(actual.get("profile_id") or "") == expected_profile_id,
+        "schema_version_matches": str(actual.get("schema_version") or "") == str(expected.get("schema_version") or ""),
+        "source_commit_matches": str(actual.get("source_commit") or "") == str(expected.get("source_commit") or ""),
+        "business_dates_match": actual.get("business_dates") == expected.get("business_dates"),
+        "job_sequence_matches": actual.get("job_sequence") == expected.get("job_sequence"),
+        "artifact_hash_matches": actual_hash == expected_hash == str(actual_persistence.get("artifact_hash") or ""),
+    }
+    status = "PASS" if all(checks.values()) else "FAIL"
+    return {
+        "status": status,
+        "path": str(plan_path),
+        "exists": checks["exists"],
+        "read_back_valid": checks["read_back_valid"],
+        "run_id_matches": checks["run_id_matches"],
+        "profile_id_matches": checks["profile_id_matches"],
+        "schema_version_matches": checks["schema_version_matches"],
+        "source_commit_matches": checks["source_commit_matches"],
+        "business_dates_match": checks["business_dates_match"],
+        "job_sequence_matches": checks["job_sequence_matches"],
+        "artifact_hash": actual_hash,
+    }
+
+
+def plan_artifact_hash(payload: dict[str, Any]) -> str:
+    canonical = json.loads(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    persistence = dict(canonical.get("plan_persistence") or {})
+    if persistence:
+        persistence["artifact_hash"] = ""
+        canonical["plan_persistence"] = persistence
+    return "sha256:" + semantic_hash(canonical)
 
 
 def runtime_cli_command(
@@ -833,28 +987,98 @@ def runtime_cli_command(
     return command
 
 
+def resolve_run_job_command(*, runtime_root: Path, job_record: dict[str, Any]) -> dict[str, Any]:
+    command = list(job_record.get("command") or [])
+    job = str(job_record.get("job") or "")
+    business_date = str(job_record.get("business_date") or "")
+    planned_feature_date = str(job_record.get("feature_date") or "")
+    resolution = {
+        "schema_version": "runtime_test_run_feature_date_command_resolution_v1",
+        "job": job,
+        "business_date": business_date,
+        "planned_feature_date": planned_feature_date,
+        "materialized_contract_required": job in FEATURE_DATE_JOBS,
+        "materialized_contract_present": False,
+        "selected_feature_date": "",
+        "feature_date_argument_action": "not_required",
+        "feature_date_authority_source": "",
+        "reason": "",
+    }
+    if job not in FEATURE_DATE_JOBS:
+        return {"command": command, "resolution": resolution}
+    contract = load_feature_date_contract(
+        operations_root=runtime_root / "operations",
+        requested_feature_date=business_date,
+    )
+    if contract is None:
+        command = command_without_option(command, "--feature-date")
+        resolution.update(
+            {
+                "feature_date_argument_action": "removed_no_materialized_contract",
+                "feature_date_authority_source": "missing_normal_feature_date_contract",
+                "reason": "materialized_feature_date_contract_missing_at_run_boundary",
+            }
+        )
+        return {"command": command, "resolution": resolution}
+    selected = contract.selected_feature_date
+    command = command_with_option(command, "--feature-date", selected)
+    resolution.update(
+        {
+            "materialized_contract_present": True,
+            "selected_feature_date": selected,
+            "feature_date_argument_action": "set_from_materialized_contract",
+            "feature_date_authority_source": "normal_feature_date_contract",
+            "reason": "runtime_job_command_feature_date_resolved_from_materialized_contract",
+            "contract_status": contract.status,
+            "contract_reason": contract.reason,
+            "contract_artifact_path": contract.contract_artifact_path,
+            "planned_matches_materialized": (not planned_feature_date) or planned_feature_date == selected,
+        }
+    )
+    return {"command": command, "resolution": resolution}
+
+
+def command_with_option(command: list[str], option: str, value: str) -> list[str]:
+    updated = command_without_option(command, option)
+    if value:
+        updated.extend([option, value])
+    return updated
+
+
+def command_without_option(command: list[str], option: str) -> list[str]:
+    updated: list[str] = []
+    skip_next = False
+    for item in command:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == option:
+            skip_next = True
+            continue
+        updated.append(item)
+    return updated
+
+
 def resolve_business_dates(
     *,
     profile: dict[str, Any],
+    runtime_root: Path,
     business_days: int | None,
     start_date: str | None,
     date_from: str | None,
     date_to: str | None,
 ) -> list[str]:
+    calendar_days = load_trading_calendar_business_days(runtime_root=runtime_root)
     if date_from and date_to:
-        start = date.fromisoformat(date_from)
-        end = date.fromisoformat(date_to)
-        accepted = set(profile.get("accepted_feature_dates") or {})
-        days: list[str] = []
-        current = start
-        while current <= end:
-            text = current.isoformat()
-            if current.weekday() < 5 or text in accepted:
-                days.append(text)
-            current += timedelta(days=1)
-        return days
+        if calendar_days:
+            return [day for day in calendar_days if date_from <= day <= date_to]
+        return weekday_business_days(date_from=date_from, date_to=date_to)
     count = business_days or int(profile["business_days"])
-    start = date.fromisoformat(start_date or profile["window"]["date_from"])
+    start_text = start_date or profile["window"]["date_from"]
+    if calendar_days:
+        selected = [day for day in calendar_days if day >= start_text]
+        return selected[:count]
+    start = date.fromisoformat(start_text)
     days = []
     current = start
     while len(days) < count:
@@ -864,31 +1088,92 @@ def resolve_business_dates(
     return days
 
 
+def load_trading_calendar_business_days(*, runtime_root: Path) -> list[str]:
+    source = runtime_root / "operations" / "jquants" / "historical_snapshots" / "trading_calendar" / "data.parquet"
+    if not source.is_file():
+        return []
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source)
+    except Exception:
+        return []
+    if "Date" not in frame.columns:
+        return []
+    if "HolDiv" in frame.columns:
+        mask = frame["HolDiv"].astype(str) == "1"
+    elif "HolidayDivision" in frame.columns:
+        mask = frame["HolidayDivision"].astype(str) == "1"
+    else:
+        return []
+    return sorted(str(value) for value in frame.loc[mask, "Date"].dropna().unique())
+
+
+def weekday_business_days(*, date_from: str, date_to: str) -> list[str]:
+    start = date.fromisoformat(date_from)
+    end = date.fromisoformat(date_to)
+    days: list[str] = []
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
 def resolve_feature_date(*, profile: dict[str, Any], runtime_root: Path, business_date: str) -> dict[str, Any]:
     contract_path = runtime_root / "operations" / "feature_date_contract" / f"{business_date}.json"
-    accepted = profile.get("accepted_feature_dates") or {}
-    selected = str(accepted.get(business_date) or business_date)
-    payload = {
-        "status": "PASS",
-        "reason": "runtime_test_plan_preflight_uses_profile_window_not_stale_feature_contract",
-        "requested_feature_date": business_date,
-        "selected_feature_date": selected,
-        "latest_available_market_date": selected,
-        "contract_artifact_path": str(contract_path),
-    }
+    expected = str((profile.get("accepted_feature_dates") or {}).get(business_date) or "")
+    contract = load_feature_date_contract(
+        operations_root=runtime_root / "operations",
+        requested_feature_date=business_date,
+    )
+    if contract is None:
+        selected = expected or business_date
+        payload = {
+            "status": "PASS",
+            "reason": "feature_date_contract_not_yet_materialized_plan_expectation_only",
+            "requested_feature_date": business_date,
+            "selected_feature_date": selected,
+            "latest_available_market_date": selected,
+            "contract_artifact_path": str(contract_path),
+            "plan_feature_date_expectation_source": "runtime_test_profile_schedule",
+        }
+        source = "runtime_test_plan_schedule_expectation"
+        feature_date_authority_source = "not_yet_materialized_plan_expectation"
+        authority_status = "NOT_YET_MATERIALIZED"
+        reason = payload["reason"]
+    else:
+        payload = contract.to_payload()
+        payload["contract_artifact_path"] = contract.contract_artifact_path
+        selected = contract.selected_feature_date
+        source = "normal_feature_date_contract"
+        feature_date_authority_source = "normal_feature_date_contract"
+        authority_status = "PASS"
+        reason = str(payload.get("reason") or "")
+        if expected and selected != expected:
+            authority_status = "REVIEW_REQUIRED"
+            reason = "feature_date_authority_mismatch"
+        payload["status"] = authority_status if authority_status != "PASS" else str(payload.get("status") or "UNKNOWN")
+    payload["reason"] = reason
     return {
-        "source": "runtime_test_plan_preflight",
+        "source": source,
         "contract_path": str(contract_path),
         "contract_hash": semantic_hash(payload),
-        "contract_materialized": False,
-        "stale_existing_contract_ignored": contract_path.exists(),
-        "profile_expected_selected_feature_date": str((profile.get("accepted_feature_dates") or {}).get(business_date) or ""),
+        "contract_materialized": contract is not None,
+        "materialized_contract_exists": contract_path.is_file(),
+        "stale_existing_contract_ignored": False,
+        "profile_expected_selected_feature_date": expected,
         "profile_value_used_as_authority": False,
+        "profile_value_used_as_plan_expectation": bool(expected),
         "requested_feature_date": business_date,
         "selected_feature_date": selected,
         "carryover": selected != business_date,
         "status": payload.get("status", "UNKNOWN"),
         "reason": payload.get("reason", ""),
+        "authority_status": authority_status,
+        "feature_date_authority_source": feature_date_authority_source,
+        "run_authority_required_stage": "runtime_market_refresh_and_data_readiness",
     }
 
 
@@ -1415,6 +1700,45 @@ def latest_run(evidence_root: Path) -> dict[str, Any]:
     return payload
 
 
+def active_run_for_profile(evidence_root: Path, *, profile_id: str) -> dict[str, Any]:
+    root = runs_root(evidence_root)
+    if not root.exists():
+        return {}
+    states = sorted(root.glob("*/run_state.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for state_path in states:
+        payload = read_json(state_path)
+        validate_schema(
+            payload=payload,
+            artifact_name="runtime test run state",
+            supported=SUPPORTED_RUN_STATE_SCHEMA_VERSIONS,
+        )
+        run_profile_id = str(payload.get("profile_id") or "")
+        if run_profile_id and run_profile_id != profile_id:
+            continue
+        run_id = str(payload.get("run_id") or state_path.parent.name)
+        if is_run_closed(evidence_root=evidence_root, run_id=run_id):
+            continue
+        if str(payload.get("status") or "") in {"RUNNING", "HALT"}:
+            return payload
+    return {}
+
+
+def is_run_closed(*, evidence_root: Path, run_id: str) -> bool:
+    final_summary_path = runs_root(evidence_root) / run_id / "final_summary.json"
+    if not final_summary_path.exists():
+        return False
+    try:
+        payload = read_json(final_summary_path)
+        validate_schema(
+            payload=payload,
+            artifact_name="runtime test final summary",
+            supported={FINAL_SUMMARY_SCHEMA_VERSION},
+        )
+    except Exception:
+        return False
+    return bool(payload.get("closed_at"))
+
+
 def backups_root(evidence_root: Path) -> Path:
     return evidence_root / "backups"
 
@@ -1510,6 +1834,68 @@ def run_runtime_cli(command: list[str], *, cwd: Path) -> subprocess.CompletedPro
     return subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
+def collect_runtime_cli_job_evidence(
+    *,
+    completed: subprocess.CompletedProcess[str],
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    job: str,
+) -> None:
+    job_dir = run_dir / "daily" / business_date / job
+    job_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = runtime_cli_manifest_path(completed.stdout)
+    copied_manifest = ""
+    copied_log = ""
+    run_id = ""
+    if manifest_path and manifest_path.is_file():
+        copied_manifest_path = job_dir / "runtime_manifest.json"
+        shutil.copy2(manifest_path, copied_manifest_path)
+        copied_manifest = str(copied_manifest_path)
+        try:
+            manifest = read_json(manifest_path)
+            run_id = str(manifest.get("run_id") or "")
+        except (OSError, json.JSONDecodeError):
+            run_id = ""
+    if run_id:
+        log_path = runtime_root / "runtime_state" / "logs" / business_date / f"{run_id}.log"
+        if log_path.is_file():
+            copied_log_path = job_dir / "runtime_log.log"
+            shutil.copy2(log_path, copied_log_path)
+            copied_log = str(copied_log_path)
+    write_json_atomic(
+        job_dir / "cli_result.json",
+        {
+            "schema_version": "runtime_test_cli_job_evidence_v1",
+            "business_date": business_date,
+            "job": job,
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "source_manifest_path": str(manifest_path) if manifest_path else "",
+            "runtime_manifest_copied": bool(copied_manifest),
+            "runtime_manifest_path": copied_manifest,
+            "runtime_log_copied": bool(copied_log),
+            "runtime_log_path": copied_log,
+        },
+    )
+
+
+def runtime_cli_manifest_path(stdout: str) -> Path | None:
+    for line in reversed(stdout.splitlines()):
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        manifest = payload.get("manifest")
+        if isinstance(manifest, str) and manifest:
+            return Path(manifest)
+    return None
+
+
 def base_payload(subcommand: str, status: str) -> dict[str, Any]:
     exit_code = next((code for code, name in EXIT_CODES.items() if name == status), EXIT_PASS)
     return {
@@ -1554,7 +1940,11 @@ def read_json(path: Path) -> dict[str, Any]:
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
     tmp.replace(path)
 
 

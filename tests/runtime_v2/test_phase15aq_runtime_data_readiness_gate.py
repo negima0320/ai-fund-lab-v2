@@ -22,6 +22,7 @@ class FixtureModel:
 def test_phase15aq_data_readiness_job_writes_ready_artifact(tmp_path):
     runtime_root = _runtime_root(tmp_path, business_date=BUSINESS_DATE, current_as_of=BUSINESS_DATE)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=FEATURE_DATE)
+    _write_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     policy_path = _write_policy(tmp_path / "capital_deployment.json")
     candidate_model = _write_file(tmp_path / "candidate.pkl")
     opportunity_model = _write_file(tmp_path / "opportunity.pkl")
@@ -150,6 +151,7 @@ def test_phase15aq_stale_current_is_review_required(tmp_path):
 def test_phase15aq_non_trading_day_demo_override_allows_expected_previous_current(tmp_path):
     runtime_root = _runtime_root(tmp_path, business_date=NON_TRADING_DAY, current_as_of="2026-09-18")
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date="2026-09-18")
+    _write_feature_date_contract(runtime_root, business_date=NON_TRADING_DAY, selected_feature_date="2026-09-18")
 
     result = evaluate_runtime_data_readiness(
         runtime_root=runtime_root,
@@ -240,6 +242,18 @@ def test_phase17r_historical_data_readiness_uses_contract_and_historical_scope(t
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=business_date)
     _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date="2026-07-14")
     _write_feature_date_contract(runtime_root, business_date=business_date, selected_feature_date=business_date)
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "runtime_v2_pending_slot_v1",
+            "state": "EMPTY",
+            "status": "EMPTY",
+            "active_pending": False,
+            "target_session_date": business_date,
+            "items": [],
+            "no_action_reason": "NO_SIGNAL:fixture",
+        },
+    )
     _write_safety_decision(runtime_root, business_date="2026-07-10", mode="historical")
 
     result = evaluate_runtime_data_readiness(
@@ -252,6 +266,8 @@ def test_phase17r_historical_data_readiness_uses_contract_and_historical_scope(t
         opportunity_model_path=_write_file(tmp_path / "opportunity.pkl"),
         broker_environment="historical_simulated",
         runtime_test_evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "phase17r",
+        runtime_test_run_id="phase17r",
+        runtime_test_profile_id="historical-smoke",
     )
 
     assert result.status == "READY"
@@ -406,6 +422,9 @@ def _write_feature_inputs(feature_root: Path, *, feature_date: str) -> Path:
         feature_dir / "position_feature_input.parquet",
         index=False,
     )
+    pd.DataFrame(
+        [{"target_date": feature_date, "code": "__POLICY_INPUT__", "data_until": feature_date}]
+    ).to_parquet(feature_dir / "capital_policy_input.parquet", index=False)
     return feature_root
 
 

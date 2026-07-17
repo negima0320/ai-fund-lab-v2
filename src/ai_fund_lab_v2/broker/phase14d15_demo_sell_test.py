@@ -184,7 +184,6 @@ def run_phase14d15_demo_sell_single_order_guarded_test(
         base_url_is_demo=base_url_is_demo,
         base_url_is_production=base_url_is_production,
         live_order_allowed=True,
-        max_order_amount=max_order_amount,
         broker_position_quantity=before_position_quantity,
         broker_available_quantity=before_available_quantity,
     )

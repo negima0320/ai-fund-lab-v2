@@ -8,6 +8,7 @@ from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 
 from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _demo_settings
 from tests.runtime_v2.test_phase15i_submit_guard_buy_sell_policy_manifest import (
+    _attach_pending_safety_evidence,
     _approved_pending,
     _item,
     _position,
@@ -15,6 +16,7 @@ from tests.runtime_v2.test_phase15i_submit_guard_buy_sell_policy_manifest import
     _write_broker_positions_snapshot,
     _write_current_state,
     _write_policy,
+    _write_runtime_readiness_authorities,
     _write_safety_decision,
 )
 from tests.runtime_v2.test_phase15k_morning_policy_propagation_hidden_policy_removal import (
@@ -24,6 +26,7 @@ from tests.runtime_v2.test_phase15k_morning_policy_propagation_hidden_policy_rem
     _write_features,
     _write_policy as _write_morning_policy,
 )
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 def test_phase15n_safety_missing_blocks_morning(tmp_path):
@@ -34,6 +37,7 @@ def test_phase15n_safety_missing_blocks_morning(tmp_path):
         candidate_codes=("7203",),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_morning_policy(tmp_path / "capital_deployment_policy.json", max_positions=1)
 
     assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 20
@@ -96,6 +100,7 @@ def test_phase15n_safety_allow_permits_morning_and_submit(tmp_path):
         candidate_codes=("7203",),
         price=1000,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_morning_policy(tmp_path / "capital_deployment_policy.json", max_positions=1)
 
     assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
@@ -239,6 +244,23 @@ def test_phase15n_safety_halt_stops_submit(tmp_path):
 def test_phase15n_cli_manifest_contains_safety_evidence(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    _write_current_state(runtime_root, positions=[], cash=1_000_000, market_value=0)
+    pending = _approved_pending(
+        (
+            _item(
+                pending_item_id="buy-1",
+                symbol="7203",
+                side="BUY",
+                quantity=100,
+                estimated_price=1000,
+                estimated_amount=100_000,
+            ),
+        ),
+        policy_path=policy_path,
+    )
+    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+    _attach_pending_safety_evidence(runtime_root, safety_decision_id="safety-phase15i-fixture")
+    _write_runtime_readiness_authorities(runtime_root, business_date="2026-07-09")
     exit_code = main(
         [
             "--mode",

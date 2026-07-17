@@ -1782,39 +1782,362 @@ Phase17。
 
 ```text
 Phase17 Purpose:
-Historical Runtime v2 Performance Test
+Historical Runtime Acceptance
++
+Runtime v2 BUY/SELL/Execution/Ledger/Valuation検証
++
+Opportunity AI BUY eligibility defect investigation
++
+AI Lifecycle未完成問題の発見
++
+AI Lifecycle v2共通Architecture設計
 
-Phase17-A 5 Business Day Smoke
-Phase17-B 20 Business Day Continuity Test
-Phase17-C 1-Year Performance Test
-Phase17-D Performance Attribution
-Phase17-E AI / Policy / Safety / PM / Capital Allocation Improvement Design
-Phase17-F 1-Year Revalidation
-Phase17-G 2021-07 to Latest Full Historical Test
-Phase17 Final Performance Review
+Status:
+PARTIAL_ACCEPTANCE / HANDOFF_COMPLETE
+
+Final Judgment:
+PHASE17_HISTORICAL_RUNTIME_ACCEPTANCE_PARTIAL
+PHASE17_AI_LIFECYCLE_DESIGN_COMPLETE
+PHASE18_IMPLEMENTATION_REQUIRED
+REVIEW_REQUIRED
+
+Primary Run:
+runtime-test-historical-extended-smoke-20260716T230100525117Z
+
+Period:
+2026-06-29 through 2026-07-10
+
+Business Days:
+10
+
+Job Records:
+80
+
+Pass-like:
+80
+
+Non-pass:
+0
+
+Important Boundary:
+80/80 job completion proves Historical scheduler/no-action Runtime continuity.
+It does not complete BUY / Fill / Hold / SELL full-path acceptance because BUY count was 0.
 
 Phase17 Metrics:
-Annual Return
-Total Return
-Maximum Drawdown
-Profit Factor
-Win Rate
-Exposure
-Cash Utilization
-Turnover
-Average Holding Period
-Safety Impact
-Candidate Attribution
-Opportunity Attribution
-PM Attribution
-Capital Allocation Attribution
 Runtime Integrity
+Historical state transition integrity
+Artifact resolution / fail-closed behavior
+BUY eligibility contract validity
+Opportunity model output distribution
+AI Lifecycle completeness
+Runtime no-action correctness
+```
+
+Phase17到達点。
+
+```text
+Historical Runtime Scheduler / No-action Path:
+PASS
+
+Runtime v2 artifact resolution / fail-closed:
+PASS
+
+Candidate AI Runtime execution:
+PASS
+
+Opportunity AI Runtime execution:
+PASS
+
+BV14 Market Status BUY Guard:
+PASS
+
+BV15 Opportunity BUY Eligibility:
+PASS
+
+BUY lifecycle:
+NOT_ACCEPTED / NOT_EXERCISED
+
+Position Management with actual positions:
+NOT_ACCEPTED / NOT_EXERCISED
+
+SELL lifecycle:
+NOT_ACCEPTED / NOT_EXERCISED
+
+AI Lifecycle v2 architecture:
+DESIGN_COMPLETE / IMPLEMENTATION_READY
+
+AI Lifecycle v2 implementation:
+NOT_IMPLEMENTED
+
+Formal Opportunity model:
+STALE / NOT_PROMOTION_READY
+
+BUY:
+REMAINS_BLOCKED
+```
+
+Phase17で判明したAI Lifecycle gap。
+
+```text
+TRAINING_PIPELINE_PARTIAL
+AUTO_RETRAIN_NOT_READY
+REGISTRY_PARTIAL
+MODEL_LIFECYCLE_INCOMPLETE
+DATASET_PIPELINE_BLOCKED
+```
+
+Phase17未完了事項はPhase18へ移管する。
+
+```text
+最新PIT Dataset Rebuild Pipeline
+Candidate / Opportunity共通Dataset Lifecycle
+train / retrain pipeline
+Champion / Challenger formal evaluation
+Promotion Readiness
+Atomic BUY AI Bundle packaging
+Authority-approved Registry promotion
+Runtime freshness gate
+Runtime drift gate
+weekly lifecycle scheduler
+lifecycle observability
+rollback / revoke acceptance
+End-to-End AI Lifecycle Acceptance
+新accepted BUY AI BundleでのHistorical Runtime Test
+BUY / Fill / Hold / SELL full-path acceptance
+```
+
+Opportunity AI設計の扱い。
+
+```text
+Current Decision:
+Opportunity AI design is provisionally retained.
+
+Redesign Condition:
+Only if current specification fails after fresh PIT dataset reconstruction and formal retraining/revalidation.
+
+Prohibited:
+Do not relax BV15 thresholds.
+Do not ignore no_buy_reason.
+Do not force Top-N BUY.
+Do not redesign Opportunity target before Phase18-B/C evidence.
+```
+
+AI Lifecycle v2 SoT。
+
+```text
+docs/02_architecture/ai_lifecycle_v2.md
 ```
 
 Phase18。
 
 ```text
-Broker-connected Continuous Operation Test
+Phase18 — AI Lifecycle v2 Implementation and End-to-End Acceptance
+
+Japanese:
+AI Lifecycle v2 実装・統合受入
+
+Status:
+PLANNED / READY_TO_START
+
+Scope:
+Candidate AI
+Opportunity AI
+Position Management AI / Policy Adapter
+Safety Policy Engine
+future AI onboarding contract
+
+Purpose:
+AI Fund Lab v2の全AIコンポーネントについて、
+データまたはPolicy Evidence更新、
+Dataset rebuild、
+retrainまたはPolicy validation、
+Champion/Challenger評価、
+Promotion readiness、
+Authority acceptance、
+Registry切替、
+Runtime freshness/drift gate、
+scheduler、
+monitoring、
+rollbackまでを、
+docs/02_architecture/ai_lifecycle_v2.md に従って
+安全・再現可能・監査可能に実装する。
+
+Important:
+PM and Safety are currently Policy / Rule-based lifecycle components.
+Do not apply Candidate / Opportunity trainable retrain semantics to PM or Safety unless their trainable design is formally added to the AI Lifecycle v2 SoT.
+```
+
+Phase18実装ロードマップ。
+
+```text
+Phase18-A — Common PIT Dataset Rebuild Pipeline
+Candidate PIT Dataset
+Opportunity PIT Dataset
+label-safe cutoff
+source authority
+schema
+lineage
+data quality
+leakage audit
+idempotency
+versioned dataset artifact
+
+Phase18-B — Training / Validation / Challenger Pipeline
+Candidate Challenger
+Opportunity Challenger
+time-series split
+validation
+test
+recent holdout
+Champion comparison
+calibration
+regime evaluation
+reproducibility
+
+Phase18-C — Promotion Readiness and Atomic BUY AI Bundle
+Safety / Integrity
+Predictive Validity
+Operational Utility
+Candidate / Opportunity compatibility
+Atomic BUY AI Bundle
+promotion request
+rollback metadata
+
+Phase18-D — Registry Promotion Operator
+Authority review
+ARTIFACT_ACCEPTED
+atomic Registry update
+materialized index
+previous Champion retention
+revoke / rollback
+idempotency
+
+Phase18-E — Runtime Freshness and Drift Gates
+source freshness
+dataset lag
+model training lag
+model acceptance age
+feature drift
+Candidate population drift
+prediction drift
+MODEL_UNHEALTHY
+MARKET_NO_OPPORTUNITY
+BUY BLOCK / REVIEW_REQUIRED
+SELL continuity
+
+Phase18-F — Weekly Lifecycle Scheduler and Observability
+weekly eligibility check
+label-safe readiness
+locks
+retry
+timeout
+no overlap
+status artifacts
+operator reports
+alerts
+no automatic self-promotion
+
+Phase18-G — Full AI Component Lifecycle Coverage
+Candidate AI lifecycle
+Opportunity AI lifecycle
+PM policy lifecycle
+Safety policy lifecycle
+future AI onboarding
+failure blast radius
+policy freshness
+semantic regression
+
+Phase18-H — End-to-End AI Lifecycle Acceptance
+dataset rebuild
+train / validation
+promotion readiness
+authority rehearsal
+Registry acceptance rehearsal
+Runtime next-job discovery
+freshness / drift gates
+rollback rehearsal
+failure cases
+
+Phase18-I — Historical Runtime Re-Acceptance
+new accepted Atomic BUY AI Bundle
+fresh Historical Runtime Test
+BUY
+Submit
+Fill
+Ledger
+Current
+Valuation
+PM
+SELL
+Report
+Notification
+```
+
+Phase18開始条件。
+
+```text
+docs/02_architecture/ai_lifecycle_v2.md accepted as SoT
+BV20-R1 objective alignment complete
+Phase17 final handoff accepted
+BUY remains blocked
+no Runtime model switch pending
+no unreviewed Registry promotion pending
+existing formal artifact set remains unchanged
+```
+
+Phase18完了条件。
+
+```text
+latest label-safe dataからCandidate/Opportunity datasetを再構築可能
+dataset reproducibility / idempotency PASS
+no leakage PASS
+formal retraining / validationを再現可能
+Champion / Challenger comparison PASS
+Operational Utility評価可能
+Atomic BUY AI Bundle生成可能
+authority-approved Registry promotion可能
+Runtimeがnext-job boundaryでbundleを発見
+freshness / drift gateがscope別に動作
+stale modelでBUY BLOCK
+MARKET_NO_OPPORTUNITYとMODEL_UNHEALTHYを区別
+SELL continuity PASS
+weekly scheduler / monitoring PASS
+rollback / revoke rehearsal PASS
+Candidate / Opportunity / PM / Safety lifecycle coverage PASS
+Historical RuntimeでBUYからSELLまでのfull pathを再Acceptance
+
+Final Judgment Candidates:
+AI_LIFECYCLE_V2_IMPLEMENTATION_COMPLETE
+ALL_AI_LIFECYCLE_COVERAGE_PASS
+ATOMIC_BUY_AI_BUNDLE_ACCEPTED
+RUNTIME_FRESHNESS_DRIFT_GATES_PASS
+WEEKLY_LIFECYCLE_OPERATIONAL
+ROLLBACK_ACCEPTANCE_PASS
+HISTORICAL_RUNTIME_FULL_PATH_PASS
+PHASE18_COMPLETE
+```
+
+Phase18禁止事項。
+
+```text
+Runtime/training jobによるself-promotion禁止
+Registry accepted eventの無承認書き込み禁止
+CandidateとOpportunityの独立切替禁止
+manual model path edit禁止
+BV15 threshold relaxation禁止
+no_buy_reason無視禁止
+Top-N強制BUY禁止
+Paper Ledger / Broker Snapshot / PnL / bought情報の学習利用禁止
+future information leakage禁止
+backtest結果の学習利用禁止
+本番broker write禁止
+本番注文禁止
+```
+
+Phase19。
+
+```text
+Broker-connected Continuous Operation Test / Production Enablement
 
 Scope:
 立花証券Demo
@@ -1823,14 +2146,6 @@ Broker-connected multi-day
 Notification Delivery
 Recovery
 Monitoring
-```
-
-Phase19。
-
-```text
-Production Enablement
-
-Scope:
 Production credentials
 Production account reconciliation
 Production Broker Write

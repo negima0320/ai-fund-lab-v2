@@ -221,7 +221,8 @@ def test_phase17_l_runner_passes_identity_and_uses_profile_only_as_expected_valu
     )
     feature_evidence = plan["business_dates"][0]["feature_date_evidence"]
     command = plan["business_dates"][0]["jobs"][0]["command"]
-    assert feature_evidence["source"] == "normal_feature_date_contract"
+    assert feature_evidence["source"] == "runtime_test_plan_schedule_expectation"
+    assert feature_evidence["feature_date_authority_source"] == "not_yet_materialized_plan_expectation"
     assert feature_evidence["profile_value_used_as_authority"] is False
     assert "--runtime-test-run-id" in command
     assert command[command.index("--runtime-test-run-id") + 1] == "runtime-test-fixture"

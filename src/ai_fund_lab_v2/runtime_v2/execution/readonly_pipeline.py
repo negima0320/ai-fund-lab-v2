@@ -27,8 +27,9 @@ from ai_fund_lab_v2.runtime_v2.execution.ledger_projection import (
 )
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
-from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExecutionRecord
+from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExecutionRecord, LedgerPositionRecord
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     is_mode_rooted_runtime_root,
     reject_mode_rooted_runtime_root,
@@ -88,6 +89,24 @@ class ExecutionReadOnlyPipelineResult:
     runtime_state_path: str = ""
     runtime_state_version: str = ""
     execution_references: tuple[str, ...] = ()
+    execution_action: str = "EXECUTE"
+    orderlist_required: bool = True
+    orderlist_status: str = "REQUIRED"
+    submitted_order_count: int = 0
+    fill_count: int = 0
+    pending_terminalization_status: str = "NOT_EVALUATED"
+    pending_consumed: bool = False
+    pending_mutated: bool = False
+    pending_read_valid: bool = False
+    pending_classification: str = ""
+    pending_active: bool | None = None
+    pending_plan_present: bool = False
+    pending_item_count: int = 0
+    no_action_reason: str = ""
+    submit_authority_status: str = ""
+    submit_action: str = ""
+    submit_authority_path: str = ""
+    submit_authority_reason: str = ""
 
     def to_stage_details(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +147,33 @@ def run_execution_readonly_pipeline(
         _reject_mode_rooted_runtime_root(runtime_root_path)
     except ValueError as exc:
         return _result(status="HALT", reason=str(exc), runtime_root=runtime_root_path)
+    no_action = _resolve_no_action_execution_authority(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+    )
+    if no_action["status"] == "PASS":
+        return _no_action_result(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            no_action=no_action,
+        )
+    if no_action["status"] in {"BLOCKED", "REVIEW_REQUIRED"}:
+        return _result(
+            status=str(no_action["status"]),
+            reason=str(no_action["reason"]),
+            runtime_root=runtime_root_path,
+            pending_read_valid=bool(no_action.get("pending_read_valid")),
+            pending_classification=str(no_action.get("pending_classification") or ""),
+            pending_active=no_action.get("pending_active"),
+            pending_plan_present=bool(no_action.get("pending_plan_present")),
+            pending_item_count=int(no_action.get("pending_item_count") or 0),
+            no_action_reason=str(no_action.get("no_action_reason") or ""),
+            submit_authority_status=str(no_action.get("submit_authority_status") or ""),
+            submit_action=str(no_action.get("submit_action") or ""),
+            submit_authority_path=str(no_action.get("submit_authority_path") or ""),
+            submit_authority_reason=str(no_action.get("submit_authority_reason") or ""),
+        )
     try:
         demo_fallback_authority = load_demo_execution_fallback_authority(
             demo_execution_fallback_authority_path,
@@ -186,9 +232,14 @@ def run_execution_readonly_pipeline(
         cash_present=bundle.cash is not None,
     )
     ledger_orders = tuple(project_order_to_ledger_record(order) for order in bundle.orders)
-    broker_detail_executions = tuple(project_execution_to_ledger_record(execution) for execution in bundle.executions)
+    broker_detail_executions = (
+        ()
+        if mode == "historical"
+        else tuple(project_execution_to_ledger_record(execution) for execution in bundle.executions)
+    )
     equivalent_executions = _execution_equivalent_records(
         orders=bundle.orders,
+        executions=bundle.executions,
         positions=bundle.positions,
         cash_present=bundle.cash is not None,
         mode=mode,
@@ -198,6 +249,26 @@ def run_execution_readonly_pipeline(
         demo_fallback_authority=demo_fallback_authority,
     )
     ledger_executions = (*broker_detail_executions, *equivalent_executions)
+    historical_position_transitions: tuple[LedgerPositionRecord, ...] = ()
+    historical_transition_errors: tuple[str, ...] = ()
+    if mode == "historical":
+        historical_position_transitions, historical_transition_errors = _historical_position_transition_records(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            as_of=as_of,
+            executions=equivalent_executions,
+            broker_position_symbols=tuple(position.symbol for position in bundle.positions),
+        )
+        if historical_transition_errors:
+            return _result(
+                status="REVIEW_REQUIRED",
+                reason="historical position transition invalid: " + ",".join(historical_transition_errors),
+                runtime_root=runtime_root_path,
+                snapshot_status=snapshot_result.status,
+                snapshot_path=str(snapshot_path),
+                report_path=str(report_path),
+            )
+    ledger_positions = (*ledger_positions, *historical_position_transitions)
 
     orders_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "orders.jsonl", ledger_orders)
     executions_appended = _append_ledger_records(
@@ -358,7 +429,227 @@ def run_execution_readonly_pipeline(
         runtime_state_path=runtime_state_path,
         runtime_state_version=runtime_state_version,
         execution_references=execution_references,
+        execution_action="EXECUTE",
+        orderlist_required=True,
+        orderlist_status="READY" if bundle.orders else "MISSING",
+        submitted_order_count=len(bundle.orders),
+        fill_count=len(ledger_executions),
+        pending_terminalization_status="NOT_REQUIRED",
+        pending_consumed=False,
+        pending_mutated=False,
     )
+
+
+def _resolve_no_action_execution_authority(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+) -> dict[str, Any]:
+    pending_read = read_pending_order_plan_path(
+        path=runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        environment=mode,
+    )
+    evidence = {
+        "pending_read_valid": pending_read.valid,
+        "pending_classification": pending_read.classification,
+        "pending_active": _payload_bool(pending_read.payload, "active_pending"),
+        "pending_plan_present": pending_read.plan is not None,
+        "pending_item_count": _payload_item_count(pending_read.payload),
+        "no_action_reason": _payload_text(pending_read.payload, "no_action_reason"),
+    }
+    if not pending_read.valid:
+        return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
+    if pending_read.classification != "EMPTY":
+        return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
+    empty_reason = _validate_empty_pending_payload(
+        pending_read.payload,
+        business_date=business_date,
+        environment=mode,
+    )
+    if empty_reason:
+        return {"status": "BLOCKED", "reason": empty_reason, **evidence}
+    submit = _load_submit_no_action_authority(runtime_root=runtime_root, business_date=business_date)
+    evidence.update(
+        {
+            "submit_authority_status": submit["status"],
+            "submit_action": submit["submit_action"],
+            "submit_authority_path": submit["path"],
+            "submit_authority_reason": submit["reason"],
+        }
+    )
+    if submit["status"] != "PASS":
+        return {"status": "REVIEW_REQUIRED", "reason": submit["reason"], **evidence}
+    return {"status": "PASS", "reason": "no_submitted_orders", **evidence}
+
+
+def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) -> dict[str, str]:
+    manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
+    manifests = sorted(manifest_dir.glob("runtime-v2-submit-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not manifests:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "submit NO_ACTION authority missing",
+            "path": "",
+            "submit_action": "",
+        }
+    for path in manifests:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if str(payload.get("job") or "") != "submit":
+            continue
+        if str(payload.get("business_date") or "") != business_date:
+            return {
+                "status": "REVIEW_REQUIRED",
+                "reason": "submit NO_ACTION authority business_date mismatch",
+                "path": str(path),
+                "submit_action": str(payload.get("submit_action") or ""),
+            }
+        submit_action = str(payload.get("submit_action") or "")
+        if (
+            _int_value(payload.get("exit_code"), -1) == 0
+            and str(payload.get("final_state") or "") != "BLOCKED"
+            and bool(payload.get("pending_read_valid")) is True
+            and str(payload.get("pending_classification") or "") == "EMPTY"
+            and bool(payload.get("pending_active")) is False
+            and bool(payload.get("pending_plan_present")) is False
+            and _int_value(payload.get("pending_item_count"), 0) == 0
+            and submit_action == "NO_ACTION"
+            and _int_value(payload.get("submitted_count"), 0) == 0
+            and _int_value(payload.get("blocked_count"), 0) == 0
+            and bool(payload.get("review_required")) is False
+            and bool(payload.get("halt_required")) is False
+            and not bool((payload.get("prohibited_actions") or {}).get("demo_submit_executed"))
+            and not bool((payload.get("prohibited_actions") or {}).get("production_order_executed"))
+        ):
+            return {
+                "status": "PASS",
+                "reason": "submit_no_action_authority_ready",
+                "path": str(path),
+                "submit_action": submit_action,
+            }
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "submit NO_ACTION authority inconsistent",
+            "path": str(path),
+            "submit_action": submit_action,
+        }
+    return {
+        "status": "REVIEW_REQUIRED",
+        "reason": "submit NO_ACTION authority unreadable",
+        "path": "",
+        "submit_action": "",
+    }
+
+
+def _no_action_result(*, runtime_root: Path, business_date: str, no_action: dict[str, Any]) -> ExecutionReadOnlyPipelineResult:
+    return ExecutionReadOnlyPipelineResult(
+        status="PASS",
+        reason="no_submitted_orders",
+        snapshot_status="NOT_REQUIRED",
+        snapshot_path="",
+        report_path="",
+        orders_count=0,
+        executions_count=0,
+        positions_count=0,
+        cash_present=False,
+        ledger_orders_appended=0,
+        ledger_executions_appended=0,
+        ledger_positions_appended=0,
+        ledger_cash_appended=0,
+        ledger_events_appended=0,
+        asset_current_written=False,
+        asset_policy="not_required_no_submitted_orders",
+        reconcile_status="NOT_REQUIRED",
+        reconcile_findings=0,
+        orderlist_readonly_connected=False,
+        execution_reflection_connected=False,
+        ledger_connected=True,
+        asset_connected=False,
+        order_detail_required=False,
+        order_detail_status="NOT_REQUIRED",
+        execution_acceptance_status="PASS",
+        execution_acceptance_reason="no_submitted_orders",
+        execution_acceptance_warnings=(),
+        execution_equivalent_count=0,
+        runtime_owned_projection_status="NOT_REQUIRED",
+        runtime_owned_projection_reason="no_submitted_orders",
+        current_apply_status="NOT_REQUIRED",
+        current_apply_reason="no_submitted_orders",
+        execution_references=(),
+        execution_action="NO_ACTION",
+        orderlist_required=False,
+        orderlist_status="NOT_REQUIRED",
+        submitted_order_count=0,
+        fill_count=0,
+        pending_terminalization_status="ALREADY_TERMINAL",
+        pending_consumed=False,
+        pending_mutated=False,
+        pending_read_valid=bool(no_action.get("pending_read_valid")),
+        pending_classification=str(no_action.get("pending_classification") or ""),
+        pending_active=no_action.get("pending_active"),
+        pending_plan_present=bool(no_action.get("pending_plan_present")),
+        pending_item_count=int(no_action.get("pending_item_count") or 0),
+        no_action_reason=str(no_action.get("no_action_reason") or ""),
+        submit_authority_status=str(no_action.get("submit_authority_status") or ""),
+        submit_action=str(no_action.get("submit_action") or ""),
+        submit_authority_path=str(no_action.get("submit_authority_path") or ""),
+        submit_authority_reason=str(no_action.get("submit_authority_reason") or ""),
+    )
+
+
+def _validate_empty_pending_payload(
+    payload: dict[str, Any] | None,
+    *,
+    business_date: str,
+    environment: str,
+) -> str:
+    if not isinstance(payload, dict):
+        return "pending EMPTY classification payload missing"
+    if bool(payload.get("active_pending", True)):
+        return "pending EMPTY classification active_pending contradiction"
+    if str(payload.get("environment") or "") != environment:
+        return "pending EMPTY classification environment mismatch"
+    if str(payload.get("state") or payload.get("status") or "").upper() != "EMPTY":
+        return "pending EMPTY classification state mismatch"
+    items = payload.get("items")
+    if not isinstance(items, list) or items:
+        return "pending EMPTY classification requires empty items"
+    if str(payload.get("target_session_date") or "") != business_date:
+        return "pending EMPTY classification target_session_date mismatch"
+    if str(payload.get("intended_submit_date") or "") != business_date:
+        return "pending EMPTY classification intended_submit_date mismatch"
+    no_action_reason = str(payload.get("no_action_reason") or "")
+    if not (no_action_reason.startswith("NO_SIGNAL:") or no_action_reason.startswith("NO_ACTION:")):
+        return "pending EMPTY classification no_action_reason missing"
+    return ""
+
+
+def _payload_text(payload: dict[str, Any] | None, key: str) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get(key) or "")
+
+
+def _payload_bool(payload: dict[str, Any] | None, key: str) -> bool | None:
+    if not isinstance(payload, dict) or key not in payload:
+        return None
+    return bool(payload.get(key))
+
+
+def _payload_item_count(payload: dict[str, Any] | None) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    items = payload.get("items")
+    return len(items) if isinstance(items, list) else 0
+
+
+def _int_value(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    return int(value)
 
 
 def _evaluate_execution_acceptance(
@@ -493,6 +784,7 @@ def _execution_acceptance_events(
 def _execution_equivalent_records(
     *,
     orders: Iterable[Any],
+    executions: Iterable[Any] = (),
     positions: Iterable[Any],
     cash_present: bool,
     mode: str,
@@ -504,6 +796,7 @@ def _execution_equivalent_records(
     if not cash_present:
         return ()
     positions_by_symbol = {position.symbol: position for position in positions}
+    executions_by_order = {execution.order_ref_hash: execution for execution in executions}
     records: list[LedgerExecutionRecord] = []
     orders_tuple = tuple(orders)
     for order in orders_tuple:
@@ -534,6 +827,11 @@ def _execution_equivalent_records(
         execution_price = average_price
         price_source = "position_evidence"
         production_equivalent = bool(getattr(order, "production_equivalent", True))
+        source_execution = executions_by_order.get(order.order_ref_hash)
+        if source_execution is not None and (position is None or mode == "historical"):
+            execution_price = float(getattr(source_execution, "price", 0.0) or 0.0)
+            market_price = execution_price
+            price_source = "historical_execution_authority" if mode == "historical" else "broker_execution_evidence"
         if fallback_applies and demo_fallback_authority is not None:
             execution_price = demo_fallback_authority.execution_price
             price_source = "operator_browser_confirmation"
@@ -585,6 +883,69 @@ def _execution_equivalent_records(
     return tuple(records)
 
 
+def _historical_position_transition_records(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    as_of: str,
+    executions: Iterable[LedgerExecutionRecord],
+    broker_position_symbols: tuple[str, ...] = (),
+) -> tuple[tuple[LedgerPositionRecord, ...], tuple[str, ...]]:
+    state = _load_json_dict(runtime_root / "persistent_ledger" / "state.json")
+    current_positions = {
+        str(row.get("symbol") or "").strip(): row
+        for row in state.get("positions") or ()
+        if str(row.get("symbol") or "").strip()
+    }
+    records: list[LedgerPositionRecord] = []
+    errors: list[str] = []
+    broker_symbols = {str(symbol).strip() for symbol in broker_position_symbols if str(symbol).strip()}
+    existing_execution_keys = _existing_dedup_keys(runtime_root / "persistent_ledger" / "executions.jsonl")
+    for execution in executions:
+        if execution.side.upper() != "SELL":
+            continue
+        symbol = str(execution.symbol).strip()
+        if symbol in broker_symbols:
+            continue
+        current = current_positions.get(symbol)
+        if current is None:
+            if execution.dedup_key and execution.dedup_key in existing_execution_keys:
+                continue
+            errors.append(f"current_position_missing:{symbol}")
+            continue
+        current_quantity = _float(current.get("quantity"))
+        executed_quantity = float(execution.filled_quantity or execution.quantity or 0.0)
+        if executed_quantity > current_quantity:
+            errors.append(f"executed_quantity_exceeds_current:{symbol}")
+            continue
+        remaining_quantity = max(current_quantity - executed_quantity, 0.0)
+        average_price = _float(current.get("average_price"))
+        current_market_value = _float(current.get("market_value"))
+        market_price = current_market_value / current_quantity if current_quantity else average_price
+        market_value = remaining_quantity * market_price
+        transition_id = f"historical-position-transition:{business_date}:{symbol}:{execution.execution_id}"
+        records.append(
+            LedgerPositionRecord(
+                record_id=f"ledger-position-transition-{_short_hash(transition_id)}",
+                record_type="position",
+                schema_version="1",
+                environment="historical",
+                source="runtime_v2_execution_readonly_simulation",
+                created_at=as_of,
+                dedup_key=transition_id,
+                review_required=True,
+                production_equivalent=False,
+                position_key=symbol,
+                symbol=symbol,
+                quantity=remaining_quantity,
+                average_price=average_price,
+                market_value=market_value,
+                as_of=business_date,
+            )
+        )
+    return tuple(records), tuple(errors)
+
+
 def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
     status = str(order.get("status") or order.get("order_status") or "")
     return {
@@ -598,6 +959,12 @@ def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
         "accepted_at": str(order.get("order_datetime") or order.get("accepted_at") or ""),
         "updated_at": str(order.get("as_of") or order.get("updated_at") or ""),
     }
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _runtime_execution_payload(execution: dict[str, Any]) -> dict[str, Any]:
@@ -771,6 +1138,16 @@ def _result(
     snapshot_status: str = "NOT_EXECUTED",
     snapshot_path: str = "",
     report_path: str = "",
+    pending_read_valid: bool = False,
+    pending_classification: str = "",
+    pending_active: bool | None = None,
+    pending_plan_present: bool = False,
+    pending_item_count: int = 0,
+    no_action_reason: str = "",
+    submit_authority_status: str = "",
+    submit_action: str = "",
+    submit_authority_path: str = "",
+    submit_authority_reason: str = "",
 ) -> ExecutionReadOnlyPipelineResult:
     return ExecutionReadOnlyPipelineResult(
         status=status,
@@ -795,4 +1172,22 @@ def _result(
         execution_reflection_connected=False,
         ledger_connected=False,
         asset_connected=False,
+        execution_action="BLOCKED" if status in {"BLOCKED", "HALT"} else "NOT_EXECUTED",
+        orderlist_required=True,
+        orderlist_status="NOT_EVALUATED",
+        submitted_order_count=0,
+        fill_count=0,
+        pending_terminalization_status="NOT_EVALUATED",
+        pending_consumed=False,
+        pending_mutated=False,
+        pending_read_valid=pending_read_valid,
+        pending_classification=pending_classification,
+        pending_active=pending_active,
+        pending_plan_present=pending_plan_present,
+        pending_item_count=pending_item_count,
+        no_action_reason=no_action_reason,
+        submit_authority_status=submit_authority_status,
+        submit_action=submit_action,
+        submit_authority_path=submit_authority_path,
+        submit_authority_reason=submit_authority_reason,
     )

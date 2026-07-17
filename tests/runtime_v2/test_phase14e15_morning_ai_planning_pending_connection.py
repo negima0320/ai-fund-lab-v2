@@ -11,6 +11,7 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
     OPPORTUNITY_REQUIRED_COLUMNS,
     PM_REQUIRED_COLUMNS,
 )
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 class CandidateFixtureModel:
@@ -28,6 +29,7 @@ class OpportunityFixtureModel:
 def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-08", selected_feature_date="2026-07-07")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
@@ -91,6 +93,7 @@ def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(t
 def test_phase14e15_morning_job_generates_new_pending_plan_on_same_day_retry(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-08", selected_feature_date="2026-07-07")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     args = [
@@ -141,6 +144,7 @@ def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         candidate_codes=("9432", "9501"),
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-08", selected_feature_date="2026-07-07")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
@@ -198,6 +202,7 @@ def test_phase14e28_morning_job_blocks_when_reliable_price_source_is_missing(tmp
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         write_price_source=False,
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-08", selected_feature_date="2026-07-07")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
@@ -257,7 +262,9 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
         candidate_codes=("72030", "65010", "67580", "99840"),
         position_codes=("7203",),
+        feature_date="2026-07-08",
     )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
 
     exit_code = main(
@@ -269,7 +276,7 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
             "--business-date",
             "2026-07-09",
             "--feature-date",
-            "2026-07-07",
+            "2026-07-08",
             "--feature-root",
             str(feature_root),
             "--submit-enabled",
@@ -447,13 +454,21 @@ def _write_feature_inputs(
     *,
     position_codes: tuple[str, ...] = (),
     write_price_source: bool = True,
+    feature_date: str = "2026-07-07",
 ) -> Path:
-    feature_dir = root / "2026-07-07"
+    feature_dir = root / feature_date
     feature_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for index, code in enumerate(candidate_codes):
         row = {column: _feature_value(column, code=code, index=index) for column in CANDIDATE_REQUIRED_COLUMNS}
-        row.update({"as_of_date": "2026-07-07", "universe_eligible": True, "data_until": "2026-07-07"})
+        row.update(
+            {
+                "target_date": feature_date,
+                "as_of_date": feature_date,
+                "universe_eligible": True,
+                "data_until": feature_date,
+            }
+        )
         rows.append(row)
     candidate = pd.DataFrame(rows)
     candidate.to_parquet(feature_dir / "candidate_features.parquet", index=False)
@@ -461,9 +476,10 @@ def _write_feature_inputs(
         [
             {
                 **{column: _feature_value(column, code=str(row["code"]), index=index) for column in OPPORTUNITY_REQUIRED_COLUMNS},
-                "as_of_date": "2026-07-07",
+                "target_date": feature_date,
+                "as_of_date": feature_date,
                 "feature_version": "runtime_v2_opportunity_feature_input_v2_market_sector_fixture",
-                "data_until": "2026-07-07",
+                "data_until": feature_date,
                 "created_at": "2026-07-08T00:00:00Z",
             }
             for index, row in enumerate(rows)
@@ -472,9 +488,9 @@ def _write_feature_inputs(
     opportunity.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
     pm_rows = [
         {
-            "target_date": "2026-07-07",
+            "target_date": feature_date,
             "position_state_as_of": "2026-07-09",
-            "entry_date": "2026-07-07",
+            "entry_date": feature_date,
             "code": code,
             "broker_issue_code": code,
             "holding_days": 2,
@@ -483,7 +499,7 @@ def _write_feature_inputs(
             "unrealized_return": 0.0,
             "quantity": 100,
             "feature_version": "runtime_v2_pm_feature_input_fixture",
-            "data_until": "2026-07-07",
+            "data_until": feature_date,
             "created_at": "2026-07-08T00:00:00Z",
             "no_position_reason": "",
         }
@@ -496,10 +512,10 @@ def _write_feature_inputs(
     pd.DataFrame(
         [
             {
-                "target_date": "2026-07-07",
+                "target_date": feature_date,
                 "code": "__POLICY_INPUT__",
                 "policy_input_type": "phase14e15_fixture_refs",
-                "data_until": "2026-07-07",
+                "data_until": feature_date,
             }
         ]
     ).to_parquet(feature_dir / "capital_policy_input.parquet", index=False)
@@ -508,7 +524,7 @@ def _write_feature_inputs(
         price_dir.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(
             [
-                {"Code": str(code), "Date": "2026-07-07", "Close": _fixture_price(code), "PriceSource": "fixture_close"}
+                {"Code": str(code), "Date": feature_date, "Close": _fixture_price(code), "PriceSource": "fixture_close"}
                 for code in candidate_codes
             ]
         ).to_parquet(price_dir / "data.parquet", index=False)

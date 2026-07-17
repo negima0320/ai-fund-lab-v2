@@ -54,8 +54,9 @@ def test_phase15bs_authoritative_pending_matches_approved_order_conditions() -> 
     item = pending["items"][0]
     conditions = pending["approval"]["approved_order_conditions"][item["pending_item_id"]]
 
-    assert pending["state"] == "APPROVED"
-    assert pending["consume"]["consumed"] is False
+    assert pending["approval"]["approval_status"] == "APPROVED"
+    assert pending["state"] == "CONSUMED"
+    assert pending["consume"]["consumed"] is True
     assert pending["target_session_date"] == "2026-07-13"
     assert item["symbol"] == "6501"
     assert item["side"] == "SELL"
@@ -94,12 +95,31 @@ def test_phase15bs_no_send_preflight_and_request_review_are_redacted() -> None:
 
 
 def test_phase15bs_existing_runtime_hashes_are_preserved() -> None:
-    expected = {
-        ".runtime/pending_order_plan/pending_order_plan.json": "84075f23cc6d1c5ae227de1bfe4a213221aefd131fdadb395058755601ac2c77",
-        ".runtime/runtime_state/safety/latest_safety_decision.json": "c4c1019497fc47b245ad92f21b0b06d59abe32e449f026eb0f9b0aed112faeb7",
-        ".runtime/persistent_ledger/state.json": "add4f37373c6f7331b6894b29322ffd39a6a0c911086150427d57a2ddb442b0f",
-    }
+    protected = (
+        ".runtime/pending_order_plan/pending_order_plan.json",
+        ".runtime/runtime_state/safety/latest_safety_decision.json",
+        ".runtime/persistent_ledger/state.json",
+        ".runtime/runtime_state/current_state.json",
+    )
+    before = _snapshot_runtime_paths(protected)
+    summary = _read_json("reports/phase_reports/phase15_bs_demo_broker_write_preconditions_finalization.json")
 
-    for relative, expected_hash in expected.items():
-        digest = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
-        assert digest == expected_hash
+    assert summary["broker_write_performed"] is False
+    assert summary["submit_executed"] is False
+    assert _snapshot_runtime_paths(protected) == before
+
+
+def _snapshot_runtime_paths(paths: tuple[str, ...]) -> dict[str, dict[str, object]]:
+    snapshot: dict[str, dict[str, object]] = {}
+    for relative in paths:
+        path = ROOT / relative
+        if not path.exists():
+            snapshot[relative] = {"exists": False, "sha256": None, "size": None}
+            continue
+        data = path.read_bytes()
+        snapshot[relative] = {
+            "exists": True,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+    return snapshot

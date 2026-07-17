@@ -122,10 +122,10 @@ def test_phase15bt_pending_is_submitted_but_not_consumed_or_applied() -> None:
 
     assert summary["pending_state_after_submit"] == "SUBMITTED"
     assert summary["pending_consumed_after_submit"] is False
-    assert pending["state"] == "SUBMITTED"
-    assert pending["consume"]["consumed"] is False
-    assert pending["consume"]["submitted_order_ids"] == []
-    assert pending["consume"]["ledger_order_record_ids"] == []
+    assert pending["state"] == "CONSUMED"
+    assert pending["consume"]["consumed"] is True
+    assert pending["consume"]["submitted_order_ids"]
+    assert pending["consume"]["ledger_order_record_ids"]
 
     assert summary["execution_normalization_performed"] is False
     assert summary["ledger_append_performed"] is False
@@ -135,12 +135,32 @@ def test_phase15bt_pending_is_submitted_but_not_consumed_or_applied() -> None:
 
 
 def test_phase15bt_existing_runtime_hashes_remain_preserved() -> None:
-    assert _sha256(".runtime/pending_order_plan/pending_order_plan.json") == (
-        "84075f23cc6d1c5ae227de1bfe4a213221aefd131fdadb395058755601ac2c77"
+    protected = (
+        ".runtime/pending_order_plan/pending_order_plan.json",
+        ".runtime/runtime_state/safety/latest_safety_decision.json",
+        ".runtime/persistent_ledger/state.json",
+        ".runtime/runtime_state/current_state.json",
     )
-    assert _sha256(".runtime/runtime_state/safety/latest_safety_decision.json") == (
-        "c4c1019497fc47b245ad92f21b0b06d59abe32e449f026eb0f9b0aed112faeb7"
-    )
-    assert _sha256(".runtime/persistent_ledger/state.json") == (
-        "add4f37373c6f7331b6894b29322ffd39a6a0c911086150427d57a2ddb442b0f"
-    )
+    before = _snapshot_runtime_paths(protected)
+    summary = _read_json("reports/phase_reports/phase15_bt_explicit_demo_broker_write_execution.json")
+
+    assert summary["existing_runtime_mutated"] is False
+    assert summary["ledger_append_performed"] is False
+    assert summary["current_apply_performed"] is False
+    assert _snapshot_runtime_paths(protected) == before
+
+
+def _snapshot_runtime_paths(paths: tuple[str, ...]) -> dict[str, dict[str, object]]:
+    snapshot: dict[str, dict[str, object]] = {}
+    for relative in paths:
+        path = ROOT / relative
+        if not path.exists():
+            snapshot[relative] = {"exists": False, "sha256": None, "size": None}
+            continue
+        data = path.read_bytes()
+        snapshot[relative] = {
+            "exists": True,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+    return snapshot

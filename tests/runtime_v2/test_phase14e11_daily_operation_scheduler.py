@@ -82,12 +82,20 @@ def test_phase14e11_cli_runs_all_scheduler_jobs_without_external_writes(tmp_path
         _fake_execution_readonly_pipeline,
     )
     monkeypatch.setattr(
+        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.evaluate_runtime_data_readiness",
+        _fake_data_readiness_ready,
+    )
+    monkeypatch.setattr(
         "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_runtime_v2_market_refresh_pipeline",
         _fake_market_refresh_pipeline,
     )
     monkeypatch.setattr(
         "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_morning_ai_planning_pending_pipeline",
         _fake_morning_pipeline,
+    )
+    monkeypatch.setattr(
+        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.produce_buy_ai_decisions",
+        _fake_buy_ai_decisions,
     )
     for job, expected in PLISTS.items():
         job_root = tmp_path / job
@@ -175,7 +183,13 @@ def test_phase14e11_cli_blocks_non_payload_notification_mode(tmp_path):
     assert exit_code == 40
 
 
-def test_phase14e11_cli_allows_submit_enabled_true_for_submit_job_only(tmp_path):
+def test_phase14e11_cli_allows_submit_enabled_true_for_submit_job_only(tmp_path, monkeypatch):
+    # Data Readiness is covered by dedicated gate tests; this scheduler test
+    # isolates the submit-enabled guard path.
+    monkeypatch.setattr(
+        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.evaluate_runtime_data_readiness",
+        _fake_data_readiness_ready,
+    )
     submit_root = tmp_path / "submit"
     runtime_root = _write_fixed_current(submit_root / ".runtime")
     submit_policy_path = _write_policy(submit_root / "capital_deployment_policy.json")
@@ -306,6 +320,21 @@ def _fake_market_refresh_pipeline(**kwargs):
         {
             "status": "PASS",
             "reason": "fake market refresh",
+            "market_evidence_status": "READY",
+            "market_evidence_reason": "fake_market_evidence_ready",
+            "market_evidence_path": str(feature_root.parent / "market" / "market_evidence.json"),
+            "market_evidence_latest_pointer_path": str(feature_root.parent / "market" / "latest.json"),
+            "market_evidence_history_artifact_path": str(feature_root.parent / "market" / "history.json"),
+            "market_date": kwargs["business_date"],
+            "latest_expected_trading_date": kwargs["business_date"],
+            "latest_available_market_date": kwargs["business_date"],
+            "market_freshness_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "missing_quote_count": 0,
+            "market_summary_status": "READY",
+            "publication_status": "READY",
+            "provider_status": "NOT_CALLED",
             "generated_feature_artifacts": artifacts,
             "feature_artifact_dir": str(feature_root),
             "to_stage_details": lambda self: {
@@ -390,3 +419,49 @@ class _FakeMorningResult:
 
 def _fake_morning_pipeline(**kwargs):
     return _FakeMorningResult()
+
+
+class _FakeBuyAIResult:
+    status = "PASS"
+    reason = ""
+    ai_signals = ()
+
+    def to_manifest_fields(self):
+        return {
+            "buy_ai_status": self.status,
+            "buy_ai_reason": self.reason,
+            "candidate_count": 0,
+            "opportunity_count": 0,
+            "selected_rank_count": 0,
+        }
+
+
+def _fake_buy_ai_decisions(**kwargs):
+    return _FakeBuyAIResult()
+
+
+class _FakeDataReadinessReady:
+    status = "READY"
+    reason = "test data readiness ready"
+    artifact_path = "test-data-readiness.json"
+    payload = {
+        "overall_status": "READY",
+        "readiness_scope": "test_scheduler",
+        "review_reasons": [],
+        "halt_reasons": [],
+        "next_operator_action": "continue",
+    }
+
+    def to_manifest_fields(self):
+        return {
+            "data_readiness_status": self.status,
+            "data_readiness_scope": self.payload["readiness_scope"],
+            "data_readiness_artifact_path": self.artifact_path,
+            "data_readiness_review_reasons": [],
+            "data_readiness_halt_reasons": [],
+            "data_readiness_next_operator_action": "continue",
+        }
+
+
+def _fake_data_readiness_ready(**kwargs):
+    return _FakeDataReadinessReady()

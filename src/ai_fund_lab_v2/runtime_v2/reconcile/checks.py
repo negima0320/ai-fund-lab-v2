@@ -141,8 +141,10 @@ def check_broker_executions_vs_ledger_executions(
     for broker_execution in broker_executions:
         ledger_execution = ledger_by_ref.get(broker_execution.execution_ref_hash)
         if ledger_execution is None:
-            findings.append(_review("BROKER_EXECUTION_MISSING_LEDGER_EXECUTION", "broker_execution", broker_execution.execution_ref_hash, "ledger execution exists", "none", broker_execution.as_of))
-            continue
+            ledger_execution = equivalent_by_order.get(broker_execution.order_ref_hash)
+            if ledger_execution is None:
+                findings.append(_review("BROKER_EXECUTION_MISSING_LEDGER_EXECUTION", "broker_execution", broker_execution.execution_ref_hash, "ledger execution exists", "none", broker_execution.as_of))
+                continue
         if ledger_execution.symbol != broker_execution.symbol:
             findings.append(_review("EXECUTION_SYMBOL_MISMATCH", "ledger_execution", ledger_execution.record_id, ledger_execution.symbol, broker_execution.symbol, ledger_execution.created_at))
         if ledger_execution.quantity != broker_execution.quantity:

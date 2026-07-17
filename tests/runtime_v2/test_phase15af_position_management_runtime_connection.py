@@ -78,6 +78,7 @@ def test_phase15af_cli_sell_planning_uses_pm_artifact_not_current_liquidation(tm
     )
     manifest = _latest_manifest(runtime_root)
     pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+
     pm_artifact = json.loads(Path(manifest["pm_artifact_path"]).read_text(encoding="utf-8"))
 
     assert exit_code == 0
@@ -144,7 +145,7 @@ def test_phase15af_cli_requires_pm_artifact_and_does_not_sell_from_current_only(
     assert exit_code == 20
     assert manifest["final_state"] == "REVIEW_REQUIRED"
     assert manifest["pm_status"] == "REVIEW_REQUIRED"
-    assert "position_management_ai_runtime_producer" in stage_names
+    assert "position_management_ai_runtime_producer" not in stage_names
     assert "sell_planning_pending_pipeline" not in stage_names
     assert pending["items"] == []
 
@@ -281,6 +282,8 @@ def _runtime_root(tmp_path: Path, *, positions: list[dict]) -> Path:
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     _write_safety_decision(root)
+    _write_broker_snapshot(root)
+    _write_market_evidence(root)
     return root
 
 
@@ -391,6 +394,36 @@ def _write_safety_decision(root: Path) -> Path:
         },
     )
     return path
+
+
+def _write_broker_snapshot(root: Path) -> None:
+    _write_json(
+        root / "runtime_state" / "broker_readonly" / BUSINESS_DATE / "snapshot.json",
+        {
+            "schema_version": "runtime_v2_broker_readonly_snapshot_v1",
+            "business_date": BUSINESS_DATE,
+            "generated_at": BUSINESS_DATE + "T00:00:00Z",
+            "broker_mode": "demo",
+            "production_equivalent": False,
+            "review_required": False,
+            "positions": [],
+            "orders": [],
+            "executions": [],
+        },
+    )
+
+
+def _write_market_evidence(root: Path) -> None:
+    _write_json(
+        root / "runtime_state" / "market" / BUSINESS_DATE / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": BUSINESS_DATE,
+            "generated_at": BUSINESS_DATE + "T00:00:00Z",
+            "market_summary": {"quote_count": 1},
+            "quote_count": 1,
+        },
+    )
 
 
 def _latest_manifest(runtime_root: Path) -> dict:

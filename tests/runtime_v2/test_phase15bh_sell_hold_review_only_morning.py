@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 from tests.runtime_v2.test_phase15aq_runtime_data_readiness_gate import (
     BUSINESS_DATE,
     _load_json,
+    _write_feature_inputs,
     _runtime_root,
     _write_broker_snapshot,
     _write_json,
     _write_policy,
 )
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 from tests.runtime_v2.test_phase15bg_human_safety_review_4591 import (
     _write_feature_readiness,
     _write_high_risk_safety_decision,
@@ -119,6 +123,30 @@ def _review_only_runtime_with_4591(tmp_path: Path) -> Path:
         ],
     )
     _write_broker_snapshot(runtime_root)
+    _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=BUSINESS_DATE)
+    pd.DataFrame(
+        [
+            {
+                "target_date": BUSINESS_DATE,
+                "position_state_as_of": BUSINESS_DATE,
+                "entry_date": BUSINESS_DATE,
+                "code": "4591",
+                "broker_issue_code": "4591",
+                "holding_days": 1,
+                "average_price": 101.0,
+                "current_price": 74.0,
+                "unrealized_return": -0.26732673267326734,
+                "quantity": 5000,
+                "feature_version": "runtime_v2_pm_review_only_feature_context_v1",
+                "data_until": BUSINESS_DATE,
+                "created_at": BUSINESS_DATE + "T00:00:00Z",
+                "no_position_reason": "",
+            }
+        ]
+    ).to_parquet(
+        runtime_root / "operations" / "feature_artifacts" / BUSINESS_DATE / "position_feature_input.parquet",
+        index=False,
+    )
     _write_feature_readiness(runtime_root)
     _write_json(
         runtime_root / "operations" / "feature_consumer_readiness" / f"{BUSINESS_DATE}.json",
@@ -133,9 +161,10 @@ def _review_only_runtime_with_4591(tmp_path: Path) -> Path:
             "pm_schema_status": "READY",
         },
     )
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=BUSINESS_DATE)
     _write_high_risk_safety_decision(runtime_root)
     _write_safety_report(tmp_path, event_id="safety-event-4591")
-    _write_human_review(runtime_root, event_id="safety-event-4591", expires_at="2026-07-12T00:00:00+00:00")
+    _write_human_review(runtime_root, event_id="safety-event-4591", expires_at="2026-12-31T00:00:00+00:00")
     _write_json(
         runtime_root / "operations" / "feature_artifacts" / BUSINESS_DATE / "position_feature_input.parquet.placeholder.json",
         {"note": "review-only runner builds normalized PM contexts from Current"},

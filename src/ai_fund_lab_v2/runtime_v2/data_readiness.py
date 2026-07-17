@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import pickle
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,15 @@ ALLOWED_READINESS_SCOPES = (
     "execution",
     "current_valuation",
 )
+MORNING_VALUATION_SCOPES = {*FULL_MORNING_SCOPES, REVIEW_ONLY_MORNING_SCOPE, "sell_planning", "submit"}
+SAME_DAY_CLOSE_REQUIRED_SCOPES = {"current_valuation", "execution"}
+JST = timezone(timedelta(hours=9))
+CURRENT_VALUATION_CLOSE_CONFIRMED_TIME = time(15, 40)
+HISTORICAL_NEUTRAL_SAFETY_AUTHORITY = "historical_initial_no_external_effect"
+HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION = "historical_replay_neutral_safety_v1"
+HISTORICAL_NEUTRAL_SAFETY_SOURCE = "data_readiness_historical_temporal_authority"
+HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE = "HISTORICAL_DAILY_NEUTRAL"
+HISTORICAL_PENDING_SAFETY_AUTHORITY_TYPE = "HISTORICAL_PENDING_SAFETY_CONTEXT"
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,20 @@ class RuntimeDataReadinessResult:
             "review_only_morning_readiness",
             "human_review_status",
             "human_review_artifact_path",
+            "safety_authority_type",
+            "safety_authority_business_date",
+            "safety_authority_source",
+            "safety_authority_policy_version",
+            "previous_empty_pending_present",
+            "previous_empty_pending_ignored_as_safety_authority",
+            "historical_neutral_authority_generated_or_resolved",
+            "broker_write",
+            "external_delivery",
+            "runtime_test_run_id",
+            "runtime_test_profile_id",
+            "runtime_test_evidence_root",
+            "final_safety_status",
+            "final_safety_reason",
             "broker_environment",
             "broker_environment_production",
             "evidence_production_equivalent",
@@ -171,14 +194,31 @@ def _feature_date_contract_payload(
         operations_root=operations_root,
         requested_feature_date=business_date,
     )
-    if contract is None and explicit_feature_date:
+    if contract is not None:
+        payload = contract.to_payload()
+        payload["contract_artifact_path"] = contract.contract_artifact_path
+        payload["contract_source"] = "materialized_feature_date_contract"
+        payload["cli_feature_date"] = explicit_feature_date or ""
+        payload["feature_date_authority_source"] = "normal_feature_date_contract"
+        if explicit_feature_date and explicit_feature_date != contract.selected_feature_date:
+            payload["status"] = "REVIEW_REQUIRED"
+            payload["reason"] = "feature_date_authority_mismatch"
+            payload["authority_mismatch_fields"] = ["cli_feature_date", "contract.selected_feature_date"]
+            payload["cli_feature_date_authority_status"] = "MISMATCH"
+        else:
+            payload["cli_feature_date_authority_status"] = "PASS" if explicit_feature_date else "NOT_PROVIDED"
+        return payload
+    if explicit_feature_date:
         return {
-            "status": "EXPLICIT",
-            "reason": "explicit_feature_date_argument",
+            "status": "REVIEW_REQUIRED",
+            "reason": "feature_date_contract_missing",
             "requested_feature_date": business_date,
             "selected_feature_date": explicit_feature_date,
             "contract_artifact_path": "",
-            "contract_source": "explicit_cli_argument",
+            "contract_source": "explicit_cli_argument_without_normal_contract",
+            "feature_date_authority_source": "missing_normal_feature_date_contract",
+            "cli_feature_date": explicit_feature_date,
+            "cli_feature_date_authority_status": "CONTRACT_MISSING",
             "carryover_used": explicit_feature_date != business_date,
         }
     if contract is None:
@@ -190,11 +230,10 @@ def _feature_date_contract_payload(
         payload = contract.to_payload()
         payload["contract_artifact_path"] = contract.contract_artifact_path
         payload["contract_source"] = "resolved_read_only_feature_date_contract"
+        payload["feature_date_authority_source"] = "normal_feature_date_contract"
+        payload["cli_feature_date"] = ""
+        payload["cli_feature_date_authority_status"] = "NOT_PROVIDED"
         return payload
-    payload = contract.to_payload()
-    payload["contract_artifact_path"] = contract.contract_artifact_path
-    payload["contract_source"] = "materialized_feature_date_contract"
-    return payload
 
 
 def evaluate_runtime_data_readiness(
@@ -294,6 +333,8 @@ def evaluate_runtime_data_readiness(
         business_date=business_date,
         previous_trading_date=previous_trading_date,
         valuation_as_of=str(current_temporal_payload.get("valuation_as_of") or ""),
+        source_market_date=str(current_temporal_payload.get("source_market_date") or ""),
+        evaluation_time=now,
     )
     if valuation_temporal_authority["status"] == "READY":
         current_temporal_payload["current_valuation_status"] = "READY"
@@ -354,7 +395,8 @@ def evaluate_runtime_data_readiness(
     if (
         _scope_requires_feature(readiness_scope)
         and mode == "historical"
-        and feature_contract.get("contract_source") == "explicit_cli_argument"
+        and feature_contract.get("contract_source")
+        in {"explicit_cli_argument", "explicit_cli_argument_without_normal_contract"}
     ):
         reason = "historical_feature_date_contract_missing"
         review_reasons.append(reason)
@@ -405,6 +447,7 @@ def evaluate_runtime_data_readiness(
     pm_feature_path_resolved, pm_opportunity_path_resolved = _resolve_pm_input_paths_from_feature_contract(
         root=root,
         feature_contract=feature_contract,
+        business_date=business_date,
         feature_date=selected_feature_date,
         explicit_pm_feature_path=pm_feature_path,
         explicit_pm_opportunity_path=pm_opportunity_path,
@@ -455,6 +498,7 @@ def evaluate_runtime_data_readiness(
         root=root,
         business_date=business_date,
         mode=mode,
+        broker_environment=broker_environment or mode,
         current_payload=current_payload,
         pending_payload=pending_payload,
         runtime_test_run_id=runtime_test_run_id or "",
@@ -598,6 +642,24 @@ def evaluate_runtime_data_readiness(
         "broker_status": broker_effective_status,
         "safety_status": safety_payload["status"],
         "effective_safety_status": effective_safety_status,
+        "safety_authority_type": safety_payload.get("safety_authority_type") or "",
+        "safety_authority_business_date": safety_payload.get("safety_authority_business_date") or "",
+        "safety_authority_source": safety_payload.get("safety_authority_source") or "",
+        "safety_authority_policy_version": safety_payload.get("safety_authority_policy_version") or "",
+        "previous_empty_pending_present": bool(safety_payload.get("previous_empty_pending_present")),
+        "previous_empty_pending_ignored_as_safety_authority": bool(
+            safety_payload.get("previous_empty_pending_ignored_as_safety_authority")
+        ),
+        "historical_neutral_authority_generated_or_resolved": bool(
+            safety_payload.get("historical_neutral_authority_generated_or_resolved")
+        ),
+        "broker_write": bool(broker_write),
+        "external_delivery": bool(external_delivery),
+        "runtime_test_run_id": runtime_test_run_id or "",
+        "runtime_test_profile_id": runtime_test_profile_id or "",
+        "runtime_test_evidence_root": str(runtime_test_evidence_root or ""),
+        "final_safety_status": safety_payload["status"],
+        "final_safety_reason": safety_payload["reason"],
         "human_review_status": review_only_scope_payload["status"],
         "human_review_artifact_path": review_only_scope_payload.get("artifact_path") or "",
         "full_morning_readiness": "NOT_APPLICABLE" if readiness_scope == REVIEW_ONLY_MORNING_SCOPE else overall_status,
@@ -626,6 +688,15 @@ def evaluate_runtime_data_readiness(
         "current_valuation_previous_close_carry_allowed": valuation_temporal_authority["previous_close_carry_allowed"],
         "current_valuation_temporal_authority": valuation_temporal_authority["authority"],
         "current_valuation_temporal_reason": valuation_temporal_authority["reason"],
+        "current_valuation_evaluation_time": valuation_temporal_authority["evaluation_time"],
+        "current_valuation_close_confirmed_time": valuation_temporal_authority["close_confirmed_time"],
+        "current_valuation_close_confirmed": valuation_temporal_authority["close_confirmed"],
+        "current_valuation_source_market_date_status": valuation_temporal_authority["source_market_date_status"],
+        "valuation_refresh_precondition_status": "PASS"
+        if readiness_scope == "current_valuation" and valuation_temporal_authority["status"] == "READY"
+        else "NOT_APPLICABLE",
+        "target_valuation_date": business_date if readiness_scope == "current_valuation" else "",
+        "existing_valuation_as_of": current_temporal_payload["valuation_as_of"],
         "current_position_status": current_temporal_payload["current_position_status"],
         "current_valuation_status": current_temporal_payload["current_valuation_status"],
         "position_state_as_of": current_temporal_payload["position_state_as_of"],
@@ -788,84 +859,169 @@ def _current_valuation_temporal_authority(
     business_date: str,
     previous_trading_date: str,
     valuation_as_of: str,
+    source_market_date: str = "",
+    evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
-    morning_scope = readiness_scope in {*FULL_MORNING_SCOPES, REVIEW_ONLY_MORNING_SCOPE, "sell_planning"}
+    morning_scope = readiness_scope in MORNING_VALUATION_SCOPES
+    refresh_scope = readiness_scope == "current_valuation"
+    evaluation_time_jst = evaluation_time.astimezone(JST) if evaluation_time is not None else None
+    close_confirmed = (
+        (readiness_scope in SAME_DAY_CLOSE_REQUIRED_SCOPES and not refresh_scope)
+        or (
+            evaluation_time_jst is not None
+            and (
+                evaluation_time_jst.date().isoformat() > business_date
+                or (
+                    evaluation_time_jst.date().isoformat() == business_date
+                    and evaluation_time_jst.time() >= CURRENT_VALUATION_CLOSE_CONFIRMED_TIME
+                )
+            )
+        )
+    )
+    same_day_close_required = (close_confirmed or not morning_scope) and not refresh_scope
+    expected_policy = (
+        "current_valuation_refresh_precondition"
+        if refresh_scope
+        else
+        "business_date_close"
+        if same_day_close_required
+        else "morning_previous_close_or_same_day"
+    )
+    expected_date = business_date if same_day_close_required else previous_trading_date
+    source_date = source_market_date[:10] if source_market_date else ""
+
+    def payload(
+        *,
+        status: str,
+        authority: str,
+        reason: str,
+        expected_date_override: str | None = None,
+        same_day_allowed: bool | None = None,
+        previous_close_carry_allowed: bool = False,
+        source_market_date_status: str = "READY",
+    ) -> dict[str, Any]:
+        return {
+            "status": status,
+            "expected_date": expected_date_override if expected_date_override is not None else expected_date,
+            "expected_date_policy": expected_policy,
+            "same_day_allowed": (not same_day_close_required) if same_day_allowed is None else same_day_allowed,
+            "previous_close_carry_allowed": previous_close_carry_allowed,
+            "authority": authority,
+            "reason": reason,
+            "evaluation_time": evaluation_time_jst.isoformat() if evaluation_time_jst is not None else "",
+            "close_confirmed_time": CURRENT_VALUATION_CLOSE_CONFIRMED_TIME.isoformat(),
+            "close_confirmed": close_confirmed,
+            "source_market_date_status": source_market_date_status,
+        }
+
+    if not previous_trading_date:
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="missing_trading_calendar_authority",
+            reason="current_valuation_previous_trading_date_missing",
+            source_market_date_status="NOT_EVALUATED",
+        )
     if not valuation_as_of:
-        return {
-            "status": "REVIEW_REQUIRED",
-            "expected_date": previous_trading_date if morning_scope else business_date,
-            "expected_date_policy": "morning_previous_close_or_same_day" if morning_scope else "business_date_close",
-            "same_day_allowed": morning_scope,
-            "previous_close_carry_allowed": False,
-            "authority": "missing_current_valuation",
-            "reason": "current_valuation_evidence_missing",
-        }
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="missing_current_valuation",
+            reason="current_valuation_evidence_missing",
+            source_market_date_status="MISSING",
+        )
     actual = valuation_as_of[:10]
+    if source_date and source_date != actual:
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="current_valuation_source_market_date_mismatch",
+            reason="current_valuation_source_market_date_mismatch",
+            source_market_date_status="MISMATCH",
+        )
     if actual > business_date:
-        return {
-            "status": "HALT",
-            "expected_date": previous_trading_date if morning_scope else business_date,
-            "expected_date_policy": "morning_previous_close_or_same_day" if morning_scope else "business_date_close",
-            "same_day_allowed": morning_scope,
-            "previous_close_carry_allowed": False,
-            "authority": "future_current_valuation_rejected",
-            "reason": "current_valuation_future_date",
-        }
-    if morning_scope:
+        return payload(
+            status="HALT",
+            authority="future_current_valuation_rejected",
+            reason="current_valuation_future_date",
+        )
+    if refresh_scope:
         if actual == business_date:
-            return {
-                "status": "READY",
-                "expected_date": business_date,
-                "expected_date_policy": "morning_previous_close_or_same_day",
-                "same_day_allowed": True,
-                "previous_close_carry_allowed": False,
-                "authority": "current_valuation_same_day_refresh",
-                "reason": "same_day_current_valuation_refresh_available",
-            }
+            return payload(
+                status="READY",
+                authority="current_valuation_business_date_close",
+                reason="business_date_current_valuation_ready",
+                same_day_allowed=True,
+                expected_date_override=business_date,
+            )
         if previous_trading_date and actual == previous_trading_date:
-            return {
-                "status": "READY",
-                "expected_date": previous_trading_date,
-                "expected_date_policy": "morning_previous_close_or_same_day",
-                "same_day_allowed": True,
-                "previous_close_carry_allowed": True,
-                "authority": "current_valuation_previous_trading_day_close",
-                "reason": "previous_trading_day_close_is_latest_available_at_morning_evaluation",
-            }
-        return {
-            "status": "REVIEW_REQUIRED",
-            "expected_date": previous_trading_date,
-            "expected_date_policy": "morning_previous_close_or_same_day",
-            "same_day_allowed": True,
-            "previous_close_carry_allowed": False,
-            "authority": "stale_current_valuation",
-            "reason": "current_valuation_older_than_previous_trading_day",
-        }
+            return payload(
+                status="READY",
+                authority="current_valuation_previous_close_ready_for_refresh",
+                reason="previous_trading_day_close_ready_for_current_valuation_refresh",
+                same_day_allowed=True,
+                previous_close_carry_allowed=False,
+                expected_date_override=business_date,
+            )
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="stale_current_valuation",
+            reason="current_valuation_older_than_previous_trading_day",
+            same_day_allowed=True,
+            previous_close_carry_allowed=False,
+        )
+    if same_day_close_required:
+        if actual == business_date:
+            return payload(
+                status="READY",
+                authority="current_valuation_business_date_close",
+                reason="business_date_current_valuation_ready",
+                same_day_allowed=True,
+            )
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="stale_current_valuation",
+            reason="current_valuation_not_business_date_close",
+            same_day_allowed=False,
+        )
+    if evaluation_time is None and readiness_scope == "submit" and actual != business_date:
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="current_valuation_evaluation_time_missing",
+            reason="current_valuation_evaluation_time_missing",
+            source_market_date_status="NOT_EVALUATED",
+        )
     if actual == business_date:
-        return {
-            "status": "READY",
-            "expected_date": business_date,
-            "expected_date_policy": "business_date_close",
-            "same_day_allowed": True,
-            "previous_close_carry_allowed": False,
-            "authority": "current_valuation_business_date_close",
-            "reason": "business_date_current_valuation_ready",
-        }
-    return {
-        "status": "REVIEW_REQUIRED",
-        "expected_date": business_date,
-        "expected_date_policy": "business_date_close",
-        "same_day_allowed": False,
-        "previous_close_carry_allowed": False,
-        "authority": "stale_current_valuation",
-        "reason": "current_valuation_not_business_date_close",
-    }
+        return payload(
+            status="READY",
+            authority="current_valuation_same_day_refresh",
+            reason="same_day_current_valuation_refresh_available",
+            expected_date_override=business_date,
+            same_day_allowed=True,
+        )
+    if morning_scope:
+        if previous_trading_date and actual == previous_trading_date:
+            return payload(
+                status="READY",
+                authority="current_valuation_previous_trading_day_close",
+                reason="previous_trading_day_close_is_latest_available_at_morning_evaluation",
+                previous_close_carry_allowed=True,
+            )
+        return payload(
+            status="REVIEW_REQUIRED",
+            authority="stale_current_valuation",
+            reason="current_valuation_older_than_previous_trading_day",
+        )
+    return payload(
+        status="REVIEW_REQUIRED",
+        authority="stale_current_valuation",
+        reason="current_valuation_not_business_date_close",
+        same_day_allowed=False,
+    )
 
 
 def _resolve_pm_input_paths_from_feature_contract(
     *,
     root: Path,
     feature_contract: dict[str, Any],
+    business_date: str,
     feature_date: str,
     explicit_pm_feature_path: Path | str | None,
     explicit_pm_opportunity_path: Path | str | None,
@@ -874,7 +1030,7 @@ def _resolve_pm_input_paths_from_feature_contract(
     pm_feature = explicit_pm_feature_path or generated.get("position_feature_input.parquet") or None
     pm_opportunity = (
         explicit_pm_opportunity_path
-        or root / "runtime_state" / "buy_ai" / feature_date / "opportunity_rankings.json"
+        or root / "runtime_state" / "buy_ai" / business_date / "opportunity_rankings.json"
     )
     return pm_feature, pm_opportunity
 
@@ -1222,6 +1378,7 @@ def _safety_readiness_payload(
     root: Path,
     business_date: str,
     mode: str,
+    broker_environment: str,
     current_payload: dict[str, Any],
     pending_payload: dict[str, Any],
     runtime_test_run_id: str,
@@ -1237,21 +1394,6 @@ def _safety_readiness_payload(
     if mode == "historical" and (
         decision.safety_status == "SAFETY_MISSING" or decision.business_date != business_date
     ):
-        if (
-            not broker_write
-            and not external_delivery
-            and _historical_initial_current_ready(current_payload)
-            and _pending_payload_empty(pending_payload)
-        ):
-            return {
-                "status": "READY",
-                "reason": "historical_neutral_no_event_safety_ready",
-                "missing_evidence": [],
-                "stale_artifacts": [],
-                "source_paths": {"safety_decision": ""},
-                "ignored_latest_safety_decision": decision.artifact_path,
-                "historical_safety_temporal_authority": "historical_initial_no_external_effect",
-            }
         pending_authority = _historical_pending_safety_authority(
             pending_payload=pending_payload,
             business_date=business_date,
@@ -1259,10 +1401,25 @@ def _safety_readiness_payload(
             runtime_test_profile_id=runtime_test_profile_id,
             runtime_test_evidence_root=runtime_test_evidence_root,
         )
+        previous_empty_present = _previous_empty_pending_present(
+            pending_payload=pending_payload,
+            business_date=business_date,
+        )
+        common_evidence = {
+            "previous_empty_pending_present": previous_empty_present,
+            "previous_empty_pending_ignored_as_safety_authority": previous_empty_present,
+            "broker_write": bool(broker_write),
+            "external_delivery": bool(external_delivery),
+            "broker_environment": broker_environment,
+            "runtime_test_run_id": runtime_test_run_id,
+            "runtime_test_profile_id": runtime_test_profile_id,
+            "runtime_test_evidence_root": runtime_test_evidence_root,
+        }
         if (
             not broker_write
             and not external_delivery
             and pending_authority["status"] == "READY"
+            and not previous_empty_present
         ):
             return {
                 "status": "READY",
@@ -1271,15 +1428,54 @@ def _safety_readiness_payload(
                 "stale_artifacts": [],
                 "source_paths": {"safety_decision": str(pending_payload.get("source_paths", {}).get("pending") or "")},
                 "ignored_latest_safety_decision": decision.artifact_path,
-                "historical_safety_temporal_authority": "historical_initial_no_external_effect",
+                "historical_safety_temporal_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
+                "safety_authority_type": HISTORICAL_PENDING_SAFETY_AUTHORITY_TYPE,
+                "safety_authority_business_date": pending_authority.get("safety_business_date_expected") or business_date,
+                "safety_authority_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+                "safety_authority_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+                "historical_neutral_authority_generated_or_resolved": False,
                 "pending_safety_authority": pending_authority,
+                **common_evidence,
             }
+        neutral_authority = _historical_daily_neutral_safety_authority(
+            business_date=business_date,
+            mode=mode,
+            broker_environment=broker_environment,
+            current_payload=current_payload,
+            pending_payload=pending_payload,
+            runtime_test_run_id=runtime_test_run_id,
+            runtime_test_profile_id=runtime_test_profile_id,
+            runtime_test_evidence_root=runtime_test_evidence_root,
+            broker_write=broker_write,
+            external_delivery=external_delivery,
+            previous_empty_pending_present=previous_empty_present,
+        )
+        if neutral_authority["status"] == "READY":
+            return {
+                **neutral_authority,
+                "status": "READY",
+                "reason": "historical_neutral_no_event_safety_ready",
+                "missing_evidence": [],
+                "stale_artifacts": [],
+                "source_paths": {"safety_decision": ""},
+                "ignored_latest_safety_decision": decision.artifact_path,
+                "historical_safety_temporal_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
+                "pending_safety_authority": pending_authority,
+                "historical_neutral_authority_reason": neutral_authority["reason"],
+            }
+        missing_evidence = ["historical_safety_temporal_authority"]
+        if neutral_authority.get("missing_evidence"):
+            missing_evidence = _unique([*missing_evidence, *neutral_authority.get("missing_evidence")])
         return {
+            **neutral_authority,
+            **common_evidence,
             "status": "REVIEW_REQUIRED",
             "reason": "historical_safety_temporal_authority_missing",
-            "missing_evidence": ["historical_safety_temporal_authority"],
+            "missing_evidence": missing_evidence,
             "stale_artifacts": ["safety"] if decision.artifact_path else [],
             "source_paths": source_paths,
+            "pending_safety_authority": pending_authority,
+            "historical_neutral_authority_reason": neutral_authority["reason"],
         }
     if decision.safety_status != "PASS":
         return {"status": "REVIEW_REQUIRED", "reason": decision.reason or decision.safety_status, "missing_evidence": missing, "stale_artifacts": stale, "source_paths": source_paths}
@@ -1293,6 +1489,96 @@ def _safety_readiness_payload(
     if decision.decision != "ALLOW" or decision.review_required or decision.block_buy or decision.block_sell or decision.block_submit:
         return {"status": "REVIEW_REQUIRED", "reason": decision.reason or "safety_not_allow", "missing_evidence": [], "stale_artifacts": [], "source_paths": source_paths}
     return {"status": "READY", "reason": "safety_allow", "missing_evidence": [], "stale_artifacts": [], "source_paths": source_paths}
+
+
+def _previous_empty_pending_present(*, pending_payload: dict[str, Any], business_date: str) -> bool:
+    payload = dict(pending_payload.get("payload") or {})
+    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
+    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
+    target_session_date = str(payload.get("target_session_date") or "")
+    items = payload.get("items") or ()
+    return bool(state == "EMPTY" and not active_pending and not items and target_session_date and target_session_date < business_date)
+
+
+def _pending_allows_daily_neutral_safety(*, pending_payload: dict[str, Any], business_date: str) -> bool:
+    payload = dict(pending_payload.get("payload") or {})
+    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
+    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
+    items = payload.get("items") or ()
+    target_session_date = str(payload.get("target_session_date") or "")
+    consumed = bool((payload.get("consume") or {}).get("consumed")) or state == "CONSUMED"
+    if state in {"APPROVED", "PENDING_APPROVAL", "SUBMITTED", "ACTIVE", "CONSUMED"} or active_pending or consumed:
+        return False
+    if state == "EMPTY" and not active_pending and not items:
+        return not target_session_date or target_session_date <= business_date
+    return False
+
+
+def _historical_daily_neutral_safety_authority(
+    *,
+    business_date: str,
+    mode: str,
+    broker_environment: str,
+    current_payload: dict[str, Any],
+    pending_payload: dict[str, Any],
+    runtime_test_run_id: str,
+    runtime_test_profile_id: str,
+    runtime_test_evidence_root: str,
+    broker_write: bool,
+    external_delivery: bool,
+    previous_empty_pending_present: bool,
+) -> dict[str, Any]:
+    mismatched: list[str] = []
+    missing: list[str] = []
+    if mode != "historical":
+        mismatched.append("runtime_mode")
+    if broker_environment != "historical_simulated":
+        mismatched.append("broker_environment")
+    if broker_write:
+        mismatched.append("broker_write")
+    if external_delivery:
+        mismatched.append("external_delivery")
+    if not runtime_test_run_id:
+        missing.append("runtime_test_run_id")
+    if not runtime_test_profile_id:
+        missing.append("runtime_test_profile_id")
+    if not runtime_test_evidence_root:
+        missing.append("runtime_test_evidence_root")
+    if not _pending_allows_daily_neutral_safety(
+        pending_payload=pending_payload,
+        business_date=business_date,
+    ):
+        mismatched.append("pending_lifecycle_state")
+    status = "READY" if not mismatched and not missing else "REVIEW_REQUIRED"
+    reason = (
+        "historical_daily_neutral_safety_authority_ready"
+        if status == "READY"
+        else "historical_daily_neutral_safety_authority_not_available"
+    )
+    return {
+        "status": status,
+        "reason": reason,
+        "missing_evidence": missing,
+        "stale_artifacts": [],
+        "mismatched_fields": sorted(set(mismatched)),
+        "safety_authority_type": HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE,
+        "safety_authority_business_date": business_date,
+        "safety_authority_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+        "safety_authority_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+        "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
+        "safety_decision": "ALLOW",
+        "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+        "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+        "historical_neutral_authority_generated_or_resolved": status == "READY",
+        "previous_empty_pending_present": previous_empty_pending_present,
+        "previous_empty_pending_ignored_as_safety_authority": previous_empty_pending_present,
+        "broker_write": bool(broker_write),
+        "external_delivery": bool(external_delivery),
+        "broker_environment": broker_environment,
+        "runtime_test_run_id": runtime_test_run_id,
+        "runtime_test_profile_id": runtime_test_profile_id,
+        "runtime_test_evidence_root": runtime_test_evidence_root,
+    }
 
 
 def _safety_dependency_payload(*, safety_payload: dict[str, Any], broker_payload: dict[str, Any]) -> dict[str, Any]:
@@ -1469,10 +1755,10 @@ def _historical_pending_safety_authority(
     if state not in {"APPROVED", "CONSUMED"} and not consumed and not no_action_terminal:
         mismatched.append("pending_lifecycle_state")
     expected = {
-        "safety_authority": "historical_initial_no_external_effect",
+        "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
         "safety_decision": "ALLOW",
-        "safety_policy_version": "historical_replay_neutral_safety_v1",
-        "safety_source": "data_readiness_historical_temporal_authority",
+        "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+        "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
         "safety_business_date": expected_safety_business_date,
     }
     if runtime_test_run_id or safety_context.get("runtime_test_run_id"):

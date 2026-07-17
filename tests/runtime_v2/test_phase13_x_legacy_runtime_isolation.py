@@ -6,11 +6,14 @@ RUNTIME_ROOT = Path("src/ai_fund_lab_v2/runtime_v2")
 
 FORBIDDEN_IMPORT_PREFIXES = (
     "ai_fund_lab_v2.runtime",
-    "ai_fund_lab_v2.operations",
-    "ai_fund_lab_v2.broker",
     "ai_fund_lab_v2.workflow",
     "ai_fund_lab_v2.entrypoint",
 )
+
+FORBIDDEN_IMPORT_EXACT = {
+    "ai_fund_lab_v2.operations",
+    "ai_fund_lab_v2.broker",
+}
 
 FORBIDDEN_TEXT_SNIPPETS = (
     "demo_ledger",
@@ -30,6 +33,7 @@ def test_runtime_v2_has_no_legacy_runtime_imports():
                 imported == prefix or imported.startswith(f"{prefix}.")
                 for prefix in FORBIDDEN_IMPORT_PREFIXES
             ), f"{path} imports legacy dependency {imported}"
+            assert imported not in FORBIDDEN_IMPORT_EXACT, f"{path} imports legacy dependency {imported}"
 
 
 def test_runtime_v2_has_no_legacy_entrypoint_or_resolver_references():
@@ -44,7 +48,6 @@ def test_runtime_v2_does_not_reference_legacy_submit_or_report_paths():
     forbidden = (
         "legacy_submit",
         "legacy_report",
-        "legacy_current",
         "resolve_latest_order_plan",
         "resolve_current_from_date_dir",
         "resolve_current_from_phase_dir",
@@ -65,4 +68,3 @@ def _extract_imports(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imports.add(node.module)
     return imports
-

@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 
 

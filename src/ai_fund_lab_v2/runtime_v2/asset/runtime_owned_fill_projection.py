@@ -9,6 +9,10 @@ from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.asset.writer import write_current_asset_state
+from ai_fund_lab_v2.runtime_v2.ledger.performance_events import (
+    CanonicalPerformanceExecutionEvent,
+    resolve_performance_fills,
+)
 
 EXECUTION_READONLY_SOURCES = {
     "runtime_v2_execution_readonly",
@@ -77,12 +81,45 @@ def project_runtime_owned_fills_to_current(
         )
 
     latest_positions = _latest_positions_by_symbol(ledger_positions)
-    projected_rows = tuple(
-        latest_positions[symbol]
-        for symbol in runtime_owned_symbols
-        if symbol in latest_positions and _number(latest_positions[symbol].get("quantity")) > 0
+    execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
+    fill_resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
+    canonical_events = _runtime_owned_canonical_events(
+        fill_resolution.events,
+        runtime_owned_symbols=runtime_owned_symbols,
     )
-    missing = tuple(symbol for symbol in runtime_owned_symbols if symbol not in latest_positions)
+    quantity_projection = _projected_quantities(
+        canonical_events=canonical_events,
+        latest_positions=latest_positions,
+        current_sot_before=before,
+        runtime_owned_symbols=runtime_owned_symbols,
+        mode=mode,
+    )
+    if quantity_projection["errors"]:
+        return _result(
+            status="REVIEW_REQUIRED",
+            reason="runtime owned position projection invalid: " + ",".join(quantity_projection["errors"]),
+            state_path=state_path,
+            runtime_owned_symbols=runtime_owned_symbols,
+            excluded=tuple(symbol for symbol in latest_positions if symbol not in runtime_owned_symbols),
+            positions=(),
+            before=before,
+            after=before,
+        )
+    projected_rows = tuple(
+        _projected_position_row(
+            symbol=symbol,
+            quantity=quantity,
+            latest_positions=latest_positions,
+            business_date=business_date,
+        )
+        for symbol, quantity in quantity_projection["quantities"].items()
+        if quantity > 0
+    )
+    missing = tuple(
+        symbol
+        for symbol, quantity in quantity_projection["quantities"].items()
+        if quantity > 0 and symbol not in latest_positions
+    )
     if missing:
         return _result(
             status="REVIEW_REQUIRED",
@@ -102,10 +139,12 @@ def project_runtime_owned_fills_to_current(
     projected_cash = _projected_cash(
         starting_cash=starting_cash,
         cost_basis=cost_basis,
+        submit_orders=submit_orders,
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
     )
     realized_pnl = _projected_realized_pnl(
+        submit_orders=submit_orders,
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
     )
@@ -208,26 +247,97 @@ def _current_position(row: dict[str, Any], *, business_date: str) -> CurrentAsse
     )
 
 
+def _projected_quantities(
+    *,
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+    latest_positions: dict[str, dict[str, Any]],
+    current_sot_before: dict[str, Any],
+    runtime_owned_symbols: tuple[str, ...],
+    mode: str,
+) -> dict[str, Any]:
+    if mode != "historical":
+        return {
+            "quantities": {
+                symbol: _number((latest_positions.get(symbol) or {}).get("quantity"))
+                for symbol in runtime_owned_symbols
+            },
+            "errors": (),
+        }
+    by_symbol: dict[str, list[CanonicalPerformanceExecutionEvent]] = {symbol: [] for symbol in runtime_owned_symbols}
+    for event in sorted(canonical_events, key=lambda item: (item.executed_at, item.canonical_dedup_key)):
+        by_symbol.setdefault(event.symbol, []).append(event)
+    quantities: dict[str, float] = {}
+    errors: list[str] = []
+    before_positions = {
+        str(item.get("symbol") or "").strip(): item
+        for item in current_sot_before.get("positions") or ()
+        if str(item.get("symbol") or "").strip()
+    }
+    for symbol in runtime_owned_symbols:
+        events = by_symbol.get(symbol) or []
+        has_buy_event = any(event.side.upper() == "BUY" for event in events)
+        if has_buy_event:
+            quantity = 0.0
+        elif symbol in before_positions:
+            quantity = _number(before_positions[symbol].get("quantity"))
+        elif symbol in latest_positions:
+            sell_quantity = sum(event.quantity for event in events if event.side.upper() == "SELL")
+            quantity = _number(latest_positions[symbol].get("quantity")) + sell_quantity
+        else:
+            quantity = 0.0
+        for event in events:
+            side = event.side.upper()
+            if side == "BUY":
+                quantity += event.quantity
+            elif side == "SELL":
+                quantity -= event.quantity
+            if quantity < -0.000001:
+                errors.append(f"sell_execution_exceeds_runtime_owned_quantity:{symbol}")
+                quantity = 0.0
+        quantities[symbol] = max(quantity, 0.0)
+    return {"quantities": quantities, "errors": tuple(errors)}
+
+
+def _projected_position_row(
+    *,
+    symbol: str,
+    quantity: float,
+    latest_positions: dict[str, dict[str, Any]],
+    business_date: str,
+) -> dict[str, Any]:
+    latest = latest_positions.get(symbol) or {}
+    latest_quantity = _number(latest.get("quantity"))
+    average_price = _number(latest.get("average_price"))
+    market_price = _number(latest.get("market_value")) / latest_quantity if latest_quantity else average_price
+    row = dict(latest)
+    row["symbol"] = symbol
+    row["position_key"] = row.get("position_key") or symbol
+    row["quantity"] = quantity
+    row["average_price"] = average_price
+    row["market_value"] = quantity * market_price
+    row["as_of"] = row.get("as_of") or row.get("recorded_at") or business_date
+    return row
+
+
 def _projected_cash(
     *,
     starting_cash: float,
     cost_basis: float,
+    submit_orders: list[dict[str, Any]],
     ledger_executions: list[dict[str, Any]],
     runtime_owned_symbols: tuple[str, ...],
 ) -> float:
-    execution_rows = [
-        row
-        for row in ledger_executions
-        if row.get("source") in EXECUTION_READONLY_SOURCES
-        and row.get("execution_evidence_type") == "execution_equivalent"
-        and str(row.get("symbol") or "") in runtime_owned_symbols
-    ]
+    execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
     if not execution_rows:
         return max(starting_cash - cost_basis, 0.0)
+    resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
+    canonical_events = _runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols)
+    if not canonical_events:
+        return max(starting_cash - cost_basis, 0.0)
     cash = starting_cash
-    for row in execution_rows:
-        amount = _number(row.get("cash_effect"))
-        side = str(row.get("side") or "").upper()
+    for event in canonical_events:
+        amount = event.gross_notional
+        side = event.side.upper()
         if side == "BUY":
             cash -= amount
         elif side == "SELL":
@@ -237,6 +347,7 @@ def _projected_cash(
 
 def _projected_realized_pnl(
     *,
+    submit_orders: list[dict[str, Any]],
     ledger_executions: list[dict[str, Any]],
     runtime_owned_symbols: tuple[str, ...],
 ) -> float:
@@ -245,22 +356,18 @@ def _projected_realized_pnl(
         for symbol in runtime_owned_symbols
     }
     realized = 0.0
+    execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
+    resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
     rows = sorted(
-        (
-            row
-            for row in ledger_executions
-            if row.get("source") in EXECUTION_READONLY_SOURCES
-            and row.get("execution_evidence_type") == "execution_equivalent"
-            and str(row.get("symbol") or "") in runtime_owned_symbols
-        ),
-        key=lambda row: str(row.get("executed_at") or row.get("recorded_at") or row.get("created_at") or ""),
+        _runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols),
+        key=lambda event: event.executed_at,
     )
     for row in rows:
-        symbol = str(row.get("symbol") or "")
+        symbol = row.symbol
         state = positions.setdefault(symbol, {"quantity": 0.0, "cost": 0.0})
-        quantity = _number(row.get("filled_quantity") or row.get("quantity"))
-        price = _number(row.get("price") or row.get("average_price"))
-        side = str(row.get("side") or "").upper()
+        quantity = row.quantity
+        price = row.price
+        side = row.side.upper()
         if side == "BUY":
             state["quantity"] += quantity
             state["cost"] += quantity * price
@@ -270,6 +377,14 @@ def _projected_realized_pnl(
             state["quantity"] = max(state["quantity"] - quantity, 0.0)
             state["cost"] = max(state["cost"] - average_cost * quantity, 0.0)
     return realized
+
+
+def _runtime_owned_canonical_events(
+    events: tuple[CanonicalPerformanceExecutionEvent, ...],
+    *,
+    runtime_owned_symbols: tuple[str, ...],
+) -> tuple[CanonicalPerformanceExecutionEvent, ...]:
+    return tuple(event for event in events if event.symbol in runtime_owned_symbols)
 
 
 def _state_payload_with_metadata(

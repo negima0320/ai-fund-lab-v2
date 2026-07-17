@@ -165,7 +165,6 @@ def run_phase14d8_pure_runtime_v2_demo_buy_retest(
         base_url_is_demo=base_url_is_demo,
         base_url_is_production=base_url_is_production,
         live_order_allowed=True,
-        max_order_amount=max_order_amount,
     )
     command = preflight.command
     adapter_preflight_result: RuntimeV2SubmitResult | None = None

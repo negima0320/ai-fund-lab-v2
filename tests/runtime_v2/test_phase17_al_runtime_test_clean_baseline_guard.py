@@ -154,10 +154,11 @@ def test_phase17_al_run_precondition_halts_before_any_runtime_job(tmp_path: Path
             profile=_profile(runtime_root),
             runtime_root=runtime_root,
             evidence_root=evidence_root,
-        )
+    )
 
     assert exc.value.status == "HALT"
     assert "runtime_test_clean_baseline_mismatch" in str(exc.value)
+    assert "pending_target_date_future" in str(exc.value)
     assert calls == []
 
 
@@ -306,13 +307,15 @@ def _write_plan(evidence_root: Path, *, run_id: str) -> None:
 
 def _feature_evidence() -> dict:
     return {
-        "source": "runtime_test_plan_preflight",
+        "source": "runtime_test_plan_schedule_expectation",
         "status": "PASS",
         "contract_materialized": False,
+        "materialized_contract_exists": False,
         "contract_hash": "hash",
         "profile_value_used_as_authority": False,
         "profile_expected_selected_feature_date": START_DATE,
         "selected_feature_date": START_DATE,
+        "reason": "feature_date_contract_not_yet_materialized_plan_expectation_only",
     }
 
 

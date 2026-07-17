@@ -7,8 +7,8 @@
   "official_continuity_test": false,
   "official_performance_test": false,
   "window": {
-    "date_from": "2026-07-06",
-    "date_to": ""
+    "date_from": "2026-06-29",
+    "date_to": "2026-07-10"
   },
   "business_days": 10,
   "runtime_root": ".runtime",
@@ -80,5 +80,7 @@
     "DATA_PIT_MANIFEST_READY",
     "RESET_READY",
     "ROLLBACK_READY"
-  ]
+  ],
+  "date_from": "2026-06-29",
+  "date_to": "2026-07-10"
 }

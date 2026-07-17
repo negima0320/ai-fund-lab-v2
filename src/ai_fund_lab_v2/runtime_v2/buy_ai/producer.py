@@ -26,6 +26,7 @@ from scripts.run_phase4bg_formal_candidate_inference import (
 )
 
 from ai_fund_lab_v2.opportunity_ai.inference import run_opportunity_inference
+from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     RuntimeArtifactLookupHalt,
     require_diagnostic_path_matches_registry,
@@ -336,18 +337,32 @@ def load_ai_planning_signals_from_opportunity_artifact(
     *,
     selected_rank_limit: int | None = None,
 ) -> tuple[AIPlanningSignal, ...]:
-    payload = _read_json(Path(path))
+    artifact_path = Path(path)
+    payload = _read_json(artifact_path)
     if payload.get("schema_version") != OPPORTUNITY_ARTIFACT_SCHEMA_VERSION:
         raise ValueError("Opportunity ranking artifact schema mismatch")
     rows = list(payload.get("rankings") or ())
     if selected_rank_limit is not None:
         rows = [row for row in rows if int(row.get("rank") or 999999) <= selected_rank_limit]
     runtime_id = str(payload.get("runtime_id") or "runtime-v2-buy-ai")
+    business_date = str(payload.get("business_date") or "")
+    feature_date = str(payload.get("feature_date") or payload.get("target_date") or "")
     signals: list[AIPlanningSignal] = []
     for row in sorted(rows, key=lambda item: (int(item.get("rank") or 999999), str(item.get("symbol") or ""))):
         rank = int(row.get("rank") or len(signals) + 1)
         symbol = str(row.get("symbol") or "")
         if not symbol:
+            continue
+        eligibility = evaluate_opportunity_buy_eligibility(
+            symbol=symbol,
+            business_date=business_date,
+            feature_date=feature_date,
+            opportunity_artifact_path=artifact_path,
+            opportunity_payload=payload,
+            opportunity_row=row,
+            excluded_at_stage="buy_ai_signal_loader",
+        )
+        if not eligibility.eligible:
             continue
         signals.append(
             AIPlanningSignal(
@@ -355,7 +370,7 @@ def load_ai_planning_signals_from_opportunity_artifact(
                 symbol=symbol,
                 side="BUY",
                 rank=rank,
-                score=float(row.get("opportunity_score") or 0.0),
+                score=float(row.get("opportunity_score") or row.get("expected_edge_score") or 0.0),
                 reason=str(row.get("reason") or "opportunity_ai_ranked"),
                 source_ai="opportunity_ai",
             )
@@ -649,6 +664,10 @@ def _produce_opportunity_artifact(
                 "expected_return": expected_edge_score,
                 "confidence": _confidence_from_rank(buy_rank),
                 "reason": str(row.get("buy_reason") or "opportunity_ai_ranked"),
+                "no_buy_reason": str(row.get("no_buy_reason") or ""),
+                "is_top5": bool(row.get("is_top5")) if "is_top5" in row else buy_rank <= 5,
+                "is_top10": bool(row.get("is_top10")) if "is_top10" in row else buy_rank <= 10,
+                "is_top20": bool(row.get("is_top20")) if "is_top20" in row else buy_rank <= 20,
                 "generated_at": generated_at,
                 "candidate_score": float(row.get("candidate_score") or 0.0),
                 "candidate_rank": int(row.get("candidate_rank") or 0),

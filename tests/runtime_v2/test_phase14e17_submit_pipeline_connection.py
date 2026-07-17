@@ -141,8 +141,13 @@ def test_phase14e17_production_capability_does_not_block_9000_series():
 def test_phase14e17_cli_submit_job_records_submit_pipeline_stage(monkeypatch, tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_asset_state(runtime_root)
-    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", _approved_pending(("7203",)))
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    write_pending_order_plan(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _approved_pending(("7203",), policy_path=policy_path),
+    )
+    _attach_pending_safety_evidence(runtime_root, safety_decision_id="safety-phase14e17-fixture")
+    _write_runtime_readiness_authorities(runtime_root, business_date="2026-07-08")
     captured = {}
 
     def fake_submit_pipeline(**kwargs):
@@ -268,6 +273,63 @@ def _write_asset_state(root: Path) -> None:
     (root / "persistent_ledger" / "state.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_runtime_readiness_authorities(root: Path, *, business_date: str) -> None:
+    _write_json(
+        root / "runtime_state" / "current_state.json",
+        {
+            "schema_version": "runtime_v2_operation_state_v1",
+            "role": "authoritative_runtime_operation_state",
+            "business_date": business_date,
+            "generated_at": business_date + "T08:30:00+09:00",
+            "updated_at": business_date + "T08:30:00+09:00",
+            "environment": "demo",
+            "runtime_mode": "demo",
+            "state": "CURRENT_STATE_LOADED",
+            "safety_state": "NORMAL",
+            "source": "phase14e17_cli_fixture",
+        },
+    )
+    _write_json(
+        root / "runtime_state" / "market" / business_date / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": business_date,
+            "runtime_business_date": business_date,
+            "market_date": business_date,
+            "as_of": business_date,
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "market_summary": {"status": "READY"},
+        },
+    )
+    _write_json(
+        root / "runtime_state" / "broker_readonly" / business_date / "snapshot.json",
+        {
+            "schema_version": "runtime_v2_broker_readonly_snapshot_v1",
+            "business_date": business_date,
+            "generated_at": business_date + "T08:30:00+09:00",
+            "environment": "demo",
+            "review_required": False,
+            "positions": [],
+            "orders": [],
+            "executions": [],
+        },
+    )
+
+
+def _attach_pending_safety_evidence(root: Path, *, safety_decision_id: str) -> None:
+    path = root / "pending_order_plan" / "pending_order_plan.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["safety_decision_id"] = safety_decision_id
+    payload["safety_policy_version"] = "safety_policy_v1"
+    approval = dict(payload.get("approval") or {})
+    approval["safety_decision_id"] = safety_decision_id
+    approval["safety_policy_version"] = "safety_policy_v1"
+    payload["approval"] = approval
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _approved_pending(symbols: tuple[str, ...], *, policy_path: Optional[Path] = None):
     items = tuple(
         PendingOrderItem(
@@ -286,6 +348,16 @@ def _approved_pending(symbols: tuple[str, ...], *, policy_path: Optional[Path] =
                 "product_category": "011",
                 "security_type": "011",
                 "current_listed": True,
+                "opportunity_buy_eligibility_status": "PASS",
+                "opportunity_buy_eligibility": "BUY_ELIGIBLE",
+                "opportunity_expected_edge_score": 0.10,
+                "opportunity_expected_return": 0.10,
+                "opportunity_no_buy_reason": "",
+                "opportunity_buy_rank": index,
+                "opportunity_business_date": "2026-07-08",
+                "opportunity_feature_date": "2026-07-08",
+                "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+                "opportunity_eligibility_reason": "opportunity_positive_expected_edge",
             },
         )
         for index, symbol in enumerate(symbols, start=1)
@@ -438,6 +510,11 @@ def _write_safety_decision(root: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _write_json(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _read_jsonl(path: Path):

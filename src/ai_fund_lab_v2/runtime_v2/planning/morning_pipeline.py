@@ -19,6 +19,7 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import (
     build_approval_request,
 )
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
+from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import (
     get_broker_capability,
     is_symbol_allowed_by_capability,
@@ -28,6 +29,7 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     load_feature_date_contract,
     resolve_feature_date_contract,
 )
+from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
@@ -104,6 +106,16 @@ class MorningPipelineResult:
     price_source_path: str = ""
     price_missing_count: int = 0
     budget_excluded_count: int = 0
+    buy_eligibility_status: str = ""
+    buy_eligibility_authority_source: str = ""
+    buy_eligibility_authority_path: str = ""
+    buy_eligibility_filtered_count: int = 0
+    buy_eligibility_review_count: int = 0
+    buy_eligibility_evidence: tuple[dict[str, Any], ...] = ()
+    opportunity_buy_eligibility_status: str = ""
+    opportunity_buy_eligibility_filtered_count: int = 0
+    opportunity_buy_eligibility_review_count: int = 0
+    opportunity_buy_eligibility_evidence: tuple[dict[str, Any], ...] = ()
     sample_order_sizing: tuple[dict[str, Any], ...] = ()
     capital_deployment_policy_used_by_morning: bool = False
     morning_policy_source: str = ""
@@ -135,6 +147,8 @@ class MorningPipelineResult:
         payload["selected_symbols"] = list(self.selected_symbols)
         payload["candidate_missing_columns"] = list(self.candidate_missing_columns)
         payload["sample_order_sizing"] = list(self.sample_order_sizing)
+        payload["buy_eligibility_evidence"] = list(self.buy_eligibility_evidence)
+        payload["opportunity_buy_eligibility_evidence"] = list(self.opportunity_buy_eligibility_evidence)
         return payload
 
 
@@ -442,7 +456,11 @@ def run_morning_ai_planning_pending_pipeline(
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
             target_session_date=target_session_date,
-            reason="NO_SIGNAL:available_cash_missing_or_zero",
+            reason=_budget_no_signal_reason(
+                planning_budget=planning_budget,
+                effective_order_limit=effective_order_limit,
+                per_order_budget=per_order_budget,
+            ),
             evaluation_capital=evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
@@ -542,6 +560,18 @@ def run_morning_ai_planning_pending_pipeline(
     price_missing_count = 0
     budget_excluded_count = 0
     existing_position_excluded_count = 0
+    buy_eligibility_filtered_count = 0
+    buy_eligibility_review_count = 0
+    buy_eligibility_evidence: list[dict[str, Any]] = []
+    buy_eligibility_authority_path = _buy_eligibility_snapshot_path(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+    )
+    opportunity_context = _opportunity_context(buy_ai_context)
+    opportunity_buy_eligibility_filtered_count = 0
+    opportunity_buy_eligibility_review_count = 0
+    opportunity_buy_eligibility_evidence: list[dict[str, Any]] = []
     for signal in candidate_rows:
         symbol = signal.symbol
         if not is_symbol_allowed_by_capability(symbol, capability):
@@ -555,6 +585,35 @@ def run_morning_ai_planning_pending_pipeline(
         if price is None:
             price_missing_count += 1
             continue
+        opportunity_eligibility = None
+        if opportunity_context["opportunity_artifact_path"]:
+            opportunity_eligibility = evaluate_opportunity_buy_eligibility(
+                symbol=symbol,
+                business_date=business_date,
+                feature_date=resolved_feature_date,
+                opportunity_artifact_path=opportunity_context["opportunity_artifact_path"],
+                excluded_at_stage="morning_candidate_selection",
+            )
+            opportunity_buy_eligibility_evidence.append(opportunity_eligibility.to_payload())
+            if not opportunity_eligibility.eligible:
+                opportunity_buy_eligibility_filtered_count += 1
+                continue
+        buy_eligibility = None
+        if buy_eligibility_authority_path is not None:
+            buy_eligibility = evaluate_buy_eligibility(
+                symbol=symbol,
+                business_date=business_date,
+                mode=mode,
+                listed_snapshot_path=buy_eligibility_authority_path,
+                authority_source="morning_candidate_listed_issues_snapshot",
+            )
+            buy_eligibility_evidence.append(buy_eligibility.to_payload())
+            if buy_eligibility.status == "REVIEW_REQUIRED":
+                buy_eligibility_review_count += 1
+                continue
+            if not buy_eligibility.eligible:
+                buy_eligibility_filtered_count += 1
+                continue
         quantity = _round_lot_quantity(per_order_budget, price.price)
         if quantity <= 0:
             budget_excluded_count += 1
@@ -565,6 +624,10 @@ def run_morning_ai_planning_pending_pipeline(
                 "__price_evidence": price,
                 "__planned_quantity": quantity,
                 "__ai_signal": signal,
+                "__buy_eligibility": buy_eligibility.to_payload() if buy_eligibility is not None else {},
+                "__opportunity_buy_eligibility": (
+                    opportunity_eligibility.to_payload() if opportunity_eligibility is not None else {}
+                ),
             }
         )
         if len(selected_rows) >= effective_order_limit:
@@ -596,6 +659,20 @@ def run_morning_ai_planning_pending_pipeline(
             price_missing_count=price_missing_count,
             budget_excluded_count=budget_excluded_count,
             existing_position_excluded_count=existing_position_excluded_count,
+            buy_eligibility_status="REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
+            buy_eligibility_authority_source=(
+                "morning_candidate_listed_issues_snapshot" if buy_eligibility_authority_path is not None else ""
+            ),
+            buy_eligibility_authority_path=str(buy_eligibility_authority_path or ""),
+            buy_eligibility_filtered_count=buy_eligibility_filtered_count,
+            buy_eligibility_review_count=buy_eligibility_review_count,
+            buy_eligibility_evidence=tuple(buy_eligibility_evidence),
+            opportunity_buy_eligibility_status=(
+                "REVIEW_REQUIRED" if opportunity_buy_eligibility_review_count else "PASS"
+            ),
+            opportunity_buy_eligibility_filtered_count=opportunity_buy_eligibility_filtered_count,
+            opportunity_buy_eligibility_review_count=opportunity_buy_eligibility_review_count,
+            opportunity_buy_eligibility_evidence=tuple(opportunity_buy_eligibility_evidence),
             policy_context=policy_context,
             safety_decision=runtime_safety_decision,
         )
@@ -628,6 +705,25 @@ def run_morning_ai_planning_pending_pipeline(
     order_plan_payload["feature_date_contract"] = _feature_contract_payload(feature_contract)
     order_plan_payload["market_data_freshness"] = _market_data_freshness_payload(feature_contract)
     order_plan_payload["buy_ai_context"] = buy_ai_context or {}
+    order_plan_payload["buy_eligibility_contract"] = {
+        "status": "REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
+        "authority_source": "morning_candidate_listed_issues_snapshot" if buy_eligibility_authority_path is not None else "",
+        "authority_path": str(buy_eligibility_authority_path or ""),
+        "filtered_count": buy_eligibility_filtered_count,
+        "review_count": buy_eligibility_review_count,
+        "evidence": buy_eligibility_evidence,
+    }
+    order_plan_payload["opportunity_buy_eligibility_contract"] = {
+        "status": "REVIEW_REQUIRED" if opportunity_buy_eligibility_review_count else "PASS",
+        "policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+        "artifact_path": opportunity_context["opportunity_artifact_path"],
+        "artifact_hash": opportunity_context["opportunity_artifact_hash"],
+        "business_date": business_date,
+        "feature_date": resolved_feature_date,
+        "filtered_count": opportunity_buy_eligibility_filtered_count,
+        "review_count": opportunity_buy_eligibility_review_count,
+        "evidence": opportunity_buy_eligibility_evidence,
+    }
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     order_plan_hash = _hash(order_plan_path.read_text(encoding="utf-8"))
 
@@ -729,6 +825,20 @@ def run_morning_ai_planning_pending_pipeline(
         price_source_path=str(_price_source_path(Path(feature_root))),
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
+        buy_eligibility_status="REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
+        buy_eligibility_authority_source=(
+            "morning_candidate_listed_issues_snapshot" if buy_eligibility_authority_path is not None else ""
+        ),
+        buy_eligibility_authority_path=str(buy_eligibility_authority_path or ""),
+        buy_eligibility_filtered_count=buy_eligibility_filtered_count,
+        buy_eligibility_review_count=buy_eligibility_review_count,
+        buy_eligibility_evidence=tuple(buy_eligibility_evidence),
+        opportunity_buy_eligibility_status=(
+            "REVIEW_REQUIRED" if opportunity_buy_eligibility_review_count else "PASS"
+        ),
+        opportunity_buy_eligibility_filtered_count=opportunity_buy_eligibility_filtered_count,
+        opportunity_buy_eligibility_review_count=opportunity_buy_eligibility_review_count,
+        opportunity_buy_eligibility_evidence=tuple(opportunity_buy_eligibility_evidence),
         sample_order_sizing=tuple(_sizing_summary(item) for item in pending.items),
         **_result_policy_fields(policy_context),
         **_result_safety_fields(runtime_safety_decision),
@@ -782,6 +892,16 @@ def _write_no_signal_pending(
     price_missing_count: int = 0,
     budget_excluded_count: int = 0,
     existing_position_excluded_count: int = 0,
+    buy_eligibility_status: str = "",
+    buy_eligibility_authority_source: str = "",
+    buy_eligibility_authority_path: str = "",
+    buy_eligibility_filtered_count: int = 0,
+    buy_eligibility_review_count: int = 0,
+    buy_eligibility_evidence: tuple[dict[str, Any], ...] = (),
+    opportunity_buy_eligibility_status: str = "",
+    opportunity_buy_eligibility_filtered_count: int = 0,
+    opportunity_buy_eligibility_review_count: int = 0,
+    opportunity_buy_eligibility_evidence: tuple[dict[str, Any], ...] = (),
     policy_context: dict[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
 ) -> MorningPipelineResult:
@@ -808,6 +928,21 @@ def _write_no_signal_pending(
         },
         "policy_context": policy_context or {},
         "safety_context": _safety_context_payload(safety_decision),
+        "buy_eligibility_contract": {
+            "status": buy_eligibility_status,
+            "authority_source": buy_eligibility_authority_source,
+            "authority_path": buy_eligibility_authority_path,
+            "filtered_count": buy_eligibility_filtered_count,
+            "review_count": buy_eligibility_review_count,
+            "evidence": list(buy_eligibility_evidence),
+        },
+        "opportunity_buy_eligibility_contract": {
+            "status": opportunity_buy_eligibility_status,
+            "policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+            "filtered_count": opportunity_buy_eligibility_filtered_count,
+            "review_count": opportunity_buy_eligibility_review_count,
+            "evidence": list(opportunity_buy_eligibility_evidence),
+        },
     }
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     approval_path.write_text(
@@ -900,6 +1035,16 @@ def _write_no_signal_pending(
         price_source_path=price_source_path,
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
+        buy_eligibility_status=buy_eligibility_status,
+        buy_eligibility_authority_source=buy_eligibility_authority_source,
+        buy_eligibility_authority_path=buy_eligibility_authority_path,
+        buy_eligibility_filtered_count=buy_eligibility_filtered_count,
+        buy_eligibility_review_count=buy_eligibility_review_count,
+        buy_eligibility_evidence=buy_eligibility_evidence,
+        opportunity_buy_eligibility_status=opportunity_buy_eligibility_status,
+        opportunity_buy_eligibility_filtered_count=opportunity_buy_eligibility_filtered_count,
+        opportunity_buy_eligibility_review_count=opportunity_buy_eligibility_review_count,
+        opportunity_buy_eligibility_evidence=opportunity_buy_eligibility_evidence,
         **_result_policy_fields(policy_context),
         **_result_safety_fields(safety_decision),
     )
@@ -981,6 +1126,40 @@ def _resolve_morning_feature_date_contract(
 
 def _feature_contract_payload(contract: FeatureDateContract) -> dict[str, Any]:
     return contract.to_payload()
+
+
+def _buy_eligibility_snapshot_path(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+) -> Path | None:
+    if mode != "historical":
+        return None
+    from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
+        resolve_listed_issues_snapshot,
+    )
+
+    snapshot_root = runtime_root / "operations" / "jquants" / "historical_snapshots" / "listed_issues"
+    if not (snapshot_root / "index.json").is_file():
+        return None
+    resolution = resolve_listed_issues_snapshot(
+        snapshot_root=snapshot_root,
+        business_date=business_date,
+        mode="historical",
+    )
+    if resolution.status != "PASS":
+        return None
+    return Path(resolution.selected_snapshot_path)
+
+
+def _opportunity_context(context: dict[str, Any] | None) -> dict[str, str]:
+    payload = context or {}
+    artifact_path = str(payload.get("opportunity_artifact_path") or "")
+    return {
+        "opportunity_artifact_path": artifact_path,
+        "opportunity_artifact_hash": _hash(Path(artifact_path).read_text(encoding="utf-8")) if artifact_path and Path(artifact_path).is_file() else "",
+    }
 
 
 def _market_data_freshness_payload(contract: FeatureDateContract) -> dict[str, Any]:
@@ -1106,6 +1285,21 @@ def _policy_per_order_budget(
     if policy.max_buy_order_amount is not None:
         candidates.append(policy.max_buy_order_amount)
     return max(min(candidates), 0.0)
+
+
+def _budget_no_signal_reason(
+    *,
+    planning_budget: float,
+    effective_order_limit: int,
+    per_order_budget: float,
+) -> str:
+    if effective_order_limit <= 0:
+        return "NO_SIGNAL:max_positions_reached"
+    if planning_budget <= 0:
+        return "NO_SIGNAL:available_cash_missing_or_zero"
+    if per_order_budget <= 0:
+        return "NO_SIGNAL:per_order_budget_missing_or_zero"
+    return "NO_SIGNAL:capital_allocation_budget_unavailable"
 
 
 def _morning_policy_context(
@@ -1360,13 +1554,49 @@ def _symbol(row: dict[str, Any]) -> str:
 
 
 def _listed_info(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    info = {
         "code": _symbol(row),
         "market": str(row.get("market_name") or row.get("market") or "東証").strip(),
         "product_category": str(row.get("product_category") or "011").strip(),
         "security_type": str(row.get("security_type") or row.get("product_category") or "011").strip(),
         "current_listed": bool(row.get("is_current_listed", True)),
     }
+    buy_eligibility = row.get("__buy_eligibility")
+    if isinstance(buy_eligibility, dict) and buy_eligibility:
+        info.update(
+            {
+                "buy_eligibility": buy_eligibility.get("buy_eligibility"),
+                "buy_eligibility_status": buy_eligibility.get("status"),
+                "buy_ineligible_reason": buy_eligibility.get("reason_code"),
+                "market_status_authority_source": buy_eligibility.get("authority_source"),
+                "market_status_authority_path": buy_eligibility.get("authority_path"),
+                "market_status_authority_hash": buy_eligibility.get("authority_hash"),
+                "market_status_authority_as_of": buy_eligibility.get("authority_as_of"),
+                "market_status": buy_eligibility.get("market_status"),
+                "listing_status": buy_eligibility.get("listing_status"),
+                "special_supervision_status": buy_eligibility.get("special_supervision_status"),
+                "delisting_date": buy_eligibility.get("delisting_date"),
+            }
+        )
+    opportunity_eligibility = row.get("__opportunity_buy_eligibility")
+    if isinstance(opportunity_eligibility, dict) and opportunity_eligibility:
+        info.update(
+            {
+                "opportunity_buy_eligibility_status": opportunity_eligibility.get("status"),
+                "opportunity_buy_eligibility": opportunity_eligibility.get("buy_eligibility"),
+                "opportunity_expected_edge_score": opportunity_eligibility.get("expected_edge_score"),
+                "opportunity_expected_return": opportunity_eligibility.get("expected_return"),
+                "opportunity_no_buy_reason": opportunity_eligibility.get("no_buy_reason"),
+                "opportunity_buy_rank": opportunity_eligibility.get("buy_rank"),
+                "opportunity_artifact_path": opportunity_eligibility.get("opportunity_artifact_path"),
+                "opportunity_artifact_hash": opportunity_eligibility.get("opportunity_artifact_hash"),
+                "opportunity_business_date": opportunity_eligibility.get("business_date"),
+                "opportunity_feature_date": opportunity_eligibility.get("feature_date"),
+                "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+                "opportunity_eligibility_reason": opportunity_eligibility.get("reason_code"),
+            }
+        )
+    return info
 
 
 def _broker_symbol(symbol: str, listed_info: dict[str, Any]) -> str:

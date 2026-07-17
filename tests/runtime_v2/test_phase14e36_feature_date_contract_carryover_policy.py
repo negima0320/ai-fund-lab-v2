@@ -73,29 +73,30 @@ def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
-        feature_date="2026-07-07",
+        feature_date="2026-07-08",
     )
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
     _write_json(
-        tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-08.json",
+        tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-09.json",
         {
             "status": "PASS",
             "reason": "carryover_feature_artifacts_available",
-            "requested_feature_date": "2026-07-08",
-            "selected_feature_date": "2026-07-07",
-            "latest_available_market_date": "2026-07-07",
+            "requested_feature_date": "2026-07-09",
+            "selected_feature_date": "2026-07-08",
+            "latest_available_market_date": "2026-07-08",
             "carryover_used": True,
             "carryover_reason": "requested_feature_date_missing_latest_available_within_freshness_limit",
             "freshness_lag_business_days": 1,
             "freshness_limit_business_days": 1,
-            "feature_artifact_dir": str(feature_root / "2026-07-07"),
-            "generated_feature_artifacts": {name: str(feature_root / "2026-07-07" / name) for name in ARTIFACTS},
+            "feature_artifact_dir": str(feature_root / "2026-07-08"),
+            "generated_feature_artifacts": {name: str(feature_root / "2026-07-08" / name) for name in ARTIFACTS},
             "missing_feature_artifacts": [],
-            "requested_feature_artifact_dir": str(feature_root / "2026-07-08"),
+            "requested_feature_artifact_dir": str(feature_root / "2026-07-09"),
             "requested_missing_feature_artifacts": list(ARTIFACTS),
             "price_source_alignment": "selected_feature_date",
             "contract_artifact_path": str(
-                tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-08.json"
+                tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-09.json"
             ),
         },
     )
@@ -129,7 +130,9 @@ def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
             "--candidate-model-path",
             str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
             "--opportunity-model-path",
-            str(_write_opportunity_model(tmp_path / "opportunity_model.pkl")),
+            str(opportunity_model_path),
+            "--opportunity-training-metrics-path",
+            str(_write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)),
         ]
     )
 
@@ -140,21 +143,24 @@ def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
         )
     )
     morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
+    readiness_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_data_readiness_gate")
     order_plan = json.loads((runtime_root / "runtime_state" / "morning_pipeline" / "2026-07-09" / "order_plan.json").read_text(encoding="utf-8"))
     public_report = (tmp_path / "reports" / "public" / "runtime_v2" / "latest.md").read_text(encoding="utf-8")
 
     assert exit_code == 0
     assert pending["state"] == "APPROVED"
+    assert readiness_stage["details"]["feature_date_contract"]["requested_feature_date"] == "2026-07-09"
+    assert readiness_stage["details"]["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
     assert pending["feature_date_contract"]["requested_feature_date"] == "2026-07-08"
-    assert pending["feature_date_contract"]["selected_feature_date"] == "2026-07-07"
-    assert pending["feature_date_contract"]["carryover_used"] is True
-    assert all(item["price_as_of"] == "2026-07-07" for item in pending["items"])
+    assert pending["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
+    assert pending["feature_date_contract"]["carryover_used"] is False
+    assert all(item["price_as_of"] == "2026-07-08" for item in pending["items"])
     assert morning_stage["status"] == "PASS"
-    assert morning_stage["details"]["feature_date"] == "2026-07-07"
-    assert morning_stage["details"]["carryover_used"] is True
-    assert morning_stage["details"]["freshness_lag_business_days"] == 1
+    assert morning_stage["details"]["feature_date"] == "2026-07-08"
+    assert readiness_stage["details"]["feature_date_contract"]["carryover_used"] is True
+    assert readiness_stage["details"]["feature_date_contract"]["freshness_lag_business_days"] == 1
     assert "feature_input_missing" not in morning_stage["details"]["reason"]
-    assert order_plan["feature_date_contract"]["selected_feature_date"] == "2026-07-07"
+    assert order_plan["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
     assert "Market data freshness" in public_report
 
 
@@ -166,11 +172,11 @@ def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
     )
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
     _write_json(
-        tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-08.json",
+        tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-09.json",
         {
             "status": "REVIEW_REQUIRED",
             "reason": "carryover_stale",
-            "requested_feature_date": "2026-07-08",
+            "requested_feature_date": "2026-07-09",
             "selected_feature_date": "2026-07-06",
             "latest_available_market_date": "2026-07-06",
             "carryover_used": True,
@@ -180,7 +186,7 @@ def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
             "feature_artifact_dir": str(feature_root / "2026-07-06"),
             "generated_feature_artifacts": {name: str(feature_root / "2026-07-06" / name) for name in ARTIFACTS},
             "missing_feature_artifacts": [],
-            "requested_feature_artifact_dir": str(feature_root / "2026-07-08"),
+            "requested_feature_artifact_dir": str(feature_root / "2026-07-09"),
             "requested_missing_feature_artifacts": list(ARTIFACTS),
             "price_source_alignment": "selected_feature_date",
         },
@@ -225,14 +231,13 @@ def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
             encoding="utf-8"
         )
     )
-    morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
+    readiness_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_data_readiness_gate")
 
     assert exit_code == 20
-    assert pending["state"] == "REVIEW_REQUIRED"
-    assert pending["items"] == []
-    assert morning_stage["status"] == "REVIEW_REQUIRED"
-    assert morning_stage["details"]["reason"] == "carryover_stale"
-    assert morning_stage["details"]["freshness_lag_business_days"] == 2
+    assert pending["state"] == "PENDING_APPROVAL"
+    assert readiness_stage["status"] == "REVIEW_REQUIRED"
+    assert "carryover_stale" in readiness_stage["details"]["review_reasons"]
+    assert readiness_stage["details"]["feature_date_contract"]["freshness_lag_business_days"] == 2
 
 
 def _write_fixed_current(root: Path) -> Path:
@@ -276,10 +281,12 @@ def _write_fixed_current(root: Path) -> Path:
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     _write_safety_decision(root)
+    _write_market_evidence(root, business_date="2026-07-09")
     return root
 
 
 def _write_feature_inputs(root: Path, *, feature_date: str, candidate_codes=("72030", "65010", "67580")) -> Path:
+    _write_current_authority(root.parent.parent, business_date=feature_date)
     feature_dir = root / feature_date
     feature_dir.mkdir(parents=True, exist_ok=True)
     rows = [
@@ -300,8 +307,24 @@ def _write_feature_inputs(root: Path, *, feature_date: str, candidate_codes=("72
             "volatility_return_std_20d": 0.02,
             "volume_momentum_ratio_1d_20d": 1.2,
             "liquidity_avg_volume_20d": 1_000_000 - index,
+            "market_breadth_20d": 0.5,
+            "market_breadth_5d": 0.5,
+            "market_downtrend_context": 0.0,
+            "market_downtrend_flag": False,
+            "market_ma_5_20_ratio": 1.0,
+            "market_return_20d": 0.02,
+            "market_return_5d": 0.01,
+            "market_risk_flag": False,
+            "market_volatility_20d": 0.02,
             "volume_momentum_ratio_5d": 1.1,
             "data_until": feature_date,
+            "sector_breadth_20d": 0.5,
+            "sector_momentum_flag": True,
+            "sector_rank_20d": index + 1,
+            "sector_return_20d": 0.03,
+            "sector_return_5d": 0.01,
+            "sector_weak_flag": False,
+            "stock_vs_sector_return_20d": 0.01,
         }
         for index, code in enumerate(candidate_codes)
     ]
@@ -358,6 +381,46 @@ def _write_json(path: Path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_current_authority(runtime_root: Path, *, business_date: str) -> None:
+    if (runtime_root / "persistent_ledger" / "state.json").exists():
+        return
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-e36-feature",
+            "environment": "demo",
+            "business_date": business_date,
+            "as_of": business_date,
+            "positions": [],
+            "cash": 1_000_000,
+            "buying_power": 1_000_000,
+            "market_value": 0,
+            "total_equity": 1_000_000,
+            "current_state_confirmed_empty": True,
+            "current_positions_unknown": False,
+            "cash_unknown": False,
+            "buying_power_unknown": False,
+        },
+    )
+
+
+def _write_market_evidence(root: Path, *, business_date: str) -> None:
+    _write_json(
+        root / "runtime_state" / "market" / business_date / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": business_date,
+            "as_of": business_date,
+            "generated_at": business_date + "T00:00:00Z",
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "market_summary": {"source": "phase14e36_fixture"},
+        },
+    )
+
+
 def _write_candidate_model(path: Path) -> Path:
     _write_pickle(
         path,
@@ -378,6 +441,19 @@ def _write_opportunity_model(path: Path) -> Path:
             "feature_columns": ["feature__candidate_score"],
             "preprocessing": {"medians": {"feature__candidate_score": 0.0}},
             "model_version": "opportunity_model_phase15ag_fixture",
+        },
+    )
+    return path
+
+
+def _write_opportunity_metrics(path: Path, model_path: Path) -> Path:
+    _write_json(
+        path,
+        {
+            "status": "PASS",
+            "readiness_status": "READY",
+            "model_artifact_path": str(model_path),
+            "feature_columns": ["feature__candidate_score"],
         },
     )
     return path

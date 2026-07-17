@@ -54,6 +54,20 @@ class CurrentValuationRefreshResult:
     backup_path: str
     review_required: bool
     candidate_current: dict[str, Any]
+    valuation_refresh_precondition_status: str = ""
+    existing_valuation_as_of: str = ""
+    previous_trading_date: str = ""
+    target_valuation_date: str = ""
+    valuation_refresh_action: str = ""
+    projection_status: str = ""
+    projection_source_market_date: str = ""
+    apply_status: str = ""
+    post_apply_valuation_as_of: str = ""
+    post_apply_source_market_date: str = ""
+    postcondition_status: str = ""
+    postcondition_reason: str = ""
+    temporal_authority: str = ""
+    temporal_reason: str = ""
 
     @property
     def manifest_fields(self) -> dict[str, Any]:
@@ -79,6 +93,20 @@ class CurrentValuationRefreshResult:
             "current_valuation_apply_executed": self.apply_executed,
             "current_valuation_backup_path": self.backup_path,
             "current_valuation_review_required": self.review_required,
+            "valuation_refresh_precondition_status": self.valuation_refresh_precondition_status,
+            "existing_valuation_as_of": self.existing_valuation_as_of,
+            "previous_trading_date": self.previous_trading_date,
+            "target_valuation_date": self.target_valuation_date,
+            "valuation_refresh_action": self.valuation_refresh_action,
+            "projection_status": self.projection_status,
+            "projection_source_market_date": self.projection_source_market_date,
+            "apply_status": self.apply_status,
+            "post_apply_valuation_as_of": self.post_apply_valuation_as_of,
+            "post_apply_source_market_date": self.post_apply_source_market_date,
+            "postcondition_status": self.postcondition_status,
+            "postcondition_reason": self.postcondition_reason,
+            "temporal_authority": self.temporal_authority,
+            "temporal_reason": self.temporal_reason,
             "current_position_status": self.candidate_current.get("current_position_status") or "",
             "current_valuation_status": self.candidate_current.get("current_valuation_status") or "",
         }
@@ -141,6 +169,8 @@ def build_current_valuation_candidate(
                 "no_position": True,
                 "no_position_reason": "current_has_no_runtime_owned_positions",
                 "no_fill": True,
+                "previous_valuation_as_of": str(temporal_current.get("valuation_as_of") or ""),
+                "previous_trading_date": str(temporal_current.get("valuation_as_of") or ""),
                 "valuation_as_of": market_date or candidate.get("valuation_as_of") or "",
                 "source_market_date": market_date or candidate.get("source_market_date") or "",
                 "valuation_source": str(market_path),
@@ -199,6 +229,8 @@ def build_current_valuation_candidate(
     previous_total = _sum_market_value(runtime_positions)
     previous_unrealized = _sum_unrealized(runtime_positions)
     candidate = dict(temporal_current)
+    candidate["previous_valuation_as_of"] = str(temporal_current.get("valuation_as_of") or "")
+    candidate["previous_trading_date"] = str(temporal_current.get("valuation_as_of") or "")
     candidate["positions"] = valued_positions
     candidate["market_value"] = _sum_market_value(valued_positions)
     candidate["total_equity"] = float(candidate.get("cash") or 0) + candidate["market_value"]
@@ -258,6 +290,7 @@ def run_current_valuation_refresh(
             apply_executed=False,
             backup_path="",
             history_path="",
+            projection_status="NOT_EXECUTED",
         )
         _write_json(artifact_path, payload)
         return _result_from_payload(payload, artifact_path=artifact_path)
@@ -291,12 +324,28 @@ def run_current_valuation_refresh(
     if candidate.get("no_position"):
         status = "READY"
         reason = "current_has_no_runtime_owned_positions"
+    projection_status = "PASS" if status == "READY" else "REVIEW_REQUIRED"
     apply_executed = False
     backup_path = ""
     history_path = _write_valuation_history(root=root, valuation_as_of=str(candidate.get("valuation_as_of") or business_date), candidate=candidate, market=market)
+    postcondition_status = "NOT_APPLICABLE"
+    postcondition_reason = "apply_not_requested"
     if apply_current_valuation and status == "READY":
         backup_path = str(_atomic_write_current(root=root, source_path=source_path, payload=candidate, now=now))
         apply_executed = True
+        postcondition_reasons = _post_apply_validation(source_path=source_path, business_date=business_date)
+        if postcondition_reasons:
+            status = "REVIEW_REQUIRED"
+            reason = "current_valuation_postcondition_failed"
+            missing = tuple((*missing, *postcondition_reasons))
+            postcondition_status = "REVIEW_REQUIRED"
+            postcondition_reason = ",".join(postcondition_reasons)
+        else:
+            postcondition_status = "PASS"
+            postcondition_reason = "current_valuation_postcondition_ready"
+    elif apply_current_valuation and status != "READY":
+        postcondition_status = "NOT_EXECUTED"
+        postcondition_reason = "apply_not_executed_because_projection_not_ready"
     payload = _artifact_payload(
         business_date=business_date,
         generated_at=generated_at,
@@ -313,6 +362,9 @@ def run_current_valuation_refresh(
         apply_executed=apply_executed,
         backup_path=backup_path,
         history_path=str(history_path),
+        projection_status=projection_status,
+        postcondition_status=postcondition_status,
+        postcondition_reason=postcondition_reason,
     )
     _write_json(artifact_path, payload)
     return _result_from_payload(payload, artifact_path=artifact_path)
@@ -360,7 +412,11 @@ def _artifact_payload(
     apply_executed: bool,
     backup_path: str,
     history_path: str,
+    projection_status: str,
+    postcondition_status: str = "NOT_APPLICABLE",
+    postcondition_reason: str = "",
 ) -> dict[str, Any]:
+    apply_status = "APPLIED" if apply_executed else "NOT_REQUESTED" if not apply_requested else "NOT_EXECUTED"
     return {
         "schema_version": CURRENT_VALUATION_REFRESH_SCHEMA_VERSION,
         "business_date": business_date,
@@ -370,6 +426,20 @@ def _artifact_payload(
         "review_required": status == "REVIEW_REQUIRED",
         "apply_requested": apply_requested,
         "apply_executed": apply_executed,
+        "valuation_refresh_precondition_status": "PASS" if candidate_current else "REVIEW_REQUIRED",
+        "existing_valuation_as_of": candidate_current.get("previous_valuation_as_of") or "",
+        "previous_trading_date": candidate_current.get("previous_trading_date") or "",
+        "target_valuation_date": business_date,
+        "valuation_refresh_action": "APPLY" if apply_requested else "PROJECT_ONLY",
+        "projection_status": projection_status,
+        "projection_source_market_date": market_date,
+        "apply_status": apply_status,
+        "post_apply_valuation_as_of": candidate_current.get("valuation_as_of") if apply_executed else "",
+        "post_apply_source_market_date": candidate_current.get("source_market_date") if apply_executed else "",
+        "postcondition_status": postcondition_status,
+        "postcondition_reason": postcondition_reason,
+        "temporal_authority": "current_valuation_business_date_projection",
+        "temporal_reason": "current_valuation_projection_uses_target_market_date",
         "source_current_path": source_current_path,
         "market_evidence_path": market_evidence_path,
         "market_date": market_date,
@@ -419,6 +489,20 @@ def _result_from_payload(payload: dict[str, Any], *, artifact_path: Path) -> Cur
         backup_path=str(payload.get("backup_path") or ""),
         review_required=bool(payload.get("review_required")),
         candidate_current=dict(payload.get("candidate_current") or {}),
+        valuation_refresh_precondition_status=str(payload.get("valuation_refresh_precondition_status") or ""),
+        existing_valuation_as_of=str(payload.get("existing_valuation_as_of") or ""),
+        previous_trading_date=str(payload.get("previous_trading_date") or ""),
+        target_valuation_date=str(payload.get("target_valuation_date") or ""),
+        valuation_refresh_action=str(payload.get("valuation_refresh_action") or ""),
+        projection_status=str(payload.get("projection_status") or ""),
+        projection_source_market_date=str(payload.get("projection_source_market_date") or ""),
+        apply_status=str(payload.get("apply_status") or ""),
+        post_apply_valuation_as_of=str(payload.get("post_apply_valuation_as_of") or ""),
+        post_apply_source_market_date=str(payload.get("post_apply_source_market_date") or ""),
+        postcondition_status=str(payload.get("postcondition_status") or ""),
+        postcondition_reason=str(payload.get("postcondition_reason") or ""),
+        temporal_authority=str(payload.get("temporal_authority") or ""),
+        temporal_reason=str(payload.get("temporal_reason") or ""),
     )
 
 
@@ -629,8 +713,6 @@ def _normalize_symbol(value: str) -> str:
     text = value.strip()
     if text.endswith(".T"):
         text = text[:-2]
-    if text.endswith("0") and len(text) == 5:
-        text = text[:-1]
     return text
 
 
@@ -741,6 +823,42 @@ def _missing_symbols_from_reasons(reasons: tuple[str, ...]) -> tuple[str, ...]:
         and ":" not in reason
     ]
     return tuple(sorted(set(symbols)))
+
+
+def _post_apply_validation(*, source_path: Path, business_date: str) -> tuple[str, ...]:
+    try:
+        current = _read_json(source_path)
+    except ValueError:
+        return ("post_apply_current_missing",)
+    reasons: list[str] = []
+    if str(current.get("business_date") or "") != business_date:
+        reasons.append("post_apply_business_date_mismatch")
+    if str(current.get("valuation_as_of") or "") != business_date:
+        reasons.append("post_apply_valuation_as_of_mismatch")
+    if str(current.get("source_market_date") or "") != business_date:
+        reasons.append("post_apply_source_market_date_mismatch")
+    positions = list(current.get("positions") or [])
+    for position in positions:
+        symbol = str(position.get("symbol") or position.get("code") or "")
+        if str(position.get("valuation_as_of") or "") != business_date:
+            reasons.append(f"post_apply_position_valuation_as_of_mismatch:{symbol}")
+        if str(position.get("source_market_date") or "") != business_date:
+            reasons.append(f"post_apply_position_source_market_date_mismatch:{symbol}")
+        if position.get("current_price") in (None, "") or float(position.get("current_price") or 0) <= 0:
+            reasons.append(f"post_apply_position_price_missing:{symbol}")
+        quantity = float(position.get("quantity") or 0)
+        price = float(position.get("current_price") or 0)
+        market_value = float(position.get("market_value") or 0)
+        if abs(market_value - quantity * price) > 0.0001:
+            reasons.append(f"post_apply_position_market_value_mismatch:{symbol}")
+    market_value_total = sum(float(position.get("market_value") or 0) for position in positions)
+    if abs(float(current.get("market_value") or 0) - market_value_total) > 0.0001:
+        reasons.append("post_apply_total_market_value_mismatch")
+    total_equity = float(current.get("total_equity") or 0)
+    expected_total_equity = float(current.get("cash") or 0) + float(current.get("market_value") or 0)
+    if abs(total_equity - expected_total_equity) > 0.0001:
+        reasons.append("post_apply_total_equity_mismatch")
+    return tuple(sorted(set(reasons)))
 
 
 def _read_json(path: Path) -> dict[str, Any]:

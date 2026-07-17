@@ -113,6 +113,7 @@ def test_phase15h_cli_missing_policy_stops_runtime_guarded_job(tmp_path):
         tmp_path / ".runtime",
         positions=[_position("3926", quantity=1000, price=351)],
     )
+    missing_policy_path = tmp_path / "missing_capital_deployment_policy.json"
 
     exit_code = main(
         [
@@ -136,6 +137,8 @@ def test_phase15h_cli_missing_policy_stops_runtime_guarded_job(tmp_path):
             str(runtime_root / "runtime_state" / "run_manifest"),
             "--log-root",
             str(runtime_root / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(missing_policy_path),
         ]
     )
 
@@ -146,7 +149,8 @@ def test_phase15h_cli_missing_policy_stops_runtime_guarded_job(tmp_path):
     assert manifest["final_state"] == "REVIEW_REQUIRED"
     assert manifest["capital_deployment_policy_loaded"] is False
     assert manifest["policy_missing"] is True
-    assert manifest["policy_validation_status"] == "POLICY_MISSING:--capital-deployment-policy is required"
+    assert manifest["policy_validation_status"].startswith("POLICY_MISSING:")
+    assert str(missing_policy_path) in manifest["policy_validation_status"]
     assert "sell_planning_pending_pipeline" not in stage_names
 
 
@@ -221,7 +225,24 @@ def _write_runtime_state(root: Path, *, positions: list[dict]) -> Path:
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     _write_safety_decision(root)
     _write_broker_snapshot(root)
+    _write_market_evidence(root)
     return root
+
+
+def _write_market_evidence(root: Path) -> None:
+    _write_json(
+        root / "runtime_state" / "market" / "2026-07-09" / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "business_date": "2026-07-09",
+            "as_of": "2026-07-09",
+            "generated_at": "2026-07-09T00:00:00Z",
+            "market_status": "READY",
+            "quote_status": "READY",
+            "quote_count": 1,
+            "market_summary": {"source": "phase15h_fixture"},
+        },
+    )
 
 
 def _position(symbol: str, *, quantity: float, price: float) -> dict:

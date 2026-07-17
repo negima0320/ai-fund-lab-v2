@@ -304,7 +304,7 @@ def _resolve_runtime_pm_input_paths(
     resolved_opportunity = (
         Path(opportunity_path)
         if opportunity_path
-        else root / "runtime_state" / "buy_ai" / feature_date / "opportunity_rankings.json"
+        else root / "runtime_state" / "buy_ai" / business_date / "opportunity_rankings.json"
     )
     if feature_path:
         resolved_feature = Path(feature_path)
@@ -686,6 +686,7 @@ def _validate_pm_input_contract(
     )
     opportunity_status = _pm_opportunity_status(
         opportunity_path=opportunity_path,
+        business_date=business_date,
         feature_date=feature_date,
         held_symbols=held_symbols,
         current_has_positions=bool(positions),
@@ -837,6 +838,7 @@ def _pm_feature_position_context(*, feature_path: Path, feature_date: str) -> di
 def _pm_opportunity_status(
     *,
     opportunity_path: Path,
+    business_date: str,
     feature_date: str,
     held_symbols: tuple[str, ...],
     current_has_positions: bool,
@@ -864,7 +866,11 @@ def _pm_opportunity_status(
             "missing_symbol_semantics": "artifact_missing",
         }
     try:
-        contract = _pm_opportunity_contract(opportunity_path=opportunity_path, feature_date=feature_date)
+        contract = _pm_opportunity_contract(
+            opportunity_path=opportunity_path,
+            business_date=business_date,
+            feature_date=feature_date,
+        )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return {
             "review_required": True,
@@ -913,7 +919,7 @@ def _pm_opportunity_status(
     }
 
 
-def _pm_opportunity_contract(*, opportunity_path: Path, feature_date: str) -> dict[str, Any]:
+def _pm_opportunity_contract(*, opportunity_path: Path, business_date: str = "", feature_date: str) -> dict[str, Any]:
     if opportunity_path.suffix == ".json":
         payload = _read_json(opportunity_path)
         schema_version = str(payload.get("schema_version") or "")
@@ -943,9 +949,9 @@ def _pm_opportunity_contract(*, opportunity_path: Path, feature_date: str) -> di
             raise ValueError("wrong opportunity artifact_role")
         if producer != "Runtime v2 BUY AI Producer":
             raise ValueError("producer identity mismatch")
-        business_date = str(payload.get("business_date") or "")
+        payload_business_date = str(payload.get("business_date") or "")
         payload_feature_date = str(payload.get("feature_date") or "")
-        if business_date and business_date != feature_date:
+        if business_date and payload_business_date and payload_business_date != business_date:
             raise ValueError("business date mismatch")
         if payload_feature_date != feature_date:
             raise ValueError("target date mismatch")

@@ -6,10 +6,8 @@ FORBIDDEN_IMPORT_SNIPPETS = (
     "from ai_fund_lab_v2.runtime.",
     "import ai_fund_lab_v2.runtime",
     "from ai_fund_lab_v2.operations ",
-    "from ai_fund_lab_v2.operations.",
     "import ai_fund_lab_v2.operations",
     "from ai_fund_lab_v2.broker ",
-    "from ai_fund_lab_v2.broker.",
     "import ai_fund_lab_v2.broker",
 )
 

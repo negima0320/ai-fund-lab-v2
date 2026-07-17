@@ -8,9 +8,11 @@ from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 
 from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _demo_settings
 from tests.runtime_v2.test_phase15i_submit_guard_buy_sell_policy_manifest import (
+    _attach_pending_safety_evidence,
     _approved_pending,
     _item,
     _runtime_root,
+    _write_runtime_readiness_authorities,
     _write_current_state,
     _write_policy,
 )
@@ -231,6 +233,8 @@ def test_phase15l_cli_manifest_contains_policy_consistency_evidence(tmp_path):
         policy_path=morning_policy_path,
     )
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+    _attach_pending_safety_evidence(runtime_root, safety_decision_id="safety-phase15i-fixture")
+    _write_runtime_readiness_authorities(runtime_root, business_date="2026-07-09")
 
     exit_code = main(
         [

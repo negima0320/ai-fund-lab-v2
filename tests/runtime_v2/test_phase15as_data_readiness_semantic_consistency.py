@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from ai_fund_lab_v2.runtime_v2.buy_ai.producer import (
-    DEFAULT_CANDIDATE_MODEL_PATH,
-    DEFAULT_OPPORTUNITY_MODEL_PATH,
-)
+from ai_fund_lab_v2.runtime_v2.buy_ai.producer import resolve_buy_ai_model_paths
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
+    CANDIDATE_REQUIRED_COLUMNS,
+    OPPORTUNITY_REQUIRED_COLUMNS,
+)
+from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
 BUSINESS_DATE = "2026-07-08"
@@ -25,6 +27,7 @@ class FixtureModel:
 def test_phase15as_market_calendar_open_quote_missing_is_market_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path, write_market=False)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     candidate_model = _write_model(tmp_path / "candidate.pkl")
     opportunity_model = _write_model(tmp_path / "opportunity.pkl")
 
@@ -53,6 +56,7 @@ def test_phase15as_safety_quote_missing_sets_quote_and_market_effective_review_r
         safety_reason="QUOTE_MISSING_FOR_MONITOR;BROKER_SNAPSHOT_MISSING;POSITION_WITHOUT_BROKER_SNAPSHOT",
     )
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     candidate_model = _write_model(tmp_path / "candidate.pkl")
     opportunity_model = _write_model(tmp_path / "opportunity.pkl")
 
@@ -81,6 +85,7 @@ def test_phase15as_safety_quote_missing_sets_quote_and_market_effective_review_r
 def test_phase15as_market_evidence_ready_and_safety_allow_can_be_ready(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     candidate_model = _write_model(tmp_path / "candidate.pkl")
     opportunity_model = _write_model(tmp_path / "opportunity.pkl")
 
@@ -104,6 +109,7 @@ def test_phase15as_market_evidence_ready_and_safety_allow_can_be_ready(tmp_path)
 def test_phase15as_gate_uses_canonical_buy_ai_model_paths_when_cli_paths_omitted(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
 
     result = evaluate_runtime_data_readiness(
         runtime_root=runtime_root,
@@ -114,8 +120,9 @@ def test_phase15as_gate_uses_canonical_buy_ai_model_paths_when_cli_paths_omitted
         feature_date=FEATURE_DATE,
     )
 
-    assert result.payload["candidate_model_path"] == str(DEFAULT_CANDIDATE_MODEL_PATH)
-    assert result.payload["opportunity_model_path"] == str(DEFAULT_OPPORTUNITY_MODEL_PATH)
+    expected_candidate, expected_opportunity = resolve_buy_ai_model_paths()
+    assert result.payload["candidate_model_path"] == str(expected_candidate)
+    assert result.payload["opportunity_model_path"] == str(expected_opportunity)
     assert result.payload["candidate_model_path"]
     assert result.payload["opportunity_model_path"]
 
@@ -123,6 +130,7 @@ def test_phase15as_gate_uses_canonical_buy_ai_model_paths_when_cli_paths_omitted
 def test_phase15as_corrupt_model_artifact_halts_with_component_reason(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     corrupt_model = tmp_path / "corrupt.pkl"
     corrupt_model.write_text("not pickle", encoding="utf-8")
 
@@ -145,6 +153,7 @@ def test_phase15as_corrupt_model_artifact_halts_with_component_reason(tmp_path):
 def test_phase15as_empty_pending_slot_is_ready_and_cli_has_no_missing_warning(tmp_path):
     runtime_root = _runtime_root(tmp_path, pending_empty=True)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
     candidate_model = _write_model(tmp_path / "candidate.pkl")
     opportunity_model = _write_model(tmp_path / "opportunity.pkl")
     policy = _write_policy(tmp_path / "capital_deployment.json")
@@ -194,6 +203,7 @@ def test_phase15as_pending_slot_missing_is_not_empty(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     (runtime_root / "pending_order_plan" / "pending_order_plan.json").unlink()
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
 
     result = evaluate_runtime_data_readiness(
         runtime_root=runtime_root,
@@ -215,6 +225,7 @@ def test_phase15as_pending_slot_missing_is_not_empty(tmp_path):
 def test_phase15as_demo_production_equivalence_fields_are_split(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
 
     result = evaluate_runtime_data_readiness(
         runtime_root=runtime_root,
@@ -239,6 +250,7 @@ def test_phase15as_demo_production_equivalence_fields_are_split(tmp_path):
 def test_phase15as_component_reasons_are_structured(tmp_path):
     runtime_root = _runtime_root(tmp_path, write_market=False)
     feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts")
+    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
 
     result = evaluate_runtime_data_readiness(
         runtime_root=runtime_root,
@@ -334,32 +346,53 @@ def _write_runtime_state(root: Path) -> None:
 def _write_feature_inputs(feature_root: Path) -> Path:
     feature_dir = feature_root / FEATURE_DATE
     feature_dir.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {
-            "target_date": FEATURE_DATE,
-            "code": "7203",
-            "liquidity_avg_volume_20d": 1_000_000,
-            "missing_flags_insufficient_history": False,
-            "missing_flags_price": False,
-            "missing_flags_volume": False,
-            "price_momentum_return_20d": 0.1,
-            "price_momentum_return_5d": 0.05,
-            "price_momentum_return_60d": 0.2,
-            "trend_close_over_ma_20d": 1.0,
-            "trend_ma_20_60_ratio": 1.0,
-            "trend_ma_5_20_ratio": 1.0,
-            "volatility_return_std_20d": 0.02,
-            "volume_momentum_ratio_1d_20d": 1.2,
-            "volume_momentum_ratio_5d": 1.1,
-        }
+    candidate_rows = [
+        _feature_row(
+            liquidity_avg_volume_20d=1_000_000,
+            missing_flags_insufficient_history=False,
+            missing_flags_price=False,
+            missing_flags_volume=False,
+            price_momentum_return_20d=0.1,
+            price_momentum_return_5d=0.05,
+            price_momentum_return_60d=0.2,
+            trend_close_over_ma_20d=1.0,
+            trend_ma_20_60_ratio=1.0,
+            trend_ma_5_20_ratio=1.0,
+            volatility_return_std_20d=0.02,
+            volume_momentum_ratio_1d_20d=1.2,
+            volume_momentum_ratio_5d=1.1,
+        )
     ]
-    pd.DataFrame(rows).to_parquet(feature_dir / "candidate_features.parquet", index=False)
-    pd.DataFrame(rows).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
+    opportunity_rows = [_feature_row(required_columns=OPPORTUNITY_REQUIRED_COLUMNS)]
+    pd.DataFrame(candidate_rows).to_parquet(feature_dir / "candidate_features.parquet", index=False)
+    pd.DataFrame(opportunity_rows).to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
     pd.DataFrame(columns=["target_date", "code", "no_position_reason"]).to_parquet(
         feature_dir / "position_feature_input.parquet",
         index=False,
     )
+    pd.DataFrame(
+        [{"target_date": FEATURE_DATE, "code": "__POLICY_INPUT__", "data_until": FEATURE_DATE}]
+    ).to_parquet(feature_dir / "capital_policy_input.parquet", index=False)
     return feature_root
+
+
+def _feature_row(required_columns: tuple[str, ...] = CANDIDATE_REQUIRED_COLUMNS, **overrides) -> dict:
+    row = {"target_date": FEATURE_DATE, "code": "7203", **overrides}
+    for column in required_columns:
+        row.setdefault(column, _feature_value(column))
+    return row
+
+
+def _feature_value(column: str):
+    if column == "target_date":
+        return FEATURE_DATE
+    if column == "code":
+        return "7203"
+    if column.startswith("missing_flags_"):
+        return False
+    if column.endswith("_flag") or column.endswith("_context"):
+        return False
+    return 1.0
 
 
 def _write_model(path: Path) -> Path:

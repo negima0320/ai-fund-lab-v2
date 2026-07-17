@@ -103,7 +103,7 @@ def test_phase15an_pm_feature_zero_rows_with_current_positions_requires_review(t
 
     assert readiness.status == "REVIEW_REQUIRED"
     assert readiness.pm_schema_status == "REVIEW_REQUIRED"
-    assert readiness.pm.reason == "pm_feature_empty_with_current_positions"
+    assert readiness.pm.reason == "position_feature_current_output_mismatch"
 
 
 def test_phase15an_feature_refresh_manifest_records_consumer_ready(tmp_path, monkeypatch):
@@ -215,9 +215,21 @@ def _write_current(runtime_root: Path, *, positions: list[dict]) -> None:
     path.write_text(
         json.dumps(
             {
+                "schema_version": "1",
+                "asset_state_id": "asset-phase15an",
+                "environment": "demo",
+                "business_date": "2026-07-10",
                 "as_of": "2026-07-10",
                 "updated_at": "2026-07-10T00:00:00Z",
                 "positions": positions,
+                "cash": 1_000_000,
+                "buying_power": 1_000_000,
+                "market_value": 0,
+                "total_equity": 1_000_000,
+                "current_state_confirmed_empty": not bool(positions),
+                "current_positions_unknown": False,
+                "cash_unknown": False,
+                "buying_power_unknown": False,
             },
             ensure_ascii=False,
         ),

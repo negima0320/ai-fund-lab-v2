@@ -264,7 +264,7 @@ def _runtime_with_review_pending(tmp_path: Path) -> tuple[Path, Path]:
             ],
         },
     )
-    run_sell_hold_review_only_morning(
+    result = run_sell_hold_review_only_morning(
         runtime_root=runtime_root,
         business_date=BUSINESS_DATE,
         mode="demo",
