@@ -32,6 +32,8 @@ from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     require_diagnostic_path_matches_registry,
     resolve_runtime_artifact_set,
 )
+from ai_fund_lab_v2.runtime_v2.ai_lifecycle_gates import evaluate_runtime_ai_gate
+from ai_fund_lab_v2.runtime_v2.lifecycle_evidence import build_runtime_lifecycle_evidence
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal
 from ai_fund_lab_v2.runtime_v2.storage.json_safe import dumps_json_safe
 
@@ -64,6 +66,7 @@ class BuyAIRuntimeResult:
     ai_signals: tuple[AIPlanningSignal, ...]
     candidate_schema_evidence: dict[str, Any]
     opportunity_schema_evidence: dict[str, Any]
+    lifecycle_gate_evidence: dict[str, Any] | None = None
 
     def to_manifest_fields(self) -> dict[str, Any]:
         return {
@@ -96,6 +99,22 @@ class BuyAIRuntimeResult:
             ),
             "opportunity_review_required": bool(self.opportunity_schema_evidence.get("review_required")),
             "opportunity_review_reason": self.opportunity_schema_evidence.get("review_reason") or "",
+            "ai_lifecycle_gate": self.lifecycle_gate_evidence or {},
+            "ai_lifecycle_gate_decision": (self.lifecycle_gate_evidence or {}).get("decision") or "",
+            "ai_lifecycle_gate_classification": (self.lifecycle_gate_evidence or {}).get("classification") or "",
+            "ai_lifecycle_gate_block_buy": bool((self.lifecycle_gate_evidence or {}).get("block_buy")),
+            "ai_lifecycle_gate_block_sell": bool((self.lifecycle_gate_evidence or {}).get("block_sell")),
+            "ai_lifecycle_gate_block_submit": bool((self.lifecycle_gate_evidence or {}).get("block_submit")),
+            "ai_lifecycle_gate_block_buy_planning": bool((self.lifecycle_gate_evidence or {}).get("block_buy_planning")),
+            "ai_lifecycle_gate_block_buy_submit": bool((self.lifecycle_gate_evidence or {}).get("block_buy_submit")),
+            "ai_lifecycle_gate_block_sell_planning": bool((self.lifecycle_gate_evidence or {}).get("block_sell_planning")),
+            "ai_lifecycle_gate_block_sell_submit": bool((self.lifecycle_gate_evidence or {}).get("block_sell_submit")),
+            "ai_lifecycle_gate_allow_current_refresh": bool((self.lifecycle_gate_evidence or {}).get("allow_current_refresh", True)),
+            "ai_lifecycle_gate_allow_valuation_refresh": bool((self.lifecycle_gate_evidence or {}).get("allow_valuation_refresh", True)),
+            "ai_lifecycle_gate_allow_position_management": bool((self.lifecycle_gate_evidence or {}).get("allow_position_management", True)),
+            "ai_lifecycle_gate_allow_safety_evaluation": bool((self.lifecycle_gate_evidence or {}).get("allow_safety_evaluation", True)),
+            "ai_lifecycle_gate_allow_sell_planning": bool((self.lifecycle_gate_evidence or {}).get("allow_sell_planning", True)),
+            "ai_lifecycle_gate_allow_sell_submit_authorization": bool((self.lifecycle_gate_evidence or {}).get("allow_sell_submit_authorization", True)),
         }
 
 
@@ -108,6 +127,7 @@ def produce_buy_ai_decisions(
     candidate_model_path: Path | str | None = None,
     opportunity_model_path: Path | str | None = None,
     opportunity_training_metrics_path: Path | str | None = None,
+    accepted_buy_ai_bundle_path: Path | str | None = None,
     top_n: int = 50,
     selected_rank_limit: int | None = None,
     now: datetime | None = None,
@@ -120,6 +140,7 @@ def produce_buy_ai_decisions(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     candidate_artifact_path = artifact_dir / "candidate_decisions.json"
     opportunity_artifact_path = artifact_dir / "opportunity_rankings.json"
+    lifecycle_gate_artifact_path = artifact_dir / "ai_lifecycle_gate_decision.json"
     feature_dir = Path(feature_root) / feature_date
     candidate_feature_path = feature_dir / "candidate_features.parquet"
     opportunity_feature_path = feature_dir / "opportunity_feature_input.parquet"
@@ -222,6 +243,38 @@ def produce_buy_ai_decisions(
         runtime_id=runtime_id,
         generated_at=generated_at,
     )
+    lifecycle_gate = _evaluate_and_write_lifecycle_gate(
+        artifact_path=lifecycle_gate_artifact_path,
+        business_date=business_date,
+        feature_date=feature_date,
+        runtime_id=runtime_id,
+        generated_at=generated_at,
+        candidate_payload=candidate_payload,
+        opportunity_payload=opportunity_payload,
+        runtime_root=root,
+        artifact_paths=artifact_paths,
+        accepted_buy_ai_bundle_path=accepted_buy_ai_bundle_path,
+    )
+    if lifecycle_gate["decision"] in {"BLOCK", "REVIEW_REQUIRED"}:
+        opportunity_payload["ai_lifecycle_gate"] = lifecycle_gate
+        opportunity_payload["status"] = "BLOCKED" if lifecycle_gate["decision"] == "BLOCK" else "REVIEW_REQUIRED"
+        opportunity_payload["reason"] = f"ai_lifecycle_gate_{lifecycle_gate['decision'].lower()}"
+        _write_json(opportunity_artifact_path, opportunity_payload)
+        return _result(
+            status=str(opportunity_payload["status"]),
+            reason=str(opportunity_payload["reason"]),
+            business_date=business_date,
+            runtime_id=runtime_id,
+            feature_date=feature_date,
+            generated_at=generated_at,
+            candidate_payload=candidate_payload,
+            opportunity_payload=opportunity_payload,
+            opportunity_artifact_path=opportunity_artifact_path,
+            ai_signals=(),
+            lifecycle_gate_evidence=lifecycle_gate,
+        )
+    opportunity_payload["ai_lifecycle_gate"] = lifecycle_gate
+    _write_json(opportunity_artifact_path, opportunity_payload)
     status = "PASS" if opportunity_payload["status"] == "PASS" else str(opportunity_payload.get("status") or "REVIEW_REQUIRED")
     reason = "" if status == "PASS" else str(opportunity_payload.get("reason") or "opportunity_ai_not_ready")
     return _result(
@@ -238,6 +291,7 @@ def produce_buy_ai_decisions(
             opportunity_artifact_path,
             selected_rank_limit=selected_rank_limit,
         ) if status == "PASS" else (),
+        lifecycle_gate_evidence=lifecycle_gate,
     )
 
 
@@ -812,6 +866,51 @@ def _validate_opportunity_metrics_artifact(
     }
 
 
+def _evaluate_and_write_lifecycle_gate(
+    *,
+    artifact_path: Path,
+    business_date: str,
+    feature_date: str,
+    runtime_id: str,
+    generated_at: str,
+    candidate_payload: dict[str, Any],
+    opportunity_payload: dict[str, Any],
+    runtime_root: Path,
+    artifact_paths: dict[str, Path],
+    accepted_buy_ai_bundle_path: Path | str | None = None,
+) -> dict[str, Any]:
+    lifecycle_evidence = build_runtime_lifecycle_evidence(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        feature_date=feature_date,
+        runtime_id=runtime_id,
+        candidate_payload=candidate_payload,
+        opportunity_payload={**opportunity_payload, "artifact_path": str(artifact_path)},
+        artifact_paths=artifact_paths,
+        accepted_bundle_path=accepted_buy_ai_bundle_path,
+    ).to_dict()
+    gate = evaluate_runtime_ai_gate(lifecycle_evidence["gate_input"]).to_dict()
+    gate.update(
+        {
+            "schema_version": "runtime_ai_lifecycle_gate_decision.v1",
+            "business_date": business_date,
+            "feature_date": feature_date,
+            "runtime_id": runtime_id,
+            "generated_at": generated_at,
+            "created_at": generated_at,
+            "inference_execution_permission": "PASS",
+            "buy_planning_permission": "BLOCK" if gate["block_buy_planning"] else "PASS",
+            "buy_submit_permission": "BLOCK" if gate["block_buy_submit"] else "PASS",
+            "sell_planning_permission": "BLOCK" if gate["block_sell_planning"] else "PASS",
+            "sell_submit_authorization_permission": "BLOCK" if gate["block_sell_submit"] else "PASS",
+            "sell_permission": "PASS" if not gate["block_sell"] else "BLOCK",
+            **lifecycle_evidence["artifact_fields"],
+        }
+    )
+    _write_json(artifact_path, gate)
+    return gate
+
+
 def _opportunity_metrics_halt(
     code: str,
     message: str,
@@ -991,6 +1090,7 @@ def _result(
     opportunity_payload: dict[str, Any],
     opportunity_artifact_path: Path,
     ai_signals: tuple[AIPlanningSignal, ...],
+    lifecycle_gate_evidence: dict[str, Any] | None = None,
 ) -> BuyAIRuntimeResult:
     return BuyAIRuntimeResult(
         status=status,
@@ -1009,6 +1109,7 @@ def _result(
         ai_signals=ai_signals,
         candidate_schema_evidence=_schema_evidence_from_payload(candidate_payload, prefix="candidate"),
         opportunity_schema_evidence=_schema_evidence_from_payload(opportunity_payload, prefix="opportunity"),
+        lifecycle_gate_evidence=lifecycle_gate_evidence,
     )
 
 

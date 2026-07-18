@@ -111,10 +111,14 @@ docs/README
 現在
 
 ```text
-設計フェーズ
+Phase18 COMPLETE WITH OPERATIONAL EXTENSION
 ```
 
-完了。
+Phase18-UでAI Lifecycle v2 Contract Closureは完了。
+
+Phase18-VでPhase19開始前のHistorical Runtime Test Fresh Run Operatorを追加。
+
+次はPhase19へ進める状態。
 
 ---
 
@@ -1931,205 +1935,124 @@ docs/02_architecture/ai_lifecycle_v2.md
 Phase18。
 
 ```text
-Phase18 — AI Lifecycle v2 Implementation and End-to-End Acceptance
+Phase18 — AI Lifecycle / Autonomous AI Operations Architecture Closure
 
 Japanese:
-AI Lifecycle v2 実装・統合受入
+AI Lifecycle / Autonomous AI Operations Architecture 設計完了・Phase19引き継ぎ
 
 Status:
-PLANNED / READY_TO_START
+DESIGN_COMPLETE
 
-Scope:
-Candidate AI
-Opportunity AI
-Position Management AI / Policy Adapter
-Safety Policy Engine
-future AI onboarding contract
-
-Purpose:
-AI Fund Lab v2の全AIコンポーネントについて、
-データまたはPolicy Evidence更新、
-Dataset rebuild、
-retrainまたはPolicy validation、
-Champion/Challenger評価、
-Promotion readiness、
-Authority acceptance、
-Registry切替、
-Runtime freshness/drift gate、
-scheduler、
-monitoring、
-rollbackまでを、
-docs/02_architecture/ai_lifecycle_v2.md に従って
-安全・再現可能・監査可能に実装する。
+Final Judgment:
+PHASE18_DESIGN_COMPLETE
+PHASE18_AF_FINAL_ARCHITECTURE_CONSISTENCY_PASS
+PHASE18_AF_PHASE19_U1_READY
 
 Important:
-PM and Safety are currently Policy / Rule-based lifecycle components.
-Do not apply Candidate / Opportunity trainable retrain semantics to PM or Safety unless their trainable design is formally added to the AI Lifecycle v2 SoT.
+Phase18 completed the Architecture SoT and handoff for implementation.
+Phase18 did not complete autonomous operation implementation.
+Phase18 did not materialize an Accepted Atomic BUY AI Bundle.
+Phase18 did not switch Runtime.
+Phase18 did not restart BUY.
+Phase18 did not perform Broker write.
 ```
 
-Phase18実装ロードマップ。
+Phase18最終状態。
 
 ```text
-Phase18-A — Common PIT Dataset Rebuild Pipeline
-Candidate PIT Dataset
-Opportunity PIT Dataset
-label-safe cutoff
-source authority
-schema
-lineage
-data quality
-leakage audit
-idempotency
-versioned dataset artifact
+Architecture SoT:
+docs/02_architecture/autonomous_ai_operations_architecture.md
 
-Phase18-B — Training / Validation / Challenger Pipeline
-Candidate Challenger
-Opportunity Challenger
-time-series split
-validation
-test
-recent holdout
-Champion comparison
-calibration
-regime evaluation
-reproducibility
+Architecture design:
+COMPLETE
 
-Phase18-C — Promotion Readiness and Atomic BUY AI Bundle
-Safety / Integrity
-Predictive Validity
-Operational Utility
-Candidate / Opportunity compatibility
-Atomic BUY AI Bundle
-promotion request
-rollback metadata
+Architecture consistency:
+PASS
 
-Phase18-D — Registry Promotion Operator
-Authority review
-ARTIFACT_ACCEPTED
-atomic Registry update
-materialized index
-previous Champion retention
-revoke / rollback
-idempotency
+Residual contradictions:
+0
 
-Phase18-E — Runtime Freshness and Drift Gates
-source freshness
-dataset lag
-model training lag
-model acceptance age
-feature drift
-Candidate population drift
-prediction drift
-MODEL_UNHEALTHY
-MARKET_NO_OPPORTUNITY
-BUY BLOCK / REVIEW_REQUIRED
-SELL continuity
+Accepted Atomic BUY AI Bundle:
+not yet materialized
 
-Phase18-F — Weekly Lifecycle Scheduler and Observability
-weekly eligibility check
-label-safe readiness
-locks
-retry
-timeout
-no overlap
-status artifacts
-operator reports
-alerts
-no automatic self-promotion
+Runtime BUY inference authority:
+still legacy Registry accepted component sets
 
-Phase18-G — Full AI Component Lifecycle Coverage
-Candidate AI lifecycle
-Opportunity AI lifecycle
-PM policy lifecycle
-Safety policy lifecycle
-future AI onboarding
-failure blast radius
-policy freshness
-semantic regression
+Lifecycle Gate authority:
+Accepted Atomic BUY AI Bundle evidence
 
-Phase18-H — End-to-End AI Lifecycle Acceptance
-dataset rebuild
-train / validation
-promotion readiness
-authority rehearsal
-Registry acceptance rehearsal
-Runtime next-job discovery
-freshness / drift gates
-rollback rehearsal
-failure cases
+Runtime Authority unification:
+not implemented
 
-Phase18-I — Historical Runtime Re-Acceptance
-new accepted Atomic BUY AI Bundle
-fresh Historical Runtime Test
-BUY
-Submit
-Fill
-Ledger
-Current
-Valuation
-PM
-SELL
-Report
-Notification
+Rolling Split:
+not implemented
+
+Unified Generation:
+not implemented
+
+Atomic Runtime Transition:
+not implemented
+
+Autonomous Scheduler:
+not implemented
+
+Production-equivalent E2E:
+not executed
+
+BUY restart:
+not allowed
+
+Broker write:
+not performed
 ```
 
-Phase18開始条件。
+Phase18主要成果。
 
 ```text
-docs/02_architecture/ai_lifecycle_v2.md accepted as SoT
-BV20-R1 objective alignment complete
-Phase17 final handoff accepted
-BUY remains blocked
-no Runtime model switch pending
-no unreviewed Registry promotion pending
-existing formal artifact set remains unchanged
+Phase18-AB:
+Runtime Legacy Model Provenance and AI Generation Pipeline Audit
+Judgment: PHASE18_AB_SYSTEMIC_AI_GENERATION_GAP_CONFIRMED
+
+Phase18-AC:
+Autonomous AI Operations Architecture Design
+Judgment: PHASE18_AC_AUTONOMOUS_AI_OPERATIONS_DESIGN_COMPLETE
+
+Phase18-AD:
+Autonomous AI Operations Architecture Closure Review and Design Amendment
+Judgment: PHASE18_AD_ARCHITECTURE_AMENDMENT_REQUIRED
+Coverage Matrix: VERIFIED_WITH_LIMITATION=9, BLOCKED=5, UNKNOWN=0
+
+Phase18-AE:
+Autonomous AI Operations Architecture Final System and Implementation Review
+Judgment: PHASE18_AE_ARCHITECTURE_AMENDMENT_REQUIRED
+
+Phase18-AF:
+Autonomous AI Operations Architecture Final Consistency Amendment
+Judgment: PHASE18_AF_FINAL_ARCHITECTURE_CONSISTENCY_PASS
+Residual contradiction count: 0
+Phase19 entry: AD-U1 READY
+
+Phase18-AG:
+Phase18 Final Summary, Phase19 Handoff, and Roadmap Transition
+Judgment: PHASE18_DESIGN_COMPLETE
 ```
 
-Phase18完了条件。
-
-```text
-latest label-safe dataからCandidate/Opportunity datasetを再構築可能
-dataset reproducibility / idempotency PASS
-no leakage PASS
-formal retraining / validationを再現可能
-Champion / Challenger comparison PASS
-Operational Utility評価可能
-Atomic BUY AI Bundle生成可能
-authority-approved Registry promotion可能
-Runtimeがnext-job boundaryでbundleを発見
-freshness / drift gateがscope別に動作
-stale modelでBUY BLOCK
-MARKET_NO_OPPORTUNITYとMODEL_UNHEALTHYを区別
-SELL continuity PASS
-weekly scheduler / monitoring PASS
-rollback / revoke rehearsal PASS
-Candidate / Opportunity / PM / Safety lifecycle coverage PASS
-Historical RuntimeでBUYからSELLまでのfull pathを再Acceptance
-
-Final Judgment Candidates:
-AI_LIFECYCLE_V2_IMPLEMENTATION_COMPLETE
-ALL_AI_LIFECYCLE_COVERAGE_PASS
-ATOMIC_BUY_AI_BUNDLE_ACCEPTED
-RUNTIME_FRESHNESS_DRIFT_GATES_PASS
-WEEKLY_LIFECYCLE_OPERATIONAL
-ROLLBACK_ACCEPTANCE_PASS
-HISTORICAL_RUNTIME_FULL_PATH_PASS
-PHASE18_COMPLETE
-```
-
-Phase18禁止事項。
+Phase18禁止事項・安全境界。
 
 ```text
 Runtime/training jobによるself-promotion禁止
 Registry accepted eventの無承認書き込み禁止
+Promotion CandidateのRuntime直接採用禁止
+latest fallback禁止
+manual model path fallback禁止
 CandidateとOpportunityの独立切替禁止
-manual model path edit禁止
 BV15 threshold relaxation禁止
 no_buy_reason無視禁止
 Top-N強制BUY禁止
 Paper Ledger / Broker Snapshot / PnL / bought情報の学習利用禁止
 future information leakage禁止
 backtest結果の学習利用禁止
+Runtime TransitionでCurrent/Pending/Ledger/cash/positions/Safety/Broker evidenceを変更禁止
 本番broker write禁止
 本番注文禁止
 ```
@@ -2137,21 +2060,37 @@ backtest結果の学習利用禁止
 Phase19。
 
 ```text
-Broker-connected Continuous Operation Test / Production Enablement
+Phase19 — Autonomous AI Operations Implementation
 
-Scope:
-立花証券Demo
-毎日運用
-Broker-connected multi-day
-Notification Delivery
-Recovery
-Monitoring
-Production credentials
-Production account reconciliation
-Production Broker Write
-Emergency operation
-Production runbook
-Production unlock
+Purpose:
+Phase18で確定したAutonomous AI Operations Architectureを、
+AD-U1〜AD-U7のVertical SliceとしてProduction-equivalentに実装・検証する。
+
+Architecture SoT:
+docs/02_architecture/autonomous_ai_operations_architecture.md
+
+Start Unit:
+AD-U1 Bootstrap and Authority Unification
+
+Phase19 must not start from AD-U2 or later.
+Phase19 must not implement full scheduler / retraining / transition in one batch.
+Each unit must consume the previous unit's real artifact as input.
+```
+
+Phase19正式Unit。
+
+```text
+Phase19-AD-U1 — Bootstrap and Authority Unification
+Phase19-AD-U2 — Dataset-to-Split Sufficiency Slice
+Phase19-AD-U3 — Unified Generation Slice
+Phase19-AD-U4 — Validation-to-Authority Slice
+Phase19-AD-U5 — Atomic Runtime Transition Slice
+Phase19-AD-U6 — Autonomous Scheduler and Recovery Slice
+Phase19-AD-U7 — Production-equivalent E2E Slice
+
+Note:
+Actual Codex task names inside Phase19 must follow the user's Phase prefix numbering rule.
+AD-U1 through AD-U7 are implementation-unit names, not necessarily chat step labels.
 ```
 
 ---

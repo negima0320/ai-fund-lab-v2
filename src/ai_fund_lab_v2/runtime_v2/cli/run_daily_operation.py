@@ -24,6 +24,7 @@ from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
 )
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import produce_buy_ai_decisions
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
+from ai_fund_lab_v2.runtime_v2.lifecycle_sell_continuity import evaluate_sell_continuity_from_buy_lifecycle_gate
 from ai_fund_lab_v2.runtime_v2.current_state.temporal import run_current_temporal_migration
 from ai_fund_lab_v2.runtime_v2.current_state.valuation import run_current_valuation_refresh
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import (
@@ -568,7 +569,15 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = EXIT_HALT
                 final_state = "HALT"
                 errors.append(f"buy ai halt: {buy_ai_result.reason}")
+            elif buy_ai_result.status == "BLOCKED":
+                sell_continuity = evaluate_sell_continuity_from_buy_lifecycle_gate(buy_ai_result.lifecycle_gate_evidence or {})
+                stages.extend(_buy_lifecycle_continuity_stages(sell_continuity.to_dict()))
+                exit_code = EXIT_BLOCKED
+                final_state = "BLOCKED"
+                errors.append(f"buy ai blocked: {buy_ai_result.reason}")
             elif buy_ai_result.status == "REVIEW_REQUIRED":
+                sell_continuity = evaluate_sell_continuity_from_buy_lifecycle_gate(buy_ai_result.lifecycle_gate_evidence or {})
+                stages.extend(_buy_lifecycle_continuity_stages(sell_continuity.to_dict()))
                 exit_code = EXIT_REVIEW_REQUIRED
                 final_state = "REVIEW_REQUIRED"
                 warnings.append(f"buy ai review required: {buy_ai_result.reason}")
@@ -1621,6 +1630,36 @@ def _stage(name: str, status: str, message: str, details: dict[str, Any] | None 
     return payload
 
 
+def _buy_lifecycle_continuity_stages(sell_continuity: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _stage(
+            "buy_lifecycle_sell_continuity",
+            str(sell_continuity.get("status") or "REVIEW_REQUIRED"),
+            "BUY lifecycle gate result evaluated for SELL continuity without Broker write.",
+            sell_continuity,
+        ),
+        _stage(
+            "buy_lifecycle_sell_authorization_continuity",
+            "PASS" if sell_continuity.get("allow_sell_planning") and sell_continuity.get("allow_sell_submit_authorization") else "BLOCKED",
+            "BUY lifecycle block scoped to BUY planning/submit; SELL planning and submit authorization remain reachable without Broker write.",
+            {
+                "call_graph_reached": True,
+                "current_refresh_reached": bool(sell_continuity.get("allow_current_refresh")),
+                "valuation_refresh_reached": bool(sell_continuity.get("allow_valuation_refresh")),
+                "position_management_reached": bool(sell_continuity.get("allow_position_management")),
+                "safety_evaluation_reached": bool(sell_continuity.get("allow_safety_evaluation")),
+                "sell_planning_stage_reached": bool(sell_continuity.get("allow_sell_planning")),
+                "sell_submit_authorization_stage_reached": bool(sell_continuity.get("allow_sell_submit_authorization")),
+                "broker_write_performed": False,
+                "buy_planning_permission": sell_continuity.get("buy_planning_permission") or "",
+                "buy_submit_permission": sell_continuity.get("buy_submit_permission") or "",
+                "sell_planning_permission": sell_continuity.get("sell_planning_permission") or "",
+                "sell_submit_authorization_permission": sell_continuity.get("sell_submit_authorization_permission") or "",
+            },
+        ),
+    ]
+
+
 def _data_readiness_safety_summary_fields(payload: dict[str, Any]) -> dict[str, Any]:
     safety = dict((payload.get("components") or {}).get("safety") or {})
     authority = str(safety.get("historical_safety_temporal_authority") or "")
@@ -1839,6 +1878,25 @@ def _write_morning_manifest_evidence(
         },
     )
     planning = _stage_details(stages, "morning_ai_planning_pending_pipeline")
+    sell_continuity = _stage_details(stages, "buy_lifecycle_sell_continuity")
+    sell_authorization = _stage_details(stages, "buy_lifecycle_sell_authorization_continuity")
+    _write_json_file(
+        evidence_dir / "buy_lifecycle_sell_continuity.json",
+        sell_continuity
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "buy_lifecycle_sell_continuity_stage_not_reached",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "sell_authorization_continuity.json",
+        sell_authorization
+        or {
+            "status": "NOT_EVALUATED",
+            "reason": "buy_lifecycle_sell_authorization_continuity_stage_not_reached",
+            "call_graph_reached": False,
+        },
+    )
     _write_json_file(
         evidence_dir / "planning_evidence.json",
         planning

@@ -99,6 +99,110 @@ PYTHONPATH=src python3 scripts/runtime_test.py reset \
 
 Reset requires a valid backup. It initializes Historical smoke state to 1,000,000 JPY cash/buying power, zero positions, zero pending, zero open orders, zero executions, and zero PnL. Partial reset is prohibited.
 
+## Fresh Run
+
+Fresh Run is the one-command operator for restarting a Historical Runtime Test from a clean state. It runs the formal sequence:
+
+```text
+Status -> Backup -> Clean Reset -> Plan -> Run -> Validate -> Close -> Final Summary
+```
+
+It preserves existing evidence under `reports/runtime_tests/runs/` and creates a new `run_id`. It does not purge old run evidence.
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-extended-smoke \
+  --date-from 2026-06-29 \
+  --date-to 2026-07-10 \
+  --business-days 10 \
+  --initial-cash 1000000 \
+  --dry-run
+```
+
+Actual 10BD run:
+
+```bash
+cd /Users/negishi/work/ai-fund-lab-v2
+export PYTHONPATH=src
+
+python3 scripts/runtime_test.py fresh-run \
+  --profile historical-extended-smoke \
+  --date-from 2026-06-29 \
+  --date-to 2026-07-10 \
+  --business-days 10 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Equivalent start/count form:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-extended-smoke \
+  --start-date 2026-06-29 \
+  --business-days 10 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Fresh Run uses the normal Runtime v2 CLI for runtime execution:
+
+```text
+market_refresh
+data_readiness
+morning
+sell_planning
+submit
+execution
+current_valuation_refresh
+runtime_state_refresh
+```
+
+The operator does not implement AI decisions, Pending generation, Fill generation, Ledger update, or Current update by itself.
+
+Backup / Reset scope:
+
+- Backup includes resettable Trading State only: Current, Ledger, Pending, Runtime operational state, orders, executions, positions, cash / buying power, and PnL.
+- Backup excludes Registry, Accepted Artifacts, Canonical Data, Raw Data, AI Artifacts, Feature Schema, Config, Policy, Safety, Phase Reports, and Lifecycle Evidence.
+- Reset requires the internally created `backup_id`; partial reset is prohibited.
+
+Failure behavior:
+
+- If any step is non-PASS, later steps are `NOT_EXECUTED`.
+- The summary includes `failed_step`, `exit_code`, `error`, `backup_id`, `run_id`, last completed day/job, resume possibility, rollback possibility, and a recommended command.
+- `Run` HALT does not execute `Validate` or `Close`.
+- `Validate` failure does not execute `Close`.
+
+Evidence:
+
+```text
+reports/runtime_tests/runs/<run_id>/plan.json
+reports/runtime_tests/runs/<run_id>/run_state.json
+reports/runtime_tests/runs/<run_id>/fresh_run_summary.json
+reports/runtime_tests/runs/<run_id>/final_summary.json
+reports/runtime_tests/backups/<backup_id>/
+```
+
+Exit codes are the same runner exit codes listed below.
+
+Resume / Rollback guidance:
+
+- Use `resume --run-id <RUN_ID> --dry-run` first when the summary says `resume_possible=true`.
+- Use `rollback --backup-id <BACKUP_ID> --dry-run` first when the summary says `rollback_possible=true`.
+- Actual rollback remains a separate explicit command with confirmation flags.
+
+Production prohibition:
+
+- Production profiles are rejected.
+- Broker write, external delivery, Tachibana API calls, and J-Quants fetch are disabled by accepted Historical profiles.
+- Fresh Run does not switch Runtime accepted models and does not mutate Registry accepted state.
+
+`run --auto-prepare` is deprecated. It is not a formal alias and now fails with guidance to use `fresh-run`, because Backup / Reset / Validate / Close orchestration must not be an ambiguous no-op.
+
 ## 5BD Run
 
 Dry run:

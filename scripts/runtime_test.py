@@ -55,6 +55,8 @@ EXIT_CODES = {
     EXIT_INTERNAL_ERROR: "INTERNAL_ERROR",
 }
 
+SCOPED_BUY_ONLY_JOB_STATUSES = {"REVIEW_REQUIRED_BUY_ONLY", "BLOCKED_BUY_ONLY"}
+
 PROFILE_PATHS = {
     "historical-smoke": Path("config/runtime_tests/historical_smoke_5bd.json"),
     "historical-extended-smoke": Path("config/runtime_tests/historical_extended_smoke_10bd.json"),
@@ -66,6 +68,7 @@ PLAN_SCHEMA_VERSION = "runtime_test_plan_v1"
 BACKUP_MANIFEST_SCHEMA_VERSION = "runtime_test_backup_manifest_v1"
 RESET_MANIFEST_SCHEMA_VERSION = "runtime_test_reset_manifest_v1"
 FINAL_SUMMARY_SCHEMA_VERSION = "runtime_test_final_summary_v1"
+FRESH_RUN_SUMMARY_SCHEMA_VERSION = "runtime_test_fresh_run_summary_v1"
 LEGACY_RUN_STATE_SCHEMA_VERSIONS = {"phase17_k_run_state_v1"}
 LEGACY_PLAN_SCHEMA_VERSIONS = {"phase17_k_runtime_test_plan_v1"}
 LEGACY_BACKUP_MANIFEST_SCHEMA_VERSIONS = {"phase17_k_backup_manifest_v1"}
@@ -175,6 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id")
     run.add_argument("--auto-prepare", action="store_true")
 
+    fresh = subparsers.add_parser("fresh-run")
+    add_common(fresh)
+    add_plan_window(fresh)
+    add_mutation_safety(fresh)
+    fresh.add_argument("--initial-cash", type=float)
+
     validate = subparsers.add_parser("validate")
     add_common(validate)
     validate.add_argument("--run-id")
@@ -227,6 +236,8 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return reset_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "run":
         return run_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "fresh-run":
+        return fresh_run_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "validate":
         return validate_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "resume":
@@ -413,6 +424,12 @@ def run_command(
     evidence_root: Path,
 ) -> CommandResult:
     require_historical_mutation_context(args=args, profile=profile)
+    if getattr(args, "auto_prepare", False):
+        raise RuntimeTestError(
+            "--auto-prepare is deprecated and incomplete; use `fresh-run` for formal Status->Backup->Reset->Plan->Run->Validate->Close orchestration",
+            status="INVALID_ARGUMENT",
+            exit_code=EXIT_INVALID_ARGUMENT,
+        )
     if args.run_id:
         plan_payload = load_plan_for_run(evidence_root=evidence_root, run_id=args.run_id)
     else:
@@ -471,9 +488,18 @@ def run_command(
                 business_date=day["business_date"],
                 job=job["job"],
             )
+            scoped_block = classify_scoped_buy_only_result(
+                run_dir=run_dir,
+                business_date=day["business_date"],
+                job=job["job"],
+                exit_code=completed.returncode,
+            )
+            if scoped_block:
+                job_record["runtime_test_job_status"] = scoped_block["status"]
+                job_record["scoped_block_continuation"] = scoped_block
             run_state["completed_jobs"].append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
-            if completed.returncode != 0:
+            if completed.returncode != 0 and not scoped_block:
                 run_state["status"] = "HALT"
                 run_state["halted_at"] = job_record
                 write_json_atomic(run_dir / "run_state.json", run_state)
@@ -560,7 +586,7 @@ def resume_command(
     completed_success = {
         (record.get("business_date"), record.get("job"))
         for record in run_state.get("completed_jobs", [])
-        if int(record.get("exit_code", 1)) == 0
+        if int(record.get("exit_code", 1)) == 0 or str(record.get("runtime_test_job_status") or "") in SCOPED_BUY_ONLY_JOB_STATUSES
     }
     run_state["status"] = "RUNNING"
     write_json_atomic(run_dir / "run_state.json", run_state)
@@ -590,9 +616,18 @@ def resume_command(
                 business_date=day["business_date"],
                 job=job["job"],
             )
+            scoped_block = classify_scoped_buy_only_result(
+                run_dir=run_dir,
+                business_date=day["business_date"],
+                job=job["job"],
+                exit_code=completed.returncode,
+            )
+            if scoped_block:
+                job_record["runtime_test_job_status"] = scoped_block["status"]
+                job_record["scoped_block_continuation"] = scoped_block
             run_state.setdefault("completed_jobs", []).append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
-            if completed.returncode != 0:
+            if completed.returncode != 0 and not scoped_block:
                 run_state["status"] = "HALT"
                 run_state["halted_at"] = job_record
                 write_json_atomic(run_dir / "run_state.json", run_state)
@@ -662,6 +697,204 @@ def close_command(
     payload.update(summary)
     payload["runtime_test_final_summary_schema_version"] = summary["schema_version"]
     return CommandResult(status_value, EXIT_PASS if status_value == "PASS" else EXIT_REVIEW_REQUIRED, runner_response(payload))
+
+
+def fresh_run_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    fresh_run_id = f"fresh-run-{profile['profile_id']}-{timestamp_id()}"
+    started_at = utc_now()
+    before = _fresh_run_authority_snapshot(runtime_root)
+    plan_preview = build_plan(
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=evidence_root,
+        business_days=args.business_days,
+        start_date=args.start_date,
+        date_from=args.date_from,
+        date_to=args.date_to,
+    )
+    active = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
+    if args.dry_run:
+        payload = _fresh_run_summary(
+            fresh_run_id=fresh_run_id,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+            started_at=started_at,
+            status="DRY_RUN",
+            exit_code=EXIT_PASS,
+            steps=_fresh_run_dry_run_steps(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root, plan_payload=plan_preview),
+            backup_id="",
+            run_id=plan_preview["run_id"],
+            plan_payload=plan_preview,
+            initial_cash=args.initial_cash,
+            before=before,
+            after=before,
+            failed_step="",
+            error="",
+            active_run=active,
+            dry_run=True,
+        )
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    if active:
+        payload = _fresh_run_summary(
+            fresh_run_id=fresh_run_id,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+            started_at=started_at,
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+            steps=_initial_fresh_run_steps(),
+            backup_id="",
+            run_id="",
+            plan_payload=plan_preview,
+            initial_cash=args.initial_cash,
+            before=before,
+            after=_fresh_run_authority_snapshot(runtime_root),
+            failed_step="status",
+            error=f"active run exists for profile {profile['profile_id']}: {active.get('run_id')}",
+            active_run=active,
+            dry_run=False,
+        )
+        _persist_fresh_run_summary(evidence_root=evidence_root, run_id="", fresh_run_id=fresh_run_id, payload=payload)
+        return CommandResult(payload["status"], payload["exit_code"], runner_response(payload))
+    steps = _initial_fresh_run_steps()
+    backup_id = ""
+    run_id = ""
+    plan_payload: dict[str, Any] = plan_preview
+    failed_step = ""
+    error = ""
+
+    def execute(name: str, func) -> CommandResult:
+        nonlocal failed_step, error
+        try:
+            result = func()
+        except RuntimeTestError as exc:
+            steps[name] = _fresh_step(name, exc.status, {"error": str(exc), "exit_code": exc.exit_code})
+            failed_step = name
+            error = str(exc)
+            raise
+        except Exception as exc:
+            steps[name] = _fresh_step(name, "INTERNAL_ERROR", {"error": str(exc), "exit_code": EXIT_INTERNAL_ERROR})
+            failed_step = name
+            error = str(exc)
+            raise RuntimeTestError(str(exc), status="INTERNAL_ERROR", exit_code=EXIT_INTERNAL_ERROR) from exc
+        steps[name] = _fresh_step(name, result.status, result.payload)
+        if result.exit_code != EXIT_PASS:
+            failed_step = name
+            error = str(result.payload.get("error") or result.payload.get("reason") or f"{name} returned {result.status}")
+            raise RuntimeTestError(error, status=result.status, exit_code=result.exit_code)
+        return result
+
+    exit_code = EXIT_PASS
+    final_status = "PASS"
+    try:
+        execute("status", lambda: status(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root))
+        backup_result = execute(
+            "backup",
+            lambda: backup_command(
+                argparse.Namespace(dry_run=False, confirm=True, explicit_mutation_confirm=True),
+                profile=profile,
+                runtime_root=runtime_root,
+                evidence_root=evidence_root,
+            ),
+        )
+        backup_id = str(backup_result.payload.get("backup_id") or "")
+        reset_result = execute(
+            "reset",
+            lambda: reset_command(
+                argparse.Namespace(dry_run=False, confirm=True, explicit_mutation_confirm=True, backup_id=backup_id, initial_cash=args.initial_cash),
+                profile=profile,
+                runtime_root=runtime_root,
+                evidence_root=evidence_root,
+            ),
+        )
+        if not (reset_result.payload.get("clean_state_invariant") or {}).get("passes"):
+            failed_step = "reset"
+            error = "reset clean-state invariant failed"
+            raise RuntimeTestError("reset clean-state invariant failed", status="VALIDATION_FAILURE", exit_code=EXIT_VALIDATION_FAILURE)
+        plan_result = execute(
+            "plan",
+            lambda: plan_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root),
+        )
+        plan_payload = dict(plan_result.payload)
+        run_id = str(plan_payload.get("run_id") or "")
+        execute(
+            "run",
+            lambda: run_command(
+                argparse.Namespace(
+                    dry_run=False,
+                    confirm=True,
+                    explicit_mutation_confirm=True,
+                    run_id=run_id,
+                    business_days=None,
+                    start_date=None,
+                    date_from=None,
+                    date_to=None,
+                    auto_prepare=False,
+                ),
+                profile=profile,
+                runtime_root=runtime_root,
+                evidence_root=evidence_root,
+            ),
+        )
+        execute(
+            "validate",
+            lambda: validate_command(
+                argparse.Namespace(run_id=run_id, business_date="", json=False),
+                profile=profile,
+                runtime_root=runtime_root,
+                evidence_root=evidence_root,
+            ),
+        )
+        execute(
+            "close",
+            lambda: close_command(
+                argparse.Namespace(run_id=run_id, json=False),
+                profile=profile,
+                runtime_root=runtime_root,
+                evidence_root=evidence_root,
+            ),
+        )
+    except RuntimeTestError as exc:
+        exit_code = exc.exit_code
+        final_status = exc.status
+        if not failed_step:
+            failed_step = "fresh-run"
+            error = str(exc)
+    after = _fresh_run_authority_snapshot(runtime_root)
+    payload = _fresh_run_summary(
+        fresh_run_id=fresh_run_id,
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=evidence_root,
+        started_at=started_at,
+        status=final_status,
+        exit_code=exit_code,
+        steps=steps,
+        backup_id=backup_id,
+        run_id=run_id,
+        plan_payload=plan_payload,
+        initial_cash=args.initial_cash,
+        before=before,
+        after=after,
+        failed_step=failed_step,
+        error=error,
+        active_run=active,
+        dry_run=False,
+    )
+    summary_path = _persist_fresh_run_summary(evidence_root=evidence_root, run_id=run_id, fresh_run_id=fresh_run_id, payload=payload)
+    payload["evidence_path"] = str(summary_path.parent)
+    payload["fresh_run_summary_path"] = str(summary_path)
+    return CommandResult(final_status, exit_code, runner_response(payload))
 
 
 def show(args: argparse.Namespace) -> CommandResult:
@@ -1881,6 +2114,96 @@ def collect_runtime_cli_job_evidence(
     )
 
 
+def classify_scoped_buy_only_result(
+    *,
+    run_dir: Path,
+    business_date: str,
+    job: str,
+    exit_code: int,
+) -> dict[str, Any] | None:
+    if exit_code == 0 or job != "morning":
+        return None
+    job_dir = run_dir / "daily" / business_date / job
+    manifest_path = job_dir / "runtime_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    gate = manifest.get("ai_lifecycle_gate") if isinstance(manifest.get("ai_lifecycle_gate"), dict) else {}
+    if not gate:
+        gate = _stage_details(manifest, "candidate_opportunity_ai_runtime_producer").get("ai_lifecycle_gate", {})
+        if not isinstance(gate, dict):
+            gate = {}
+    decision = str(gate.get("decision") or manifest.get("ai_lifecycle_gate_decision") or "").upper()
+    classification = str(gate.get("classification") or manifest.get("ai_lifecycle_gate_classification") or "").upper()
+    status = "REVIEW_REQUIRED_BUY_ONLY" if decision == "REVIEW_REQUIRED" else ("BLOCKED_BUY_ONLY" if decision == "BLOCK" else "")
+    continuity = _stage_details(manifest, "buy_lifecycle_sell_continuity")
+    authorization = _stage_details(manifest, "buy_lifecycle_sell_authorization_continuity")
+    checks = {
+        "runtime_cli_nonzero": exit_code != 0,
+        "morning_job": job == "morning",
+        "known_lifecycle_decision": decision in {"REVIEW_REQUIRED", "BLOCK"},
+        "not_critical_authority_violation": classification != "CRITICAL_AUTHORITY_VIOLATION",
+        "block_buy_planning": _bool_field(gate, manifest, "block_buy_planning", "ai_lifecycle_gate_block_buy_planning"),
+        "block_buy_submit": _bool_field(gate, manifest, "block_buy_submit", "ai_lifecycle_gate_block_buy_submit"),
+        "does_not_block_sell_planning": not _bool_field(gate, manifest, "block_sell_planning", "ai_lifecycle_gate_block_sell_planning"),
+        "does_not_block_sell_submit": not _bool_field(gate, manifest, "block_sell_submit", "ai_lifecycle_gate_block_sell_submit"),
+        "sell_planning_permission_pass": _str_field(gate, manifest, "sell_planning_permission") == "PASS",
+        "sell_submit_authorization_permission_pass": _str_field(gate, manifest, "sell_submit_authorization_permission") == "PASS",
+        "sell_continuity_pass": continuity.get("status") == "PASS",
+        "sell_authorization_continuity_pass": authorization.get("status") == "PASS",
+        "call_graph_reached": bool(authorization.get("call_graph_reached")),
+        "no_broker_write": not bool(continuity.get("broker_write_performed")) and not bool(authorization.get("broker_write_performed")),
+    }
+    if not status or not all(checks.values()):
+        return None
+    result = {
+        "schema_version": "runtime_test_scoped_buy_only_continuation_v1",
+        "status": status,
+        "scope": "BUY_ONLY",
+        "business_date": business_date,
+        "job": job,
+        "runtime_cli_exit_code": exit_code,
+        "runtime_manifest_path": str(manifest_path),
+        "decision": decision,
+        "classification": classification,
+        "checks": checks,
+        "reason": "runtime_lifecycle_gate_block_is_scoped_to_buy_planning_and_submit",
+    }
+    write_json_atomic(job_dir / "scoped_block_continuation.json", result)
+    return result
+
+
+def _stage_details(manifest: dict[str, Any], name: str) -> dict[str, Any]:
+    for stage in manifest.get("stages") or []:
+        if not isinstance(stage, dict) or stage.get("name") != name:
+            continue
+        details = stage.get("details")
+        if isinstance(details, dict):
+            payload = dict(details)
+            payload.setdefault("status", stage.get("status"))
+            return payload
+        return {"status": stage.get("status")}
+    return {}
+
+
+def _bool_field(gate: dict[str, Any], manifest: dict[str, Any], gate_key: str, manifest_key: str) -> bool:
+    if gate_key in gate:
+        return bool(gate.get(gate_key))
+    return bool(manifest.get(manifest_key))
+
+
+def _str_field(gate: dict[str, Any], manifest: dict[str, Any], key: str) -> str:
+    value = gate.get(key)
+    if value is None:
+        value = manifest.get(f"ai_lifecycle_gate_{key}")
+    if value is None:
+        value = manifest.get(key)
+    return str(value or "").upper()
+
+
 def runtime_cli_manifest_path(stdout: str) -> Path | None:
     for line in reversed(stdout.splitlines()):
         text = line.strip()
@@ -1894,6 +2217,214 @@ def runtime_cli_manifest_path(stdout: str) -> Path | None:
         if isinstance(manifest, str) and manifest:
             return Path(manifest)
     return None
+
+
+def _initial_fresh_run_steps() -> dict[str, dict[str, Any]]:
+    return {name: _fresh_step(name, "NOT_EXECUTED", {}) for name in ("status", "backup", "reset", "plan", "run", "validate", "close")}
+
+
+def _fresh_step(name: str, status: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step": name,
+        "status": status,
+        "exit_code": int(payload.get("exit_code", next((code for code, value in EXIT_CODES.items() if value == status), EXIT_PASS))),
+        "run_id": payload.get("run_id") or "",
+        "backup_id": payload.get("backup_id") or "",
+        "evidence_path": payload.get("evidence_path") or payload.get("backup_path") or "",
+        "summary": _fresh_step_summary(payload),
+    }
+
+
+def _fresh_step_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "runtime_root",
+        "current_environment",
+        "active_test_run",
+        "run_status",
+        "accepted_artifact_hash",
+        "latest_backup",
+        "bundle_hash",
+        "clean_state_invariant",
+        "requested_business_days",
+        "requested_start_date",
+        "requested_end_date",
+        "job_sequence",
+        "completed_business_days",
+        "checks",
+        "test_validity_judgment",
+        "acceptance_gate_judgment",
+        "error",
+    )
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _fresh_run_dry_run_steps(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path, plan_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    steps = _initial_fresh_run_steps()
+    steps["status"] = _fresh_step("status", "PLANNED_READ_ONLY", {"runtime_root": str(runtime_root), "external_effect_policy": profile["external_effect_policy"]})
+    steps["backup"] = _fresh_step("backup", "PLANNED_NO_WRITE", {"target_root": str(backups_root(evidence_root)), "scope": list(RESETTABLE_RELATIVE_PATHS), "excluded_prefixes": list(RESET_EXCLUDED_RELATIVE_PREFIXES)})
+    steps["reset"] = _fresh_step("reset", "PLANNED_NO_MUTATION", {"initial_state": profile["initial_state"], "partial_reset_prohibited": True})
+    steps["plan"] = _fresh_step("plan", "PLANNED_NO_WRITE", {"run_id": plan_payload["run_id"], "requested_business_days": plan_payload["requested_business_days"], "requested_start_date": plan_payload["requested_start_date"], "requested_end_date": plan_payload["requested_end_date"], "job_sequence": plan_payload["job_sequence"]})
+    steps["run"] = _fresh_step("run", "PLANNED_NO_EXECUTION", {"job_sequence": plan_payload["job_sequence"], "runtime_cli_module": RUNTIME_CLI_MODULE})
+    steps["validate"] = _fresh_step("validate", "PLANNED_NO_EXECUTION", {"checks": ["Runtime root", "Current", "Pending", "Runtime State", "external effect policy", "run state", "state hashes"]})
+    steps["close"] = _fresh_step("close", "PLANNED_NO_MUTATION", {"final_summary": "planned"})
+    return steps
+
+
+def _fresh_run_authority_snapshot(runtime_root: Path) -> dict[str, Any]:
+    registry = runtime_root / "artifact_registry"
+    return {
+        "runtime_root": str(runtime_root),
+        "registry_hash": directory_hash(registry) if registry.exists() else "",
+        "registry_checkpoint_hash": file_ref(registry / "checkpoints" / "latest.json", root=runtime_root).get("sha256", ""),
+        "accepted_artifact_hash": accepted_artifact_hash(runtime_root),
+        "current_hash": file_ref(runtime_root / "persistent_ledger" / "state.json", root=runtime_root).get("sha256", ""),
+        "pending_hash": file_ref(runtime_root / "pending_order_plan" / "pending_order_plan.json", root=runtime_root).get("sha256", ""),
+        "runtime_state_hash": file_ref(runtime_root / "runtime_state" / "current_state.json", root=runtime_root).get("sha256", ""),
+    }
+
+
+def _fresh_run_summary(
+    *,
+    fresh_run_id: str,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+    started_at: str,
+    status: str,
+    exit_code: int,
+    steps: dict[str, dict[str, Any]],
+    backup_id: str,
+    run_id: str,
+    plan_payload: dict[str, Any],
+    initial_cash: float | None,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    failed_step: str,
+    error: str,
+    active_run: dict[str, Any],
+    dry_run: bool,
+) -> dict[str, Any]:
+    completed_jobs = _completed_jobs_for_run(evidence_root=evidence_root, run_id=run_id)
+    completed_days = _completed_days_for_run(evidence_root=evidence_root, run_id=run_id)
+    summary = {
+        "schema_version": FRESH_RUN_SUMMARY_SCHEMA_VERSION,
+        "subcommand": "fresh-run",
+        "fresh_run_id": fresh_run_id,
+        "run_id": run_id,
+        "profile_id": profile["profile_id"],
+        "status": status,
+        "final_judgment": status,
+        "exit_code": exit_code,
+        "started_at": started_at,
+        "finished_at": utc_now(),
+        "runtime_root": str(runtime_root),
+        "evidence_root": str(evidence_root),
+        "backup_id": backup_id,
+        "date_from": plan_payload.get("requested_start_date") or "",
+        "date_to": plan_payload.get("requested_end_date") or "",
+        "business_days": int(plan_payload.get("requested_business_days") or 0),
+        "initial_cash": float(initial_cash if initial_cash is not None else profile["initial_state"]["cash"]),
+        "steps": steps,
+        "status_result": steps["status"]["status"],
+        "backup_result": steps["backup"]["status"],
+        "reset_result": steps["reset"]["status"],
+        "plan_result": steps["plan"]["status"],
+        "run_result": steps["run"]["status"],
+        "validate_result": steps["validate"]["status"],
+        "close_result": steps["close"]["status"],
+        "completed_days": completed_days,
+        "completed_jobs": completed_jobs,
+        "failed_step": failed_step,
+        "halted_step": failed_step,
+        "error": error,
+        "active_run_conflict": bool(active_run),
+        "active_run": active_run,
+        "resume_possible": bool(run_id and status in {"HALT", "REVIEW_REQUIRED", "BLOCKED"}),
+        "rollback_possible": bool(backup_id and status not in {"PASS", "DRY_RUN"}),
+        "recommended_command": _fresh_run_recommended_command(status=status, run_id=run_id, backup_id=backup_id),
+        "resume_recommendation": _fresh_run_resume_recommendation(status=status, run_id=run_id),
+        "rollback_recommendation": _fresh_run_rollback_recommendation(status=status, backup_id=backup_id),
+        "evidence_paths": _fresh_run_evidence_paths(evidence_root=evidence_root, run_id=run_id, fresh_run_id=fresh_run_id),
+        "registry_hash_before": before.get("registry_hash", ""),
+        "registry_hash_after": after.get("registry_hash", ""),
+        "accepted_artifact_hash_before": before.get("accepted_artifact_hash", ""),
+        "accepted_artifact_hash_after": after.get("accepted_artifact_hash", ""),
+        "registry_unchanged": before.get("registry_hash", "") == after.get("registry_hash", ""),
+        "accepted_artifact_unchanged": before.get("accepted_artifact_hash", "") == after.get("accepted_artifact_hash", ""),
+        "broker_write_performed": False,
+        "external_delivery_performed": False,
+        "external_effect_policy": profile["external_effect_policy"],
+        "dry_run": dry_run,
+        "dry_run_no_mutation": dry_run,
+        "existing_run_evidence_preserved": True,
+        "automatic_evidence_purge_performed": False,
+        "production_profile_rejected": profile.get("mode") != "production",
+    }
+    return summary
+
+
+def _completed_jobs_for_run(*, evidence_root: Path, run_id: str) -> list[dict[str, Any]]:
+    if not run_id:
+        return []
+    try:
+        return list(load_run_state(evidence_root, run_id).get("completed_jobs") or [])
+    except Exception:
+        return []
+
+
+def _completed_days_for_run(*, evidence_root: Path, run_id: str) -> list[str]:
+    if not run_id:
+        return []
+    try:
+        return list(load_run_state(evidence_root, run_id).get("completed_business_days") or [])
+    except Exception:
+        return []
+
+
+def _fresh_run_recommended_command(*, status: str, run_id: str, backup_id: str) -> str:
+    if status == "PASS":
+        return f"PYTHONPATH=src python3 scripts/runtime_test.py show --run-id {run_id}" if run_id else ""
+    if run_id and status in {"HALT", "REVIEW_REQUIRED", "BLOCKED"}:
+        return f"PYTHONPATH=src python3 scripts/runtime_test.py resume --run-id {run_id} --dry-run"
+    if backup_id:
+        return f"PYTHONPATH=src python3 scripts/runtime_test.py rollback --backup-id {backup_id} --dry-run"
+    return "PYTHONPATH=src python3 scripts/runtime_test.py status"
+
+
+def _fresh_run_resume_recommendation(*, status: str, run_id: str) -> str:
+    if run_id and status in {"HALT", "REVIEW_REQUIRED", "BLOCKED"}:
+        return f"Review halted job evidence, then run resume dry-run for {run_id}."
+    if status == "PASS":
+        return "Run is closed; resume is not required."
+    return "Resume is not available before a run_id exists."
+
+
+def _fresh_run_rollback_recommendation(*, status: str, backup_id: str) -> str:
+    if backup_id and status != "PASS":
+        return f"Rollback is available with backup_id={backup_id}; run rollback dry-run before actual restore."
+    if status == "PASS":
+        return "Rollback is optional and must be a separate explicit operator action."
+    return "Rollback is not available before backup succeeds."
+
+
+def _fresh_run_evidence_paths(*, evidence_root: Path, run_id: str, fresh_run_id: str) -> dict[str, str]:
+    return {
+        "run_root": str(runs_root(evidence_root) / run_id) if run_id else "",
+        "plan": str(runs_root(evidence_root) / run_id / "plan.json") if run_id else "",
+        "run_state": str(runs_root(evidence_root) / run_id / "run_state.json") if run_id else "",
+        "final_summary": str(runs_root(evidence_root) / run_id / "final_summary.json") if run_id else "",
+        "fresh_run_summary": str((runs_root(evidence_root) / run_id / "fresh_run_summary.json") if run_id else (evidence_root / "fresh_runs" / fresh_run_id / "fresh_run_summary.json")),
+        "backup_root": str(backups_root(evidence_root)),
+    }
+
+
+def _persist_fresh_run_summary(*, evidence_root: Path, run_id: str, fresh_run_id: str, payload: dict[str, Any]) -> Path:
+    if run_id:
+        path = runs_root(evidence_root) / run_id / "fresh_run_summary.json"
+    else:
+        path = evidence_root / "fresh_runs" / fresh_run_id / "fresh_run_summary.json"
+    write_json_atomic(path, payload)
+    return path
 
 
 def base_payload(subcommand: str, status: str) -> dict[str, Any]:
