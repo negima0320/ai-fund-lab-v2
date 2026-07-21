@@ -328,19 +328,39 @@ def _pm_inputs(
     opportunity_path = tmp_path / "pm_opportunity.csv"
     pd.DataFrame(rows).to_csv(opportunity_path, index=False)
     feature_path = tmp_path / "pm_feature.csv"
+    required_features = json.dumps(
+        [
+            "price_momentum_return_5d",
+            "price_momentum_return_20d",
+            "trend_close_over_ma_20d",
+            "trend_ma_5_20_ratio",
+            "volume_momentum_ratio_5d",
+            "volatility_return_std_20d",
+        ]
+    )
     pd.DataFrame(
         [
             {
                 "target_date": BUSINESS_DATE,
                 "as_of_date": BUSINESS_DATE,
+                "feature_as_of_date": BUSINESS_DATE,
+                "data_until": BUSINESS_DATE,
                 "code": symbol,
-                "feature_version": "position_management_feature_v1",
-                "return_5d": expected_edge,
-                "return_20d": expected_edge,
-                "close_over_ma_20d": expected_edge,
-                "ma_5_20_ratio": 1.0 + expected_edge,
-                "volume_ratio_5d": 1.0,
-                "volatility_20d": 0.02,
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+                "price_momentum_return_5d": expected_edge,
+                "price_momentum_return_20d": expected_edge,
+                "trend_close_over_ma_20d": 1.0 + expected_edge,
+                "trend_ma_5_20_ratio": 1.0 + expected_edge,
+                "volume_momentum_ratio_5d": 1.0,
+                "volatility_return_std_20d": 0.02,
+                "feature_source_artifact": "fixture_candidate_features.parquet",
+                "feature_source_hash": "fixture-feature-source-hash",
+                "required_features": required_features,
+                "optional_features": json.dumps(["no_position_reason"]),
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "created_at": BUSINESS_DATE + "T00:00:00Z",
             }
             for symbol in symbols
         ]

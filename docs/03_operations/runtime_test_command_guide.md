@@ -33,6 +33,18 @@ PYTHONPATH=src python3 scripts/runtime_test.py status --json
 
 Shows Runtime root, environment, active run, Current/Ledger/Pending/Runtime State summaries, Registry checkpoint, accepted artifact hash, latest backup, and external effect policy. Status is read-only.
 
+## Summarize
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <RUN_ID>
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <RUN_ID> --json
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <RUN_ID> --write-evidence
+```
+
+Summarize is a read-only post-run inspection command. It reads `reports/runtime_tests/runs/<run_id>/` evidence and, when no run-specific Trading State snapshot exists, uses the current Runtime root only if `final_summary.final_state_hashes` exactly match the current Runtime root hashes. It does not run Runtime jobs, refresh data, submit orders, generate fills, close/resume/rollback/abandon runs, call Broker APIs, or mutate Current / Ledger / Pending / Runtime State / Registry / Accepted Generation evidence.
+
+The human output includes Run Summary, External Effect Summary, Performance Summary, PM Decision Summary, BUY / SELL Summary, REDUCE / EXIT Summary, Trade Attribution, Current Positions, Lifecycle Consistency, Review / Block Summary, and Operator Judgment. `--write-evidence` writes only to `reports/runtime_tests/summaries/<summary_id>/`.
+
 ## Plan
 
 5BD plan:
@@ -347,13 +359,68 @@ Broker Layer: Approval, Submit Guard, Execution, Broker Connection, Notification
 Overall: PASS / REVIEW_REQUIRED / BLOCK
 ```
 
-Standard full inspection report:
+Default overview:
 
 ```bash
 PYTHONPATH=src:. python3 scripts/runtime_test.py system-status
 ```
 
-The standard output is the detailed operational inspection report. It includes Active Component Inventory, Active Component Count Summary, Complete Component Inventory, Component Dependency Matrix, Runtime Chain Inspection, J-Quants Dependency Matrix, Runtime State Coverage, Inspection Coverage, Data Sources, Complete Data Source Inventory, Datasets, Runtime Features, AI Models, AI Data Window Summary, AI Input Lineage, Runtime Input Lineage, Runtime Baseline Traceability, Freshness Policy Traceability, Decision Subsystems, Accepted Generation / Authority, Runtime State, Broker Layer, Freshness Matrix, Findings, Non-mutation Guarantee, and Exit Code. Candidate evaluated symbol count is reported separately from Candidate output count; Opportunity input candidate count, ranking count, and Top20 count are also reported separately.
+The default output is a compact operator overview. It shows Inspection Context, separated status judgments, key data freshness dates, Runtime completion/current state, Accepted Generation age with explicit units, important findings, and the final system-status judgment. It intentionally omits hashes, full lineage, complete inventories, and dependency matrices.
+
+Scope options:
+
+| Scope | Purpose | Main Checks |
+|---|---|---|
+| `overview` | Normal daily check | Key statuses, latest dates, Runtime state |
+| `data` | Data status check | J-Quants, Feature, Freshness, Temporal |
+| `ai` | AI status check | Accepted Generation, Model, Scaler, Health |
+| `runtime` | Runtime state check | Stage, Current, Pending, Ledger, Execution |
+| `broker` | Broker boundary check | Config, Connectivity, Write readiness |
+| `readiness` | Environment readiness | Historical, Demo, Production readiness |
+| `lineage` | Detailed lineage audit | Dataset, Hash, Split, Source |
+| `components` | Component audit | Inventory, Dependency, Authority |
+| `full` | Full inspection | All sections |
+
+Examples:
+
+```bash
+# Normal overview
+PYTHONPATH=src python3 scripts/runtime_test.py system-status
+
+# Data status
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope data
+
+# AI status
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope ai
+
+# Runtime status
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope runtime
+
+# Broker boundary status
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope broker
+
+# Production readiness / environment readiness
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope readiness
+
+# Full inspection
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope full
+```
+
+JSON output follows the selected scope:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope data --json
+```
+
+Full JSON is intentionally large; save it to a file when reviewing all details:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py system-status --scope full --json > /tmp/system_status_full.json
+```
+
+For backward compatibility, `system-status --json` still includes the deprecated top-level `system_status_report` full legacy report. New consumers should use the v2 fields: `scope`, `inspection_context`, `status_summary`, `findings`, and `sections`.
+
+Full scope includes Active Component Inventory, Active Component Count Summary, Complete Component Inventory, Component Dependency Matrix, Runtime Chain Inspection, J-Quants Dependency Matrix, Runtime State Coverage, Inspection Coverage, Data Sources, Complete Data Source Inventory, Datasets, Runtime Features, AI Models, AI Data Window Summary, AI Input Lineage, Runtime Input Lineage, Runtime Baseline Traceability, Freshness Policy Traceability, Decision Subsystems, Accepted Generation / Authority, Runtime State, Broker Layer, Freshness Matrix, Findings, Non-mutation Guarantee, and Exit Code. Candidate evaluated symbol count is reported separately from Candidate output count; Opportunity input candidate count, ranking count, and Top20 count are also reported separately.
 
 Candidate and Opportunity input lineage are first-class operator output, not JSON-only diagnostics. The human report and JSON report both show training dataset revision, dataset artifact/manifest path, source authority, source earliest/latest date, source row/symbol count, schema/content hash, Training/Calibration/Validation/Test/Recent Holdout split window statistics, recent holdout non-use, and calibration/validation independence. Runtime input lineage remains a planned pre-run contract until target-date features and inference are materialized, and must display explicit values such as `NOT_YET_MATERIALIZED` instead of empty placeholders.
 
@@ -383,19 +450,36 @@ After a Historical Runtime Test is formally closed with `Run=PASS`, `Validate=PA
 
 `NOT_PERFORMED` is not rendered as connectivity PASS. Broker Configuration and Submit Guard configuration may be PASS while Broker Connectivity, Credential Access, and Broker Write remain `NOT_PERFORMED` or `PROHIBITED`.
 
-JSON output:
-
-```bash
-PYTHONPATH=src:. python3 scripts/runtime_test.py system-status --json
-```
-
 Evidence output:
 
 ```bash
 PYTHONPATH=src:. python3 scripts/runtime_test.py system-status --write-evidence
 ```
 
-`system-status` has no `--detailed` option because the standard output is already the operational full summary.
+`system-status` has no `--detailed` option. Use `--scope full` for the full inspection report.
+
+Exit code:
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | PASS |
+| `10` | REVIEW_REQUIRED |
+| `20` | BLOCK / fail-closed precondition |
+
+Status values:
+
+| Status | Meaning |
+|---|---|
+| `PASS` | Checked and acceptable for the displayed context. |
+| `READY` | Materialized and ready. |
+| `REVIEW_REQUIRED` | Human review needed, but not necessarily Runtime failure. |
+| `BLOCKED` / `BLOCK` | Fail-closed blocker. |
+| `NOT_PERFORMED` | Deliberately not executed by this read-only command. |
+| `NOT_EVALUATED` | Outside the current inspection context. |
+| `NOT_APPLICABLE` | Not applicable for the current context/stage. |
+| `NOT_RETAINED` | Artifact not retained after successful run; not automatically a blocker. |
+
+Runtime PASS does not imply Production Ready. Broker Configuration PASS does not imply Broker Connectivity PASS. Model Health REVIEW_REQUIRED does not automatically mean Runtime Execution failed. In Historical Post-run context, transient feature artifacts not retained in shared `.runtime` are not BLOCK when completed run evidence is sufficient.
 
 Safety Artifact timing:
 

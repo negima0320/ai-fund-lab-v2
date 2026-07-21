@@ -2329,7 +2329,11 @@ Overall
 
 Broker Layer の Broker Connection は、このコマンド内では外部接続を実行しない。`NOT_PERFORMED` を明示し、Broker credential access、Broker API access、Broker write、notification send は禁止する。
 
-`system-status` の標準出力は省略 summary ではなく、完全な human inspection report とする。少なくとも Runtime Stage、Pre-run Readiness、Day1 Start Permission、Active Component Inventory、Data Sources、Datasets、Runtime Features、AI Models、AI Data Window Summary、Decision Subsystems、Accepted Generation / Authority、Runtime State、Broker Layer、Freshness Matrix、Findings、Non-mutation Guarantee、Exit Code を表示する。Candidate は evaluated_symbols と candidate_output_count を分離し、Opportunity は input_candidate_count、ranking_count、top20_count を分離して表示する。
+`system-status` の標準出力は日次運用向けの compact operator overview とする。少なくとも Inspection Context、分離された status judgments、主要な Data freshness、Runtime execution/current-state status、Accepted Generation age（秒・時・日など単位付き）、重要 findings、最終 scoped judgment を表示する。完全な human inspection report は `--scope full` または `--full` alias で明示的に要求する。
+
+`system-status` は `--scope overview|data|ai|runtime|broker|readiness|lineage|components|full` を受け付け、1 invocation につき単一 scope のみを選択する。`--json` は選択 scope に対応する v2 fields（`scope`、`inspection_context`、`status_summary`、`findings`、`sections`）を出力し、既存consumer互換のため top-level `system_status_report` に従来の full legacy report を保持する。
+
+Full scope では Runtime Stage、Pre-run Readiness、Day1 Start Permission、Active Component Inventory、Data Sources、Datasets、Runtime Features、AI Models、AI Data Window Summary、Decision Subsystems、Accepted Generation / Authority、Runtime State、Broker Layer、Freshness Matrix、Findings、Non-mutation Guarantee、Exit Code を表示する。Candidate は evaluated_symbols と candidate_output_count を分離し、Opportunity は input_candidate_count、ranking_count、top20_count を分離して表示する。
 
 Phase19-BE 以降、`system-status` の human inspection report は AI input lineage を JSON と同じ粒度で表示しなければならない。Candidate / Opportunity それぞれについて、training dataset revision、dataset artifact / manifest path、source authority、source earliest/latest date、source row/symbol count、schema/content hash、Training / Calibration / Validation / Test / Recent Holdout split window statistics、recent holdout non-use、calibration / validation independence を表示する。Runtime input lineage は pre-run では計画契約として表示し、target-date feature / inference が未生成の場合は空欄ではなく `NOT_YET_MATERIALIZED` を用いる。
 
@@ -2348,6 +2352,10 @@ Historical freshness is coverage-based. Historical mode では `required_through
 Historical Runtime Test 完了後に active run が存在せず、最新の compatible closed run が inspected runtime root と一致する場合、`system-status` は `HISTORICAL_POST_RUN` context を表示する。この場合の target business date は profile の `date_from` ではなく closed run の最終 completed business date である。Ledger / Current / Pending / Runtime Feature / AI inference / Lifecycle / Safety の日付比較は同一 context に揃え、Day1 と Day5 を混在させて `TEMPORAL_STATE_CONTAMINATION` としてはならない。ただし実際に target business date より未来の consumer state を参照した場合、または closed run の Safety authority が欠落・不一致の場合は fail-closed を維持する。
 
 Broker Layer は truthfulness-first で表示する。Broker Configuration と Submit Guard Configuration が PASS でも、Broker Connectivity Check、Credential Access、Broker Write が未実施なら `NOT_PERFORMED` / `PROHIBITED` とし、aggregate は `CONFIGURATION_PASS_CONNECTIVITY_NOT_PERFORMED` のように誤解できない値にする。
+
+Phase19-BW 以降、Runtime execution judgment と AI Model Health judgment は独立して表示する。Model Health が統計 drift 等で `REVIEW_REQUIRED` の場合も、Runtime Consumer / BUY impact / SELL impact が PASS/NONE であれば Runtime execution を `REVIEW_REQUIRED` に格下げしてはならない。Model Health finding には trigger、classification、metric、threshold、policy、observed、BUY impact、SELL impact、Runtime impact を含める。
+
+Historical post-run context では、closed run evidence、final completed business date、target-date exact-match artifact を authority とする。成功済みrun後に retention 対象外の transient feature artifact が存在しないことは Target-period Data Sufficiency の BLOCK ではない。Position runtime feature は target-date feature rows と final post-run positions を別 authority として扱い、target-date時点で position rows が0である temporal isolation と、run完了後に ledger/current にpositionが残る状態を混同してはならない。2099 fixture artifact や future fixture directory は Runtime freshness / target-date resolution に使用してはならない。
 
 `system-status` の Evidence 書き込みは `reports/runtime_tests/system_status/<run_id>/` に限定する。Current、Pending、Ledger、PM、Safety、Accepted Generation pointer、authority history、Runtime transition history、Broker state を変更してはならない。
 

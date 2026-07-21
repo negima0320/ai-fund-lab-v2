@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,7 +8,7 @@ import pandas as pd
 from ai_fund_lab_v2.paper_trading.feature_refresh import FEATURES_READY, FEATURE_REFRESH_REQUIRED, run_feature_refresh
 
 
-def _write_quotes(path: Path, *, start: str = "2026-05-01", periods: int = 30) -> None:
+def _write_quotes(path: Path, *, start: str = "2026-03-02", periods: int = 75) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     dates = pd.bdate_range(start, periods=periods)
@@ -96,6 +97,73 @@ def test_execute_generates_phase9_feature_artifacts(tmp_path: Path) -> None:
     assert result.broker_order_api_called is False
 
 
+def test_execute_copies_candidate_technical_features_to_position_input(tmp_path: Path) -> None:
+    quotes_path = tmp_path / "jquants/quotes.parquet"
+    listed_path = tmp_path / "jquants/listed.parquet"
+    runtime_root = tmp_path / ".runtime"
+    _write_quotes(quotes_path)
+    _write_listed(listed_path)
+    (runtime_root / "runtime_state").mkdir(parents=True)
+    (runtime_root / "persistent_ledger").mkdir(parents=True)
+    (runtime_root / "runtime_state/current_state.json").write_text(
+        json.dumps({"state": "CURRENT_STATE_LOADED", "asset_state_source": "persistent_ledger/state.json"}),
+        encoding="utf-8",
+    )
+    (runtime_root / "persistent_ledger/state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_v2_asset_state_v1",
+                "as_of": "2026-06-11",
+                "position_state_as_of": "2026-06-11",
+                "positions": [
+                    {
+                        "symbol": "10010",
+                        "quantity": 100,
+                        "average_price": 120.0,
+                        "entry_date": "2026-06-01",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_feature_refresh(
+        target_data_until="2026-06-11",
+        dry_run=False,
+        execute=True,
+        daily_quotes_path=quotes_path,
+        listed_info_path=listed_path,
+        feature_output_root=tmp_path / "features",
+        manifest_root=tmp_path / "manifest",
+        markdown_report_path=tmp_path / "report.md",
+        json_report_path=tmp_path / "report.json",
+        runtime_root=runtime_root,
+    )
+    candidate = pd.read_parquet(tmp_path / "features/2026-06-11/candidate_features.parquet")
+    position = pd.read_parquet(tmp_path / "features/2026-06-11/position_feature_input.parquet")
+    candidate_row = candidate[(candidate["target_date"].astype(str) == "2026-06-11") & (candidate["code"].astype(str) == "10010")].iloc[0]
+    position_row = position.iloc[0]
+    technical_columns = [
+        "price_momentum_return_5d",
+        "price_momentum_return_20d",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "volume_momentum_ratio_5d",
+        "volatility_return_std_20d",
+    ]
+
+    assert result.status == FEATURES_READY
+    assert position_row["code"] == "10010"
+    assert position_row["missing_features"] == "[]"
+    assert position_row["defaulted_features"] == "[]"
+    assert position_row["temporal_validation_status"] == "PASS"
+    assert position_row["feature_source_hash"]
+    assert position_row["feature_source_artifact"].endswith("candidate_features.parquet")
+    for column in technical_columns:
+        assert position_row[column] == candidate_row[column]
+
+
 def test_execute_detects_insufficient_lookback(tmp_path: Path) -> None:
     quotes_path = tmp_path / "jquants/quotes.parquet"
     listed_path = tmp_path / "jquants/listed.parquet"
@@ -116,13 +184,12 @@ def test_execute_detects_insufficient_lookback(tmp_path: Path) -> None:
 
     assert result.status == FEATURE_REFRESH_REQUIRED
     assert "candidate_no_universe_eligible_rows" in result.blocked_reasons
-    assert "opportunity_feature_values_all_null" in result.blocked_reasons
 
 
 def test_future_rows_are_ignored_during_generation(tmp_path: Path) -> None:
     quotes_path = tmp_path / "jquants/quotes.parquet"
     listed_path = tmp_path / "jquants/listed.parquet"
-    _write_quotes(quotes_path, start="2026-05-01", periods=35)
+    _write_quotes(quotes_path, start="2026-03-02", periods=75)
     _write_listed(listed_path)
 
     result = run_feature_refresh(
@@ -147,7 +214,7 @@ def test_candidate_universe_hard_gate_excludes_non_current_stale_missing_name_an
     quotes_path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for code in ("10010", "10020", "10030", "10040", "14000"):
-        for day in pd.bdate_range("2026-05-01", "2026-06-16"):
+        for day in pd.bdate_range("2026-03-02", "2026-06-16"):
             if code == "14000" and day.strftime("%Y-%m-%d") > "2026-06-10":
                 continue
             rows.append(

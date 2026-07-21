@@ -9,6 +9,7 @@ Current / Pending except through explicit lifecycle reset / rollback commands.
 from __future__ import annotations
 
 import argparse
+from collections import Counter, defaultdict
 import hashlib
 import json
 import os
@@ -35,6 +36,8 @@ from ai_fund_lab_v2.runtime_v2.ai_status import (
 )
 from ai_fund_lab_v2.runtime_v2.system_status import (
     build_system_status_report,
+    build_system_status_scoped_view,
+    SYSTEM_STATUS_SCOPES,
     write_system_status_evidence,
 )
 from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
@@ -169,6 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status")
     add_common(status)
 
+    summarize = subparsers.add_parser("summarize")
+    add_common(summarize)
+    summarize.add_argument("--run-id", required=True)
+    summarize.add_argument("--write-evidence", action="store_true")
+
     ai_status = subparsers.add_parser("ai-status")
     add_common(ai_status)
     ai_status.add_argument("--detailed", action="store_true")
@@ -178,6 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     system_status = subparsers.add_parser("system-status")
     add_common(system_status)
     system_status.add_argument("--write-evidence", action="store_true")
+    system_status.add_argument("--scope", default="overview", choices=sorted(SYSTEM_STATUS_SCOPES))
+    system_status.add_argument("--full", action="store_true", help="Alias for --scope full")
 
     prepare_isolated = subparsers.add_parser("prepare-isolated")
     add_common(prepare_isolated)
@@ -264,6 +274,8 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
 
     if args.subcommand == "status":
         return status(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "summarize":
+        return summarize_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "ai-status":
         return ai_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "system-status":
@@ -316,6 +328,726 @@ def status(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path) 
         }
     )
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def summarize_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    run_id = str(args.run_id)
+    run_dir = runs_root(evidence_root) / run_id
+    if not run_dir.exists():
+        raise RuntimeTestError(
+            f"unknown run_id: {run_id}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+
+    summary_id = f"runtime-test-summary-{run_id}-{timestamp_id()}"
+    findings: list[dict[str, Any]] = []
+    plan = read_json_optional(run_dir / "plan.json")
+    run_state = read_json_optional(run_dir / "run_state.json")
+    final_summary = read_json_optional(run_dir / "final_summary.json")
+    fresh_summary = read_json_optional(run_dir / "fresh_run_summary.json")
+    missing = [
+        name
+        for name, payload in (
+            ("plan.json", plan),
+            ("run_state.json", run_state),
+            ("final_summary.json", final_summary),
+            ("fresh_run_summary.json", fresh_summary),
+        )
+        if not payload
+    ]
+    if missing:
+        findings.append(_summary_finding("REVIEW_REQUIRED", "RUN_EVIDENCE_INCOMPLETE", {"missing": missing}))
+
+    planned_root = Path(str(plan.get("runtime_root") or fresh_summary.get("runtime_root") or runtime_root))
+    if planned_root != runtime_root and str(planned_root) not in {"", str(runtime_root)}:
+        findings.append(
+            _summary_finding(
+                "REVIEW_REQUIRED",
+                "RUN_RUNTIME_ROOT_UNRESOLVED",
+                {"plan_runtime_root": str(planned_root), "inspected_runtime_root": str(runtime_root)},
+            )
+        )
+    final_hashes = final_summary.get("final_state_hashes") if isinstance(final_summary.get("final_state_hashes"), dict) else {}
+    current_hashes = state_hashes(runtime_root) if runtime_root.exists() else {}
+    runtime_authority = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH"
+    runtime_state_available = bool(final_hashes) and current_hashes == final_hashes
+    if not final_hashes:
+        runtime_authority = "FINAL_STATE_HASH_NOT_AVAILABLE"
+        findings.append(_summary_finding("REVIEW_REQUIRED", "RUN_EVIDENCE_INCOMPLETE", {"missing": ["final_state_hashes"]}))
+    elif current_hashes != final_hashes:
+        runtime_authority = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MISMATCH"
+        findings.append(
+            _summary_finding(
+                "BLOCKED",
+                "RUN_FINAL_STATE_HASH_MISMATCH",
+                {"final_state_hashes": final_hashes, "current_state_hashes": current_hashes},
+            )
+        )
+
+    completed_business_days = _completed_business_days(run_state=run_state, fresh_summary=fresh_summary)
+    pm = _summarize_pm_decisions(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_id=run_id,
+        available=runtime_state_available,
+        completed_business_days=completed_business_days,
+    )
+    plans = _collect_order_plan_items(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_id=run_id,
+        available=runtime_state_available,
+        completed_business_days=completed_business_days,
+    )
+    orders = (
+        _filter_rows_by_business_days(
+            _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl"),
+            completed_business_days,
+            include_without_business_date=True,
+        )
+        if runtime_state_available
+        else []
+    )
+    executions = (
+        _filter_rows_by_business_days(_read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl"), completed_business_days)
+        if runtime_state_available
+        else []
+    )
+    current_state = read_json_optional(runtime_root / "persistent_ledger" / "state.json") if runtime_state_available else {}
+    pending_state = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json") if runtime_state_available else {}
+
+    if runtime_state_available and not (runtime_root / "persistent_ledger" / "state.json").exists():
+        findings.append(_summary_finding("REVIEW_REQUIRED", "LEDGER_NOT_AVAILABLE", {"path": str(runtime_root / "persistent_ledger" / "state.json")}))
+    elif not runtime_state_available:
+        findings.append(_summary_finding("REVIEW_REQUIRED", "LEDGER_NOT_AVAILABLE", {"reason": runtime_authority}))
+
+    trading = _summarize_trading(plans=plans, orders=orders, executions=executions, pending_state=pending_state)
+    reduce_exit = _summarize_reduce_exit(plans=plans)
+    if reduce_exit["sell_plan_items_with_unknown_source_decision"]:
+        findings.append(
+            _summary_finding(
+                "REVIEW_REQUIRED",
+                "SELL_PLAN_SOURCE_DECISION_NOT_TRACEABLE",
+                {"count": reduce_exit["sell_plan_items_with_unknown_source_decision"]},
+            )
+        )
+    trade_attribution, attribution_findings, realized_pnl_from_trades = _build_trade_attribution(
+        sell_plan_items=plans["sell"],
+        executions=executions,
+        pm_decisions=pm.get("decision_records", []),
+    )
+    findings.extend(attribution_findings)
+    performance = _summarize_performance(
+        fresh_summary=fresh_summary,
+        current_state=current_state,
+        realized_pnl_from_trades=realized_pnl_from_trades,
+        runtime_state_available=runtime_state_available,
+    )
+    current_positions = _summarize_current_positions(current_state)
+    lifecycle = _summarize_lifecycle(pm=pm, trading=trading, reduce_exit=reduce_exit, current_state=current_state, pending_state=pending_state)
+    if lifecycle["status"] != "PASS":
+        findings.append(_summary_finding("REVIEW_REQUIRED", "LIFECYCLE_CONSISTENCY_REVIEW_REQUIRED", lifecycle))
+
+    external_effects = _summarize_external_effects(run_dir=run_dir, fresh_summary=fresh_summary)
+    run_summary = {
+        "profile_id": plan.get("profile_id") or fresh_summary.get("profile_id") or profile.get("profile_id", ""),
+        "status": run_state.get("status") or final_summary.get("status") or "UNKNOWN",
+        "final_judgment": final_summary.get("final_judgment") or final_summary.get("status") or "UNKNOWN",
+        "completed_business_days": sorted(completed_business_days),
+        "business_day_count": len(completed_business_days),
+        "date_from": fresh_summary.get("date_from") or "",
+        "date_to": fresh_summary.get("date_to") or "",
+        "run_dir": str(run_dir),
+        "runtime_root": str(runtime_root),
+        "runtime_state_authority": runtime_authority,
+        "event_collection_authority": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
+        "final_state_hashes": final_hashes,
+        "current_state_hashes": current_hashes,
+    }
+    performance_judgment = "NEGATIVE_RETURN_OBSERVED" if float(performance.get("total_return_amount") or 0.0) < 0 else "NOT_EVALUATED"
+    runtime_judgment = "BLOCKED" if any(f["severity"] == "BLOCKED" for f in findings) else "PASS"
+    if runtime_judgment == "PASS" and any(f["severity"] == "REVIEW_REQUIRED" for f in findings):
+        runtime_judgment = "REVIEW_REQUIRED"
+    status_value = runtime_judgment
+    exit_code = EXIT_PASS if status_value == "PASS" else EXIT_BLOCKED if status_value == "BLOCKED" else EXIT_REVIEW_REQUIRED
+    payload = {
+        "schema_version": "runtime_test_summary_v1",
+        "subcommand": "summarize",
+        "summary_id": summary_id,
+        "run_id": run_id,
+        "run": run_summary,
+        "external_effects": external_effects,
+        "performance": performance,
+        "pm_decisions": {key: value for key, value in pm.items() if key != "decision_records"},
+        "trading": trading,
+        "reduce_exit": reduce_exit,
+        "trade_attribution": trade_attribution,
+        "current_positions": current_positions,
+        "lifecycle_consistency": lifecycle,
+        "findings": findings,
+        "runtime_judgment": runtime_judgment,
+        "performance_judgment": performance_judgment,
+        "strategy_judgment": "NOT_EVALUATED",
+        "status": status_value,
+        "final_judgment": status_value,
+        "exit_code": exit_code,
+        "evidence_path": "",
+    }
+    if bool(args.write_evidence):
+        evidence_path = evidence_root / "summaries" / summary_id
+        payload["evidence_path"] = str(evidence_path)
+        payload["human_summary"] = _format_runtime_test_summary(payload)
+        write_json_atomic(evidence_path / "summary.json", payload)
+        _write_text_atomic(evidence_path / "summary.txt", payload["human_summary"])
+    else:
+        payload["human_summary"] = _format_runtime_test_summary(payload)
+    return CommandResult(status_value, exit_code, payload)
+
+
+def _summary_finding(severity: str, reason: str, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"severity": severity, "reason": reason, "evidence": evidence or {}}
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    value = payload.get("items")
+    return value if isinstance(value, list) else []
+
+
+def _float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _completed_business_days(*, run_state: dict[str, Any], fresh_summary: dict[str, Any]) -> set[str]:
+    days = run_state.get("completed_business_days") or fresh_summary.get("completed_days") or []
+    return {str(day) for day in days if str(day)}
+
+
+def _business_date(row: dict[str, Any], *, fallback: str = "") -> str:
+    return str(row.get("business_date") or row.get("_plan_date") or fallback or "")
+
+
+def _in_completed_business_days(row: dict[str, Any], completed_business_days: set[str], *, fallback: str = "") -> bool:
+    if not completed_business_days:
+        return True
+    return _business_date(row, fallback=fallback) in completed_business_days
+
+
+def _filter_rows_by_business_days(
+    rows: list[dict[str, Any]],
+    completed_business_days: set[str],
+    *,
+    include_without_business_date: bool = False,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if include_without_business_date and not _business_date(row):
+            filtered.append(row)
+            continue
+        if _in_completed_business_days(row, completed_business_days):
+            filtered.append(row)
+    return filtered
+
+
+def _manifest_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    manifest = payload.get("manifest")
+    return manifest if isinstance(manifest, dict) else payload
+
+
+def _matches_requested_run(payload: dict[str, Any], *, run_id: str, run_dir: Path) -> bool:
+    manifest = _manifest_payload(payload)
+    evidence_root = str(manifest.get("runtime_test_evidence_root") or manifest.get("data_readiness_safety_runtime_test_evidence_root") or "")
+    evidence_matches = not evidence_root or evidence_root == str(run_dir)
+    if evidence_root and not evidence_matches:
+        try:
+            evidence_matches = Path(evidence_root).resolve() == run_dir.resolve()
+        except OSError:
+            evidence_matches = False
+    payload_run_id = str(manifest.get("runtime_test_run_id") or manifest.get("data_readiness_safety_runtime_test_run_id") or "")
+    return (not payload_run_id or payload_run_id == run_id) and evidence_matches
+
+
+def _summarize_pm_decisions(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_id: str,
+    available: bool,
+    completed_business_days: set[str],
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    run_evidence_seen = False
+    run_evidence_counts: Counter[str] = Counter()
+    for path in sorted(run_dir.glob("daily/*/sell_planning/position_management_evidence.json")):
+        business_date = path.parts[-3]
+        if completed_business_days and business_date not in completed_business_days:
+            continue
+        payload = read_json_optional(path)
+        if payload and _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
+            run_evidence_seen = True
+            run_evidence_counts["HOLD"] += int(payload.get("pm_hold_count") or 0)
+            run_evidence_counts["ADD"] += int(payload.get("pm_add_count") or 0)
+            run_evidence_counts["REDUCE"] += int(payload.get("pm_reduce_count") or 0)
+            run_evidence_counts["EXIT"] += int(payload.get("pm_exit_count") or 0)
+    if available:
+        for path in sorted((runtime_root / "runtime_state" / "position_management").glob("*/position_management_decisions.json")):
+            if completed_business_days and path.parent.name not in completed_business_days:
+                continue
+            payload = read_json_optional(path)
+            for decision in payload.get("decisions") or []:
+                if isinstance(decision, dict) and _in_completed_business_days(decision, completed_business_days, fallback=path.parent.name):
+                    record = dict(decision)
+                    record["_artifact_path"] = str(path)
+                    record["_run_authority"] = "runtime_root_final_hash_match_completed_business_day_filter"
+                    records.append(record)
+    decision_counts = Counter(str(row.get("decision") or "UNKNOWN") for row in records)
+    for decision, count in run_evidence_counts.items():
+        if count and not decision_counts.get(decision):
+            decision_counts[decision] = count
+    action_counts = Counter(str(row.get("runtime_action") or "UNKNOWN") for row in records)
+    reason_counts = Counter(str(row.get("reason") or "") for row in records)
+    by_date: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in records:
+        by_date[str(row.get("business_date") or "")][str(row.get("decision") or "UNKNOWN")] += 1
+    decision_count = len(records)
+    if run_evidence_seen and decision_count == 0:
+        decision_count = sum(run_evidence_counts.values())
+    return {
+        "source": (
+            "run_scoped_position_management_evidence"
+            if run_evidence_seen
+            else "runtime_root_position_management_decisions_completed_business_day_filter"
+            if available
+            else "UNAVAILABLE_RUNTIME_STATE_AUTHORITY_NOT_CONFIRMED"
+        ),
+        "decision_count": decision_count,
+        "decision_distribution": dict(sorted(decision_counts.items())),
+        "runtime_action_distribution": dict(sorted(action_counts.items())),
+        "reason_distribution": dict(reason_counts.most_common()),
+        "decision_by_date": {date_key: dict(sorted(counts.items())) for date_key, counts in sorted(by_date.items())},
+        "reduce_count": decision_counts.get("REDUCE", 0),
+        "exit_count": decision_counts.get("EXIT", 0),
+        "hold_count": decision_counts.get("HOLD", 0),
+        "add_count": decision_counts.get("ADD", 0),
+        "decision_records": records,
+        "completed_business_day_filter": sorted(completed_business_days),
+    }
+
+
+def _collect_order_plan_items(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_id: str,
+    available: bool,
+    completed_business_days: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    result = {"buy": [], "sell": []}
+    if not available:
+        return result
+    for path in sorted((runtime_root / "runtime_state" / "morning_pipeline").glob("*/order_plan.json")):
+        if completed_business_days and path.parent.name not in completed_business_days:
+            continue
+        for item in _items(read_json_optional(path)):
+            if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
+                result["buy"].append(
+                    {
+                        **item,
+                        "_artifact_path": str(path),
+                        "_plan_date": path.parent.name,
+                        "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
+                    }
+                )
+    for path in sorted((runtime_root / "runtime_state" / "sell_pipeline").glob("*/order_plan.json")):
+        if completed_business_days and path.parent.name not in completed_business_days:
+            continue
+        for item in _items(read_json_optional(path)):
+            if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
+                result["sell"].append(
+                    {
+                        **item,
+                        "_artifact_path": str(path),
+                        "_plan_date": path.parent.name,
+                        "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
+                    }
+                )
+    for path in sorted(run_dir.glob("daily/*/sell_planning/sell_planning_manifest.json")):
+        business_date = path.parts[-3]
+        if completed_business_days and business_date not in completed_business_days:
+            continue
+        payload = read_json_optional(path)
+        if payload and not _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
+            continue
+        manifest = _manifest_payload(payload)
+        if int(manifest.get("pm_decision_count") or 0) == 0 and int(manifest.get("pm_exit_count") or 0) == 0 and int(manifest.get("pm_reduce_count") or 0) == 0:
+            result["sell"] = [item for item in result["sell"] if str(item.get("_plan_date") or item.get("business_date") or "") != business_date]
+    return result
+
+
+def _is_submitted_order_record(row: dict[str, Any]) -> bool:
+    return (
+        row.get("record_type") == "order"
+        and str(row.get("dedup_key") or "").startswith("runtime_v2_submit:")
+        and bool(row.get("business_date"))
+        and bool(row.get("pending_item_id"))
+    )
+
+
+def _summarize_trading(
+    *,
+    plans: dict[str, list[dict[str, Any]]],
+    orders: list[dict[str, Any]],
+    executions: list[dict[str, Any]],
+    pending_state: dict[str, Any],
+) -> dict[str, Any]:
+    submitted = [row for row in orders if _is_submitted_order_record(row)]
+    submitted_counter = Counter(str(row.get("side") or "UNKNOWN") for row in submitted)
+    execution_counter = Counter(str(row.get("side") or "UNKNOWN") for row in executions if row.get("record_type") == "execution")
+    execution_quantity = Counter()
+    for row in executions:
+        if row.get("record_type") == "execution":
+            execution_quantity[str(row.get("side") or "UNKNOWN")] += _float(row.get("filled_quantity") or row.get("quantity"))
+    pending_items = [item for item in _items(pending_state) if isinstance(item, dict)]
+    pending_counter = Counter(str(item.get("side") or "UNKNOWN") for item in pending_items)
+    return {
+        "buy_plan_count": len(plans["buy"]),
+        "sell_plan_count": len(plans["sell"]),
+        "submitted_order_count": len(submitted),
+        "submitted_order_distribution": dict(sorted(submitted_counter.items())),
+        "submitted_order_double_count_prevention": {
+            "submitted_order_filter": "record_type=order,dedup_key_prefix=runtime_v2_submit,business_date_present,pending_item_id_present",
+            "ignored_execution_equivalent_order_records": len([row for row in orders if row.get("record_type") == "order"]) - len(submitted),
+        },
+        "execution_count": len([row for row in executions if row.get("record_type") == "execution"]),
+        "execution_distribution": dict(sorted(execution_counter.items())),
+        "execution_quantity_by_side": dict(sorted(execution_quantity.items())),
+        "sell_execution_count": execution_counter.get("SELL", 0),
+        "buy_execution_count": execution_counter.get("BUY", 0),
+        "pending_state": pending_state.get("state") or pending_state.get("status") or "",
+        "pending_item_distribution": dict(sorted(pending_counter.items())),
+    }
+
+
+def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    source_counter = Counter()
+    rows: list[dict[str, Any]] = []
+    unknown = 0
+    for item in plans["sell"]:
+        contract = item.get("quantity_contract") if isinstance(item.get("quantity_contract"), dict) else {}
+        source_decision = str(contract.get("source_decision") or "")
+        if not source_decision:
+            source_decision = "UNKNOWN"
+            unknown += 1
+        source_counter[source_decision] += 1
+        rows.append(
+            {
+                "business_date": item.get("_plan_date") or item.get("business_date") or "",
+                "symbol": item.get("symbol") or "",
+                "source_decision": source_decision,
+                "quantity": _float(item.get("quantity") or contract.get("final_sell_quantity")),
+                "reduce_intensity": contract.get("reduce_intensity") or "",
+                "position_quantity_before": _float(contract.get("position_quantity_before")),
+                "sellable_quantity": _float(contract.get("sellable_quantity")),
+                "target_reduce_ratio": _float(contract.get("target_reduce_ratio")),
+                "expected_remaining_quantity": _float(contract.get("expected_remaining_quantity")),
+                "quantity_contract_version": contract.get("quantity_contract_version") or "",
+                "status": contract.get("status") or item.get("status") or "",
+                "artifact_path": item.get("_artifact_path") or "",
+            }
+        )
+    return {
+        "sell_plan_source_decision_distribution": dict(sorted(source_counter.items())),
+        "reduce_sell_plan_count": source_counter.get("REDUCE", 0),
+        "exit_sell_plan_count": source_counter.get("EXIT", 0),
+        "sell_plan_items_with_unknown_source_decision": unknown,
+        "items": rows,
+    }
+
+
+def _build_trade_attribution(
+    *,
+    sell_plan_items: list[dict[str, Any]],
+    executions: list[dict[str, Any]],
+    pm_decisions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float | None]:
+    findings: list[dict[str, Any]] = []
+    sell_plans = defaultdict(list)
+    for item in sell_plan_items:
+        sell_plans[(str(item.get("_plan_date") or item.get("business_date") or ""), str(item.get("symbol") or ""))].append(item)
+    pm_index = {(str(row.get("business_date") or ""), str(row.get("symbol") or "")): row for row in pm_decisions}
+    positions: dict[str, dict[str, float]] = defaultdict(lambda: {"quantity": 0.0, "average_price": 0.0})
+    attributions: list[dict[str, Any]] = []
+    realized_total = 0.0
+    traceable = True
+    for row in sorted(
+        [e for e in executions if e.get("record_type") == "execution"],
+        key=lambda x: (
+            str(x.get("business_date") or ""),
+            0 if str(x.get("side") or "").upper() == "BUY" else 1,
+            str(x.get("record_id") or x.get("execution_id") or ""),
+        ),
+    ):
+        symbol = str(row.get("symbol") or row.get("broker_issue_code") or "")
+        side = str(row.get("side") or "").upper()
+        qty = _float(row.get("filled_quantity") or row.get("quantity"))
+        price = _float(row.get("price") or row.get("average_price") or row.get("market_price"), default=-1.0)
+        pos = positions[symbol]
+        if side == "BUY":
+            old_qty = pos["quantity"]
+            new_qty = old_qty + qty
+            if new_qty > 0:
+                pos["average_price"] = ((old_qty * pos["average_price"]) + (qty * price)) / new_qty
+            pos["quantity"] = new_qty
+            continue
+        if side != "SELL":
+            continue
+        business_date = str(row.get("business_date") or "")
+        matched_plan = _match_sell_plan(sell_plans.get((business_date, symbol), []), qty)
+        contract = matched_plan.get("quantity_contract") if isinstance(matched_plan.get("quantity_contract"), dict) else {}
+        source_decision = str(contract.get("source_decision") or "UNKNOWN")
+        pm = pm_index.get((business_date, symbol), {})
+        if price < 0 or pos["quantity"] <= 0 or qty <= 0 or not matched_plan:
+            traceable = False
+            findings.append(
+                _summary_finding(
+                    "REVIEW_REQUIRED",
+                    "REVIEW_REQUIRED_TRADE_LEVEL_REALIZED_PNL_NOT_TRACEABLE",
+                    {"business_date": business_date, "symbol": symbol, "quantity": qty, "matched_sell_plan": bool(matched_plan)},
+                )
+            )
+            realized_pnl = None
+        else:
+            realized_pnl = (price - pos["average_price"]) * qty
+            realized_total += realized_pnl
+        remaining = max(pos["quantity"] - qty, 0.0)
+        attributions.append(
+            {
+                "business_date": business_date,
+                "symbol": symbol,
+                "side": "SELL",
+                "quantity": qty,
+                "price": price if price >= 0 else None,
+                "source_decision": source_decision,
+                "reduce_intensity": contract.get("reduce_intensity") or "",
+                "pm_decision_id": pm.get("decision_id") or "",
+                "pm_reason": pm.get("reason") or "",
+                "pm_runtime_action": pm.get("runtime_action") or "",
+                "entry_average_price": pos["average_price"] if pos["quantity"] > 0 else None,
+                "realized_pnl": realized_pnl,
+                "pnl_traceability": "CALCULATED_FROM_LEDGER_AVERAGE_COST" if realized_pnl is not None else "REVIEW_REQUIRED_TRADE_LEVEL_REALIZED_PNL_NOT_TRACEABLE",
+                "remaining_quantity_after_trade": remaining,
+                "sell_plan_artifact_path": matched_plan.get("_artifact_path") or "",
+                "execution_id": row.get("execution_id") or row.get("record_id") or "",
+            }
+        )
+        pos["quantity"] = remaining
+    return attributions, findings, realized_total if traceable else None
+
+
+def _match_sell_plan(candidates: list[dict[str, Any]], quantity: float) -> dict[str, Any]:
+    if not candidates:
+        return {}
+    for item in candidates:
+        if abs(_float(item.get("quantity")) - quantity) < 0.0001:
+            return item
+    return candidates[0]
+
+
+def _summarize_performance(
+    *,
+    fresh_summary: dict[str, Any],
+    current_state: dict[str, Any],
+    realized_pnl_from_trades: float | None,
+    runtime_state_available: bool,
+) -> dict[str, Any]:
+    initial = _float(fresh_summary.get("initial_cash") or current_state.get("runtime_evaluation_capital"))
+    final_equity = _float(current_state.get("total_equity") or (_float(current_state.get("cash")) + _float(current_state.get("market_value"))))
+    total_return = final_equity - initial if runtime_state_available and initial else None
+    realized = current_state.get("realized_pnl")
+    realized_method = "current_state.realized_pnl"
+    if realized in (None, ""):
+        realized = realized_pnl_from_trades
+        realized_method = "trade_attribution_average_cost" if realized is not None else "NOT_TRACEABLE"
+    return {
+        "initial_equity": initial if initial else None,
+        "final_cash": current_state.get("cash"),
+        "final_market_value": current_state.get("market_value"),
+        "final_equity": final_equity if runtime_state_available else None,
+        "total_return_amount": total_return,
+        "total_return_percent": (total_return / initial * 100.0) if total_return is not None and initial else None,
+        "realized_pnl": realized,
+        "realized_pnl_method": realized_method,
+        "unrealized_pnl": current_state.get("new_unrealized_pnl"),
+        "negative_return_runtime_effect": "DOES_NOT_FAIL_RUNTIME_JUDGMENT",
+    }
+
+
+def _summarize_current_positions(current_state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for pos in current_state.get("positions") or []:
+        if not isinstance(pos, dict):
+            continue
+        rows.append(
+            {
+                "symbol": pos.get("symbol") or "",
+                "quantity": _float(pos.get("quantity")),
+                "average_price": pos.get("average_price"),
+                "current_price": pos.get("current_price"),
+                "market_value": pos.get("market_value"),
+                "unrealized_pnl": pos.get("unrealized_pnl"),
+                "valuation_as_of": pos.get("valuation_as_of") or current_state.get("valuation_as_of") or "",
+            }
+        )
+    return rows
+
+
+def _summarize_lifecycle(
+    *,
+    pm: dict[str, Any],
+    trading: dict[str, Any],
+    reduce_exit: dict[str, Any],
+    current_state: dict[str, Any],
+    pending_state: dict[str, Any],
+) -> dict[str, Any]:
+    pending_consistent = _pending_empty_or_explained(trading=trading, pending_state=pending_state)
+    checks = {
+        "PM_EXIT_TO_SELL_PLAN": pm.get("exit_count", 0) == reduce_exit.get("exit_sell_plan_count", 0),
+        "PM_REDUCE_TO_PARTIAL_SELL_PLAN": pm.get("reduce_count", 0) == reduce_exit.get("reduce_sell_plan_count", 0),
+        "SELL_PLAN_TO_SUBMIT": trading.get("sell_plan_count", 0) == trading.get("submitted_order_distribution", {}).get("SELL", 0),
+        "SELL_SUBMIT_TO_EXECUTION": trading.get("submitted_order_distribution", {}).get("SELL", 0) == trading.get("execution_distribution", {}).get("SELL", 0),
+        "LEDGER_TO_CURRENT": bool(current_state),
+        "PENDING_EMPTY_OR_EXPLAINED": pending_consistent,
+    }
+    return {
+        "status": "PASS" if all(checks.values()) else "REVIEW_REQUIRED",
+        "checks": checks,
+        "check_semantics": {
+            "PM_EXIT_TO_SELL_PLAN": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "PM_REDUCE_TO_PARTIAL_SELL_PLAN": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "SELL_PLAN_TO_SUBMIT": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "SELL_SUBMIT_TO_EXECUTION": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "PENDING_EMPTY_OR_EXPLAINED": "PASS_WHEN_EMPTY_CONSUMED_TERMINALIZED_OR_EXECUTION_EXPLAINS_FINAL_PENDING_STATE",
+        },
+        "pm_reduce_count": pm.get("reduce_count", 0),
+        "pm_exit_count": pm.get("exit_count", 0),
+        "sell_plan_count": trading.get("sell_plan_count", 0),
+        "submitted_sell_order_count": trading.get("submitted_order_distribution", {}).get("SELL", 0),
+        "sell_execution_count": trading.get("execution_distribution", {}).get("SELL", 0),
+    }
+
+
+def _pending_empty_or_explained(*, trading: dict[str, Any], pending_state: dict[str, Any]) -> bool:
+    state = str(pending_state.get("state") or pending_state.get("status") or "").upper()
+    pending_items = sum(int(count or 0) for count in (trading.get("pending_item_distribution") or {}).values())
+    if state in {"", "EMPTY", "CONSUMED", "TERMINALIZED", "NOT_REQUIRED"} and pending_items == 0:
+        return True
+    if (
+        trading.get("submitted_order_count", 0) == trading.get("execution_count", 0)
+        and trading.get("submitted_order_count", 0) > 0
+        and trading.get("sell_plan_count", 0) == trading.get("submitted_order_distribution", {}).get("SELL", 0)
+    ):
+        return True
+    return False
+
+
+def _summarize_external_effects(*, run_dir: Path, fresh_summary: dict[str, Any]) -> dict[str, Any]:
+    policy = fresh_summary.get("external_effect_policy") if isinstance(fresh_summary.get("external_effect_policy"), dict) else {}
+    audits = [read_json_optional(path) for path in sorted(run_dir.glob("daily/*/*/external_effect_audit.json"))]
+    truthy_policy = {key: value for key, value in policy.items() if value is True}
+    audit_review = [audit for audit in audits if audit.get("status") not in {"", "PASS"}]
+    return {
+        "policy": policy,
+        "historical_external_effects_disabled": not truthy_policy,
+        "audit_count": len(audits),
+        "audit_review_required_count": len(audit_review),
+        "broker_write": bool(policy.get("broker_write")),
+        "external_delivery": bool(policy.get("external_delivery")),
+        "jquants_fetch": bool(policy.get("jquants_fetch")),
+        "tachibana_api": bool(policy.get("tachibana_api")),
+    }
+
+
+def _format_runtime_test_summary(payload: dict[str, Any]) -> str:
+    run = payload["run"]
+    performance = payload["performance"]
+    pm = payload["pm_decisions"]
+    trading = payload["trading"]
+    reduce_exit = payload["reduce_exit"]
+    lifecycle = payload["lifecycle_consistency"]
+    findings = payload["findings"]
+    lines = [
+        "Run Summary",
+        f"- run_id: {payload['run_id']}",
+        f"- status: {run.get('status')} / final_judgment: {run.get('final_judgment')}",
+        f"- business_days: {run.get('business_day_count')} ({run.get('date_from')} to {run.get('date_to')})",
+        f"- runtime_state_authority: {run.get('runtime_state_authority')}",
+        "",
+        "External Effect Summary",
+        f"- historical_external_effects_disabled: {payload['external_effects'].get('historical_external_effects_disabled')}",
+        "",
+        "Performance Summary",
+        f"- final_equity: {performance.get('final_equity')} / return: {performance.get('total_return_amount')} ({performance.get('total_return_percent')}%)",
+        f"- realized_pnl: {performance.get('realized_pnl')} / unrealized_pnl: {performance.get('unrealized_pnl')}",
+        "",
+        "PM Decision Summary",
+        f"- decisions: {pm.get('decision_count')} {pm.get('decision_distribution')}",
+        "",
+        "BUY / SELL Summary",
+        f"- buy_plan_count: {trading.get('buy_plan_count')} / sell_plan_count: {trading.get('sell_plan_count')}",
+        f"- submitted: {trading.get('submitted_order_distribution')} / executions: {trading.get('execution_distribution')}",
+        "",
+        "REDUCE / EXIT Summary",
+        f"- source_decisions: {reduce_exit.get('sell_plan_source_decision_distribution')}",
+        "",
+        "Trade Attribution",
+        f"- sell_trades: {len(payload['trade_attribution'])}",
+        "",
+        "Current Positions",
+        f"- positions: {len(payload['current_positions'])}",
+        "",
+        "Lifecycle Consistency",
+        f"- status: {lifecycle.get('status')} checks={lifecycle.get('checks')}",
+        "",
+        "Review / Block Summary",
+        f"- findings: {len(findings)} {[finding.get('reason') for finding in findings]}",
+        "",
+        "Operator Judgment",
+        f"- runtime_judgment: {payload['runtime_judgment']}",
+        f"- performance_judgment: {payload['performance_judgment']}",
+        f"- strategy_judgment: {payload['strategy_judgment']}",
+    ]
+    if payload.get("evidence_path"):
+        lines.append(f"- evidence_path: {payload['evidence_path']}")
+    return "\n".join(lines)
 
 
 def ai_status_command(
@@ -376,6 +1108,7 @@ def system_status_command(
     evidence_root: Path,
 ) -> CommandResult:
     try:
+        scope = "full" if getattr(args, "full", False) else str(getattr(args, "scope", "overview") or "overview")
         expected_business_date = str((profile.get("window") or {}).get("date_from") or "")
         post_run_context = latest_closed_runtime_test_system_status_context(
             evidence_root=evidence_root,
@@ -396,9 +1129,10 @@ def system_status_command(
         evidence_path = ""
         if args.write_evidence:
             evidence_path = str(write_system_status_evidence(report, evidence_root=evidence_root))
+        scoped_view = build_system_status_scoped_view(report, scope=scope)
         payload = runner_response(
             {
-                "schema_version": report["schema_version"],
+                "schema_version": scoped_view["schema_version"],
                 "subcommand": "system-status",
                 "status": report["status"],
                 "current_step": "system-status",
@@ -412,8 +1146,15 @@ def system_status_command(
                 "profile_id": profile.get("profile_id", ""),
                 "read_only": True,
                 "broker_access": "NOT_PERFORMED",
+                "scope": scope,
+                "system_status_schema_version": scoped_view["schema_version"],
+                "inspection_context": scoped_view["inspection_context"],
+                "status_summary": scoped_view["status_summary"],
+                "findings": scoped_view["findings"],
+                "sections": scoped_view["sections"],
+                "legacy_json_compatibility": scoped_view["legacy_json_compatibility"],
                 "system_status_report": report,
-                "human_summary": report["human_summary"],
+                "human_summary": scoped_view["human_summary"],
             }
         )
         return CommandResult(str(report["status"]), int(report["exit_code"]), payload)
@@ -3086,6 +3827,12 @@ def emit(payload: dict[str, Any], *, json_output: bool) -> None:
     if json_output:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return
+    if payload.get("subcommand") == "summarize" and payload.get("human_summary"):
+        print(payload["human_summary"])
+        if payload.get("evidence_path"):
+            print(f"Evidence Path: {payload['evidence_path']}")
+        print(f"Exit Code: {payload.get('exit_code', '')}")
+        return
     if payload.get("subcommand") in {"ai-status", "system-status"} and payload.get("human_summary"):
         print(payload["human_summary"])
         if payload.get("evidence_path"):
@@ -3113,6 +3860,18 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     with tmp.open("w", encoding="utf-8") as handle:
         handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp.replace(path)
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+        if not text.endswith("\n"):
+            handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
     tmp.replace(path)

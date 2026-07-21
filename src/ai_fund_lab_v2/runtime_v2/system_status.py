@@ -13,6 +13,18 @@ from ai_fund_lab_v2.runtime_v2.ai_status import build_ai_status_report
 
 
 SYSTEM_STATUS_SCHEMA_VERSION = "runtime_test_system_status_report.v1"
+SYSTEM_STATUS_VIEW_SCHEMA_VERSION = "runtime_test_system_status_v2"
+SYSTEM_STATUS_SCOPES = {
+    "overview",
+    "data",
+    "ai",
+    "runtime",
+    "broker",
+    "readiness",
+    "lineage",
+    "components",
+    "full",
+}
 SAFETY_DECISION_RELATIVE_PATH = Path("runtime_state") / "safety" / "latest_safety_decision.json"
 RUNTIME_STAGE_ORDER = {
     "PRE_RUN": 0,
@@ -96,7 +108,11 @@ def build_system_status_report(
         expected_business_date=expected_business_date or runtime_date,
         runtime_stage=str(runtime_stage_contract["runtime_stage"]),
     )
-    data_status = _data_status(ai_report)
+    data_status = _data_status(
+        ai_report,
+        data_inspection=data_inspection,
+        expected_business_date=expected_business_date or runtime_path_date,
+    )
     temporal_authority_audit = _temporal_authority_audit(
         root=root,
         runtime_mode=runtime_mode or "",
@@ -179,6 +195,7 @@ def build_system_status_report(
     target_period_data_sufficiency = _target_period_data_sufficiency(
         data_inspection=data_inspection,
         target_business_dates=target_business_dates or [],
+        post_run_context=post_run_context,
     )
     inspection_context = _inspection_context(
         root=root,
@@ -268,6 +285,17 @@ def build_system_status_report(
     overall_status = _combine_status([*layer_statuses.values(), inspection_coverage["status"]])
     exit_code = 20 if overall_status == "BLOCK" else 10 if overall_status == "REVIEW_REQUIRED" else 0
     findings = _main_findings(data_status, ai_status, runtime_status, runtime_state_status, broker_layer_status)
+    status_summary = _status_summary(
+        inspection_context=inspection_context,
+        overall_status=overall_status,
+        data_status=data_status,
+        ai_status=ai_status,
+        runtime_status=runtime_status,
+        runtime_state_status=runtime_state_status,
+        broker_layer_status=broker_layer_status,
+        environment_readiness=environment_readiness,
+        target_period_data_sufficiency=target_period_data_sufficiency,
+    )
     summary = {
         "schema_version": SYSTEM_STATUS_SCHEMA_VERSION,
         "created_at": created_at,
@@ -279,6 +307,7 @@ def build_system_status_report(
         "runtime_state": runtime_state_status["summary"],
         "broker_layer": broker_layer_status["summary"],
         "main_findings": findings,
+        "judgments": status_summary,
     }
     environment_readiness = _environment_readiness(
         inspection_context=inspection_context,
@@ -326,6 +355,7 @@ def build_system_status_report(
         "system_status_summary": summary,
         "inspection_context": inspection_context,
         "environment_readiness": environment_readiness,
+        "status_summary": status_summary,
         "operational_summary": operational_summary,
         "active_model_summary": active_model_summary,
         "active_component_count_summary": active_component_count_summary,
@@ -1628,6 +1658,312 @@ def _operational_summary(
     }
 
 
+def _status_summary(
+    *,
+    inspection_context: dict[str, Any],
+    overall_status: str,
+    data_status: dict[str, Any],
+    ai_status: dict[str, Any],
+    runtime_status: dict[str, Any],
+    runtime_state_status: dict[str, Any],
+    broker_layer_status: dict[str, Any],
+    environment_readiness: dict[str, Any],
+    target_period_data_sufficiency: dict[str, Any],
+) -> dict[str, Any]:
+    post_run = inspection_context.get("inspection_mode") == "HISTORICAL_POST_RUN"
+    runtime_execution = "PASS" if post_run and inspection_context.get("post_run_context", {}).get("status") == "PASS" else runtime_status.get("status", overall_status)
+    model_health = runtime_status.get("model_health", {})
+    broker_config = "PASS" if broker_layer_status.get("submit_guard", {}).get("configuration_status") == "PASS" else broker_layer_status.get("status", "")
+    return {
+        "inspection_judgment": "PASS" if overall_status == "PASS" else overall_status,
+        "runtime_execution_judgment": runtime_execution,
+        "data_judgment": data_status.get("status", ""),
+        "ai_authority_judgment": ai_status.get("accepted_generation", {}).get("status") or ai_status.get("status", ""),
+        "model_health_judgment": model_health.get("status", "PASS"),
+        "model_health_runtime_impact": model_health.get("runtime_impact", "NONE"),
+        "model_health_buy_impact": model_health.get("buy_impact", "PASS"),
+        "model_health_sell_impact": model_health.get("sell_impact", "PASS"),
+        "runtime_state_judgment": runtime_state_status.get("status", ""),
+        "broker_configuration_judgment": broker_config,
+        "broker_connectivity_judgment": broker_layer_status.get("broker_connection", {}).get("status", "NOT_PERFORMED"),
+        "broker_judgment": broker_layer_status.get("truthfulness_status", broker_layer_status.get("status", "")),
+        "readiness_judgment": environment_readiness.get("production_current_data_readiness", "NOT_EVALUATED"),
+        "production_readiness": "NOT_EVALUATED" if not environment_readiness.get("production_ready") else "PASS",
+        "strategy_judgment": "NOT_EVALUATED",
+        "target_period_data_sufficiency_judgment": target_period_data_sufficiency.get("status", ""),
+        "exit_code_basis": "overall_inspection",
+    }
+
+
+def build_system_status_scoped_view(report: dict[str, Any], *, scope: str = "overview") -> dict[str, Any]:
+    scope = scope or "overview"
+    if scope not in SYSTEM_STATUS_SCOPES:
+        raise ValueError(f"invalid system-status scope: {scope}")
+    sections = _system_status_sections(report)
+    selected_sections = sections if scope == "full" else {scope: sections[scope]}
+    findings = _system_status_findings(report)
+    view = {
+        "schema_version": SYSTEM_STATUS_VIEW_SCHEMA_VERSION,
+        "subcommand": "system-status",
+        "scope": scope,
+        "inspection_context": report.get("inspection_context", {}),
+        "status_summary": report.get("status_summary", {}),
+        "findings": findings,
+        "final_judgment": _system_status_final_judgment(report),
+        "sections": selected_sections,
+        "legacy_json_compatibility": {
+            "system_status_report_top_level_preserved": True,
+            "legacy_schema_version": report.get("schema_version", ""),
+            "migration": "Use --scope full --json or the deprecated system_status_report top-level field for full legacy inspection JSON.",
+        },
+    }
+    view["human_summary"] = render_system_status_scoped_human_summary(view, legacy_full_human=report.get("human_summary", ""))
+    return _sanitize_empty_values(view)
+
+
+def _system_status_sections(report: dict[str, Any]) -> dict[str, Any]:
+    context = report.get("inspection_context", {})
+    data = report.get("data_status", {})
+    runtime_state = report.get("runtime_state_status", {})
+    current_artifact = next(
+        (item for item in runtime_state.get("temporal_isolation", {}).get("artifacts", []) if item.get("component_id") == "persistent_ledger_current"),
+        {},
+    )
+    return {
+        "overview": {
+            "inspection_context": context,
+            "status_summary": report.get("status_summary", {}),
+            "data_freshness": _overview_data_freshness(report),
+            "runtime": {
+                "completed_days": len(context.get("completed_business_days") or []),
+                "runtime_stage": context.get("runtime_stage", ""),
+                "current_cash": current_artifact.get("cash", ""),
+                "positions": current_artifact.get("position_count", ""),
+                "pending_orders": _pending_order_count(runtime_state),
+            },
+            "accepted_generation": _accepted_generation_overview(report),
+        },
+        "data": {
+            "data_status": data,
+            "data_sources": report.get("data_inspection", {}).get("data_sources", []),
+            "runtime_features": report.get("data_inspection", {}).get("runtime_features", []),
+            "target_period_data_sufficiency": report.get("target_period_data_sufficiency", {}),
+            "freshness_matrix": report.get("freshness_matrix", {}),
+            "historical_source_consumer_cutoff": report.get("historical_source_consumer_cutoff", {}),
+        },
+        "ai": {
+            "ai_status": report.get("ai_status", {}),
+            "accepted_generation": report.get("authority_generation", {}),
+            "active_model_summary": report.get("active_model_summary", {}),
+            "ai_data_window_summary": report.get("ai_data_window_summary", {}),
+            "baseline_traceability": report.get("baseline_traceability", {}),
+            "freshness_policy_traceability": report.get("freshness_policy_traceability", {}),
+        },
+        "runtime": {
+            "runtime_status": report.get("runtime_status", {}),
+            "runtime_state_status": runtime_state,
+            "runtime_stage_contract": report.get("runtime_stage_contract", {}),
+            "decision_subsystems": report.get("decision_subsystems", {}),
+            "runtime_chain_inspection": report.get("runtime_chain_inspection", {}),
+        },
+        "broker": {
+            "broker_layer_status": report.get("broker_layer_status", {}),
+            "broker_truthfulness_audit": report.get("broker_truthfulness_audit", {}),
+            "not_performed_checks": report.get("not_performed_checks", {}),
+            "external_effects": {
+                "broker_access": "NOT_PERFORMED",
+                "broker_write": "NOT_PERFORMED",
+            },
+        },
+        "readiness": {
+            "environment_readiness": report.get("environment_readiness", {}),
+            "operational_summary": report.get("operational_summary", {}),
+            "not_evaluated_checks": report.get("not_evaluated_checks", {}),
+        },
+        "lineage": {
+            "candidate_input_lineage": report.get("candidate_input_lineage", {}),
+            "opportunity_input_lineage": report.get("opportunity_input_lineage", {}),
+            "runtime_input_lineage_contract": report.get("runtime_input_lineage_contract", {}),
+            "split_window_statistics": report.get("split_window_statistics", {}),
+            "recent_holdout_usage_audit": report.get("recent_holdout_usage_audit", {}),
+            "calibration_validation_independence_audit": report.get("calibration_validation_independence_audit", {}),
+        },
+        "components": {
+            "active_component_count_summary": report.get("active_component_count_summary", {}),
+            "active_component_inventory": report.get("active_component_inventory", {}),
+            "complete_component_inventory": report.get("complete_component_inventory", {}),
+            "component_dependency_matrix": report.get("component_dependency_matrix", {}),
+            "jquants_dependency_matrix": report.get("jquants_dependency_matrix", {}),
+            "runtime_state_coverage": report.get("runtime_state_coverage", {}),
+            "inspection_coverage": report.get("inspection_coverage", {}),
+        },
+    }
+
+
+def _overview_data_freshness(report: dict[str, Any]) -> dict[str, Any]:
+    sources = {item.get("component_id"): item for item in report.get("data_inspection", {}).get("data_sources", [])}
+    features = {item.get("component_id"): item for item in report.get("data_inspection", {}).get("runtime_features", [])}
+    return {
+        "raw_quotes": {"date": sources.get("raw_jquants_daily_quotes", {}).get("latest_business_date", ""), "status": sources.get("raw_jquants_daily_quotes", {}).get("status", "")},
+        "normalized_quotes": {"date": sources.get("normalized_jquants_daily_quotes", {}).get("latest_business_date", ""), "status": sources.get("normalized_jquants_daily_quotes", {}).get("status", "")},
+        "listed_issues": {"date": sources.get("listed_issues", {}).get("latest_business_date", ""), "status": sources.get("listed_issues", {}).get("status", "")},
+        "candidate_feature": {"date": features.get("candidate_runtime_feature", {}).get("feature_date", ""), "status": features.get("candidate_runtime_feature", {}).get("status", "")},
+        "opportunity_feature": {"date": features.get("opportunity_runtime_feature", {}).get("feature_date", ""), "status": features.get("opportunity_runtime_feature", {}).get("status", "")},
+    }
+
+
+def _accepted_generation_overview(report: dict[str, Any]) -> dict[str, Any]:
+    authority = report.get("authority_generation", {})
+    return {
+        "accepted_generation_id": authority.get("committed_accepted_generation_id", ""),
+        "status": authority.get("status", ""),
+        "accepted_at": authority.get("accepted_at", ""),
+        "age": authority.get("accepted_generation_age", {}),
+    }
+
+
+def _pending_order_count(runtime_state_status: dict[str, Any]) -> Any:
+    for item in runtime_state_status.get("temporal_isolation", {}).get("artifacts", []):
+        if item.get("component_id") == "pending_plan":
+            return item.get("order_count", "")
+    return "NOT_RECORDED"
+
+
+def _system_status_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = []
+    for text in report.get("system_status_summary", {}).get("main_findings", []):
+        if text and text != "No blocking findings.":
+            if text.startswith("Runtime lifecycle:") and report.get("runtime_status", {}).get("model_health", {}).get("status") == "REVIEW_REQUIRED":
+                continue
+            findings.append({"severity": "REVIEW_REQUIRED", "reason": text})
+    model = report.get("runtime_status", {}).get("model_health", {})
+    if model.get("status") == "REVIEW_REQUIRED":
+        findings.append(
+            {
+                "severity": "REVIEW_REQUIRED",
+                "reason": "MODEL_HEALTH_REVIEW_REQUIRED",
+                "runtime_impact": model.get("runtime_impact", "NONE"),
+                "buy_impact": model.get("buy_impact", "PASS"),
+                "sell_impact": model.get("sell_impact", "PASS"),
+            }
+        )
+    broker = report.get("broker_layer_status", {}).get("broker_connection", {})
+    if broker.get("status") == "NOT_PERFORMED":
+        findings.append({"severity": "NOT_PERFORMED", "reason": "BROKER_CONNECTIVITY_NOT_PERFORMED"})
+    return findings or [{"severity": "PASS", "reason": "NO_BLOCKING_FINDINGS"}]
+
+
+def _system_status_final_judgment(report: dict[str, Any]) -> str:
+    summary = report.get("status_summary", {})
+    if summary.get("inspection_judgment") == "PASS" and summary.get("model_health_judgment") == "REVIEW_REQUIRED":
+        return "SYSTEM_STATUS_PASS_WITH_MODEL_HEALTH_REVIEW"
+    if summary.get("inspection_judgment") == "PASS":
+        return "SYSTEM_STATUS_PASS"
+    return f"SYSTEM_STATUS_{summary.get('inspection_judgment', 'REVIEW_REQUIRED')}"
+
+
+def render_system_status_scoped_human_summary(view: dict[str, Any], *, legacy_full_human: str = "") -> str:
+    scope = view.get("scope", "overview")
+    if scope == "full" and legacy_full_human:
+        return legacy_full_human
+    if scope == "overview":
+        return _render_system_status_overview(view)
+    section = view.get("sections", {}).get(scope, {})
+    lines = [
+        f"AI Fund Lab v2 System Status - {scope.title()}",
+        "=" * (35 + len(scope)),
+        "",
+        "Summary",
+        "-------",
+        f"Inspection : {view.get('status_summary', {}).get('inspection_judgment', '')}",
+        f"Runtime Execution : {view.get('status_summary', {}).get('runtime_execution_judgment', '')}",
+        f"Data : {view.get('status_summary', {}).get('data_judgment', '')}",
+        f"AI Authority : {view.get('status_summary', {}).get('ai_authority_judgment', '')}",
+        f"Model Health : {view.get('status_summary', {}).get('model_health_judgment', '')}",
+        f"Broker Connectivity : {view.get('status_summary', {}).get('broker_connectivity_judgment', '')}",
+        "",
+        "Details",
+        "-------",
+    ]
+    for key, value in section.items():
+        lines.append(f"{key}: {_short_value(value)}")
+    lines.extend(["", "Final", "-----", str(view.get("final_judgment", ""))])
+    return "\n".join(lines)
+
+
+def _render_system_status_overview(view: dict[str, Any]) -> str:
+    section = view.get("sections", {}).get("overview", {})
+    context = view.get("inspection_context", {})
+    status = view.get("status_summary", {})
+    freshness = section.get("data_freshness", {})
+    runtime = section.get("runtime", {})
+    generation = section.get("accepted_generation", {})
+    findings = [item for item in view.get("findings", []) if item.get("severity") != "PASS"]
+    lines = [
+        "AI Fund Lab v2 System Status",
+        "============================",
+        "",
+        "Context",
+        "-------",
+        f"Inspection Mode     : {context.get('inspection_mode', '')}",
+        f"Run ID              : {context.get('runtime_test_run_id', 'NOT_APPLICABLE')}",
+        f"Profile             : {context.get('profile', '')}",
+        f"Target Date         : {context.get('target_business_date', '')}",
+        f"Runtime Stage       : {context.get('runtime_stage', '')}",
+        "",
+        "Status",
+        "------",
+        f"Inspection          : {status.get('inspection_judgment', '')}",
+        f"Runtime Execution   : {status.get('runtime_execution_judgment', '')}",
+        f"Data                : {status.get('data_judgment', '')}",
+        f"AI Authority        : {status.get('ai_authority_judgment', '')}",
+        f"Model Health        : {status.get('model_health_judgment', '')}",
+        f"Runtime State       : {status.get('runtime_state_judgment', '')}",
+        f"Broker Config       : {status.get('broker_configuration_judgment', '')}",
+        f"Broker Connectivity : {status.get('broker_connectivity_judgment', '')}",
+        f"Production Ready    : {status.get('production_readiness', '')}",
+        "",
+        "Data Freshness",
+        "--------------",
+    ]
+    for label, key in (
+        ("Raw Quotes", "raw_quotes"),
+        ("Normalized Quotes", "normalized_quotes"),
+        ("Listed Issues", "listed_issues"),
+        ("Candidate Feature", "candidate_feature"),
+        ("Opportunity Feature", "opportunity_feature"),
+    ):
+        item = freshness.get(key, {})
+        lines.append(f"{label:<20}: {item.get('date', '')} {item.get('status', '')}")
+    lines.extend(
+        [
+            "",
+            "Runtime",
+            "-------",
+            f"Completed Days      : {runtime.get('completed_days', '')}",
+            f"Current Cash        : {runtime.get('current_cash', '')} JPY",
+            f"Positions           : {runtime.get('positions', '')}",
+            f"Pending Orders      : {runtime.get('pending_orders', '')}",
+            "",
+            "Accepted Generation",
+            "-------------------",
+            f"ID                  : {generation.get('accepted_generation_id', '')}",
+            f"Status              : {generation.get('status', '')}",
+            f"Accepted At         : {generation.get('accepted_at', '')}",
+            f"Age                 : {(generation.get('age') or {}).get('human', '')}",
+            "",
+            "Findings",
+            "--------",
+        ]
+    )
+    if findings:
+        lines.extend(f"- {finding.get('reason')} (runtime impact: {finding.get('runtime_impact', 'N/A')})" for finding in findings[:8])
+    else:
+        lines.append("- No blocking findings.")
+    lines.extend(["", "Final", "-----", str(view.get("final_judgment", ""))])
+    return "\n".join(lines)
+
+
 def write_system_status_evidence(report: dict[str, Any], *, evidence_root: Path, run_id: str | None = None) -> Path:
     run_id = run_id or "system-status-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     run_root = Path(evidence_root) / "system_status" / run_id
@@ -1869,15 +2205,42 @@ def render_system_status_human_summary(
     return "\n".join(lines)
 
 
-def _data_status(ai_report: dict[str, Any]) -> dict[str, Any]:
+def _data_status(
+    ai_report: dict[str, Any],
+    *,
+    data_inspection: dict[str, Any],
+    expected_business_date: str,
+) -> dict[str, Any]:
     freshness = ai_report["jquants_and_feature_freshness"]
     lineage = ai_report["dataset_lineage"]
     split = ai_report["split_audit"]
     latest_jquants = freshness["latest_jquants"].get("latest_normalized_daily_quotes_date", "")
     latest_feature_payload = dict(freshness["latest_buy_feature"])
-    latest_feature_payload["manifest_path"] = _truth_value(latest_feature_payload.get("manifest_path", ""), missing="NOT_YET_MATERIALIZED")
+    runtime_feature_statuses = [
+        item.get("status", "PASS")
+        for item in data_inspection.get("runtime_features", [])
+        if item.get("component_id") in {"candidate_runtime_feature", "opportunity_runtime_feature"}
+    ]
+    target_feature_dates = [
+        str(item.get("feature_date") or "")
+        for item in data_inspection.get("runtime_features", [])
+        if item.get("component_id") in {"candidate_runtime_feature", "opportunity_runtime_feature"}
+        and str(item.get("feature_date") or "")
+    ]
+    target_feature_status = _combine_status(runtime_feature_statuses or ["PASS"])
+    target_feature_date = expected_business_date if expected_business_date and expected_business_date in target_feature_dates else (target_feature_dates[0] if target_feature_dates else "")
+    latest_feature_payload.update(
+        {
+            "expected_inference_feature_date": _truth_value(expected_business_date, missing="NOT_CONFIGURED"),
+            "feature_date": _truth_value(target_feature_date, missing="NOT_YET_MATERIALIZED"),
+            "manifest_path": _truth_value(data_inspection.get("feature_manifest", {}).get("path") or latest_feature_payload.get("manifest_path", ""), missing="NOT_YET_MATERIALIZED"),
+            "runtime_resolution_authority": "target_business_date_exact_match" if expected_business_date else "current_runtime_business_date",
+            "future_fixture_artifact_excluded": True,
+            "forbidden_resolution_methods": ["max_date", "latest_directory", "mtime", "future_fixture_date"],
+        }
+    )
     latest_feature = _truth_value(latest_feature_payload.get("feature_date", ""), missing="NOT_YET_MATERIALIZED")
-    status = _combine_status([freshness.get("status", "PASS"), lineage.get("status", "PASS"), split.get("status", "PASS")])
+    status = _combine_status([target_feature_status, lineage.get("status", "PASS"), split.get("status", "PASS")])
     return {
         "status": status,
         "jquants": freshness["latest_jquants"],
@@ -2005,17 +2368,35 @@ def _runtime_status(ai_report: dict[str, Any], *, ai_inventory: dict[str, Any], 
                 "sell_continuity": "PASS",
             },
         }
-    status = readiness.get("status", "BLOCK")
+    runtime_consumer_status = "PASS" if readiness.get("candidate_runtime_status") == "PASS" and readiness.get("opportunity_runtime_status") == "PASS" else "BLOCK"
+    model_health_status = "REVIEW_REQUIRED" if readiness.get("status") == "REVIEW_REQUIRED" else readiness.get("status", "BLOCK")
+    buy_status = "PASS" if readiness.get("block_buy_planning") is False else "BLOCK"
+    sell_status = readiness.get("sell_permission", "")
+    status = "PASS" if runtime_consumer_status == "PASS" and buy_status == "PASS" and sell_status == "PASS" else _combine_status([runtime_consumer_status, buy_status, sell_status])
     return {
         "status": status,
         "resolver": authority,
         "committed": ai_report["accepted_generation_status"],
         "runtime_consumer": {
-            "status": "PASS" if readiness.get("candidate_runtime_status") == "PASS" and readiness.get("opportunity_runtime_status") == "PASS" else "BLOCK",
+            "status": runtime_consumer_status,
             "candidate_runtime_status": readiness.get("candidate_runtime_status", ""),
             "opportunity_runtime_status": readiness.get("opportunity_runtime_status", ""),
         },
         "lifecycle": readiness,
+        "model_health": {
+            "status": model_health_status,
+            "trigger": readiness.get("lifecycle_classification", ""),
+            "classification": readiness.get("lifecycle_classification", ""),
+            "decision": readiness.get("lifecycle_decision", ""),
+            "inference_readiness": readiness.get("inference_readiness", ""),
+            "policy_version": "phase19_ar_threshold_policy",
+            "metric": "runtime_lifecycle_monitoring",
+            "observed": readiness.get("review_findings", []),
+            "threshold": "accepted_generation_runtime_baseline_policy",
+            "runtime_impact": "NONE" if status == "PASS" else status,
+            "buy_impact": buy_status,
+            "sell_impact": sell_status,
+        },
         "threshold": {
             "status": "REVIEW_REQUIRED" if "STATISTICAL_DRIFT" in str(readiness.get("lifecycle_classification", "")) else "PASS",
             "classification": readiness.get("lifecycle_classification", ""),
@@ -2033,8 +2414,10 @@ def _runtime_status(ai_report: dict[str, Any], *, ai_inventory: dict[str, Any], 
         "summary": {
             "status": status,
             "lifecycle": readiness.get("lifecycle_classification", ""),
-            "buy_planning": "PASS" if readiness.get("block_buy_planning") is False else "BLOCK",
-            "sell_continuity": readiness.get("sell_permission", ""),
+            "model_health": model_health_status,
+            "model_health_runtime_impact": "NONE" if status == "PASS" else status,
+            "buy_planning": buy_status,
+            "sell_continuity": sell_status,
         },
     }
 
@@ -2655,7 +3038,9 @@ def _target_period_data_sufficiency(
     *,
     data_inspection: dict[str, Any],
     target_business_dates: list[str],
+    post_run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    post_run_context = post_run_context or {}
     sources = {item.get("component_id"): item for item in data_inspection.get("data_sources", [])}
     raw_path = Path(str(sources.get("raw_jquants_daily_quotes", {}).get("artifact_path") or ""))
     normalized_path = Path(str(sources.get("normalized_jquants_daily_quotes", {}).get("artifact_path") or ""))
@@ -2685,6 +3070,42 @@ def _target_period_data_sufficiency(
     feature_missing = [day for day in target_business_dates if day not in feature_dates]
     status = "PASS" if target_business_dates and not raw_missing and not normalized_missing and not listed_missing else "BLOCK"
     feature_status = "PASS" if not feature_missing else "PRE_RUN_NOT_MATERIALIZED"
+    if _valid_post_run_context(post_run_context):
+        completed = [str(day) for day in post_run_context.get("completed_business_days") or []]
+        completed_set = set(completed)
+        missing_completed = [day for day in target_business_dates if day not in completed_set]
+        status = "PASS" if target_business_dates and not missing_completed else "REVIEW_REQUIRED"
+        feature_status = "NOT_REQUIRED_FOR_POST_RUN_VALIDATION" if feature_missing else "PASS"
+        per_day = [
+            {
+                **item,
+                "target_run_execution_status": "PASS" if item["business_date"] in completed_set else "REVIEW_REQUIRED",
+                "artifact_retention_status": "AVAILABLE" if item["candidate_feature_materialized"] or item["opportunity_feature_materialized"] else "NOT_RETAINED_AFTER_SUCCESSFUL_RUN",
+                "current_shared_runtime_artifact_retention": "AVAILABLE" if item["candidate_feature_materialized"] or item["opportunity_feature_materialized"] else "NOT_RETAINED_AFTER_SUCCESSFUL_RUN",
+                "post_run_validation_requirement": "RUN_EVIDENCE_AUTHORITY",
+            }
+            for item in per_day
+        ]
+        return {
+            "component_id": "target_period_data_sufficiency",
+            "component_name": "Target Period Data Sufficiency",
+            "status": status,
+            "inspection_context": "HISTORICAL_POST_RUN",
+            "pre_run_source_sufficiency": "NOT_APPLICABLE_POST_RUN",
+            "post_run_execution_evidence_sufficiency": status,
+            "current_shared_runtime_artifact_retention": "NOT_REQUIRED_FOR_POST_RUN_VALIDATION" if feature_missing else "AVAILABLE",
+            "target_business_dates": target_business_dates,
+            "completed_business_days": completed,
+            "missing_completed_business_days": missing_completed,
+            "raw_quotes_missing_dates": raw_missing,
+            "normalized_quotes_missing_dates": normalized_missing,
+            "listed_issues_missing_dates": listed_missing,
+            "runtime_feature_materialized_dates": sorted(feature_dates),
+            "runtime_feature_missing_dates": feature_missing,
+            "runtime_feature_status": feature_status,
+            "per_day": per_day,
+            "reason": "completed_run_evidence_is_post_run_authority" if status == "PASS" else "completed_run_evidence_incomplete",
+        }
     return {
         "component_id": "target_period_data_sufficiency",
         "component_name": "Target Period Data Sufficiency",
@@ -2808,6 +3229,15 @@ def _data_inspection(
             )["status"]
         else:
             feature_status = "PASS" if artifact.get("status") == "FEATURES_READY" and projection.get("feature_order_validation") != "BLOCK" else "REVIEW_REQUIRED"
+        source_refs = artifact.get("source_data_refs", {}) if isinstance(artifact.get("source_data_refs"), dict) else {}
+        position_temporal_isolation = (
+            ai_name == "position"
+            and str(source_refs.get("position_feature_reason") or "") == "current_position_state_as_of_after_feature_target_date"
+            and int(_numeric_or_zero(artifact.get("row_count", parquet_stats.get("row_count", 0)))) == 0
+        )
+        final_positions = _read_json_optional(root / "persistent_ledger" / "state.json").get("positions") or []
+        if position_temporal_isolation:
+            feature_status = "PASS"
         runtime_features.append(
             {
                 "component_id": f"{ai_name}_runtime_feature",
@@ -2822,7 +3252,12 @@ def _data_inspection(
                 "content_hash": _sha256_file(path),
                 "generation_process": "runtime_v2_market_refresh_pipeline / feature_refresh",
                 "runtime_consumer": ai_name,
-                "source_data_refs": artifact.get("source_data_refs", {}),
+                "source_data_refs": source_refs,
+                "position_feature_authority_status": "TEMPORAL_ISOLATION_PASS" if position_temporal_isolation else "NOT_APPLICABLE",
+                "position_feature_authority_reason": source_refs.get("position_feature_reason", "") if ai_name == "position" else "",
+                "position_feature_target_date_position_count": _numeric_or_zero(source_refs.get("current_position_count", 0)) if ai_name == "position" else "",
+                "final_post_run_position_count": len(final_positions) if ai_name == "position" else "",
+                "position_feature_final_position_semantics": "target-date feature rows and final post-run positions are distinct authorities" if ai_name == "position" else "",
                 "target_date_resolution_status": target_resolution_status,
                 "fallback_used": bool(artifact.get("fallback_used", False)),
                 **projection,
@@ -3474,12 +3909,14 @@ def _decision_item(
 def _authority_generation(ai_report: dict[str, Any], *, manifest: dict[str, Any]) -> dict[str, Any]:
     accepted = ai_report["accepted_generation_status"]
     authority = ai_report["runtime_authority_status"]
+    age = _accepted_generation_age(accepted_at=str(accepted.get("accepted_at") or ""), current_time=_utc_now())
     return {
         "component_id": "accepted_generation_authority",
         "component_name": "Accepted Generation / Runtime Authority",
         "status": accepted.get("status", ""),
         "committed_accepted_generation_id": accepted.get("accepted_generation_id", ""),
         "accepted_at": accepted.get("accepted_at", ""),
+        "accepted_generation_age": age,
         "aggregate_hash": accepted.get("aggregate_hash", ""),
         "authority_history_path": ".runtime/ai_lifecycle/authority_history",
         "runtime_pointer_path": accepted.get("pointer_path", ""),
@@ -3607,6 +4044,52 @@ def _truth_value(value: Any, *, missing: str = "NOT_APPLICABLE") -> Any:
     if isinstance(value, str) and value in {"", "."}:
         return missing
     return value
+
+
+def _numeric_or_zero(value: Any) -> float:
+    try:
+        if value in (None, ""):
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _accepted_generation_age(*, accepted_at: str, current_time: str) -> dict[str, Any]:
+    accepted = _parse_datetime(accepted_at)
+    current = _parse_datetime(current_time)
+    if accepted is None or current is None:
+        return {
+            "accepted_at": _truth_value(accepted_at, missing="NOT_RECORDED"),
+            "current_time": _truth_value(current_time, missing="NOT_RECORDED"),
+            "age_seconds": "NOT_RECORDED",
+            "age_hours": "NOT_RECORDED",
+            "age_days": "NOT_RECORDED",
+            "human": "NOT_RECORDED",
+        }
+    seconds = max((current - accepted).total_seconds(), 0.0)
+    hours = seconds / 3600.0
+    days = seconds / 86400.0
+    whole_days = int(seconds // 86400)
+    whole_hours = int((seconds % 86400) // 3600)
+    return {
+        "accepted_at": accepted_at,
+        "current_time": current_time,
+        "age_seconds": int(seconds),
+        "age_hours": round(hours, 2),
+        "age_days": round(days, 2),
+        "human": f"{whole_days} day{'s' if whole_days != 1 else ''} {whole_hours} hour{'s' if whole_hours != 1 else ''}",
+    }
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    text = str(value or "")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def _sanitize_empty_values(value: Any) -> Any:

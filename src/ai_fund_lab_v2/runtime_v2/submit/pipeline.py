@@ -1109,7 +1109,7 @@ def _historical_restricted_sell_quantity(*, runtime_root: Path, symbol: str) -> 
             continue
         if str(record.get("symbol") or "").strip() != normalized_symbol:
             continue
-        if str(record.get("status") or "").upper() in {"REJECTED", "CANCELLED", "CANCELED"}:
+        if not _is_historical_open_sell_order(record):
             continue
         sell_order_quantity += _float(record.get("quantity"))
     for record in _read_jsonl_records(runtime_root / "persistent_ledger" / "executions.jsonl"):
@@ -1123,6 +1123,25 @@ def _historical_restricted_sell_quantity(*, runtime_root: Path, symbol: str) -> 
             continue
         sell_execution_quantity += _float(record.get("filled_quantity") or record.get("quantity"))
     return max(sell_order_quantity - sell_execution_quantity, 0.0)
+
+
+def _is_historical_open_sell_order(record: Mapping[str, Any]) -> bool:
+    status = str(record.get("status") or record.get("order_status") or "").strip().upper()
+    if status in {
+        "REJECTED",
+        "CANCELLED",
+        "CANCELED",
+        "FILLED",
+        "FILL",
+        "FULL_FILL",
+        "FULLY_FILLED",
+        "DONE",
+    }:
+        return False
+    source = str(record.get("source") or "").strip()
+    if source == "runtime_v2_execution_readonly_simulation":
+        return False
+    return True
 
 
 def _read_jsonl_records(path: Path) -> tuple[dict[str, Any], ...]:

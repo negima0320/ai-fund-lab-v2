@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
     AcceptedGenerationResolution,
@@ -29,7 +30,21 @@ from scripts.run_phase4bg_formal_candidate_inference import (
     _predict_scores as predict_candidate_scores,
 )
 
-from ai_fund_lab_v2.opportunity_ai.inference import run_opportunity_inference
+from ai_fund_lab_v2.opportunity_ai.inference import (
+    BLOCKED_BY_INFERENCE,
+    READY_FOR_PHASE5G_QUALITY_AUDIT,
+    audit_opportunity_inference_frame,
+    build_inference_feature_frame,
+    build_inference_output,
+    normalize_candidate_frame,
+    read_feature_frame_for_dates,
+    run_opportunity_inference,
+)
+from ai_fund_lab_v2.runtime_v2.buy_ai.generation_bound_inference import (
+    GenerationBoundInferenceError,
+    load_generation_bound_binding,
+    predict_generation_bound_scores,
+)
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     RuntimeArtifactLookupHalt,
@@ -237,6 +252,7 @@ def produce_buy_ai_decisions(
         runtime_id=runtime_id,
         generated_at=generated_at,
         top_n=top_n,
+        accepted_generation_resolution=accepted_generation_resolution,
     )
     if candidate_payload["status"] != "PASS":
         _write_json(opportunity_artifact_path, _empty_opportunity_payload(
@@ -556,6 +572,7 @@ def _produce_candidate_artifact(
     runtime_id: str,
     generated_at: str,
     top_n: int,
+    accepted_generation_resolution: AcceptedGenerationResolution | None = None,
 ) -> dict[str, Any]:
     if model_path is None or not model_path.is_file():
         payload = _candidate_payload(
@@ -589,7 +606,34 @@ def _produce_candidate_artifact(
         )
         _write_json(artifact_path, payload)
         return payload
-    model_payload = _read_pickle(model_path)
+    generation_binding = None
+    if accepted_generation_resolution is not None:
+        try:
+            generation_binding = load_generation_bound_binding(
+                resolution=accepted_generation_resolution,
+                component="candidate",
+                repo_root=Path("."),
+            )
+            model_payload = generation_binding.model_payload
+        except GenerationBoundInferenceError as exc:
+            payload = _candidate_payload(
+                business_date=business_date,
+                feature_date=feature_date,
+                runtime_id=runtime_id,
+                generated_at=generated_at,
+                model_version="",
+                status="HALT",
+                reason=exc.reason_code,
+                feature_path=feature_path,
+                model_path=model_path,
+                artifact_path=artifact_path,
+                rows=(),
+            )
+            payload["halt_reason"] = exc.reason_code
+            _write_json(artifact_path, payload)
+            return payload
+    else:
+        model_payload = _read_pickle(model_path)
     feature_columns = [str(column) for column in model_payload.get("feature_columns") or ()]
     if not feature_columns:
         payload = _candidate_payload(
@@ -686,7 +730,32 @@ def _produce_candidate_artifact(
         )
         _write_json(artifact_path, payload)
         return payload
-    scores = predict_candidate_scores(model_payload["model"], candidate_feature_matrix(latest, feature_columns))
+    try:
+        scores = (
+            predict_generation_bound_scores(generation_binding, latest)
+            if generation_binding is not None
+            else predict_candidate_scores(model_payload["model"], candidate_feature_matrix(latest, feature_columns))
+        )
+    except GenerationBoundInferenceError as exc:
+        payload = _candidate_payload(
+            business_date=business_date,
+            feature_date=feature_date,
+            runtime_id=runtime_id,
+            generated_at=generated_at,
+            model_version=str(model_payload.get("model_version") or "phase4bf_formal_candidate_model"),
+            status="HALT",
+            reason=exc.reason_code,
+            feature_path=feature_path,
+            model_path=model_path,
+            artifact_path=artifact_path,
+            rows=(),
+            schema_evidence=schema_evidence,
+        )
+        payload["halt_reason"] = exc.reason_code
+        if generation_binding is not None:
+            payload["generation_bound_inference"] = generation_binding.evidence()
+        _write_json(artifact_path, payload)
+        return payload
     rows = build_scored_candidates(
         latest.to_dict("records"),
         scores,
@@ -709,6 +778,10 @@ def _produce_candidate_artifact(
         rows=tuple(rows[:top_n]),
         schema_evidence=schema_evidence,
     )
+    if generation_binding is not None:
+        payload["generation_bound_inference"] = generation_binding.evidence()
+        payload["transformation_stage"] = "accepted_generation_bound_imputer_scaler_model"
+        payload["legacy_fallback_used"] = False
     _write_json(artifact_path, payload)
     return payload
 
@@ -792,47 +865,115 @@ def _produce_opportunity_artifact(
         payload["metrics_validation"] = metrics_validation
         _write_json(artifact_path, payload)
         return payload
-    result = run_opportunity_inference(
-        candidate_path=candidate_artifact_path,
-        feature_path=opportunity_feature_path,
-        model_path=opportunity_model_path,
-        training_metrics_path=opportunity_training_metrics_path,
-        output_dir=artifact_path.parent,
-        created_at=generated_at,
-        inference_run_id=runtime_id,
-    )
-    if str(result.summary.get("status") or "") != "OK":
-        model_authority = model_authority or _opportunity_model_authority(
-            accepted_generation_resolution=accepted_generation_resolution,
+    generation_binding = None
+    if accepted_generation_resolution is None:
+        result = run_opportunity_inference(
+            candidate_path=candidate_artifact_path,
+            feature_path=opportunity_feature_path,
             model_path=opportunity_model_path,
-            model_payload=model_payload,
-            result_summary=result.summary,
+            training_metrics_path=opportunity_training_metrics_path,
+            output_dir=artifact_path.parent,
+            created_at=generated_at,
+            inference_run_id=runtime_id,
         )
-        payload = _empty_opportunity_payload(
-            business_date=business_date,
-            runtime_id=runtime_id,
-            feature_date=feature_date,
-            generated_at=generated_at,
-            status="REVIEW_REQUIRED",
-            reason=str(result.summary.get("readiness_status") or "opportunity_inference_not_ready"),
-            candidate_artifact_path=candidate_artifact_path,
-            opportunity_feature_path=opportunity_feature_path,
-            model_version=str(result.summary.get("model_version") or ""),
-            model_authority=model_authority,
-            review_reason=str(result.summary.get("readiness_status") or "opportunity_inference_not_ready"),
-            schema_evidence=schema_evidence,
-        )
-        _write_json(artifact_path, payload)
-        return payload
+        if str(result.summary.get("status") or "") != "OK":
+            model_authority = model_authority or _opportunity_model_authority(
+                accepted_generation_resolution=accepted_generation_resolution,
+                model_path=opportunity_model_path,
+                model_payload=model_payload,
+                result_summary=result.summary,
+            )
+            payload = _empty_opportunity_payload(
+                business_date=business_date,
+                runtime_id=runtime_id,
+                feature_date=feature_date,
+                generated_at=generated_at,
+                status="REVIEW_REQUIRED",
+                reason=str(result.summary.get("readiness_status") or "opportunity_inference_not_ready"),
+                candidate_artifact_path=candidate_artifact_path,
+                opportunity_feature_path=opportunity_feature_path,
+                model_version=str(result.summary.get("model_version") or ""),
+                model_authority=model_authority,
+                review_reason=str(result.summary.get("readiness_status") or "opportunity_inference_not_ready"),
+                schema_evidence=schema_evidence,
+            )
+            _write_json(artifact_path, payload)
+            return payload
+        output = result.output
+        result_summary = result.summary
+    else:
+        try:
+            generation_binding = load_generation_bound_binding(
+                resolution=accepted_generation_resolution,
+                component="opportunity",
+                repo_root=Path("."),
+            )
+            candidate_payload = _read_json(candidate_artifact_path)
+            candidate_rows = pd.DataFrame(candidate_payload.get("rows") or [])
+            candidate = normalize_candidate_frame(candidate_rows)
+            target_dates = sorted(candidate["target_date"].dropna().astype(str).unique().tolist())
+            feature = read_feature_frame_for_dates(opportunity_feature_path, target_dates)
+            inference_frame = build_inference_feature_frame(candidate_frame=candidate, feature_frame=feature)
+            feature_columns = list(generation_binding.feature_order)
+            audit = audit_opportunity_inference_frame(
+                inference_frame,
+                feature_columns=feature_columns,
+                input_candidate_count=len(candidate),
+                label_table_read_flag=False,
+                created_at=generated_at,
+            )
+            if audit["leakage_audit_status"] != "OK":
+                raise GenerationBoundInferenceError("opportunity_feature_leakage_audit_failed")
+            if inference_frame.empty:
+                raise GenerationBoundInferenceError("opportunity_join_coverage_empty")
+            scores = predict_generation_bound_scores(generation_binding, inference_frame)
+            output = build_inference_output(
+                inference_frame,
+                scores=np.asarray(scores, dtype=float),
+                model_version=str(model_payload.get("model_version") or "opportunity_model_unknown"),
+                created_at=generated_at,
+                inference_run_id=runtime_id,
+            )
+            result_summary = {
+                "status": "OK",
+                "readiness_status": READY_FOR_PHASE5G_QUALITY_AUDIT,
+                "model_version": str(model_payload.get("model_version") or "opportunity_model_unknown"),
+            }
+        except GenerationBoundInferenceError as exc:
+            model_authority = model_authority or _opportunity_model_authority(
+                accepted_generation_resolution=accepted_generation_resolution,
+                model_path=opportunity_model_path,
+                model_payload=model_payload,
+                result_summary={"readiness_status": exc.reason_code},
+            )
+            payload = _empty_opportunity_payload(
+                business_date=business_date,
+                runtime_id=runtime_id,
+                feature_date=feature_date,
+                generated_at=generated_at,
+                status="HALT",
+                reason=exc.reason_code,
+                candidate_artifact_path=candidate_artifact_path,
+                opportunity_feature_path=opportunity_feature_path,
+                model_version=str(model_payload.get("model_version") or ""),
+                model_authority=model_authority,
+                review_reason=exc.reason_code,
+                schema_evidence=schema_evidence,
+            )
+            payload["halt_reason"] = exc.reason_code
+            payload["readiness_status"] = BLOCKED_BY_INFERENCE
+            payload["generation_bound_inference"] = {"status": "HALT", "reason": exc.reason_code}
+            _write_json(artifact_path, payload)
+            return payload
     model_authority = model_authority or _opportunity_model_authority(
         accepted_generation_resolution=accepted_generation_resolution,
         model_path=opportunity_model_path,
         model_payload=model_payload,
-        result_summary=result.summary,
+        result_summary=result_summary,
     )
-    model_version = str(model_authority.get("model_version") or result.summary.get("model_version") or "")
+    model_version = str(model_authority.get("model_version") or result_summary.get("model_version") or "")
     rows = []
-    for row in result.output.sort_values(["buy_rank", "code"]).to_dict("records"):
+    for row in output.sort_values(["buy_rank", "code"]).to_dict("records"):
         expected_edge_score = _required_float(row.get("expected_edge_score"), field_name="expected_edge_score")
         buy_rank = _required_rank(row.get("buy_rank"), field_name="buy_rank")
         downside_risk_score = _required_float(row.get("downside_risk_score"), field_name="downside_risk_score")
@@ -880,13 +1021,19 @@ def _produce_opportunity_artifact(
         "reason": "",
         "prediction_metric_name": "opportunity_score",
         "prediction_semantics": "runtime_opportunity_score",
-        "transformation_stage": "runtime_artifact_opportunity_score",
+        "transformation_stage": (
+            "accepted_generation_bound_imputer_scaler_model"
+            if generation_binding is not None
+            else "runtime_artifact_opportunity_score"
+        ),
         "calibration_applied": False,
+        "legacy_fallback_used": False if generation_binding is not None else True,
         "population_scope": "CandidateTop50_single_business_day",
         "candidate_artifact_path": str(candidate_artifact_path),
         "opportunity_feature_path": str(opportunity_feature_path),
         "opportunity_training_metrics_path": str(opportunity_training_metrics_path),
         "metrics_validation": metrics_validation,
+        "generation_bound_inference": generation_binding.evidence() if generation_binding is not None else {},
         **_opportunity_schema_payload_fields(schema_evidence),
         "ranking_count": len(rows),
         "rankings": rows,

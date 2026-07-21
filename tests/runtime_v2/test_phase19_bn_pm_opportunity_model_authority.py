@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
     AcceptedGenerationMember,
     AcceptedGenerationResolution,
@@ -123,11 +125,46 @@ def _pm_contract(tmp_path: Path, opportunity_path: Path) -> dict:
 
 def _feature(tmp_path: Path) -> Path:
     path = tmp_path / "position_feature_input.csv"
-    path.write_text(
-        "target_date,code,market_price,return_1d,return_5d,return_20d,volatility_20d,holding_days,unrealized_return,quantity,avg_price\n"
-        f"{BUSINESS_DATE},10010,1010,0.01,0.01,0.01,0.02,1,0.01,100,1000\n",
-        encoding="utf-8",
+    required_features = json.dumps(
+        [
+            "price_momentum_return_5d",
+            "price_momentum_return_20d",
+            "trend_close_over_ma_20d",
+            "trend_ma_5_20_ratio",
+            "volume_momentum_ratio_5d",
+            "volatility_return_std_20d",
+        ]
     )
+    pd.DataFrame(
+        [
+            {
+                "target_date": BUSINESS_DATE,
+                "code": "10010",
+                "market_price": 1010,
+                "holding_days": 1,
+                "unrealized_return": 0.01,
+                "quantity": 100,
+                "avg_price": 1000,
+                "feature_as_of_date": BUSINESS_DATE,
+                "data_until": BUSINESS_DATE,
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+                "price_momentum_return_5d": 0.01,
+                "price_momentum_return_20d": 0.01,
+                "trend_close_over_ma_20d": 1.01,
+                "trend_ma_5_20_ratio": 1.01,
+                "volume_momentum_ratio_5d": 1.1,
+                "volatility_return_std_20d": 0.02,
+                "feature_source_artifact": "fixture_candidate_features.parquet",
+                "feature_source_hash": "fixture-feature-source-hash",
+                "required_features": required_features,
+                "optional_features": json.dumps(["no_position_reason"]),
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "created_at": BUSINESS_DATE + "T00:00:00Z",
+            }
+        ]
+    ).to_csv(path, index=False)
     return path
 
 

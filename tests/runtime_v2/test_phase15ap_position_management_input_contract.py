@@ -231,6 +231,125 @@ def test_phase15ap_hidden_default_fields_are_not_used(tmp_path):
     assert artifact["defaulted_fields"] == []
 
 
+def test_phase19_bu_pm_required_technical_feature_missing_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",))
+    feature = pd.read_csv(feature_path).drop(columns=["price_momentum_return_5d"])
+    feature.to_csv(feature_path, index=False)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_feature_required_columns_missing"
+    assert "pm_feature.price_momentum_return_5d" in artifact["missing_fields"]
+    assert artifact["required_feature_validation"]["status"] == "FAIL"
+
+
+def test_phase19_bu_pm_future_feature_data_rejected(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",))
+    feature = pd.read_csv(feature_path)
+    feature["feature_as_of_date"] = "2026-07-10"
+    feature.to_csv(feature_path, index=False)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert artifact["temporal_validation_status"] == "FAIL"
+    assert "temporal_validation_failed" in artifact["required_feature_validation"]["reasons"]
+
+
+def test_phase19_bu_pm_technical_features_affect_score_path(tmp_path):
+    positive_runtime_root = _runtime_root(tmp_path / "positive_runtime", positions=[_position("6522", average_price=1000, current_price=1020)])
+    negative_runtime_root = _runtime_root(tmp_path / "negative_runtime", positions=[_position("6522", average_price=1000, current_price=1020)])
+    high_vol_runtime_root = _runtime_root(tmp_path / "high_vol_runtime", positions=[_position("6522", average_price=1000, current_price=1020)])
+    positive_opportunity, positive_feature = _pm_inputs(tmp_path / "positive", symbols=("6522",), expected_edge=0.08, downside=0.2)
+    negative_opportunity, negative_feature = _pm_inputs(
+        tmp_path / "negative",
+        symbols=("6522",),
+        expected_edge=0.08,
+        downside=0.2,
+        technicals={
+            "price_momentum_return_5d": -0.08,
+            "price_momentum_return_20d": -0.12,
+            "trend_close_over_ma_20d": 0.94,
+            "trend_ma_5_20_ratio": 0.94,
+            "volume_momentum_ratio_5d": 1.0,
+            "volatility_return_std_20d": 0.02,
+        },
+    )
+    high_vol_opportunity, high_vol_feature = _pm_inputs(
+        tmp_path / "high_vol",
+        symbols=("6522",),
+        expected_edge=0.08,
+        downside=0.2,
+        technicals={"volatility_return_std_20d": 0.16},
+    )
+
+    positive = produce_position_management_decisions(
+        runtime_root=positive_runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=positive_opportunity,
+        feature_path=positive_feature,
+    )
+    negative = produce_position_management_decisions(
+        runtime_root=negative_runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=negative_opportunity,
+        feature_path=negative_feature,
+    )
+    high_vol = produce_position_management_decisions(
+        runtime_root=high_vol_runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=high_vol_opportunity,
+        feature_path=high_vol_feature,
+    )
+    positive_action = pd.read_csv(Path(positive.action_csv_path)).iloc[0]
+    negative_action = pd.read_csv(Path(negative.action_csv_path)).iloc[0]
+    high_vol_action = pd.read_csv(Path(high_vol.action_csv_path)).iloc[0]
+
+    assert positive.status == "PASS"
+    assert negative.status == "PASS"
+    assert high_vol.status == "PASS"
+    assert float(positive_action["hold_score"]) > float(negative_action["hold_score"])
+    assert float(negative_action["exit_score"]) > float(positive_action["exit_score"])
+    assert float(high_vol_action["reduce_score"]) > float(positive_action["reduce_score"])
+
+
+def test_phase19_bu_pm_feature_contract_mode_parity(tmp_path):
+    for mode in ("historical", "demo", "production"):
+        runtime_root = _runtime_root(tmp_path / f"rt_{mode}", positions=[_position("6522")])
+        opportunity_path, feature_path = _pm_inputs(tmp_path / f"inputs_{mode}", symbols=("6522",))
+        result = produce_position_management_decisions(
+            runtime_root=runtime_root,
+            business_date=BUSINESS_DATE,
+            mode=mode,
+            opportunity_path=opportunity_path,
+            feature_path=feature_path,
+        )
+        artifact = _read_json(result.artifact_path)
+        assert result.status == "PASS"
+        assert artifact["feature_contract_version"] == "runtime_v2_pm_feature_input_contract_v2"
+        assert artifact["input_contract"]["pm_required_feature_validation"]["status"] == "PASS"
+
+
 def test_phase15ap_cli_does_not_enter_sell_planning_on_pm_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path, positions=[_position("6522")])
     opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), feature_symbols=())
@@ -329,7 +448,9 @@ def _pm_inputs(
     downside: float = 0.8,
     include_no_position_reason: bool = True,
     opportunity_status: str = "CSV",
+    technicals: dict[str, float] | None = None,
 ) -> tuple[Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     if opportunity_status == "REVIEW_REQUIRED":
         opportunity_path = tmp_path / "pm_opportunity.json"
         _write_json(
@@ -365,21 +486,54 @@ def _pm_inputs(
         ).to_csv(opportunity_path, index=False)
     feature_path = tmp_path / "pm_feature.csv"
     selected_feature_symbols = symbols if feature_symbols is None else feature_symbols
+    technical_values = {
+        "price_momentum_return_5d": 0.08,
+        "price_momentum_return_20d": 0.12,
+        "trend_close_over_ma_20d": 1.05,
+        "trend_ma_5_20_ratio": 1.03,
+        "volume_momentum_ratio_5d": 1.1,
+        "volatility_return_std_20d": 0.02,
+    }
+    technical_values.update(technicals or {})
     feature_rows = [
         {
             "target_date": BUSINESS_DATE,
+            "feature_as_of_date": BUSINESS_DATE,
             "as_of_date": BUSINESS_DATE,
             "code": symbol,
-            "feature_version": "position_management_feature_v1",
-            "return_5d": expected_edge,
-            "return_20d": expected_edge,
-            "close_over_ma_20d": expected_edge,
+            **technical_values,
+            "feature_source_artifact": "candidate_features.parquet",
+            "feature_source_hash": "fixture-candidate-feature-hash",
+            "required_features": json.dumps(sorted(technical_values)),
+            "optional_features": json.dumps(["no_position_reason"]),
+            "missing_features": "[]",
+            "defaulted_features": "[]",
+            "temporal_validation_status": "PASS",
+            "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+            "data_until": BUSINESS_DATE,
+            "created_at": BUSINESS_DATE + "T00:00:00Z",
         }
         for symbol in selected_feature_symbols
     ]
     frame = pd.DataFrame(feature_rows)
     if frame.empty:
-        columns = ["target_date", "code", "as_of_date", "feature_version"]
+        columns = [
+            "target_date",
+            "feature_as_of_date",
+            "as_of_date",
+            "code",
+            *technical_values.keys(),
+            "feature_source_artifact",
+            "feature_source_hash",
+            "required_features",
+            "optional_features",
+            "missing_features",
+            "defaulted_features",
+            "temporal_validation_status",
+            "feature_version",
+            "data_until",
+            "created_at",
+        ]
         if include_no_position_reason:
             columns.append("no_position_reason")
         frame = pd.DataFrame(columns=columns)

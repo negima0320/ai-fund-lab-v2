@@ -36,9 +36,32 @@ from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision
 
 ARTIFACT_SCHEMA_VERSION = "runtime_v2_position_management_decision_v1"
 INFERENCE_VERSION = "position_management_ai_phase6a_regular_path_v1"
-PM_INPUT_SCHEMA_VERSION = "runtime_v2_pm_input_v1"
+PM_INPUT_SCHEMA_VERSION = "runtime_v2_pm_input_v2"
+PM_FEATURE_CONTRACT_VERSION = "runtime_v2_pm_feature_input_contract_v2"
+PM_REDUCE_INTENSITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_intensity_v1"
 CURRENT_REQUIRED_FIELDS = ("symbol", "quantity", "as_of", "source", "average_price")
-PM_FEATURE_REQUIRED_COLUMNS = ("target_date", "code")
+PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS = (
+    "price_momentum_return_5d",
+    "price_momentum_return_20d",
+    "trend_close_over_ma_20d",
+    "trend_ma_5_20_ratio",
+    "volume_momentum_ratio_5d",
+    "volatility_return_std_20d",
+)
+PM_FEATURE_REQUIRED_COLUMNS = (
+    "target_date",
+    "feature_as_of_date",
+    "code",
+    "feature_source_artifact",
+    "feature_source_hash",
+    "required_features",
+    "optional_features",
+    "missing_features",
+    "defaulted_features",
+    "temporal_validation_status",
+    *PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS,
+)
+PM_FEATURE_OPTIONAL_COLUMNS = ("no_position_reason",)
 OPPORTUNITY_REQUIRED_COLUMNS = (
     "target_date",
     "code",
@@ -96,6 +119,8 @@ class PositionManagementRuntimeResult:
             "pm_current_as_of": self.input_contract.get("pm_current_as_of") or "",
             "pm_current_freshness": self.input_contract.get("pm_current_freshness") or "",
             "pm_feature_source": self.input_contract.get("pm_feature_source") or "",
+            "pm_feature_contract_version": self.input_contract.get("pm_feature_contract_version") or "",
+            "pm_feature_source_hash": self.input_contract.get("pm_feature_source_hash") or "",
             "pm_feature_row_count": self.input_contract.get("pm_feature_row_count"),
             "pm_opportunity_source": self.input_contract.get("pm_opportunity_source") or "",
             "pm_opportunity_status": self.input_contract.get("pm_opportunity_status") or "",
@@ -103,6 +128,9 @@ class PositionManagementRuntimeResult:
             "pm_missing_symbols": self.input_contract.get("pm_missing_symbols") or [],
             "pm_derived_fields": self.input_contract.get("pm_derived_fields") or [],
             "pm_defaulted_fields": self.input_contract.get("pm_defaulted_fields") or [],
+            "pm_required_feature_validation": self.input_contract.get("pm_required_feature_validation") or {},
+            "pm_optional_feature_status": self.input_contract.get("pm_optional_feature_status") or {},
+            "pm_temporal_validation_status": self.input_contract.get("pm_temporal_validation_status") or "",
             "pm_review_required": bool(self.input_contract.get("pm_review_required")),
             "pm_review_reason": self.input_contract.get("pm_review_reason") or "",
         }
@@ -377,9 +405,11 @@ def verify_position_management_runtime_adapter_authority(
 
 
 def load_sell_exit_decisions_from_pm_artifact(path: Path | str) -> tuple[SellExitDecision, ...]:
-    payload = _read_json(Path(path))
+    artifact_path = Path(path)
+    payload = _read_json(artifact_path)
     if payload.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
         raise ValueError("Position Management artifact schema mismatch")
+    payload = {**payload, "artifact_path": str(artifact_path)}
     return _sell_exit_decisions_from_artifact(payload)
 
 
@@ -415,10 +445,11 @@ def validate_position_management_input_contract(
 def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExitDecision, ...]:
     decisions: list[SellExitDecision] = []
     for item in payload.get("decisions") or ():
-        if str(item.get("decision") or "").upper() != "EXIT":
+        decision = str(item.get("decision") or "").upper()
+        if decision not in {"EXIT", "REDUCE"}:
             continue
         quantity = float(item.get("runtime_sell_quantity") or 0)
-        if quantity <= 0:
+        if decision == "EXIT" and quantity <= 0:
             continue
         decisions.append(
             SellExitDecision(
@@ -426,6 +457,10 @@ def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExi
                 quantity=quantity,
                 reason=str(item.get("reason") or "position_management_exit"),
                 score=float(item.get("confidence") or 0.0),
+                source_decision=decision,
+                reduce_intensity=str(item.get("reduce_intensity") or ""),
+                source_decision_artifact=str(payload.get("artifact_path") or ""),
+                source_decision_id=str(item.get("decision_id") or ""),
             )
         )
     return tuple(decisions)
@@ -493,13 +528,24 @@ def _decision_payload(row: dict[str, Any], *, current: dict[str, Any], generated
     reason = str(row.get("exit_reason") or row.get("action_reason") or decision)
     runtime_sell_quantity = position_quantity if decision == "EXIT" else 0.0
     runtime_action = "SELL_FULL_POSITION" if decision == "EXIT" else "NO_SELL_ORDER"
+    reduce_intensity = ""
+    reduce_intensity_evidence: dict[str, Any] = {}
     if decision == "REDUCE":
-        runtime_action = "REVIEW_REQUIRED_REDUCE_QUANTITY_CONTRACT_MISSING"
-        reason = reason + "; reduce quantity contract is not defined in Runtime v2"
+        reduce_intensity = _reduce_intensity(row=row, reason=reason)
+        reduce_intensity_evidence = {
+            "contract_version": PM_REDUCE_INTENSITY_CONTRACT_VERSION,
+            "authority": "Position Management emits reduce intensity; Sell Planning owns broker quantity calculation",
+            "reduce_score": _float(row.get("reduce_score")),
+            "exit_score": _float(row.get("exit_score")),
+            "hold_score": _float(row.get("hold_score")),
+            "reason": reason,
+        }
+        runtime_action = "SELL_PARTIAL_POSITION_REDUCE_QUANTITY_BY_SELL_PLANNING"
     if decision == "ADD":
         runtime_action = "NO_SELL_ORDER_ADD_OUT_OF_SELL_SCOPE"
         reason = reason + "; ADD is outside SELL Planning scope"
     return {
+        "decision_id": f"pm-{str(row.get('target_date') or '')}-{symbol}-{decision.lower()}",
         "business_date": str(row.get("target_date") or ""),
         "symbol": symbol,
         "decision": decision,
@@ -519,7 +565,26 @@ def _decision_payload(row: dict[str, Any], *, current: dict[str, Any], generated
         "runtime_position_quantity": position_quantity,
         "runtime_sell_quantity": runtime_sell_quantity,
         "runtime_action": runtime_action,
+        "reduce_intensity": reduce_intensity,
+        "reduce_intensity_evidence": reduce_intensity_evidence,
+        "runtime_quantity_authority": (
+            "SELL_PLANNING_REDUCE_QUANTITY_CONTRACT"
+            if decision == "REDUCE"
+            else "PM_EXIT_FULL_POSITION_QUANTITY"
+            if decision == "EXIT"
+            else ""
+        ),
     }
+
+
+def _reduce_intensity(*, row: dict[str, Any], reason: str) -> str:
+    reduce_score = _float(row.get("reduce_score"))
+    text = str(reason or "").lower()
+    if reduce_score >= 0.60 or "high_downside" in text:
+        return "STRONG"
+    if reduce_score >= 0.50 or "peak_drawdown_warning" in text:
+        return "MEDIUM"
+    return "LIGHT"
 
 
 def _artifact_payload(
@@ -560,6 +625,15 @@ def _artifact_payload(
         "current_source": str(contract.get("pm_current_source") or ""),
         "current_as_of": str(contract.get("pm_current_as_of") or ""),
         "pm_feature_source": str(feature_path),
+        "feature_contract_version": str(contract.get("pm_feature_contract_version") or PM_FEATURE_CONTRACT_VERSION),
+        "feature_source_artifact": str(contract.get("pm_feature_source_artifact") or feature_path),
+        "feature_source_hash": str(contract.get("pm_feature_source_hash") or ""),
+        "required_features": list(contract.get("pm_required_features") or []),
+        "optional_features": list(contract.get("pm_optional_features") or []),
+        "required_feature_validation": dict(contract.get("pm_required_feature_validation") or {}),
+        "optional_feature_status": dict(contract.get("pm_optional_feature_status") or {}),
+        "temporal_validation_status": str(contract.get("pm_temporal_validation_status") or ""),
+        "used_feature_snapshot": dict(contract.get("pm_used_feature_snapshot") or {}),
         "pm_feature_row_count": contract.get("pm_feature_row_count"),
         "opportunity_source": str(opportunity_path),
         "missing_fields": list(contract.get("pm_missing_fields") or []),
@@ -722,8 +796,17 @@ def _validate_pm_input_contract(
         "pm_historical_empty_current_authority": "runtime_state_current_state" if historical_empty_current_authority else "",
         "pm_current_freshness": "STALE" if "current" in stale_artifacts else "FRESH",
         "pm_feature_source": str(feature_path),
+        "pm_feature_contract_version": feature_status.get("feature_contract_version") or PM_FEATURE_CONTRACT_VERSION,
+        "pm_feature_source_artifact": feature_status.get("source_artifact") or str(feature_path),
+        "pm_feature_source_hash": feature_status.get("source_hash") or "",
         "pm_feature_row_count": feature_status["row_count"],
         "pm_feature_date": feature_date,
+        "pm_required_features": feature_status.get("required_features") or list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+        "pm_optional_features": feature_status.get("optional_features") or list(PM_FEATURE_OPTIONAL_COLUMNS),
+        "pm_required_feature_validation": feature_status.get("required_feature_validation") or {},
+        "pm_optional_feature_status": feature_status.get("optional_feature_status") or {},
+        "pm_temporal_validation_status": feature_status.get("temporal_validation_status") or "",
+        "pm_used_feature_snapshot": feature_status.get("used_feature_snapshot") or {},
         "pm_opportunity_source": str(opportunity_path),
         "pm_opportunity_status": opportunity_status["status"],
         "pm_opportunity_model_version": opportunity_status.get("model_version") or "",
@@ -739,7 +822,7 @@ def _validate_pm_input_contract(
         "pm_missing_symbols": sorted(set(symbol for symbol in missing_symbols if symbol)),
         "pm_stale_artifacts": sorted(set(stale_artifacts)),
         "pm_derived_fields": sorted(set(derived_fields)),
-        "pm_defaulted_fields": defaulted_fields,
+        "pm_defaulted_fields": sorted(set(defaulted_fields + list(feature_status.get("defaulted_fields") or []))),
         "pm_position_context": position_context,
         "pm_review_required": review_required,
         "pm_review_reason": reason if review_required else "",
@@ -761,24 +844,55 @@ def _pm_feature_status(
             "missing_fields": [] if not current_has_positions else ["pm_feature_source"],
             "missing_symbols": [],
             "stale": False,
+            "feature_contract_version": PM_FEATURE_CONTRACT_VERSION,
+            "source_hash": "",
+            "source_artifact": str(feature_path),
+            "required_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+            "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+            "defaulted_fields": [],
+            "required_feature_validation": {"status": "NOT_RUN"},
+            "optional_feature_status": {},
+            "temporal_validation_status": "NOT_RUN",
+            "used_feature_snapshot": {},
         }
     frame = _read_table(feature_path)
     columns = set(str(column) for column in frame.columns)
     missing_fields = [f"pm_feature.{column}" for column in PM_FEATURE_REQUIRED_COLUMNS if column not in columns]
     if missing_fields:
         return {
-            "review_required": True,
-            "reason": "pm_feature_required_columns_missing",
+            "review_required": current_has_positions,
+            "reason": "pm_feature_required_columns_missing" if current_has_positions else "",
             "row_count": len(frame),
             "missing_fields": missing_fields,
             "missing_symbols": [],
             "stale": False,
+            "feature_contract_version": PM_FEATURE_CONTRACT_VERSION,
+            "source_hash": _sha256_file(feature_path),
+            "source_artifact": str(feature_path),
+            "required_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+            "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+            "defaulted_fields": [],
+            "required_feature_validation": {
+                "status": "FAIL" if current_has_positions else "NOT_REQUIRED",
+                "missing_columns": missing_fields,
+            },
+            "optional_feature_status": {},
+            "temporal_validation_status": "NOT_RUN",
+            "used_feature_snapshot": {},
         }
     frame = frame.copy()
     frame["target_date"] = frame["target_date"].astype(str)
     frame["code"] = frame["code"].astype(str)
     date_rows = frame[frame["target_date"] == feature_date].copy()
     stale = bool(len(frame) and date_rows.empty)
+    feature_hash = _sha256_file(feature_path)
+    defaulted_fields = _pm_feature_json_list_values(date_rows, "defaulted_features")
+    missing_feature_values = _pm_feature_json_list_values(date_rows, "missing_features")
+    optional_status = {
+        "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+        "missing_optional_columns": [column for column in PM_FEATURE_OPTIONAL_COLUMNS if column not in columns],
+        "default_policy": "no_position_reason_optional; scoring features do not default in runtime producer",
+    }
     if not current_has_positions:
         return {
             "review_required": False,
@@ -787,6 +901,16 @@ def _pm_feature_status(
             "missing_fields": [],
             "missing_symbols": [],
             "stale": stale,
+            "feature_contract_version": PM_FEATURE_CONTRACT_VERSION,
+            "source_hash": feature_hash,
+            "source_artifact": str(feature_path),
+            "required_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+            "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+            "defaulted_fields": defaulted_fields,
+            "required_feature_validation": {"status": "NOT_REQUIRED", "reason": "no_current_positions"},
+            "optional_feature_status": optional_status,
+            "temporal_validation_status": "PASS" if not stale else "STALE",
+            "used_feature_snapshot": {},
         }
     if date_rows.empty:
         return {
@@ -796,17 +920,163 @@ def _pm_feature_status(
             "missing_fields": [],
             "missing_symbols": list(held_symbols),
             "stale": stale,
+            "feature_contract_version": PM_FEATURE_CONTRACT_VERSION,
+            "source_hash": feature_hash,
+            "source_artifact": str(feature_path),
+            "required_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+            "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+            "defaulted_fields": defaulted_fields,
+            "required_feature_validation": {"status": "FAIL", "reason": "rows_missing"},
+            "optional_feature_status": optional_status,
+            "temporal_validation_status": "STALE" if stale else "FAIL",
+            "used_feature_snapshot": {},
         }
     covered = set(date_rows["code"].astype(str))
     missing_symbols = [symbol for symbol in held_symbols if symbol not in covered]
+    duplicate_count = int(date_rows.duplicated(["target_date", "code"]).sum())
+    numeric_failures = _pm_feature_numeric_failures(date_rows, PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS)
+    future_count = _pm_feature_future_date_count(date_rows, feature_date=feature_date)
+    row_missing_features = sorted(set(missing_feature_values))
+    temporal_status_values = sorted(set(date_rows.get("temporal_validation_status", pd.Series([], dtype=str)).dropna().astype(str).tolist()))
+    temporal_failure = bool(future_count or any(value not in {"PASS", ""} for value in temporal_status_values))
+    missing_required_values = [
+        f"pm_feature.{column}"
+        for column in PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS
+        if column in date_rows.columns and date_rows[column].isna().any()
+    ]
+    validation_status = "PASS"
+    validation_reasons: list[str] = []
+    if missing_symbols:
+        validation_status = "FAIL"
+        validation_reasons.append("missing_held_symbols")
+    if duplicate_count:
+        validation_status = "FAIL"
+        validation_reasons.append("duplicate_target_date_code")
+    if numeric_failures:
+        validation_status = "FAIL"
+        validation_reasons.append("non_finite_numeric_feature")
+    if missing_required_values or row_missing_features:
+        validation_status = "FAIL"
+        validation_reasons.append("required_feature_value_missing")
+    if defaulted_fields:
+        validation_status = "FAIL"
+        validation_reasons.append("implicit_defaulted_feature_not_allowed")
+    if temporal_failure or stale:
+        validation_status = "FAIL"
+        validation_reasons.append("temporal_validation_failed")
+    required_validation = {
+        "status": validation_status,
+        "required_columns": list(PM_FEATURE_REQUIRED_COLUMNS),
+        "required_technical_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+        "missing_columns": [],
+        "missing_feature_values": sorted(set(missing_required_values + [f"pm_feature.{item}" for item in row_missing_features])),
+        "duplicate_count": duplicate_count,
+        "numeric_failures": numeric_failures,
+        "reasons": validation_reasons,
+    }
+    used_feature_snapshot = _pm_used_feature_snapshot(date_rows, held_symbols=held_symbols)
+    review_required = bool(missing_symbols or validation_status != "PASS")
+    reason = ""
+    if review_required:
+        reason = "pm_feature_required_feature_missing" if (missing_required_values or row_missing_features) else "pm_feature_contract_validation_failed"
+    if missing_symbols:
+        reason = "pm_feature_rows_missing_for_current_positions"
     return {
-        "review_required": bool(missing_symbols),
-        "reason": "pm_feature_rows_missing_for_current_positions" if missing_symbols else "",
+        "review_required": review_required,
+        "reason": reason,
         "row_count": len(date_rows),
         "missing_fields": [],
         "missing_symbols": missing_symbols,
         "stale": stale,
+        "feature_contract_version": PM_FEATURE_CONTRACT_VERSION,
+        "source_hash": feature_hash,
+        "source_artifact": str(feature_path),
+        "required_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+        "optional_features": list(PM_FEATURE_OPTIONAL_COLUMNS),
+        "defaulted_fields": defaulted_fields,
+        "required_feature_validation": required_validation,
+        "optional_feature_status": optional_status,
+        "temporal_validation_status": "PASS" if not temporal_failure and not stale else "FAIL",
+        "used_feature_snapshot": used_feature_snapshot,
     }
+
+
+def _pm_feature_json_list_values(frame: pd.DataFrame, column: str) -> list[str]:
+    if frame.empty or column not in frame.columns:
+        return []
+    values: list[str] = []
+    for raw in frame[column].dropna().tolist():
+        if raw in ("", "[]"):
+            continue
+        parsed: Any
+        if isinstance(raw, list):
+            parsed = raw
+        else:
+            try:
+                parsed = json.loads(str(raw))
+            except json.JSONDecodeError:
+                parsed = [str(raw)]
+        if isinstance(parsed, list):
+            values.extend(str(item) for item in parsed if str(item))
+        elif parsed not in (None, ""):
+            values.append(str(parsed))
+    return sorted(set(values))
+
+
+def _pm_feature_numeric_failures(frame: pd.DataFrame, columns: tuple[str, ...]) -> list[str]:
+    failures: list[str] = []
+    for column in columns:
+        if column not in frame.columns:
+            failures.append(f"pm_feature.{column}:missing_column")
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.isna().any() or not values.map(lambda value: math.isfinite(float(value))).all():
+            failures.append(f"pm_feature.{column}:non_finite")
+    return failures
+
+
+def _pm_feature_future_date_count(frame: pd.DataFrame, *, feature_date: str) -> int:
+    count = 0
+    target = pd.to_datetime(pd.Series([feature_date]), errors="coerce").iloc[0]
+    if pd.isna(target):
+        return len(frame)
+    for column in ("feature_as_of_date", "data_until", "position_state_as_of"):
+        if column not in frame.columns:
+            continue
+        dates = pd.to_datetime(frame[column], errors="coerce")
+        count += int(((dates > target) | dates.isna()).sum())
+    return count
+
+
+def _pm_used_feature_snapshot(frame: pd.DataFrame, *, held_symbols: tuple[str, ...]) -> dict[str, Any]:
+    if frame.empty:
+        return {"row_count": 0, "symbols": []}
+    rows = frame[frame["code"].astype(str).isin(set(held_symbols))] if "code" in frame.columns else frame
+    snapshot: dict[str, Any] = {
+        "row_count": int(len(rows)),
+        "symbols": sorted(rows["code"].astype(str).unique().tolist()) if "code" in rows.columns else [],
+        "technical_features": list(PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS),
+    }
+    for column in PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS:
+        if column not in rows.columns:
+            continue
+        values = pd.to_numeric(rows[column], errors="coerce")
+        snapshot[column] = {
+            "min": _float(values.min()),
+            "max": _float(values.max()),
+            "missing_count": int(values.isna().sum()),
+        }
+    return snapshot
+
+
+def _sha256_file(path: Path) -> str:
+    if not path or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _pm_feature_position_context(*, feature_path: Path, feature_date: str) -> dict[str, dict[str, Any]]:

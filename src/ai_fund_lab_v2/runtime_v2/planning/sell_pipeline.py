@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalDecision, ApprovalStatus
@@ -33,6 +34,20 @@ class SellExitDecision:
     quantity: float
     reason: str
     score: float = 1.0
+    source_decision: str = "EXIT"
+    reduce_intensity: str = ""
+    source_decision_artifact: str = ""
+    source_decision_id: str = ""
+    quantity_contract: dict[str, Any] | None = None
+
+
+REDUCE_QUANTITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_quantity_v1"
+DEFAULT_TRADABLE_UNIT = 100.0
+REDUCE_INTENSITY_RATIOS: dict[str, float] = {
+    "LIGHT": 0.25,
+    "MEDIUM": 0.33,
+    "STRONG": 0.50,
+}
 
 
 @dataclass(frozen=True)
@@ -279,7 +294,8 @@ def run_sell_planning_pending_pipeline(
             safety_decision=runtime_safety_decision,
         )
 
-    selected_decisions = tuple(exit_decisions[:max_orders])
+    prioritized_decisions = _apply_exit_priority(tuple(exit_decisions))
+    selected_decisions = tuple(prioritized_decisions[:max_orders])
     if not selected_decisions:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -293,7 +309,49 @@ def run_sell_planning_pending_pipeline(
             safety_decision=runtime_safety_decision,
         )
 
-    ai_signals = tuple(_ai_signal(decision, index) for index, decision in enumerate(selected_decisions, start=1))
+    pending_conflict = _pending_sell_conflict(
+        runtime_root=runtime_root_path,
+        symbols=tuple(decision.symbol for decision in selected_decisions),
+    )
+    if pending_conflict:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
+            reason="REVIEW_REQUIRED_REDUCE_PENDING_SELL_CONFLICT:" + ",".join(pending_conflict),
+            current_position_count=len(current_positions),
+            current_exposure=current_exposure,
+            status="REVIEW_REQUIRED",
+            safety_decision=runtime_safety_decision,
+        )
+
+    quantity_decisions = tuple(
+        _quantity_contract_decision(
+            decision=decision,
+            position=current_positions.get(decision.symbol),
+            runtime_root=runtime_root_path,
+            mode=mode,
+        )
+        for decision in selected_decisions
+    )
+    quantity_failures = tuple(decision for decision in quantity_decisions if decision.quantity <= 0)
+    if quantity_failures:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
+            reason=";".join(str((decision.quantity_contract or {}).get("reason") or "reduce_quantity_contract_failed") for decision in quantity_failures),
+            current_position_count=len(current_positions),
+            current_exposure=current_exposure,
+            status="REVIEW_REQUIRED",
+            safety_decision=runtime_safety_decision,
+        )
+
+    ai_signals = tuple(_ai_signal(decision, index) for index, decision in enumerate(quantity_decisions, start=1))
     policy_context = _policy_context(capital_deployment_policy)
     allocations = tuple(
         _allocation(
@@ -302,7 +360,7 @@ def run_sell_planning_pending_pipeline(
             position=current_positions.get(decision.symbol),
             policy_context=policy_context,
         )
-        for decision, signal in zip(selected_decisions, ai_signals)
+        for decision, signal in zip(quantity_decisions, ai_signals)
     )
     planning_result = build_order_plan(
         PlanningInput(
@@ -502,14 +560,15 @@ def _attach_historical_safety_authority(
 
 
 def _ai_signal(decision: SellExitDecision, rank: int) -> AIPlanningSignal:
+    source_decision = str(decision.source_decision or "EXIT").upper()
     return AIPlanningSignal(
-        signal_id=f"sell-exit-ai-{decision.symbol}-{rank:03d}",
+        signal_id=f"sell-{source_decision.lower()}-pm-{decision.symbol}-{rank:03d}",
         symbol=decision.symbol,
         side="SELL",
         rank=rank,
         score=decision.score,
         reason=decision.reason,
-        source_ai="runtime_v2_exit_ai",
+        source_ai="runtime_v2_position_management",
     )
 
 
@@ -540,6 +599,7 @@ def _allocation(
         policy_source=str((policy_context or {}).get("policy_source") or ""),
         sizing_policy_reason=str((policy_context or {}).get("sizing_policy_reason") or ""),
         policy_context=policy_context,
+        quantity_contract=decision.quantity_contract,
     )
 
 
@@ -586,7 +646,367 @@ def _pending_item(item) -> PendingOrderItem:
         safety_source=item.safety_source,
         safety_decision=item.safety_decision,
         safety_reason=item.safety_reason,
+        quantity_contract=item.quantity_contract,
     )
+
+
+def _quantity_contract_decision(
+    *,
+    decision: SellExitDecision,
+    position: CurrentAssetPosition | None,
+    runtime_root: Path,
+    mode: str,
+) -> SellExitDecision:
+    source_decision = str(decision.source_decision or "EXIT").upper()
+    position_quantity = float(position.quantity) if position is not None else 0.0
+    sellable = _sellable_quantity_evidence(
+        runtime_root=runtime_root,
+        symbol=decision.symbol,
+        position_quantity=position_quantity,
+        mode=mode,
+    )
+    sellable_quantity = float(sellable["sellable_quantity"])
+    if source_decision == "EXIT":
+        requested_quantity = float(decision.quantity or 0.0) or position_quantity
+        quantity = min(requested_quantity, sellable_quantity)
+        status = "PASS" if quantity > 0 else "REVIEW_REQUIRED"
+        reason = (
+            "EXIT sells the requested/current full sellable quantity"
+            if status == "PASS"
+            else "REVIEW_REQUIRED_EXIT_SELLABLE_QUANTITY_ZERO"
+        )
+        contract = {
+            "quantity_contract_version": "runtime_v2_pm_exit_full_quantity_v1",
+            "source_decision": "EXIT",
+            "position_quantity_before": position_quantity,
+            "requested_sell_quantity": requested_quantity,
+            "sellable_quantity": sellable_quantity,
+            "sellable_quantity_source": sellable["sellable_quantity_source"],
+            "restricted_quantity": sellable["restricted_quantity"],
+            "final_sell_quantity": quantity,
+            "expected_remaining_quantity": max(position_quantity - quantity, 0.0),
+            "status": status,
+            "reason": reason,
+        }
+        return replace(
+            decision,
+            quantity=quantity,
+            reason=decision.reason if status == "PASS" else reason,
+            source_decision="EXIT",
+            quantity_contract=contract,
+        )
+    if source_decision != "REDUCE":
+        return replace(
+            decision,
+            quantity=0.0,
+            quantity_contract={
+                "quantity_contract_version": REDUCE_QUANTITY_CONTRACT_VERSION,
+                "source_decision": source_decision,
+                "status": "REVIEW_REQUIRED",
+                "reason": "REVIEW_REQUIRED_UNSUPPORTED_SELL_SOURCE_DECISION",
+            },
+        )
+    contract = calculate_reduce_quantity_contract(
+        position_quantity=float(position.quantity) if position is not None else 0.0,
+        sellable_quantity=sellable_quantity,
+        sellable_quantity_source=str(sellable["sellable_quantity_source"]),
+        restricted_quantity=float(sellable["restricted_quantity"]),
+        reduce_intensity=decision.reduce_intensity,
+        tradable_unit=DEFAULT_TRADABLE_UNIT,
+    )
+    return replace(
+        decision,
+        quantity=float(contract.get("final_sell_quantity") or 0.0),
+        source_decision="REDUCE",
+        quantity_contract=contract,
+    )
+
+
+def calculate_reduce_quantity_contract(
+    *,
+    position_quantity: float,
+    reduce_intensity: str,
+    sellable_quantity: float | None = None,
+    sellable_quantity_source: str = "current_position_quantity",
+    restricted_quantity: float = 0.0,
+    tradable_unit: float = DEFAULT_TRADABLE_UNIT,
+) -> dict[str, Any]:
+    intensity = str(reduce_intensity or "").upper()
+    target_reduce_ratio = REDUCE_INTENSITY_RATIOS.get(intensity)
+    effective_sellable_quantity = min(float(position_quantity), float(sellable_quantity if sellable_quantity is not None else position_quantity))
+    base = {
+        "quantity_contract_version": REDUCE_QUANTITY_CONTRACT_VERSION,
+        "source_decision": "REDUCE",
+        "reduce_intensity": intensity,
+        "target_reduce_ratio": target_reduce_ratio,
+        "position_quantity_before": float(position_quantity),
+        "sellable_quantity": effective_sellable_quantity,
+        "sellable_quantity_source": sellable_quantity_source,
+        "restricted_quantity": float(restricted_quantity),
+        "tradable_unit": float(tradable_unit),
+        "minimum_order_quantity": float(tradable_unit),
+        "minimum_remaining_quantity": float(tradable_unit),
+        "rounding_policy": "floor_to_tradable_unit_to_avoid_oversell",
+    }
+    if position_quantity <= 0:
+        return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_CURRENT_POSITION_MISSING", "final_sell_quantity": 0.0}
+    if tradable_unit <= 0:
+        return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_TRADABLE_UNIT_UNKNOWN", "final_sell_quantity": 0.0}
+    if target_reduce_ratio is None:
+        return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_INTENSITY_UNKNOWN", "final_sell_quantity": 0.0}
+    if effective_sellable_quantity < tradable_unit:
+        return {
+            **base,
+            "status": "REVIEW_REQUIRED",
+            "reason": "REVIEW_REQUIRED_REDUCE_SELLABLE_QUANTITY_BELOW_TRADABLE_UNIT",
+            "raw_reduce_quantity": effective_sellable_quantity * target_reduce_ratio,
+            "rounded_reduce_quantity": 0.0,
+            "final_sell_quantity": 0.0,
+            "expected_remaining_quantity": position_quantity,
+        }
+    if position_quantity <= tradable_unit:
+        return {
+            **base,
+            "status": "REVIEW_REQUIRED",
+            "reason": "REVIEW_REQUIRED_REDUCE_NOT_EXECUTABLE_AT_TRADABLE_UNIT",
+            "raw_reduce_quantity": position_quantity * target_reduce_ratio,
+            "rounded_reduce_quantity": 0.0,
+            "final_sell_quantity": 0.0,
+            "expected_remaining_quantity": position_quantity,
+        }
+    raw_reduce_quantity = effective_sellable_quantity * target_reduce_ratio
+    rounded_reduce_quantity = math.floor(raw_reduce_quantity / tradable_unit) * tradable_unit
+    expected_remaining_quantity = position_quantity - rounded_reduce_quantity
+    if rounded_reduce_quantity <= 0:
+        return {
+            **base,
+            "status": "REVIEW_REQUIRED",
+            "reason": "REVIEW_REQUIRED_REDUCE_ROUNDED_QUANTITY_ZERO",
+            "raw_reduce_quantity": raw_reduce_quantity,
+            "rounded_reduce_quantity": rounded_reduce_quantity,
+            "final_sell_quantity": 0.0,
+            "expected_remaining_quantity": position_quantity,
+        }
+    if rounded_reduce_quantity >= position_quantity:
+        return {
+            **base,
+            "status": "REVIEW_REQUIRED",
+            "reason": "REVIEW_REQUIRED_REDUCE_QUANTITY_EXCEEDS_OR_EQUALS_POSITION",
+            "raw_reduce_quantity": raw_reduce_quantity,
+            "rounded_reduce_quantity": rounded_reduce_quantity,
+            "final_sell_quantity": 0.0,
+            "expected_remaining_quantity": expected_remaining_quantity,
+        }
+    if expected_remaining_quantity < tradable_unit:
+        return {
+            **base,
+            "status": "REVIEW_REQUIRED",
+            "reason": "REVIEW_REQUIRED_REDUCE_MINIMUM_REMAINING_QUANTITY_VIOLATION",
+            "raw_reduce_quantity": raw_reduce_quantity,
+            "rounded_reduce_quantity": rounded_reduce_quantity,
+            "final_sell_quantity": 0.0,
+            "expected_remaining_quantity": expected_remaining_quantity,
+        }
+    return {
+        **base,
+        "status": "PASS",
+        "reason": "reduce_quantity_contract_pass",
+        "raw_reduce_quantity": raw_reduce_quantity,
+        "rounded_reduce_quantity": rounded_reduce_quantity,
+        "final_sell_quantity": rounded_reduce_quantity,
+        "expected_remaining_quantity": expected_remaining_quantity,
+    }
+
+
+def _apply_exit_priority(decisions: tuple[SellExitDecision, ...]) -> tuple[SellExitDecision, ...]:
+    exit_symbols = {
+        str(decision.symbol).strip()
+        for decision in decisions
+        if str(decision.source_decision or "EXIT").upper() == "EXIT" and str(decision.symbol).strip()
+    }
+    result: list[SellExitDecision] = []
+    seen: set[tuple[str, str]] = set()
+    for decision in decisions:
+        symbol = str(decision.symbol).strip()
+        source_decision = str(decision.source_decision or "EXIT").upper()
+        if source_decision == "REDUCE" and symbol in exit_symbols:
+            continue
+        key = (symbol, source_decision)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(decision)
+    return tuple(result)
+
+
+def _pending_sell_conflict(*, runtime_root: Path, symbols: tuple[str, ...]) -> tuple[str, ...]:
+    path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    if not path.is_file():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ("PENDING_SLOT_UNREADABLE",)
+    state = str(payload.get("state") or payload.get("status") or "").upper()
+    active_pending = bool(payload.get("active_pending", state not in {"", "EMPTY", "CONSUMED", "NOT_REQUIRED"}))
+    if not active_pending:
+        return ()
+    requested = {str(symbol).strip() for symbol in symbols if str(symbol).strip()}
+    conflicts: list[str] = []
+    for item in payload.get("items") or ():
+        if str(item.get("side") or "").upper() != "SELL":
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        if symbol in requested and float(item.get("quantity") or 0.0) > 0:
+            conflicts.append(symbol)
+    return tuple(sorted(set(conflicts)))
+
+
+def _sellable_quantity_evidence(
+    *,
+    runtime_root: Path,
+    symbol: str,
+    position_quantity: float,
+    mode: str,
+) -> dict[str, Any]:
+    if position_quantity <= 0:
+        return {
+            "sellable_quantity": 0.0,
+            "restricted_quantity": 0.0,
+            "sellable_quantity_source": "current_position_missing",
+        }
+    if mode == "historical":
+        restricted = _historical_restricted_sell_quantity(runtime_root=runtime_root, symbol=symbol)
+        return {
+            "sellable_quantity": max(float(position_quantity) - restricted, 0.0),
+            "restricted_quantity": restricted,
+            "sellable_quantity_source": "historical_simulated_broker_authority",
+        }
+    snapshot = _load_broker_positions_snapshot(runtime_root)
+    snapshot_quantity = _broker_snapshot_available_quantity(snapshot=snapshot, symbol=symbol)
+    if snapshot_quantity is None:
+        return {
+            "sellable_quantity": float(position_quantity),
+            "restricted_quantity": 0.0,
+            "sellable_quantity_source": "current_position_quantity_submit_guard_final_authority",
+        }
+    available = min(float(position_quantity), snapshot_quantity)
+    return {
+        "sellable_quantity": available,
+        "restricted_quantity": max(float(position_quantity) - available, 0.0),
+        "sellable_quantity_source": "broker_readonly_available_quantity_snapshot",
+    }
+
+
+def _historical_restricted_sell_quantity(*, runtime_root: Path, symbol: str) -> float:
+    normalized_symbol = str(symbol).strip()
+    sell_order_quantity = 0.0
+    sell_execution_quantity = 0.0
+    for record in _read_jsonl_records(runtime_root / "persistent_ledger" / "orders.jsonl"):
+        if str(record.get("environment") or "") != "historical":
+            continue
+        if str(record.get("side") or "").upper() != "SELL":
+            continue
+        if str(record.get("symbol") or "").strip() != normalized_symbol:
+            continue
+        if not _is_historical_open_sell_order(record):
+            continue
+        sell_order_quantity += _safe_float(record.get("quantity"))
+    for record in _read_jsonl_records(runtime_root / "persistent_ledger" / "executions.jsonl"):
+        if str(record.get("environment") or record.get("mode") or "") != "historical":
+            continue
+        if str(record.get("side") or "").upper() != "SELL":
+            continue
+        if str(record.get("symbol") or record.get("broker_issue_code") or "").strip() != normalized_symbol:
+            continue
+        if str(record.get("execution_status") or "").lower() not in {"filled", "partial_fill", "partially_filled"}:
+            continue
+        sell_execution_quantity += _safe_float(record.get("filled_quantity") or record.get("quantity"))
+    return max(sell_order_quantity - sell_execution_quantity, 0.0)
+
+
+def _is_historical_open_sell_order(record: Mapping[str, Any]) -> bool:
+    status = str(record.get("status") or record.get("order_status") or "").strip().upper()
+    if status in {
+        "REJECTED",
+        "CANCELLED",
+        "CANCELED",
+        "FILLED",
+        "FILL",
+        "FULL_FILL",
+        "FULLY_FILLED",
+        "DONE",
+    }:
+        return False
+    source = str(record.get("source") or "").strip()
+    if source == "runtime_v2_execution_readonly_simulation":
+        return False
+    return True
+
+
+def _load_broker_positions_snapshot(runtime_root: Path) -> dict[str, Any]:
+    snapshot_dir = runtime_root / "broker" / "snapshots" / "positions"
+    if not snapshot_dir.exists():
+        return {}
+    candidates = [
+        path
+        for path in snapshot_dir.glob("*.json")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    if not candidates:
+        return {}
+    path = max(candidates, key=lambda candidate: (candidate.stat().st_mtime, candidate.name))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _broker_snapshot_available_quantity(*, snapshot: dict[str, Any], symbol: str) -> float | None:
+    records = snapshot.get("records")
+    if not isinstance(records, list):
+        records = snapshot.get("positions")
+    if not isinstance(records, list):
+        return None
+    values: list[float] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_symbol = str(record.get("issue_code") or record.get("symbol") or record.get("position_key") or "").strip()
+        requested = str(symbol).strip()
+        if record_symbol != requested and record_symbol[:4] != requested[:4]:
+            continue
+        value = _optional_float(record.get("available_quantity"))
+        if value is None:
+            return None
+        values.append(float(value))
+    if not values:
+        return None
+    return sum(values)
+
+
+def _read_jsonl_records(path: Path) -> tuple[dict[str, Any], ...]:
+    if not path.is_file():
+        return ()
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return tuple(records)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _policy_context(policy: CapitalDeploymentPolicy | None) -> dict[str, Any] | None:

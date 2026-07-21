@@ -747,6 +747,13 @@ PYTHONPATH=src python3 scripts/runtime_test.py close \
   --run-id <RUN_ID>
 ```
 
+Read-only post-run summary command:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py summarize \
+  --run-id <RUN_ID>
+```
+
 Rollback command:
 
 ```bash
@@ -767,7 +774,35 @@ PYTHONPATH=src python3 scripts/runtime_test.py abandon \
 
 All mutating commands must require explicit mutation confirmation. Ambiguous `--force`-style flags are prohibited.
 
-### 26.2.1 HALT Run Abandon Contract
+### 26.2.1 Runtime Test Summary Contract
+
+`summarize --run-id <RUN_ID>` is a read-only post-run inspection command for closed or completed Runtime Test evidence. It must not run Runtime jobs, refresh market data, call Broker APIs, submit orders, generate fills, reset state, rollback state, close a run, resume a run, abandon a run, or mutate Current / Ledger / Pending / Runtime State / Registry / Accepted Generation evidence.
+
+The command must resolve run-specific evidence from `reports/runtime_tests/runs/<run_id>/`. It must not silently summarize unrelated shared `.runtime` state. When run-specific final Trading State snapshots are unavailable, the command may read the current Runtime root only when `final_summary.final_state_hashes` exactly match the current Runtime root state hashes. If the hashes do not match, the command must return `BLOCKED` with reason `RUN_FINAL_STATE_HASH_MISMATCH`. If evidence is incomplete, the command must return `REVIEW_REQUIRED` with a specific reason such as `RUN_EVIDENCE_INCOMPLETE`, `LEDGER_NOT_AVAILABLE`, or `RUN_RUNTIME_ROOT_UNRESOLVED`.
+
+The canonical JSON schema version is `runtime_test_summary_v1`. The top-level summary must include:
+
+- `run`
+- `external_effects`
+- `performance`
+- `pm_decisions`
+- `trading`
+- `reduce_exit`
+- `trade_attribution`
+- `current_positions`
+- `lifecycle_consistency`
+- `findings`
+- `runtime_judgment`
+- `performance_judgment`
+- `strategy_judgment`
+
+Human output must include the following sections: Run Summary, External Effect Summary, Performance Summary, PM Decision Summary, BUY / SELL Summary, REDUCE / EXIT Summary, Trade Attribution, Current Positions, Lifecycle Consistency, Review / Block Summary, and Operator Judgment.
+
+Trade-level realized PnL must not be guessed. If it cannot be traced from accepted Ledger / Execution / SELL plan evidence, the trade must be marked `REVIEW_REQUIRED_TRADE_LEVEL_REALIZED_PNL_NOT_TRACEABLE`. Negative strategy return is not a Runtime failure by itself; the command must keep Runtime judgment separate from performance and strategy judgment.
+
+`--write-evidence` is allowed only for summary evidence under `reports/runtime_tests/summaries/<summary_id>/` and must not write into Runtime Trading State or run evidence.
+
+### 26.2.2 HALT Run Abandon Contract
 
 A HALT Runtime Test may be explicitly abandoned only when the operator will not resume that run. Abandon is not evidence deletion and is not a test result conversion.
 
@@ -966,6 +1001,7 @@ Partial restore is prohibited. Current-only restore, Ledger-only restore, Pendin
 | Command | State Change | Responsibility |
 |---|---:|---|
 | `status` | No | Read-only Runtime Test state summary. |
+| `summarize` | No | Read-only post-run summary, trade attribution, distribution, lifecycle, and operator judgment from accepted run evidence. |
 | `plan` | No | Build execution plan, job sequence, dates, evidence paths, and expected commands. |
 | `backup` | Yes | Backup resettable Trading State before reset/run. |
 | `reset` | Yes | Initialize the test Trading State all-or-nothing from an accepted backup. |
@@ -1178,6 +1214,7 @@ This specification consolidates accepted outcomes from:
 
 | Version | Date | Change Summary | Related Phase / Report | Contract Impact | Approval Status |
 |---|---|---|---|---|---|
+| 1.7 | 2026-07-22 | Added scoped `system-status` output, default overview, legacy JSON compatibility, and post-run truthfulness separation. | Phase19-BW | Refines observability/CLI schema only; no Runtime authority or trading-state mutation authority. | REVIEWED |
 | 1.6 | 2026-07-21 | Expanded `system-status` standard output and evidence to complete inspection inventory. | Phase19-AZ | Refines observability schema and human output; no Runtime authority or trading-state mutation authority. | REVIEWED |
 | 1.5 | 2026-07-21 | Clarified `system-status` Safety Artifact timing: pre-run missing is `NOT_YET_APPLICABLE`, post Safety/Morning route missing is `BLOCK`. | Phase19-AY | Refines observability semantics only; no Runtime authority or trading-state mutation authority. | REVIEWED |
 | 1.4 | 2026-07-21 | Added `system-status` as the recommended daily read-only system health command and narrowed `ai-status` to AI Artifact Inspection. | Phase19-AX | Adds system-wide observability command; no Runtime authority or trading-state mutation authority. | REVIEWED |
@@ -1240,9 +1277,11 @@ Allowed options:
 ```text
 --json
 --write-evidence
+--scope overview|data|ai|runtime|broker|readiness|lineage|components|full
+--full
 ```
 
-There is no `--detailed` option because standard output is the full human operational summary.
+There is no `--detailed` option. Standard output is the compact operator overview. Full inspection is requested with `--scope full` or the `--full` alias. Exactly one scope is selected per invocation; multiple-scope output is intentionally not part of this contract.
 
 `ai-status` remains available as AI Artifact Inspection, but normal daily operation should use `system-status`.
 
@@ -1254,7 +1293,9 @@ reports/runtime_tests/system_status/<run_id>/
 
 `system-status` must not mutate authority or Trading State and must not access Broker credentials/API. Broker Connection is reported as `NOT_PERFORMED` inside this read-only command.
 
-The standard `system-status` human output is the full inspection report. It must include:
+The standard `system-status` human output is the default `overview` scope. It must include Inspection Context, separated status judgments, key data freshness dates, Runtime execution/current-state status, Accepted Generation age with explicit units, important findings, non-mutation guarantee, and exit code.
+
+The `full` scope is the full inspection report. It must include:
 
 ```text
 Runtime Stage
@@ -1277,6 +1318,18 @@ Exit Code
 ```
 
 JSON and evidence output must carry the same semantic information. Candidate `evaluated_symbols` must not be conflated with Candidate output count. Opportunity `input_candidate_count`, `ranking_count`, and `top20_count` must be separate.
+
+JSON output follows the selected scope using v2 fields:
+
+```text
+scope
+inspection_context
+status_summary
+findings
+sections
+```
+
+For compatibility with existing consumers, JSON also preserves the deprecated top-level `system_status_report` full legacy report. New consumers should use the v2 selected-scope fields.
 
 Safety Artifact timing contract:
 
@@ -1312,6 +1365,10 @@ Operational truthfulness contract:
 - `NOT_PERFORMED` and `NOT_EVALUATED` must not be rendered as PASS.
 - Broker Configuration and Submit Guard Configuration are separate from Broker Connectivity, Credential Access, and Broker Write.
 - Paths that are not yet materialized must use explicit values such as `NOT_YET_MATERIALIZED` or `NOT_APPLICABLE`; `.` and empty path placeholders are prohibited.
+- Runtime execution judgment and AI Model Health judgment are separate. Model Health `REVIEW_REQUIRED` must include trigger, classification, metric, threshold, policy, observed value, BUY impact, SELL impact, and Runtime impact. Statistical Model Health review alone must not make Runtime execution `REVIEW_REQUIRED` when Runtime consumers and action impacts are PASS/NONE.
+- Historical post-run target-period data sufficiency is evaluated from closed-run evidence and the final completed business date. Missing non-retained transient feature artifacts after a successful closed run are not blockers when completed-run evidence proves the target period executed successfully.
+- Runtime freshness resolution must exclude future fixture artifacts such as 2099 directories. It must not use latest-directory, max-date, mtime, or future-fixture fallback as Runtime authority.
+- Position runtime feature authority separates target-date feature rows from final post-run positions. A target-date position feature row count of zero can be `TEMPORAL_ISOLATION_PASS` even when final ledger/current state contains positions after the target-date feature window.
 
 Complete AI input lineage contract:
 

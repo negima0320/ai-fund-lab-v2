@@ -96,13 +96,22 @@ POSITION_METADATA_ONLY_COLUMNS = {
     "code",
     "created_at",
     "data_until",
+    "defaulted_features",
     "entry_date",
+    "feature_as_of_date",
+    "feature_contract_version",
     "feature_set_name",
+    "feature_source_artifact",
+    "feature_source_hash",
     "feature_version",
+    "missing_features",
     "no_position_reason",
+    "optional_features",
     "position_state_as_of",
+    "required_features",
     "source_snapshot_id",
     "target_date",
+    "temporal_validation_status",
 }
 
 POSITION_OPERATIONAL_STATE_COLUMNS = {

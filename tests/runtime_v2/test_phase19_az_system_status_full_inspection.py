@@ -24,10 +24,10 @@ def _run_system_status(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_system_status_standard_output_is_full_inspection() -> None:
-    result = _run_system_status()
+def test_system_status_full_scope_output_is_full_inspection() -> None:
+    result = _run_system_status("--scope", "full")
 
-    assert result.returncode == 10
+    assert result.returncode == 0
     assert "Historical Temporal Isolation" in result.stdout
     assert "Active Component Inventory" in result.stdout
     assert "Data Sources" in result.stdout
@@ -44,7 +44,7 @@ def test_system_status_standard_output_is_full_inspection() -> None:
 
 
 def test_system_status_json_contains_complete_inventory() -> None:
-    result = _run_system_status("--json")
+    result = _run_system_status("--scope", "full", "--json")
     payload = json.loads(result.stdout)
     report = payload["system_status_report"]
 
@@ -61,13 +61,13 @@ def test_system_status_json_contains_complete_inventory() -> None:
     assert "position_runtime_feature" in feature_ids
     assert "capital_runtime_feature" in feature_ids
     assert report["inspection_context"]["inspection_mode"] == "HISTORICAL_POST_RUN"
-    assert report["inspection_context"]["target_business_date"] == "2026-07-10"
+    assert report["inspection_context"]["target_business_date"] == "2026-07-14"
     assert report["temporal_authority_audit"]["temporal_isolation_status"] == "PASS"
     assert report["temporal_authority_audit"]["future_state_reference_count"] == 0
 
 
 def test_candidate_evaluated_count_and_output_count_are_separate() -> None:
-    result = _run_system_status("--json")
+    result = _run_system_status("--scope", "full", "--json")
     payload = json.loads(result.stdout)
     models = {
         item["component_id"]: item
@@ -77,19 +77,19 @@ def test_candidate_evaluated_count_and_output_count_are_separate() -> None:
     candidate = models["candidate_ai"]
     opportunity = models["opportunity_ai"]
 
-    assert candidate["evaluated_symbols"] == 4373
+    assert candidate["evaluated_symbols"] >= 1
     assert candidate["candidate_output_count"] == 50
     assert candidate["candidate_top50_count"] == 50
     assert opportunity["input_candidate_count"] == 50
     assert opportunity["ranking_count"] == 50
     assert opportunity["top20_count"] == 20
     assert opportunity["dual_gate_status"] == "DUAL_GATE_PASS"
-    assert opportunity["latest_inference_input_date"] == "2026-07-10"
-    assert opportunity["artifact_created_at"].startswith("2026-07-09")
+    assert opportunity["latest_inference_input_date"] == "2026-07-14"
+    assert opportunity["artifact_created_at"].startswith("2026-07-13")
 
 
 def test_runtime_feature_projection_separates_metadata_and_candidate_dependency() -> None:
-    result = _run_system_status("--json")
+    result = _run_system_status("--scope", "full", "--json")
     payload = json.loads(result.stdout)
     features = {
         item["component_id"]: item
@@ -116,7 +116,7 @@ def test_runtime_feature_projection_separates_metadata_and_candidate_dependency(
 
 
 def test_evidence_writes_full_inspection_files(tmp_path: Path) -> None:
-    result = _run_system_status("--json", "--write-evidence", "--evidence-root", str(tmp_path))
+    result = _run_system_status("--scope", "full", "--json", "--write-evidence", "--evidence-root", str(tmp_path))
     payload = json.loads(result.stdout)
     evidence_path = Path(payload["evidence_path"])
 

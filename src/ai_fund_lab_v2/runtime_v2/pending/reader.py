@@ -285,6 +285,11 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 safety_source=str(item.get("safety_source") or ""),
                 safety_decision=str(item.get("safety_decision") or ""),
                 safety_reason=str(item.get("safety_reason") or ""),
+                quantity_contract=(
+                    dict(item["quantity_contract"])
+                    if isinstance(item.get("quantity_contract"), Mapping)
+                    else None
+                ),
             )
             for item in payload["items"]
         ),

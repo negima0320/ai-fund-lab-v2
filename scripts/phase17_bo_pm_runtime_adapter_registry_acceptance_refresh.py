@@ -67,11 +67,11 @@ def _phase17_bo_registry_tests(module: Any) -> list[dict[str, Any]]:
 def main() -> int:
     module = _load_base_module()
     module.VERSION = "phase17_bo_pm_runtime_adapter_registry_formal_acceptance_refresh.v1"
-    module.EVIDENCE_ID = "control_position_management_accepted_current_path_v7"
+    module.EVIDENCE_ID = "control_position_management_accepted_current_path_v9"
     module.REPORT_ROOT = REPORT_ROOT
     module.PHASE_DOC = REPO_ROOT / "docs/phase_reports/phase17_bo_pm_runtime_adapter_registry_acceptance_refresh_internal.md"
     module.PHASE_JSON = REPORT_ROOT / "registry_acceptance_internal.json"
-    module.PREVIOUS_ACCEPTED_ADAPTER_HASH = "d08d854266f6822f322a7947fd7deb20a2906d2a56806d030e2618114bdcaa4b"
+    module.PREVIOUS_ACCEPTED_ADAPTER_HASH = "490a4b48fe15858425cb5394b9d22444e78922b6e6b97190a9cdad8991ca760a"
     module.run_tests = lambda: _phase17_bo_registry_tests(module)
     return module.main()
 

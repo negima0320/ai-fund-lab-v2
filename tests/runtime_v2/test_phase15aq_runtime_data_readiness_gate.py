@@ -467,6 +467,16 @@ def _candidate_row(symbol: str, feature_date: str) -> dict:
 def _write_pm_inputs(tmp_path: Path, *, symbols: tuple[str, ...], feature_date: str) -> tuple[Path, Path]:
     opportunity = tmp_path / "pm_opportunity.csv"
     feature = tmp_path / "pm_feature.csv"
+    required_features = json.dumps(
+        [
+            "price_momentum_return_5d",
+            "price_momentum_return_20d",
+            "trend_close_over_ma_20d",
+            "trend_ma_5_20_ratio",
+            "volume_momentum_ratio_5d",
+            "volatility_return_std_20d",
+        ]
+    )
     pd.DataFrame(
         [
             {
@@ -479,7 +489,32 @@ def _write_pm_inputs(tmp_path: Path, *, symbols: tuple[str, ...], feature_date: 
             for symbol in symbols
         ]
     ).to_csv(opportunity, index=False)
-    pd.DataFrame([{"target_date": feature_date, "code": symbol} for symbol in symbols]).to_csv(feature, index=False)
+    pd.DataFrame(
+        [
+            {
+                "target_date": feature_date,
+                "code": symbol,
+                "feature_as_of_date": feature_date,
+                "data_until": feature_date,
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+                "price_momentum_return_5d": 0.03,
+                "price_momentum_return_20d": 0.05,
+                "trend_close_over_ma_20d": 1.02,
+                "trend_ma_5_20_ratio": 1.01,
+                "volume_momentum_ratio_5d": 1.1,
+                "volatility_return_std_20d": 0.02,
+                "feature_source_artifact": "fixture_candidate_features.parquet",
+                "feature_source_hash": "fixture-feature-source-hash",
+                "required_features": required_features,
+                "optional_features": json.dumps(["no_position_reason"]),
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "created_at": feature_date + "T00:00:00Z",
+            }
+            for symbol in symbols
+        ]
+    ).to_csv(feature, index=False)
     return opportunity, feature
 
 

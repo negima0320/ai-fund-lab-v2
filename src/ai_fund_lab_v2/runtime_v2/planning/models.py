@@ -45,6 +45,7 @@ class CapitalAllocationSignal:
     policy_source: str = ""
     sizing_policy_reason: str = ""
     policy_context: dict[str, Any] | None = None
+    quantity_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class OrderPlanItem:
     sell_liquidation_policy: str = ""
     manual_review_threshold: dict[str, Any] | None = None
     sizing_policy_reason: str = ""
+    quantity_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

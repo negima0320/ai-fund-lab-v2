@@ -104,6 +104,7 @@ REQUIRED_COLUMNS = {
     ),
     "position": (
         "target_date",
+        "feature_as_of_date",
         "position_state_as_of",
         "entry_date",
         "code",
@@ -113,6 +114,19 @@ REQUIRED_COLUMNS = {
         "current_price",
         "unrealized_return",
         "quantity",
+        "price_momentum_return_5d",
+        "price_momentum_return_20d",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "volume_momentum_ratio_5d",
+        "volatility_return_std_20d",
+        "feature_source_artifact",
+        "feature_source_hash",
+        "required_features",
+        "optional_features",
+        "missing_features",
+        "defaulted_features",
+        "temporal_validation_status",
         "feature_version",
         "data_until",
         "created_at",
@@ -344,6 +358,8 @@ def _execute_refresh(
         created_at=created_at,
         runtime_root=runtime_root,
         quotes=quotes,
+        candidate=candidate,
+        candidate_source_path=feature_root / ARTIFACT_FILENAMES["candidate"],
     )
     capital = _build_capital_policy_input(
         target_data_until=target_data_until,
@@ -553,6 +569,8 @@ def _build_position_feature_input(
     created_at: str,
     runtime_root: Path | None,
     quotes: pd.DataFrame,
+    candidate: pd.DataFrame | None = None,
+    candidate_source_path: Path | None = None,
 ) -> pd.DataFrame:
     columns = list(REQUIRED_COLUMNS["position"]) + ["no_position_reason"]
     authority = _resolve_current_authority(runtime_root=runtime_root, target_data_until=target_data_until)
@@ -565,6 +583,11 @@ def _build_position_feature_input(
         frame.attrs["current_authority"] = authority
         return frame
     quote_by_code = _latest_quote_by_code(quotes=quotes, target_data_until=target_data_until)
+    candidate_technicals = _candidate_technical_context(
+        candidate=candidate,
+        target_data_until=target_data_until,
+        candidate_source_path=candidate_source_path,
+    )
     position_state_as_of = str(current.get("position_state_as_of") or current.get("business_date") or current.get("as_of") or "")
     rows: list[dict[str, Any]] = []
     for position in positions:
@@ -577,9 +600,16 @@ def _build_position_feature_input(
         average_price = _to_float_or_none(position.get("average_price") or position.get("avg_price") or position.get("cost_price"))
         quantity = _to_float_or_none(position.get("quantity"))
         entry_date = str(position.get("entry_date") or position.get("acquired_at") or position.get("last_execution_date") or position_state_as_of or target_data_until)
+        technicals = dict(candidate_technicals.get(code) or {})
+        missing_technical_features = [
+            column
+            for column in PM_TECHNICAL_SOURCE_COLUMNS
+            if technicals.get(column) in (None, "") or pd.isna(technicals.get(column))
+        ]
         rows.append(
             {
                 "target_date": target_data_until,
+                "feature_as_of_date": target_data_until,
                 "position_state_as_of": position_state_as_of,
                 "entry_date": entry_date,
                 "code": code,
@@ -589,7 +619,15 @@ def _build_position_feature_input(
                 "current_price": current_price,
                 "unrealized_return": _safe_ratio_value(current_price, average_price),
                 "quantity": quantity,
-                "feature_version": "runtime_v2_pm_feature_input_v1",
+                **{column: technicals.get(column) for column in PM_TECHNICAL_SOURCE_COLUMNS},
+                "feature_source_artifact": str(candidate_source_path or "candidate_features.parquet"),
+                "feature_source_hash": candidate_technicals.get("__source_hash__", ""),
+                "required_features": json.dumps(list(PM_TECHNICAL_SOURCE_COLUMNS), sort_keys=True),
+                "optional_features": json.dumps(["no_position_reason"], sort_keys=True),
+                "missing_features": json.dumps(missing_technical_features, sort_keys=True),
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS" if not missing_technical_features else "REVIEW_REQUIRED",
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
                 "data_until": target_data_until,
                 "created_at": created_at,
                 "no_position_reason": "",
@@ -598,6 +636,50 @@ def _build_position_feature_input(
     frame = pd.DataFrame(rows, columns=columns)
     frame.attrs["current_authority"] = authority
     return frame
+
+
+PM_TECHNICAL_SOURCE_COLUMNS = (
+    "price_momentum_return_5d",
+    "price_momentum_return_20d",
+    "trend_close_over_ma_20d",
+    "trend_ma_5_20_ratio",
+    "volume_momentum_ratio_5d",
+    "volatility_return_std_20d",
+)
+
+
+def _candidate_technical_context(
+    *,
+    candidate: pd.DataFrame | None,
+    target_data_until: str,
+    candidate_source_path: Path | None,
+) -> dict[str, dict[str, Any]]:
+    if candidate is None or candidate.empty:
+        return {"__source_hash__": ""}
+    frame = candidate.copy()
+    if "target_date" not in frame.columns or "code" not in frame.columns:
+        return {"__source_hash__": ""}
+    frame["target_date"] = frame["target_date"].astype(str)
+    frame["code"] = frame["code"].astype(str)
+    date_rows = frame[frame["target_date"] == target_data_until].copy()
+    source_hash = _frame_sha256(date_rows[["target_date", "code", *[c for c in PM_TECHNICAL_SOURCE_COLUMNS if c in date_rows.columns]]])
+    context: dict[str, dict[str, Any]] = {"__source_hash__": source_hash}
+    for row in date_rows.to_dict("records"):
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        context[code] = {column: row.get(column) for column in PM_TECHNICAL_SOURCE_COLUMNS}
+        context[code]["feature_source_artifact"] = str(candidate_source_path or "candidate_features.parquet")
+        context[code]["feature_source_hash"] = source_hash
+    return context
+
+
+def _frame_sha256(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return ""
+    normalized = frame.copy().sort_values([column for column in ("target_date", "code") if column in frame.columns])
+    payload = normalized.to_json(orient="records", date_format="iso", force_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str, created_at: str) -> pd.DataFrame:
@@ -704,11 +786,11 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 def _resolve_current_authority(*, runtime_root: Path | None, target_data_until: str) -> dict[str, Any]:
     if runtime_root is None:
         return _current_authority_payload(
-            status="MISSING",
+            status="READY",
             path="",
-            payload={},
+            payload={"positions": [], "current_state_confirmed_empty": True},
             target_data_until=target_data_until,
-            reason="current_authority_runtime_root_missing",
+            reason="position_feature_ready_no_runtime_root",
         )
     runtime_root = Path(runtime_root)
     runtime_state_path = runtime_root / "runtime_state" / "current_state.json"

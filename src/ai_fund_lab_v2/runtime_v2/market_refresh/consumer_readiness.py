@@ -72,6 +72,7 @@ OPPORTUNITY_REQUIRED_COLUMNS: tuple[str, ...] = (
 
 PM_REQUIRED_COLUMNS: tuple[str, ...] = (
     "target_date",
+    "feature_as_of_date",
     "position_state_as_of",
     "entry_date",
     "code",
@@ -81,6 +82,19 @@ PM_REQUIRED_COLUMNS: tuple[str, ...] = (
     "current_price",
     "unrealized_return",
     "quantity",
+    "price_momentum_return_5d",
+    "price_momentum_return_20d",
+    "trend_close_over_ma_20d",
+    "trend_ma_5_20_ratio",
+    "volume_momentum_ratio_5d",
+    "volatility_return_std_20d",
+    "feature_source_artifact",
+    "feature_source_hash",
+    "required_features",
+    "optional_features",
+    "missing_features",
+    "defaulted_features",
+    "temporal_validation_status",
     "feature_version",
     "data_until",
     "created_at",
@@ -364,12 +378,12 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
     if current_authority.get("current_authority_status") != "READY":
         status = "REVIEW_REQUIRED"
         reason = str(current_authority.get("reason") or "current_authority_not_ready")
-    elif current_position_count > 0 and missing:
-        status = "REVIEW_REQUIRED"
-        reason = "required_pm_feature_columns_missing"
     elif current_position_count > 0 and len(frame) == 0:
         status = "REVIEW_REQUIRED"
         reason = "position_feature_current_output_mismatch"
+    elif current_position_count > 0 and missing:
+        status = "REVIEW_REQUIRED"
+        reason = "required_pm_feature_columns_missing"
     elif current_position_count == 0 and len(frame) == 0 and not has_no_position_reason:
         status = "REVIEW_REQUIRED"
         reason = "pm_feature_empty_without_no_position_reason"

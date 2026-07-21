@@ -37,20 +37,25 @@ def test_system_status_help_has_minimal_options() -> None:
     assert result.returncode == 0
     assert "--json" in result.stdout
     assert "--write-evidence" in result.stdout
+    assert "--scope" in result.stdout
     assert "--detailed" not in result.stdout
 
 
 def test_system_status_json_reviews_whole_system() -> None:
     result = _run_system_status("--json")
-    assert result.returncode == 10
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
     report = payload["system_status_report"]
-    assert report["status"] == "REVIEW_REQUIRED"
+    assert payload["scope"] == "overview"
+    assert payload["status_summary"]["inspection_judgment"] == "PASS"
+    assert payload["status_summary"]["model_health_judgment"] == "REVIEW_REQUIRED"
+    assert report["status"] == "PASS"
     assert report["inspection_context"]["inspection_mode"] == "HISTORICAL_POST_RUN"
-    assert report["inspection_context"]["target_business_date"] == "2026-07-10"
+    assert report["inspection_context"]["target_business_date"] == "2026-07-14"
     assert report["data_status"]["status"] == "PASS"
     assert report["ai_status"]["status"] == "PASS"
-    assert report["runtime_status"]["status"] == "REVIEW_REQUIRED"
+    assert report["runtime_status"]["status"] == "PASS"
+    assert report["runtime_status"]["model_health"]["status"] == "REVIEW_REQUIRED"
     assert report["runtime_state_status"]["status"] == "PASS"
     assert report["temporal_authority_audit"]["temporal_isolation_status"] == "PASS"
     assert report["broker_layer_status"]["broker_connection"]["broker_access"] == "NOT_PERFORMED"
@@ -59,13 +64,13 @@ def test_system_status_json_reviews_whole_system() -> None:
 
 def test_system_status_human_summary() -> None:
     result = _run_system_status()
-    assert result.returncode == 10
+    assert result.returncode == 0
     assert "AI Fund Lab v2 System Status" in result.stdout
-    assert "Data: PASS" in result.stdout
-    assert "Broker Access: NOT_PERFORMED" in result.stdout
-    assert "Inspection context: HISTORICAL_POST_RUN for 2026-07-10" in result.stdout
-    assert "Temporal isolation" in result.stdout
-    assert "Exit Code: 10" in result.stdout
+    assert "Data                : PASS" in result.stdout
+    assert "Broker Connectivity : NOT_PERFORMED" in result.stdout
+    assert "Inspection Mode     : HISTORICAL_POST_RUN" in result.stdout
+    assert "Target Date         : 2026-07-14" in result.stdout
+    assert "Exit Code: 0" in result.stdout
 
 
 def test_system_status_write_evidence(tmp_path: Path) -> None:

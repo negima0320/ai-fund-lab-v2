@@ -170,6 +170,7 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
         sell_liquidation_policy=str(_policy_value(allocation, "sell_liquidation_policy") or ""),
         manual_review_threshold=_policy_value(allocation, "manual_review_threshold"),
         sizing_policy_reason=allocation.sizing_policy_reason if allocation else "",
+        quantity_contract=dict(allocation.quantity_contract) if allocation and allocation.quantity_contract else None,
     )
 
 

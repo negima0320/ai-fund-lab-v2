@@ -100,6 +100,7 @@ class PendingOrderItem:
     safety_source: str = ""
     safety_decision: str = ""
     safety_reason: str = ""
+    quantity_contract: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

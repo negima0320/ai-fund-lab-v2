@@ -5,9 +5,9 @@ Final judgment: `PHASE17_B1I_B_PM_ADAPTER_AUTHORITY_ACCEPTED`
 ## Authority
 - Authority mode: `ACCEPTED_CURRENT_PATH`
 - Accepted current path: `src/ai_fund_lab_v2/runtime_v2/position_management/producer.py`
-- Source hash: `4f1c0f7e7409cba1a65238d5c88736624071c7911b8b55ea74974bb7e8e763c7`
-- New PM set: `control.position_management.accepted_set@sha256-ca33e52e6a73b8af`
-- Old PM set: `control.position_management.accepted_set@sha256-8c87f91911b03e75`
+- Source hash: `60aed38779738c322469838f035fbfc234f8cdb97103edb303c23bf6baf91571`
+- New PM set: `control.position_management.accepted_set@sha256-9a17ed6faf965379`
+- Old PM set: `control.position_management.accepted_set@sha256-99cf50b4778296aa`
 
 ## Gates
 - PM_CURRENT_SOURCE_REVIEWED: `PASS`
