@@ -1,0 +1,208 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/unified_generation_candidate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authority": {
+      "type": "string"
+    },
+    "accepted": {
+      "const": false,
+      "type": "boolean"
+    },
+    "bootstrap_or_retraining": {
+      "enum": [
+        "BOOTSTRAP",
+        "RETRAINING"
+      ],
+      "type": "string"
+    },
+    "calibration_artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "calibration_hashes": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "candidate_model_artifact_id": {
+      "type": "string"
+    },
+    "candidate_model_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_usage_contract_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "dual_gate_artifact_id": {
+      "type": "string"
+    },
+    "dual_gate_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "feature_order_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "generation_candidate_id": {
+      "type": "string"
+    },
+    "generation_eligibility": {
+      "const": true,
+      "type": "boolean"
+    },
+    "generation_manifest_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "generation_status": {
+      "const": "GENERATION_CANDIDATE"
+    },
+    "generation_version": {
+      "type": "string"
+    },
+    "lineage_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "opportunity_model_artifact_id": {
+      "type": "string"
+    },
+    "opportunity_model_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "policy_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "preprocessing_pipeline_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "previous_generation_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "producer": {
+      "type": "string"
+    },
+    "runtime_baseline_artifact_id": {
+      "type": "string"
+    },
+    "runtime_baseline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_eligibility": {
+      "const": false,
+      "type": "boolean"
+    },
+    "scaler_artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scaler_hashes": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "split_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "validation_artifact_id": {
+      "type": "string"
+    },
+    "validation_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "generation_candidate_id",
+    "generation_version",
+    "generation_status",
+    "generation_eligibility",
+    "accepted",
+    "runtime_eligibility",
+    "created_at",
+    "producer",
+    "source_phase",
+    "authority",
+    "candidate_model_artifact_id",
+    "candidate_model_hash",
+    "opportunity_model_artifact_id",
+    "opportunity_model_hash",
+    "calibration_artifact_ids",
+    "calibration_hashes",
+    "validation_artifact_id",
+    "validation_hash",
+    "dual_gate_artifact_id",
+    "dual_gate_hashes",
+    "runtime_baseline_artifact_id",
+    "runtime_baseline_hash",
+    "dataset_revision_ids",
+    "dataset_usage_contract_hash",
+    "split_ids",
+    "policy_hashes",
+    "schema_hashes",
+    "feature_order_hashes",
+    "lineage_hashes",
+    "bootstrap_or_retraining",
+    "previous_generation_ref",
+    "generation_manifest_hash"
+  ],
+  "title": "unified_generation_candidate",
+  "type": "object"
+}

@@ -119,7 +119,7 @@ def test_phase17_bf_empty_pending_submit_cli_exits_zero_and_records_manifest(tmp
     assert manifest["prohibited_actions"]["demo_submit_executed"] is False
 
 
-def test_phase17_bf_empty_pending_temporal_mismatch_fails_closed(tmp_path):
+def test_phase17_bf_empty_pending_temporal_metadata_is_not_order_authority(tmp_path):
     result = _run_empty_payload_variant(
         tmp_path,
         {
@@ -128,16 +128,20 @@ def test_phase17_bf_empty_pending_temporal_mismatch_fails_closed(tmp_path):
         },
     )
 
-    assert result.status == "BLOCKED"
-    assert result.submit_action == "BLOCKED"
-    assert result.reason == "pending EMPTY classification target_session_date mismatch"
+    assert result.status == "PASS"
+    assert result.submit_action == "NO_ACTION"
+    assert result.reason == "pending_empty_no_action"
+    assert result.submitted_count == 0
+    assert result.pending_consumed is False
 
 
-def test_phase17_bf_empty_pending_missing_safety_authority_fails_closed(tmp_path):
+def test_phase17_bf_empty_pending_missing_safety_authority_is_no_action(tmp_path):
     result = _run_empty_payload_variant(tmp_path, {"safety_context": {}})
 
-    assert result.status == "BLOCKED"
-    assert result.reason == "pending EMPTY classification safety authority missing"
+    assert result.status == "PASS"
+    assert result.submit_action == "NO_ACTION"
+    assert result.reason == "pending_empty_no_action"
+    assert result.submitted_count == 0
 
 
 def test_phase17_bf_empty_pending_active_contradiction_fails_closed(tmp_path):

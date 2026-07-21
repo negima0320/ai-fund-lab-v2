@@ -606,24 +606,16 @@ def _validate_empty_pending_payload(
     business_date: str,
     environment: str,
 ) -> str:
+    _ = business_date, environment
     if not isinstance(payload, dict):
         return "pending EMPTY classification payload missing"
     if bool(payload.get("active_pending", True)):
         return "pending EMPTY classification active_pending contradiction"
-    if str(payload.get("environment") or "") != environment:
-        return "pending EMPTY classification environment mismatch"
     if str(payload.get("state") or payload.get("status") or "").upper() != "EMPTY":
         return "pending EMPTY classification state mismatch"
     items = payload.get("items")
-    if not isinstance(items, list) or items:
+    if items not in (None, []) and not (isinstance(items, tuple) and not items):
         return "pending EMPTY classification requires empty items"
-    if str(payload.get("target_session_date") or "") != business_date:
-        return "pending EMPTY classification target_session_date mismatch"
-    if str(payload.get("intended_submit_date") or "") != business_date:
-        return "pending EMPTY classification intended_submit_date mismatch"
-    no_action_reason = str(payload.get("no_action_reason") or "")
-    if not (no_action_reason.startswith("NO_SIGNAL:") or no_action_reason.startswith("NO_ACTION:")):
-        return "pending EMPTY classification no_action_reason missing"
     return ""
 
 

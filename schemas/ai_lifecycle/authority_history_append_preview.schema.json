@@ -1,0 +1,46 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/authority_history_append_preview.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "aggregate_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "append_status": {
+      "const": "NOT_EXECUTED"
+    },
+    "authority_decision_ref": {
+      "type": "object"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "duplicate_append_guard": {
+      "type": "object"
+    },
+    "generation_identity": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "append_status",
+    "idempotency_key",
+    "generation_identity",
+    "aggregate_hash",
+    "authority_decision_ref",
+    "duplicate_append_guard",
+    "content_hash"
+  ],
+  "title": "authority_history_append_preview",
+  "type": "object"
+}

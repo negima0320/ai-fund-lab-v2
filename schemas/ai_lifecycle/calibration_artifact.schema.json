@@ -1,0 +1,274 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/calibration_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "artifact_type": {
+          "const": "CALIBRATION"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "CALIBRATION_OUTPUT",
+        "REVIEW_REQUIRED",
+        "REJECTED",
+        "NOT_APPLICABLE"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "bootstrap_or_retraining": {
+      "enum": [
+        "BOOTSTRAP",
+        "RETRAINING"
+      ],
+      "type": "string"
+    },
+    "calibration_config": {
+      "type": "object"
+    },
+    "calibration_config_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "calibration_method": {
+      "type": "string"
+    },
+    "calibration_method_version": {
+      "type": "string"
+    },
+    "calibration_parameter_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "calibration_parameters": {
+      "type": "object"
+    },
+    "component": {
+      "enum": [
+        "Candidate",
+        "Opportunity"
+      ],
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corporate_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_lineage_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision": {
+      "type": "object"
+    },
+    "dataset_revision_id": {
+      "type": "string"
+    },
+    "dataset_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_usage_contract": {
+      "type": "object"
+    },
+    "dataset_usage_contract_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "embargo_business_days": {
+      "type": "integer"
+    },
+    "feature_order": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "feature_schema_identity": {
+      "type": "string"
+    },
+    "fit_window": {
+      "type": "object"
+    },
+    "fit_window_role": {
+      "const": "CALIBRATION_FIT_WINDOW",
+      "type": "string"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_eligibility": {
+      "type": "boolean"
+    },
+    "hash_inventory": {
+      "type": "object"
+    },
+    "input_score_schema": {
+      "type": "object"
+    },
+    "label_schema_identity": {
+      "type": "string"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "output_score_schema": {
+      "type": "object"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "quality_gate_result": {
+      "type": "object"
+    },
+    "quality_metrics": {
+      "type": "object"
+    },
+    "rolling_split_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_eligibility": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_model_artifact": {
+      "type": "object"
+    },
+    "source_model_artifact_id": {
+      "type": "string"
+    },
+    "source_model_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "source_model_hash_target": {
+      "type": "object"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "source_scaler_artifact": {
+      "type": "object"
+    },
+    "source_scaler_artifact_id": {
+      "type": "string"
+    },
+    "source_scaler_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "source_scaler_hash_target": {
+      "type": "object"
+    },
+    "split_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_id": {
+      "type": "string"
+    },
+    "target_horizon_business_days": {
+      "type": "integer"
+    },
+    "trading_calendar_identity": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_status",
+    "schema_version",
+    "artifact_type",
+    "artifact_version",
+    "created_at",
+    "producer",
+    "source_phase",
+    "component",
+    "generation_candidate_id",
+    "authority",
+    "dataset_revision",
+    "dataset_revision_id",
+    "dataset_content_hash",
+    "dataset_schema_hash",
+    "dataset_lineage_hash",
+    "split_id",
+    "split_content_hash",
+    "dataset_usage_contract",
+    "dataset_usage_contract_hash",
+    "source_model_artifact",
+    "source_model_artifact_id",
+    "source_model_hash",
+    "source_model_hash_target",
+    "source_scaler_artifact",
+    "source_scaler_artifact_id",
+    "source_scaler_hash",
+    "source_scaler_hash_target",
+    "feature_order",
+    "feature_schema_identity",
+    "label_schema_identity",
+    "trading_calendar_identity",
+    "target_horizon_business_days",
+    "embargo_business_days",
+    "bootstrap_or_retraining",
+    "rolling_split_policy_hash",
+    "corporate_action_policy_hash",
+    "model_quality_policy_hash",
+    "calibration_method",
+    "calibration_method_version",
+    "calibration_config",
+    "calibration_config_hash",
+    "calibration_parameters",
+    "calibration_parameter_hash",
+    "fit_window",
+    "fit_window_role",
+    "input_score_schema",
+    "output_score_schema",
+    "quality_metrics",
+    "quality_gate_result",
+    "hash_inventory",
+    "runtime_eligibility",
+    "generation_eligibility",
+    "accepted",
+    "content_hash"
+  ],
+  "title": "calibration_artifact",
+  "type": "object"
+}

@@ -1,0 +1,139 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/accepted_decision.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted_generation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority": {
+      "type": "string"
+    },
+    "broker_write_authorized": {
+      "const": false
+    },
+    "buy_restart_authorized": {
+      "const": false
+    },
+    "codex_is_reviewer": {
+      "const": false
+    },
+    "conditions": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "decision": {
+      "enum": [
+        "APPROVE",
+        "REJECT",
+        "REVIEW_REQUIRED"
+      ],
+      "type": "string"
+    },
+    "decision_status": {
+      "enum": [
+        "APPROVE",
+        "BLOCK",
+        "REVIEW_REQUIRED"
+      ],
+      "type": "string"
+    },
+    "decision_type": {
+      "const": "ACCEPTED_DECISION"
+    },
+    "decision_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "decision_id": {
+      "type": "string"
+    },
+    "generation_candidate_id": {
+      "type": "string"
+    },
+    "generation_manifest_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_transition_authorized": {
+      "const": false
+    },
+    "rejection_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "review_reason": {
+      "type": "string"
+    },
+    "reviewed_at": {
+      "type": "string"
+    },
+    "reviewed_generation_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "runtime_baseline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_baseline_id": {
+      "type": "string"
+    },
+    "freshness_metadata_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corrective_review_ref": {
+      "type": "string"
+    },
+    "dual_gate_ref": {
+      "type": "string"
+    },
+    "independent_review_ref": {
+      "type": "string"
+    },
+    "policy_versions": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "decision_id",
+    "decision_type",
+    "generation_candidate_id",
+    "generation_manifest_hash",
+    "decision",
+    "decision_status",
+    "reviewer",
+    "reviewed_at",
+    "review_reason",
+    "reviewed_generation_hash",
+    "runtime_baseline_id",
+    "runtime_baseline_hash",
+    "freshness_metadata_hash",
+    "corrective_review_ref",
+    "dual_gate_ref",
+    "independent_review_ref",
+    "runtime_transition_authorized",
+    "buy_restart_authorized",
+    "broker_write_authorized",
+    "policy_versions",
+    "accepted_generation_id",
+    "rejection_reasons",
+    "conditions",
+    "codex_is_reviewer",
+    "authority",
+    "decision_hash"
+  ],
+  "title": "accepted_decision",
+  "type": "object"
+}

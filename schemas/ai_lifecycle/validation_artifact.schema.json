@@ -1,0 +1,267 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/validation_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "artifact_type": {
+          "const": "VALIDATION_RESULT"
+        }
+      }
+    },
+    {
+      "properties": {
+        "component": {
+          "const": "Validation"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "DRAFT",
+        "TRAINING_OUTPUT",
+        "FIXTURE_TRAINING_OUTPUT",
+        "VALIDATION_PENDING",
+        "VALIDATION_PASS",
+        "VALIDATION_BLOCK",
+        "GENERATION_CANDIDATE",
+        "REVIEW_REQUIRED",
+        "ACCEPTED",
+        "REJECTED",
+        "RETIRED",
+        "INVALIDATED",
+        "NOT_APPLICABLE"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "block_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bootstrap_or_retraining": {
+      "enum": [
+        "BOOTSTRAP",
+        "RETRAINING"
+      ],
+      "type": "string"
+    },
+    "calibration_result": {
+      "type": "object"
+    },
+    "compatibility_result": {
+      "type": "object"
+    },
+    "component": {
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corporate_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_binding_result": {
+      "type": "object"
+    },
+    "dataset_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_input_contract_id": {
+      "type": "string"
+    },
+    "dataset_lineage_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision_id": {
+      "type": "string"
+    },
+    "dataset_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "embargo_business_days": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "feature_schema_identity": {
+      "type": "string"
+    },
+    "final_validation_judgment": {
+      "enum": [
+        "PASS",
+        "BLOCK",
+        "REVIEW_REQUIRED"
+      ],
+      "type": "string"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "label_schema_identity": {
+      "type": "string"
+    },
+    "leakage_guard_result": {
+      "type": "object"
+    },
+    "lineage_binding_result": {
+      "type": "object"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "model_quality_policy_result": {
+      "type": "object"
+    },
+    "preprocessing_pipeline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "prohibited_input_guard_result": {
+      "type": "object"
+    },
+    "review_required_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "rolling_split_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_interface_compatibility": {
+      "type": "object"
+    },
+    "scaled_feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_id": {
+      "type": "string"
+    },
+    "scaler_method": {
+      "type": "string"
+    },
+    "schema_binding_result": {
+      "type": "object"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "split_binding_result": {
+      "type": "object"
+    },
+    "split_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_id": {
+      "type": "string"
+    },
+    "target_horizon_business_days": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "trading_calendar_identity": {
+      "type": "string"
+    },
+    "validated_artifact_hashes": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "validated_artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_type",
+    "artifact_version",
+    "artifact_status",
+    "created_at",
+    "producer",
+    "source_phase",
+    "component",
+    "generation_candidate_id",
+    "content_hash",
+    "schema_version",
+    "authority",
+    "dataset_input_contract_id",
+    "dataset_revision_id",
+    "dataset_content_hash",
+    "dataset_schema_hash",
+    "dataset_lineage_hash",
+    "split_id",
+    "split_content_hash",
+    "rolling_split_policy_hash",
+    "corporate_action_policy_hash",
+    "model_quality_policy_hash",
+    "feature_schema_identity",
+    "label_schema_identity",
+    "trading_calendar_identity",
+    "target_horizon_business_days",
+    "embargo_business_days",
+    "bootstrap_or_retraining",
+    "validated_artifact_ids",
+    "validated_artifact_hashes",
+    "dataset_binding_result",
+    "split_binding_result",
+    "schema_binding_result",
+    "lineage_binding_result",
+    "model_quality_policy_result",
+    "leakage_guard_result",
+    "prohibited_input_guard_result",
+    "compatibility_result",
+    "calibration_result",
+    "runtime_interface_compatibility",
+    "final_validation_judgment",
+    "block_reasons",
+    "review_required_reasons"
+  ],
+  "title": "validation_artifact",
+  "type": "object"
+}

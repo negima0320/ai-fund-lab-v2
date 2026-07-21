@@ -1,0 +1,321 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/opportunity_model_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "artifact_type": {
+          "const": "OPPORTUNITY_MODEL"
+        }
+      }
+    },
+    {
+      "properties": {
+        "component": {
+          "const": "Opportunity"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "DRAFT",
+        "TRAINING_OUTPUT",
+        "FIXTURE_TRAINING_OUTPUT",
+        "VALIDATION_PENDING",
+        "VALIDATION_PASS",
+        "VALIDATION_BLOCK",
+        "GENERATION_CANDIDATE",
+        "REVIEW_REQUIRED",
+        "ACCEPTED",
+        "REJECTED",
+        "RETIRED",
+        "INVALIDATED",
+        "NOT_APPLICABLE"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "bootstrap_or_retraining": {
+      "enum": [
+        "BOOTSTRAP",
+        "RETRAINING"
+      ],
+      "type": "string"
+    },
+    "candidate_dependency_contract": {
+      "type": "object"
+    },
+    "candidate_feature_or_score_dependency": {
+      "type": "object"
+    },
+    "candidate_model_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "component": {
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corporate_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_input_contract_id": {
+      "type": "string"
+    },
+    "dataset_lineage_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision_id": {
+      "type": "string"
+    },
+    "dataset_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "determinism_contract": {
+      "type": "object"
+    },
+    "embargo_business_days": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "execution_mode": {
+      "enum": [
+        "VALIDATE_ONLY",
+        "FIXTURE_SMOKE",
+        "FORMAL_BOOTSTRAP",
+        "FORMAL_RETRAINING",
+        "FIXTURE_SCALING_SMOKE",
+        "CORRECTIVE_BOOTSTRAP"
+      ],
+      "type": "string"
+    },
+    "feature_columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "feature_schema_identity": {
+      "type": "string"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_eligibility": {
+      "type": "boolean"
+    },
+    "label_column": {
+      "type": "string"
+    },
+    "label_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "label_schema_identity": {
+      "type": "string"
+    },
+    "model_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "model_family": {
+      "type": "string"
+    },
+    "model_file": {
+      "type": "string"
+    },
+    "model_format": {
+      "type": "string"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "model_quality_policy_result": {
+      "type": "object"
+    },
+    "opportunity_universe_definition": {
+      "type": "object"
+    },
+    "preprocessing_pipeline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "prohibited_input_audit_result": {
+      "type": "object"
+    },
+    "random_seed": {
+      "type": "integer"
+    },
+    "ranking_or_classification_contract": {
+      "type": "object"
+    },
+    "recent_holdout_window": {
+      "type": "object"
+    },
+    "rolling_split_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_eligibility": {
+      "type": "boolean"
+    },
+    "scaled_feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_id": {
+      "type": "string"
+    },
+    "scaler_method": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "split_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_id": {
+      "type": "string"
+    },
+    "target_horizon_business_days": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "test_window": {
+      "type": "object"
+    },
+    "trading_calendar_identity": {
+      "type": "string"
+    },
+    "train_window": {
+      "type": "object"
+    },
+    "training_code_version": {
+      "type": "string"
+    },
+    "training_config": {
+      "type": "object"
+    },
+    "training_config_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "training_statistics": {
+      "type": "object"
+    },
+    "validation_window": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_type",
+    "artifact_version",
+    "artifact_status",
+    "created_at",
+    "producer",
+    "source_phase",
+    "component",
+    "generation_candidate_id",
+    "content_hash",
+    "schema_version",
+    "authority",
+    "dataset_input_contract_id",
+    "dataset_revision_id",
+    "dataset_content_hash",
+    "dataset_schema_hash",
+    "dataset_lineage_hash",
+    "split_id",
+    "split_content_hash",
+    "rolling_split_policy_hash",
+    "corporate_action_policy_hash",
+    "model_quality_policy_hash",
+    "feature_schema_identity",
+    "label_schema_identity",
+    "trading_calendar_identity",
+    "target_horizon_business_days",
+    "embargo_business_days",
+    "bootstrap_or_retraining",
+    "model_family",
+    "model_format",
+    "model_file",
+    "model_content_hash",
+    "training_code_version",
+    "training_config",
+    "training_config_hash",
+    "random_seed",
+    "determinism_contract",
+    "feature_columns",
+    "feature_schema_hash",
+    "label_column",
+    "label_schema_hash",
+    "train_window",
+    "validation_window",
+    "test_window",
+    "recent_holdout_window",
+    "training_statistics",
+    "model_quality_policy_result",
+    "prohibited_input_audit_result",
+    "candidate_dependency_contract",
+    "candidate_feature_or_score_dependency",
+    "candidate_model_hash",
+    "opportunity_universe_definition",
+    "ranking_or_classification_contract",
+    "runtime_eligibility",
+    "accepted",
+    "generation_eligibility",
+    "execution_mode"
+  ],
+  "title": "opportunity_model_artifact",
+  "type": "object"
+}

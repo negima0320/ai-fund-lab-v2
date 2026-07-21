@@ -81,7 +81,7 @@ def _gate_for(classification: str) -> dict:
     raise AssertionError(classification)
 
 
-def test_phase18t_buy_lifecycle_blocks_buy_only_for_required_scenarios() -> None:
+def test_phase18t_buy_lifecycle_blocks_buy_only_for_runtime_integrity_scenarios() -> None:
     for name in ("MODEL_UNHEALTHY", "INSUFFICIENT_EVIDENCE", "MARKET_NO_OPPORTUNITY", "BUY_REVIEW_REQUIRED"):
         gate = _gate_for(name)
         continuity = evaluate_sell_continuity_from_buy_lifecycle_gate(gate).to_dict()
@@ -92,12 +92,16 @@ def test_phase18t_buy_lifecycle_blocks_buy_only_for_required_scenarios() -> None
         assert continuity["allow_sell_planning"] is True
         assert continuity["allow_sell_submit_authorization"] is True
         assert continuity["broker_write_performed"] is False
-        if name == "MARKET_NO_OPPORTUNITY":
+        if gate.get("runtime_integrity_status") == "BLOCK":
+            assert continuity["buy_planning_permission"] == "BLOCK"
+            assert continuity["buy_submit_permission"] == "BLOCK"
+        elif name == "MARKET_NO_OPPORTUNITY":
             assert gate["classification"] == "MARKET_NO_OPPORTUNITY"
             assert continuity["buy_planning_permission"] == "PASS"
         else:
-            assert continuity["buy_planning_permission"] == "BLOCK"
-            assert continuity["buy_submit_permission"] == "BLOCK"
+            assert gate["trading_permission_effect"] == "NONE"
+            assert continuity["buy_planning_permission"] == "PASS"
+            assert continuity["buy_submit_permission"] == "PASS"
 
 
 def test_phase18t_run_daily_operation_stage_reaches_sell_authorization_call_graph() -> None:

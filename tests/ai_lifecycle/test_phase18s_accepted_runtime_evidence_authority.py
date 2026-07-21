@@ -60,7 +60,9 @@ def test_phase18s_accepted_state_missing_does_not_fallback_to_promotion_candidat
     )
     gate = evaluate_runtime_ai_gate(evidence.to_gate_input()).to_dict()
     assert "accepted_state_missing" in evidence.integrity_evidence["reason_codes"]
-    assert gate["classification"] == "INSUFFICIENT_EVIDENCE"
+    assert gate["classification"] == "RUNTIME_INTEGRITY_BLOCK"
+    assert gate["trading_permission_effect"] == "BUY_BLOCK"
+    assert gate["runtime_integrity_status"] == "BLOCK"
     assert gate["block_buy"] is True
 
 
@@ -76,7 +78,10 @@ def test_phase18s_manual_path_rejected_in_production_runtime() -> None:
         accepted_bundle_path=Path(".runtime/artifact_registry/promotion_candidates/transactions/promotion-tx-phase18i-1081babc49b5d26b/atomic_buy_ai_bundle.json"),
     )
     assert "manual_accepted_bundle_path_forbidden" in evidence.integrity_evidence["reason_codes"]
-    assert evaluate_runtime_ai_gate(evidence.to_gate_input()).to_dict()["classification"] == "INSUFFICIENT_EVIDENCE"
+    gate = evaluate_runtime_ai_gate(evidence.to_gate_input()).to_dict()
+    assert gate["classification"] == "RUNTIME_INTEGRITY_BLOCK"
+    assert gate["trading_permission_effect"] == "BUY_BLOCK"
+    assert gate["runtime_integrity_status"] == "BLOCK"
 
 
 def test_phase18s_hash_schema_lineage_mismatch_fail_closed(tmp_path: Path) -> None:
@@ -131,9 +136,10 @@ def test_phase18s_immediate_drift_cases(tmp_path: Path) -> None:
     stable = evaluate_runtime_ai_gate(_evidence(tmp_path, bundle, scores=stable_scores).to_gate_input()).to_dict()
     assert stable["decision"] == "PASS"
     hard_prediction = evaluate_runtime_ai_gate(_evidence(tmp_path, bundle, scores=[9.0, 9.1, 9.2, 9.3, 9.4, 9.5]).to_gate_input()).to_dict()
-    assert hard_prediction["classification"] == "MODEL_UNHEALTHY"
+    assert hard_prediction["classification"] == "STATISTICAL_DRIFT_REVIEW_REQUIRED"
     population = evaluate_runtime_ai_gate(_evidence(tmp_path, bundle, candidate_count=1, scores=[0.08, 0.09, 0.10]).to_gate_input()).to_dict()
-    assert population["block_buy"] is True
+    assert population["trading_permission_effect"] == "NONE"
+    assert population["block_buy"] is False
 
 
 def test_phase18s_all_negative_without_hard_drift_is_market_no_opportunity(tmp_path: Path) -> None:

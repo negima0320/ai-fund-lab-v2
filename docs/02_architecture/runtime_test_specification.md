@@ -694,6 +694,15 @@ Classify Failure
 
 The standard flow must not be reordered. A test run that skips Backup, skips Reset where a reset is required, bypasses Validate, or closes without evidence is invalid.
 
+Fresh Run identifier contract:
+
+- `fresh_run_id` belongs to the one-command orchestration attempt.
+- `backup_id` belongs to the pre-reset backup bundle.
+- Runtime Test `run_id` belongs to the Plan step. Plan generates it when the operator did not provide one, persists it in `plan.json`, and Run / Validate / Close must use the exact same Runtime Test `run_id`.
+- `fresh_run_id`, `backup_id`, and Runtime Test `run_id` must not be conflated.
+- Internal `fresh-run` subcommand calls must construct complete request namespaces for the shared Plan logic. A missing required Plan namespace attribute is an explicit `INVALID_ARGUMENT`, not an internal Python attribute error.
+- Fresh Run dry-run must validate Plan request construction, Runtime Test `run_id` generation, and downstream argument handoff contracts without mutating Runtime state or writing plan/run evidence.
+
 ### 26.2 Runtime Test Command
 
 The formal user-facing command entrypoint is:
@@ -747,7 +756,46 @@ PYTHONPATH=src python3 scripts/runtime_test.py rollback \
   --yes-i-understand-this-mutates-trading-state
 ```
 
+Abandon command for a non-resumed HALT run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py abandon \
+  --run-id <RUN_ID> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
 All mutating commands must require explicit mutation confirmation. Ambiguous `--force`-style flags are prohibited.
+
+### 26.2.1 HALT Run Abandon Contract
+
+A HALT Runtime Test may be explicitly abandoned only when the operator will not resume that run. Abandon is not evidence deletion and is not a test result conversion.
+
+Abandon must preserve:
+
+- `run_state.json`
+- `plan.json`
+- `fresh_run_summary.json`
+- daily job evidence
+- rollback / backup references
+
+Abandon must create evidence containing:
+
+- `run_id`
+- `previous_status`
+- `abandoned_at`
+- `abandon_reason`
+- `abandoned_by=operator`
+- `resume_disabled=true`
+- `evidence_preserved=true`
+- `trading_state_mutated=false`
+- `broker_access=false`
+- `broker_write=false`
+- `external_delivery=false`
+
+A valid abandoned run has `status=ABANDONED` in `final_summary.json` or a valid `abandonment.json` with `abandoned_at`. Active run detection must exclude runs with `closed_at`, `abandoned_at`, `status=ABANDONED`, or valid abandonment evidence. `RUNNING` and non-abandoned `HALT` runs remain active.
+
+`resume` must reject an abandoned run. `abandon --dry-run` must not write files and must report whether abandonment is possible, which files would be created, which evidence is preserved, and that Trading State mutation is false.
 
 ### 26.3 Historical 5BD
 
@@ -924,6 +972,7 @@ Partial restore is prohibited. Current-only restore, Ledger-only restore, Pendin
 | `run` | Yes | Invoke the normal Runtime v2 CLI by business date and job. |
 | `validate` | No | Validate run, state, temporal, authority, and evidence consistency; never repair. |
 | `resume` | Yes | Continue from the last valid checkpoint if baselines match; never skip failed jobs. |
+| `abandon` | Evidence only | Mark a non-resumed HALT run abandoned without deleting evidence or mutating Trading State. |
 | `rollback` | Yes | Restore the full resettable Trading State bundle from backup. |
 | `close` | No | Freeze final evidence, validity judgment, acceptance gate judgment, and lifecycle recommendation. |
 
@@ -1129,9 +1178,171 @@ This specification consolidates accepted outcomes from:
 
 | Version | Date | Change Summary | Related Phase / Report | Contract Impact | Approval Status |
 |---|---|---|---|---|---|
+| 1.6 | 2026-07-21 | Expanded `system-status` standard output and evidence to complete inspection inventory. | Phase19-AZ | Refines observability schema and human output; no Runtime authority or trading-state mutation authority. | REVIEWED |
+| 1.5 | 2026-07-21 | Clarified `system-status` Safety Artifact timing: pre-run missing is `NOT_YET_APPLICABLE`, post Safety/Morning route missing is `BLOCK`. | Phase19-AY | Refines observability semantics only; no Runtime authority or trading-state mutation authority. | REVIEWED |
+| 1.4 | 2026-07-21 | Added `system-status` as the recommended daily read-only system health command and narrowed `ai-status` to AI Artifact Inspection. | Phase19-AX | Adds system-wide observability command; no Runtime authority or trading-state mutation authority. | REVIEWED |
+| 1.3 | 2026-07-21 | Added read-only `ai-status` authority/readiness inspection command, evidence contract, and exit-code semantics for statistical drift vs structural blockers. | Phase19-AV | Adds observability command; no Runtime authority or trading-state mutation authority. | REVIEWED |
 | 1.2 | 2026-07-14 | Added Historical logical as-of consumer-input and Feature Date Contract PASS entry-gate requirements. | Phase17-M | Clarifies Runtime Test entry validity and Historical consumer wiring; Runtime Core semantics unchanged. | REVIEWED |
 | 1.1 | 2026-07-14 | Added Standard Runtime Test Procedure as normative execution authority. | Documentation-02 | No upstream contract meaning changed. | ACCEPTED |
 | 1.0 | 2026-07-14 | Initial project-wide Runtime Test Specification consolidating Phase17-A through Phase17-J and architecture contracts. | Documentation-01 | No upstream contract meaning changed. | ACCEPTED |
+
+## Phase19-AV Amendment: AI Authority Inspection Command
+
+Runtime Test includes `scripts/runtime_test.py ai-status` as a read-only AI authority and Runtime readiness inspection command.
+
+The command reports:
+
+```text
+AI Authority Status
+Overall Status
+COMMITTED Generation
+Accepted At
+Runtime Loaded Generation
+Candidate model / training / feature count / validation / runtime load
+Opportunity model / training / feature count / selection validation / runtime load
+Latest J-Quants
+Latest BUY Feature
+Inference Readiness
+Broker Access = NOT_PERFORMED
+Main Findings
+```
+
+`ai-status` may write evidence only when `--write-evidence` is explicitly set. Evidence writes are limited to `reports/runtime_tests/ai_status/<run_id>/` and must not mutate Runtime State, Trading State, authority pointers, authority history, generation artifacts, or broker-facing files.
+
+Exit-code contract for `ai-status`:
+
+| Code | Meaning |
+|---:|---|
+| 0 | PASS |
+| 10 | REVIEW_REQUIRED |
+| 20 | BLOCK |
+| 30 | COMMAND_OR_INTERNAL_ERROR |
+
+Statistical drift alone maps to `REVIEW_REQUIRED` and does not automatically stop BUY planning. Structural issues, including schema mismatch, hash mismatch, missing model/scaler/calibration, missing features, NaN/Inf, loader failure, collapse, or missing Candidate dependency, map to `BLOCK`.
+
+## Phase19-AX Amendment: System Status Command
+
+Runtime Test includes `scripts/runtime_test.py system-status` as the recommended daily pre-operation read-only system health command.
+
+The command reports:
+
+```text
+Data
+AI
+Runtime
+Runtime State
+Broker Layer
+Overall
+```
+
+Allowed options:
+
+```text
+--json
+--write-evidence
+```
+
+There is no `--detailed` option because standard output is the full human operational summary.
+
+`ai-status` remains available as AI Artifact Inspection, but normal daily operation should use `system-status`.
+
+When `--write-evidence` is used, evidence is written to:
+
+```text
+reports/runtime_tests/system_status/<run_id>/
+```
+
+`system-status` must not mutate authority or Trading State and must not access Broker credentials/API. Broker Connection is reported as `NOT_PERFORMED` inside this read-only command.
+
+The standard `system-status` human output is the full inspection report. It must include:
+
+```text
+Runtime Stage
+Pre-run Readiness
+Day1 Start Permission
+Active Component Inventory
+Data Sources
+Datasets
+Runtime Features
+AI Models
+AI Data Window Summary
+Decision Subsystems
+Accepted Generation / Authority
+Runtime State
+Broker Layer
+Freshness Matrix
+Findings
+Non-mutation Guarantee
+Exit Code
+```
+
+JSON and evidence output must carry the same semantic information. Candidate `evaluated_symbols` must not be conflated with Candidate output count. Opportunity `input_candidate_count`, `ranking_count`, and `top20_count` must be separate.
+
+Safety Artifact timing contract:
+
+| Safety Artifact State | Meaning | System Status |
+|---|---|---|
+| `PRE_RUN_NOT_MATERIALIZED` | Expected target-date Runtime Safety Decision has not yet been produced because the target-date Runtime route has not started. | `NOT_YET_APPLICABLE` |
+| `MATERIALIZED` | Latest Safety Decision exists and matches the expected business date. | `READY` |
+| `ARTIFACT_DATE_MISMATCH` | Latest Safety Decision exists but does not match the expected business date. | `REVIEW_REQUIRED` |
+| `POST_RUN_MATERIALIZATION_MISSING` | Target-date Safety or Morning route evidence exists but latest Safety Decision is missing. | `BLOCK` |
+
+`system-status` must not create, repair, or handwrite Safety Decision artifacts. It only reports the materialization state.
+
+Historical post-run inspection is a distinct `system-status` context. When no active run exists and the latest compatible Historical Runtime Test has `Run=PASS`, `Validate=PASS`, `Close=PASS`, valid `closed_at`, matching profile, matching runtime root, and completed business days, `system-status` must inspect `HISTORICAL_POST_RUN` using the final completed business date as target authority. The command must not compare final-day Ledger / Current state to the profile Day1 start date. Historical Safety authority for this context is the closed run's Data Readiness / Submit evidence (`data_readiness_historical_temporal_authority`) for the final completed business date. Missing or mismatched post-run Safety authority remains fail-closed; this rule does not create or require a dummy latest Safety artifact.
+
+Pre-run artifact semantics:
+
+| Artifact Family | Expected Stage | Pre-run Missing | Post-stage Missing |
+|---|---|---|---|
+| Runtime Features | `FEATURE_READY` | `NOT_YET_APPLICABLE` / `PRE_RUN_NOT_MATERIALIZED` | `BLOCK` / `POST_STAGE_MATERIALIZATION_MISSING` |
+| Candidate Inference | `AI_INFERENCE_DONE` | `NOT_YET_APPLICABLE` / `PRE_RUN_NOT_MATERIALIZED` | `BLOCK` / `POST_STAGE_MATERIALIZATION_MISSING` |
+| Opportunity Inference | `AI_INFERENCE_DONE` | `NOT_YET_APPLICABLE` / `PRE_RUN_NOT_MATERIALIZED` | `BLOCK` / `POST_STAGE_MATERIALIZATION_MISSING` |
+| AI Lifecycle Gate | `LIFECYCLE_GATE_DONE` | `NOT_YET_APPLICABLE` / `PRE_RUN_NOT_MATERIALIZED` | `BLOCK` / `POST_STAGE_MATERIALIZATION_MISSING` |
+| BUY Planning | `DAILY_PLAN_CREATED` | `NOT_YET_APPLICABLE` / `PRE_RUN_NOT_MATERIALIZED` | `BLOCK` / `POST_STAGE_MATERIALIZATION_MISSING` |
+
+Candidate / Opportunity model status is separated from target-date feature and inference materialization. `model_authority_resolution_status`、`model_artifact_resolution_status`、`model_hash_validation_status`、`scaler_resolution_status`、`calibration_resolution_status`、`model_loader_validation_status` must be able to PASS while `target_date_feature_status` and `target_date_inference_status` are `NOT_YET_APPLICABLE` before Day1 Runtime execution.
+
+Historical freshness uses coverage semantics: `required_through_date` is the target business date, `available_through_date` is the latest available data date, `missing_required_business_days` must be zero to PASS, and `coverage_ahead_business_days` records data availability beyond the target date. Future-row use by Runtime consumers remains prohibited by Temporal Guard.
+
+Operational truthfulness contract:
+
+- `system-status` PASS is scoped to the displayed `inspection_context` only.
+- Historical isolated pre-run PASS does not imply Demo current-data readiness, Production current-data readiness, Broker connectivity readiness, Broker write readiness, `BUY_READY`, `PRODUCTION_READY`, or autonomous operation complete.
+- `NOT_PERFORMED` and `NOT_EVALUATED` must not be rendered as PASS.
+- Broker Configuration and Submit Guard Configuration are separate from Broker Connectivity, Credential Access, and Broker Write.
+- Paths that are not yet materialized must use explicit values such as `NOT_YET_MATERIALIZED` or `NOT_APPLICABLE`; `.` and empty path placeholders are prohibited.
+
+Complete AI input lineage contract:
+
+- `system-status` human output and JSON output must carry the same Candidate / Opportunity input lineage facts.
+- Candidate / Opportunity lineage must include training dataset revision, dataset artifact / manifest path, source authority, source earliest/latest date, source row/symbol count, source schema/content hash, split window statistics for Training, Calibration, Validation, Test, and Recent Holdout, recent holdout usage booleans, and calibration / validation independence.
+- Recent Holdout remains `NOT_USED_IN_PHASE19` unless a later accepted contract explicitly changes this. It has no Runtime authority impact in the pre-run inspection.
+- Runtime input lineage before execution is a planned contract over target business date, required market data through date, planned feature source date, temporal cutoff, and future-row guard. Missing target-date feature/inference artifacts before their stage must be rendered as `NOT_YET_MATERIALIZED`, not as blank or PASS-by-absence.
+
+Complete component inspection contract:
+
+- `system-status` must inventory all operational Runtime components, not only AI artifacts.
+- Each component row must include Component Name, Component Type, Active/Inactive status, Authority, Implementation, Input Artifact, Output Artifact, Input Components, Input Business Date, Output Business Date, Configuration Status, Runtime Status, Inspection Status, and J-Quants dependency.
+- Runtime Chain inspection must cover Market Refresh, Feature Refresh, Candidate AI, Opportunity AI, Lifecycle Monitoring, Safety, BUY Planning, SELL Planning, Approval, Submit, Execution, Ledger Update, Reporting, and Notification.
+- Runtime State coverage must include Current, Pending, Ledger, PM, Safety, Approval, Planning, Reporting, and Notification.
+- Repository operation components that are not inspected must be reported as `COMPONENT_NOT_INSPECTED` / `REVIEW_REQUIRED`. Missing inspection coverage must not PASS.
+
+Runtime status semantics contract:
+
+- `implementation_status`, `configuration_status`, `authority_resolution_status`, `inspection_status`, `target_date_execution_status`, and `runtime_result_status` are separate fields.
+- `inspection_status = PASS` means the component was inspected. It does not mean the target business date step executed or succeeded.
+- PRE_RUN components that have not run must use `NOT_YET_APPLICABLE`, `NOT_PERFORMED`, or `NOT_YET_MATERIALIZED` for target-date execution/result fields.
+- Candidate / Opportunity model loadability must be separated from target-date inference result.
+- Submit Guard, Execution Guard, Ledger Update, Reporting, and Notification may have configuration PASS while target-date execution remains `NOT_PERFORMED`.
+- Overall PASS is scoped to the displayed inspection context and Runtime stage. It does not mean all target-date Runtime components completed, Broker connectivity PASS, BUY_READY, PRODUCTION_READY, or autonomous operation complete.
+
+J-Quants dependency classification contract:
+
+- Formal dependency type is `jquants_dependency_type`, one of `DIRECT`, `INDIRECT`, or `NONE`.
+- Every component must include `jquants_dependency_path`, `jquants_direct_input_artifacts`, and `jquants_dependency_reason`.
+- Historical source coverage fields must separate `source_available_from_date`, `source_available_through_date`, `required_through_date`, `consumer_cutoff_date`, actual consumed date range, `future_rows_available`, and `future_rows_consumed`.
+- Future rows consumed by a Runtime consumer is `TEMPORAL_CONTRACT_VIOLATION` and must BLOCK.
 
 ## Phase17-M Amendment: Historical Consumer Input Gate
 

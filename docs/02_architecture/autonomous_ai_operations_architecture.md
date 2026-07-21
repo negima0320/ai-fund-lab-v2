@@ -10,6 +10,20 @@ market data -> label-safe dataset -> generation -> validation -> accepted author
 
 The Runtime production authority for BUY AI must be a single accepted generation. In this design, **Accepted AI Generation** is a semantic name for the existing **Accepted Atomic BUY AI Bundle** concept, not a new independent artifact family.
 
+Permanent training, generation, model-quality, bootstrap/retraining, and latest-data semantics are defined in:
+
+```text
+docs/02_architecture/ai_training_and_generation_lifecycle.md
+```
+
+That document is the Source of Truth for distinguishing Dataset update from AI Generation update, learning targets from non-learning Runtime components, and latest PIT inference features from latest Accepted Generation authority.
+
+Generation output artifact schemas, immutable hash bindings, artifact authority boundaries, runtime accepted-only eligibility, serialization compatibility, reproducibility, and prohibited artifact content are defined in:
+
+```text
+docs/02_architecture/ai_generation_artifact_contract.md
+```
+
 ## Current Architecture
 
 ```mermaid
@@ -792,6 +806,33 @@ Runtime drift baseline is a materialized generation member. Its source must be o
 
 Accepted Runtime observation may be used for operational monitoring after deployment, but it is not a substitute for the accepted generation baseline and must not be used as training data or automatic promotion evidence.
 
+### AE-5.1 Phase19-AO Recent Holdout De-scope and Baseline Source
+
+For Phase19 bootstrap/corrective generation only, Human Architecture Decision `Phase19-AO` de-scopes Recent Holdout from Accepted Generation entry:
+
+```text
+recent_holdout_required_for_phase19_acceptance = false
+recent_holdout_required_for_phase19_accepted_decision = false
+recent_holdout_required_for_phase19_runtime_transition = false
+recent_holdout_required_for_phase19_runtime_readiness = false
+recent_holdout_used_for_phase19_runtime_baseline = false
+recent_holdout_accessed = false
+```
+
+Recent Holdout remains a reserved split. It must not be deleted, reused, transformed into training input, used for fit, tuning, threshold selection, calibration fit, method selection, Corrective Re-evaluation, or Formal Validation overwrite in Phase19.
+
+The Phase19 Runtime Baseline source is:
+
+```text
+Formal Validation / Corrective Re-evaluation test-window inference outputs
++
+CandidateTop50 selection outputs
+```
+
+The baseline is operational health and drift comparison evidence only. It must not overwrite Formal Validation, rerun Dual Gate, or directly drive daily Runtime BUY decisions.
+
+Future phases may reactivate Recent Holdout only through an explicit versioned contract amendment and Human Review.
+
 ### AE-6 Rollback and Data Revision
 
 Rollback restores a previously accepted generation only when that generation's dataset lineage and authority remain valid. If a data revision invalidates the previous generation lineage, rollback to that generation is prohibited and the correct recovery action is rebuild/retrain/re-authority review, with BUY blocked and SELL continuity evaluated independently.
@@ -813,9 +854,123 @@ Freshness evidence must distinguish:
 
 No implementation may collapse these into a single ambiguous `freshness` field for gating, reporting, or acceptance.
 
+### AE-7.1 Phase19-AO Freshness Metadata Placement
+
+Phase19 Accepted Generation entry must keep the eight freshness dimensions separate and place them by owner:
+
+Generation-bound freshness in the Accepted Generation Manifest:
+
+```text
+raw_data_max_date_at_generation
+normalized_data_max_date_at_generation
+dataset_revision_id
+dataset_source_max_date
+dataset_target_max_date
+label_safe_cutoff
+candidate_training_cutoff
+opportunity_training_cutoff
+calibration_cutoff
+validation_cutoff
+generation_created_at
+freshness_policy_version
+```
+
+Materialization-time freshness:
+
+```text
+accepted_at
+effective_from
+accepted_generation_age_origin
+```
+
+Runtime-time freshness in Runtime State / Monitoring:
+
+```text
+runtime_loaded_generation_id
+runtime_loaded_at
+runtime_loaded_generation_age
+inference_feature_date
+expected_inference_feature_date
+raw_refresh_status
+normalized_refresh_status
+dataset_refresh_status
+```
+
+Schema mismatch, hash mismatch, or a missing required generation-bound freshness field is a BLOCK condition. Raw or normalized data staleness alone must not automatically stop SELL.
+
 ### AE-8 Trading State and Broker Boundary
 
 Accepted BUY AI generation does not own Current, Pending, Ledger, Safety, Broker Snapshot, Submit Guard, Execution, or Broker write authority. Runtime transition may update only accepted generation pointers and transition evidence. It must not reset positions, cash, pending orders, approvals, safety locks, broker evidence, or ledger records.
+
+### AE-8.1 Generation-Bound Scaler Boundary
+
+Feature scalers are preprocessing artifacts inside an AI Generation. They are not standalone Runtime authority and must not be discovered by latest path, mtime, component model directory, or Registry fallback.
+
+Future Runtime inference must resolve:
+
+```text
+Accepted Generation
+-> generation-bound imputer
+-> generation-bound scaler
+-> generation-bound model
+```
+
+Runtime must reject scaler hash mismatch, model/scaler component mismatch, feature order mismatch, unreviewed scaler artifacts, and direct Training Artifact scaler use. Adding a scaler contract does not authorize Accepted Generation creation, Runtime transition, BUY restart, or Broker write.
+
+### AE-8.2 AI Status Inspection Boundary
+
+`scripts/runtime_test.py ai-status` is a read-only operational observability command. It may inspect the COMMITTED Accepted Generation pointer, Accepted Generation Manifest, Candidate / Opportunity bindings, freshness metadata, runtime lifecycle gate evidence, latest J-Quants date, latest BUY feature date, runtime readiness, and legacy fallback absence.
+
+It must not mutate authority or trading state:
+
+```text
+No Accepted Generation creation
+No authority history append
+No runtime pointer write
+No training
+No calibration
+No validation rerun
+No Unified Generation
+No Runtime transition
+No BUY restart
+No Broker access
+No Broker write
+```
+
+`ai-status` does not become Runtime authority. It reports the authority state produced by the Accepted Generation Resolver. Statistical drift findings are REVIEW_REQUIRED observability findings unless paired with a structural failure; they do not by themselves authorize automatic BUY stop, SELL stop, Runtime transition, or Production Ready.
+
+### AE-8.3 System Status Operational Boundary
+
+`scripts/runtime_test.py system-status` is the recommended daily pre-operation read-only health command for the entire AI Fund Lab v2 system. It supersedes `ai-status` as the normal operator entrypoint, while `ai-status` remains the narrower AI Artifact Inspection command.
+
+`system-status` may inspect:
+
+```text
+Data: J-Quants, Raw, Normalized, Feature, Dataset, Split
+AI: Candidate, Opportunity, Calibration, Runtime Baseline, Freshness, Accepted Generation
+Runtime: Resolver, COMMITTED authority, Runtime Consumer, Lifecycle, Threshold, BUY Planning, SELL Continuity
+Runtime State: Current, Pending, Ledger, PM, Safety
+Broker Layer: Approval, Submit Guard, Execution, Broker Connection, Notification, Reporting
+Overall: PASS / REVIEW_REQUIRED / BLOCK
+```
+
+It must not train, calibrate, validate, create generations, mutate authority history, write Runtime pointers, mutate Trading State, restart BUY, access Broker credentials/API, write Broker orders, or send notifications.
+
+The default human output is the full inspection report, not a category-only summary. It lists active and inactive AI/system components, all active Data/Dataset/Feature inputs, trained models and attached scaler/calibration artifacts, rule/threshold-based decision subsystems, Accepted Generation authority binding, Runtime State artifacts, Broker Layer local status, and the full Freshness Matrix. Counts must be semantic: Candidate evaluated symbol count is separate from Candidate output count, and Opportunity input candidate count is separate from ranking and Top20 counts.
+
+Runtime State Safety inspection is timing-aware. If the expected target-date Safety Decision is missing before the target-date Runtime route starts, `system-status` reports `PRE_RUN_NOT_MATERIALIZED` / `NOT_YET_APPLICABLE`; this does not block Day1 start by itself. If target-date Safety or Morning route evidence exists and the latest Safety Decision is still missing, `system-status` reports `POST_RUN_MATERIALIZATION_MISSING` / `BLOCK`. If an artifact exists but the business date differs from the expected target date, the result is `REVIEW_REQUIRED`.
+
+Phase19-BC extends this timing-aware rule to target-date Runtime Features, Candidate/Opportunity Inference, AI Lifecycle Gate, Runtime Baseline/Freshness decisions, BUY/SELL Planning, Approval, Submit, Execution, Reporting, and Notification. Missing artifacts are normal before their expected generation stage and must be reported as `NOT_YET_APPLICABLE`; after the relevant stage has completed, the same missing artifact is `BLOCK`. Candidate/Opportunity model authority, artifact hashes, scaler/calibration resolution, and read-only loader validation are separate from target-date inference output existence.
+
+Phase19-BD requires `system-status` to report operational truth by environment. A Historical isolated pre-run PASS is not Production readiness. Demo current-data readiness, Production current-data readiness, Broker connectivity readiness, Broker write readiness, multi-day continuity readiness, and autonomous operation readiness must be separated and shown as `NOT_EVALUATED`, `NOT_PERFORMED`, or `PROHIBITED` unless actually verified. Broker `NOT_PERFORMED` must not be displayed as connectivity PASS.
+
+Phase19-BE requires `system-status` to close complete AI input lineage in both human and JSON outputs. Candidate and Opportunity must expose their training dataset revision, dataset artifact / manifest path, source authority, source earliest/latest date, source row/symbol/schema/content hash, split window statistics for Training, Calibration, Validation, Test, and Recent Holdout, recent holdout non-use, and calibration / validation independence. Runtime input lineage is a planned pre-run contract until the target-date Runtime route materializes features and inference, and empty placeholders are prohibited.
+
+Phase19-BF requires `system-status` to close complete operational component inspection. All Runtime operation components must be inventoried with authority, implementation, input/output artifacts, input dependencies, business-date lineage, configuration status, runtime status, inspection status, Runtime-chain position, J-Quants dependency, and Runtime State coverage. A repository operation component that is not represented in inspection coverage is a contract failure and must not be hidden behind an overall PASS.
+
+Phase19-BG requires `system-status` to prevent operational status ambiguity. Inspection success, implementation/configuration validity, authority resolution, target-date execution, and runtime result are distinct statuses. PRE_RUN not-yet-executed components must be classified as `NOT_YET_APPLICABLE`, `NOT_PERFORMED`, or `NOT_YET_MATERIALIZED`, not Runtime result PASS. J-Quants dependency must be classified as `DIRECT`, `INDIRECT`, or `NONE` with a path and reason. Historical source availability beyond target date must be separated from consumer cutoff and future-row consumption.
+
+`system-status` is observability, not authority. It cannot declare Production Ready, BUY Ready, or autonomous operation complete.
 
 ### AE-9 Phase19 Entry Boundary
 

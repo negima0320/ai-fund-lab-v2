@@ -1,0 +1,60 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/accepted_generation_materialization_preview.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "accepted": {
+      "const": false
+    },
+    "aggregate_hash_preview": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "authority_decision_ref": {
+      "type": "object"
+    },
+    "candidate_member": {
+      "type": "object"
+    },
+    "freshness_metadata": {
+      "type": "object"
+    },
+    "materialization_ready": {
+      "type": "boolean"
+    },
+    "opportunity_member": {
+      "type": "object"
+    },
+    "prospective_generation_id": {
+      "type": "string"
+    },
+    "runtime_baseline_ref": {
+      "type": "object"
+    },
+    "runtime_eligibility": {
+      "const": false
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_generation_candidate_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "prospective_generation_id",
+    "source_generation_candidate_id",
+    "accepted",
+    "runtime_eligibility",
+    "materialization_ready",
+    "candidate_member",
+    "opportunity_member",
+    "runtime_baseline_ref",
+    "freshness_metadata",
+    "authority_decision_ref",
+    "aggregate_hash_preview"
+  ],
+  "title": "accepted_generation_materialization_preview",
+  "type": "object"
+}

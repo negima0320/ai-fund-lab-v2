@@ -1,0 +1,421 @@
+{
+  "$id": "schemas/runtime_test/system_status_report.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "active_component_inventory": {
+      "additionalProperties": true,
+      "properties": {
+        "active_ai_models": {
+          "type": "array"
+        },
+        "categories": {
+          "type": "object"
+        },
+        "components": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "components",
+        "active_ai_models",
+        "categories"
+      ],
+      "type": "object"
+    },
+    "active_component_count_summary": {
+      "additionalProperties": true,
+      "required": [
+        "active_trained_models",
+        "active_statistical_baselines",
+        "active_threshold_policies",
+        "active_rule_based_control_subsystems",
+        "components_with_complete_input_lineage_inspection",
+        "components_with_unresolved_input_lineage_inspection"
+      ],
+      "type": "object"
+    },
+    "active_model_summary": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "ai_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "authority_generation": {
+      "additionalProperties": true,
+      "required": [
+        "committed_accepted_generation_id",
+        "resolver_result",
+        "forbidden_fallback_count"
+      ],
+      "type": "object"
+    },
+    "baseline_traceability": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "broker_layer_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "broker_truthfulness_audit": {
+      "additionalProperties": true,
+      "required": [
+        "broker_configuration_status",
+        "broker_connectivity_check_status",
+        "credential_access_status",
+        "broker_write_status",
+        "submit_guard_configuration_status"
+      ],
+      "type": "object"
+    },
+    "calibration_validation_independence_audit": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "complete_component_inventory": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "component_count",
+        "components",
+        "unresolved_components"
+      ],
+      "type": "object"
+    },
+    "component_dependency_matrix": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "dependencies"
+      ],
+      "type": "object"
+    },
+    "candidate_input_lineage": {
+      "additionalProperties": true,
+      "required": [
+        "component",
+        "status",
+        "training_dataset_revision",
+        "dataset_artifact_path",
+        "dataset_manifest_path",
+        "dataset_source_earliest_date",
+        "dataset_source_latest_date",
+        "dataset_source_row_count",
+        "dataset_source_symbol_count",
+        "dataset_source_schema_hash",
+        "dataset_source_content_hash",
+        "split_windows",
+        "recent_holdout_usage",
+        "calibration_validation_independence"
+      ],
+      "type": "object"
+    },
+    "data_inspection": {
+      "additionalProperties": true,
+      "properties": {
+        "data_sources": {
+          "type": "array"
+        },
+        "datasets": {
+          "type": "array"
+        },
+        "runtime_features": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "data_sources",
+        "datasets",
+        "runtime_features"
+      ],
+      "type": "object"
+    },
+    "data_source_inventory": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "data_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "decision_subsystems": {
+      "additionalProperties": true,
+      "properties": {
+        "subsystems": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "subsystems"
+      ],
+      "type": "object"
+    },
+    "demo_freshness": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "environment_readiness": {
+      "additionalProperties": true,
+      "required": [
+        "historical_pre_run_readiness",
+        "single_day_runtime_readiness",
+        "multi_day_continuity_readiness",
+        "demo_current_data_readiness",
+        "production_current_data_readiness",
+        "broker_connectivity_readiness",
+        "broker_write_readiness"
+      ],
+      "type": "object"
+    },
+    "exit_code": {
+      "enum": [
+        0,
+        10,
+        20,
+        30
+      ]
+    },
+    "final_judgment": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "freshness_matrix": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "freshness_policy_traceability": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "historical_coverage": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "historical_source_consumer_cutoff": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "source_available_from_date",
+        "source_available_through_date",
+        "required_through_date",
+        "consumer_cutoff_date",
+        "actual_consumed_from_date",
+        "actual_consumed_through_date",
+        "future_row_guard",
+        "future_rows_available",
+        "future_rows_consumed"
+      ],
+      "type": "object"
+    },
+    "inspection_context": {
+      "additionalProperties": true,
+      "required": [
+        "inspection_mode",
+        "runtime_mode",
+        "broker_environment",
+        "profile",
+        "runtime_root",
+        "runtime_root_type",
+        "target_business_date",
+        "current_calendar_date",
+        "runtime_stage",
+        "shared_runtime_root_used"
+      ],
+      "type": "object"
+    },
+    "non_mutation": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "not_evaluated_checks": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "not_performed_checks": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "operational_summary": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "overall_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "production_freshness": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "recent_holdout_usage_audit": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "runtime_chain_inspection": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "chain"
+      ],
+      "type": "object"
+    },
+    "runtime_input_lineage_contract": {
+      "additionalProperties": true,
+      "required": [
+        "component",
+        "status",
+        "runtime_stage",
+        "target_business_date",
+        "required_market_data_through_date",
+        "planned_feature_source_date",
+        "actual_feature_business_date",
+        "temporal_cutoff_policy",
+        "future_row_guard"
+      ],
+      "type": "object"
+    },
+    "runtime_state_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "runtime_state_coverage": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "items",
+        "unresolved"
+      ],
+      "type": "object"
+    },
+    "runtime_status": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "runtime_test_system_status_report.v1"
+    },
+    "opportunity_input_lineage": {
+      "additionalProperties": true,
+      "required": [
+        "component",
+        "status",
+        "training_dataset_revision",
+        "dataset_artifact_path",
+        "dataset_manifest_path",
+        "dataset_source_earliest_date",
+        "dataset_source_latest_date",
+        "dataset_source_row_count",
+        "dataset_source_symbol_count",
+        "dataset_source_schema_hash",
+        "dataset_source_content_hash",
+        "split_windows",
+        "recent_holdout_usage",
+        "calibration_validation_independence"
+      ],
+      "type": "object"
+    },
+    "split_window_statistics": {
+      "additionalProperties": true,
+      "required": [
+        "candidate",
+        "opportunity"
+      ],
+      "type": "object"
+    },
+    "inspection_coverage": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "total_active_components",
+        "inspected_components",
+        "passed",
+        "warnings",
+        "skipped",
+        "unresolved"
+      ],
+      "type": "object"
+    },
+    "jquants_dependency_matrix": {
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "dependencies"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED",
+        "BLOCK"
+      ]
+    },
+    "subcommand": {
+      "const": "system-status"
+    },
+    "system_status_summary": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "subcommand",
+    "status",
+    "exit_code",
+    "system_status_summary",
+    "active_component_inventory",
+    "data_inspection",
+    "decision_subsystems",
+    "authority_generation",
+    "freshness_matrix",
+    "data_status",
+    "ai_status",
+    "runtime_status",
+    "runtime_state_status",
+    "broker_layer_status",
+    "overall_status",
+    "non_mutation",
+    "final_judgment",
+    "inspection_context",
+    "environment_readiness",
+    "operational_summary",
+    "active_component_count_summary",
+    "active_model_summary",
+    "candidate_input_lineage",
+    "opportunity_input_lineage",
+    "split_window_statistics",
+    "runtime_input_lineage_contract",
+    "complete_component_inventory",
+    "component_dependency_matrix",
+    "runtime_chain_inspection",
+    "jquants_dependency_matrix",
+    "runtime_state_coverage",
+    "historical_source_consumer_cutoff",
+    "inspection_coverage",
+    "data_source_inventory",
+    "production_freshness",
+    "demo_freshness",
+    "historical_coverage",
+    "baseline_traceability",
+    "freshness_policy_traceability",
+    "recent_holdout_usage_audit",
+    "calibration_validation_independence_audit",
+    "broker_truthfulness_audit",
+    "not_performed_checks",
+    "not_evaluated_checks"
+  ],
+  "title": "Runtime Test System Status Report",
+  "type": "object"
+}

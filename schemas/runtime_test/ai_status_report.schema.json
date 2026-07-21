@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/runtime_test/ai_status_report.schema.json",
+  "title": "Runtime Test AI Status Report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "subcommand",
+    "status",
+    "exit_code",
+    "ai_status_summary",
+    "dataset_lineage",
+    "split_audit",
+    "candidate_ai_status",
+    "opportunity_ai_status",
+    "accepted_generation_status",
+    "runtime_authority_status",
+    "jquants_and_feature_freshness",
+    "freshness_taxonomy",
+    "runtime_readiness",
+    "legacy_fallback_audit",
+    "non_mutation",
+    "final_judgment"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "runtime_test_ai_status_report.v1"
+    },
+    "subcommand": {
+      "const": "ai-status"
+    },
+    "status": {
+      "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"]
+    },
+    "exit_code": {
+      "enum": [0, 10, 20, 30]
+    },
+    "ai_status_summary": {
+      "type": "object"
+    },
+    "dataset_lineage": {
+      "type": "object"
+    },
+    "split_audit": {
+      "type": "object"
+    },
+    "candidate_ai_status": {
+      "type": "object"
+    },
+    "opportunity_ai_status": {
+      "type": "object"
+    },
+    "accepted_generation_status": {
+      "type": "object"
+    },
+    "runtime_authority_status": {
+      "type": "object"
+    },
+    "jquants_and_feature_freshness": {
+      "type": "object"
+    },
+    "freshness_taxonomy": {
+      "type": "object"
+    },
+    "runtime_readiness": {
+      "type": "object"
+    },
+    "legacy_fallback_audit": {
+      "type": "object"
+    },
+    "non_mutation": {
+      "type": "object"
+    },
+    "final_judgment": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

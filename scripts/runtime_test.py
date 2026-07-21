@@ -24,6 +24,19 @@ from ai_fund_lab_v2.runtime_v2.historical_support.reset_plan import (
     RESETTABLE_RELATIVE_PATHS,
     RESET_EXCLUDED_RELATIVE_PREFIXES,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.isolated_root import (
+    day1_pre_run_absent_artifacts,
+    materialize_isolated_historical_runtime_root,
+    protected_shared_runtime_hashes,
+)
+from ai_fund_lab_v2.runtime_v2.ai_status import (
+    build_ai_status_report,
+    write_ai_status_evidence,
+)
+from ai_fund_lab_v2.runtime_v2.system_status import (
+    build_system_status_report,
+    write_system_status_evidence,
+)
 from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     load_feature_date_contract,
     resolve_feature_date_contract,
@@ -156,10 +169,27 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status")
     add_common(status)
 
+    ai_status = subparsers.add_parser("ai-status")
+    add_common(ai_status)
+    ai_status.add_argument("--detailed", action="store_true")
+    ai_status.add_argument("--write-evidence", action="store_true")
+    ai_status.add_argument("--check-runtime-readiness", action="store_true")
+
+    system_status = subparsers.add_parser("system-status")
+    add_common(system_status)
+    system_status.add_argument("--write-evidence", action="store_true")
+
+    prepare_isolated = subparsers.add_parser("prepare-isolated")
+    add_common(prepare_isolated)
+    prepare_isolated.add_argument("--run-id")
+    prepare_isolated.add_argument("--target-business-date")
+    prepare_isolated.add_argument("--write-evidence", action="store_true")
+
     plan = subparsers.add_parser("plan")
     add_common(plan)
     add_plan_window(plan)
     plan.add_argument("--write-evidence", action="store_true")
+    plan.add_argument("--run-id")
 
     backup = subparsers.add_parser("backup")
     add_common(backup)
@@ -193,6 +223,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(resume)
     add_mutation_safety(resume)
     resume.add_argument("--run-id", required=True)
+
+    abandon = subparsers.add_parser("abandon")
+    add_common(abandon)
+    add_mutation_safety(abandon)
+    abandon.add_argument("--run-id", required=True)
+    abandon.add_argument("--reason", default="operator_abandoned_halt_run")
 
     rollback = subparsers.add_parser("rollback")
     add_common(rollback)
@@ -228,6 +264,12 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
 
     if args.subcommand == "status":
         return status(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "ai-status":
+        return ai_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "system-status":
+        return system_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "prepare-isolated":
+        return prepare_isolated_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "plan":
         return plan_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "backup":
@@ -242,6 +284,8 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return validate_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "resume":
         return resume_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "abandon":
+        return abandon_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "rollback":
         return rollback_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "close":
@@ -274,6 +318,351 @@ def status(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path) 
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
 
 
+def ai_status_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    try:
+        report = build_ai_status_report(
+            runtime_root=runtime_root,
+            check_runtime_readiness=bool(args.check_runtime_readiness),
+        )
+        evidence_path = ""
+        if args.write_evidence:
+            evidence_path = str(write_ai_status_evidence(report, evidence_root=evidence_root))
+        payload = runner_response(
+            {
+                "schema_version": report["schema_version"],
+                "subcommand": "ai-status",
+                "status": report["status"],
+                "current_step": "ai-status",
+                "completed_days": [],
+                "next_step": "manual review" if report["status"] == "REVIEW_REQUIRED" else "",
+                "backup_id": "",
+                "evidence_path": evidence_path,
+                "final_judgment": report["final_judgment"]["final_judgment"],
+                "exit_code": report["exit_code"],
+                "runtime_root": str(runtime_root),
+                "profile_id": profile.get("profile_id", ""),
+                "read_only": True,
+                "broker_access": "NOT_PERFORMED",
+                "ai_status_report": report,
+                "human_summary": report["detailed_human_summary"] if args.detailed else report["human_summary"],
+            }
+        )
+        return CommandResult(str(report["status"]), int(report["exit_code"]), payload)
+    except Exception as exc:
+        payload = base_payload("ai-status", "HALT")
+        payload.update(
+            {
+                "status": "COMMAND_ERROR",
+                "exit_code": EXIT_HALT,
+                "error": str(exc),
+                "read_only": True,
+                "broker_access": "NOT_PERFORMED",
+            }
+        )
+        return CommandResult("COMMAND_ERROR", EXIT_HALT, runner_response(payload))
+
+
+def system_status_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    try:
+        expected_business_date = str((profile.get("window") or {}).get("date_from") or "")
+        post_run_context = latest_closed_runtime_test_system_status_context(
+            evidence_root=evidence_root,
+            profile=profile,
+            runtime_root=runtime_root,
+        )
+        if post_run_context:
+            expected_business_date = str(post_run_context.get("final_business_date") or expected_business_date)
+        report = build_system_status_report(
+            runtime_root=runtime_root,
+            expected_business_date=expected_business_date or None,
+            runtime_mode=str(profile.get("mode") or ""),
+            profile_id=str(profile.get("profile_id") or ""),
+            broker_environment=str(profile.get("broker_environment") or ""),
+            target_business_dates=post_run_context.get("completed_business_days") if post_run_context else system_status_target_business_dates(profile),
+            post_run_context=post_run_context,
+        )
+        evidence_path = ""
+        if args.write_evidence:
+            evidence_path = str(write_system_status_evidence(report, evidence_root=evidence_root))
+        payload = runner_response(
+            {
+                "schema_version": report["schema_version"],
+                "subcommand": "system-status",
+                "status": report["status"],
+                "current_step": "system-status",
+                "completed_days": [],
+                "next_step": "manual review" if report["status"] == "REVIEW_REQUIRED" else "",
+                "backup_id": "",
+                "evidence_path": evidence_path,
+                "final_judgment": report["final_judgment"]["final_judgment"],
+                "exit_code": report["exit_code"],
+                "runtime_root": str(runtime_root),
+                "profile_id": profile.get("profile_id", ""),
+                "read_only": True,
+                "broker_access": "NOT_PERFORMED",
+                "system_status_report": report,
+                "human_summary": report["human_summary"],
+            }
+        )
+        return CommandResult(str(report["status"]), int(report["exit_code"]), payload)
+    except Exception as exc:
+        payload = base_payload("system-status", "HALT")
+        payload.update(
+            {
+                "status": "COMMAND_ERROR",
+                "exit_code": EXIT_HALT,
+                "error": str(exc),
+                "read_only": True,
+                "broker_access": "NOT_PERFORMED",
+            }
+        )
+        return CommandResult("COMMAND_ERROR", EXIT_HALT, runner_response(payload))
+
+
+def system_status_target_business_dates(profile: dict[str, Any]) -> list[str]:
+    accepted = profile.get("accepted_feature_dates")
+    if isinstance(accepted, dict) and accepted:
+        return sorted(str(day) for day in accepted)
+    window = profile.get("window") if isinstance(profile.get("window"), dict) else {}
+    start = str(window.get("date_from") or "")
+    end = str(window.get("date_to") or "")
+    if not start or not end:
+        return []
+    try:
+        current = date.fromisoformat(start)
+        final = date.fromisoformat(end)
+    except ValueError:
+        return []
+    days: list[str] = []
+    while current <= final:
+        if current.weekday() < 5:
+            days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def latest_closed_runtime_test_system_status_context(
+    *,
+    evidence_root: Path,
+    profile: dict[str, Any],
+    runtime_root: Path,
+) -> dict[str, Any]:
+    """Resolve a closed Historical Runtime Test context for read-only post-run inspection."""
+
+    profile_id = str(profile.get("profile_id") or "")
+    if str(profile.get("mode") or "") != "historical" or not profile_id:
+        return {}
+    if active_run_for_profile(evidence_root, profile_id=profile_id):
+        return {}
+    root = runs_root(evidence_root)
+    if not root.exists():
+        return {}
+    summaries = sorted(root.glob("*/fresh_run_summary.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for summary_path in summaries:
+        summary = read_json_optional(summary_path)
+        if str(summary.get("profile_id") or "") != profile_id:
+            continue
+        if str(summary.get("status") or "") != "PASS" or str(summary.get("close_result") or "") != "PASS":
+            continue
+        completed_days = [str(day) for day in summary.get("completed_days") or [] if str(day)]
+        if not completed_days:
+            continue
+        run_id = str(summary.get("run_id") or summary_path.parent.name)
+        final_summary = read_json_optional(runs_root(evidence_root) / run_id / "final_summary.json")
+        if str(final_summary.get("status") or "") != "PASS" or not final_summary.get("closed_at"):
+            continue
+        if not _runtime_roots_match(str(summary.get("runtime_root") or ""), runtime_root):
+            continue
+        final_day = completed_days[-1]
+        context = {
+            "schema_version": "system_status_historical_post_run_context.v1",
+            "context_type": "HISTORICAL_POST_RUN",
+            "status": "PASS",
+            "authority": "latest_closed_runtime_test",
+            "run_id": run_id,
+            "profile_id": profile_id,
+            "run_evidence_root": str(summary_path.parent),
+            "runtime_root": str(runtime_root),
+            "completed_business_days": completed_days,
+            "final_business_date": final_day,
+            "closed_at": str(final_summary.get("closed_at") or ""),
+            "fresh_run_summary_path": str(summary_path),
+            "final_summary_path": str(runs_root(evidence_root) / run_id / "final_summary.json"),
+            "runtime_stage": "EXECUTION_DONE",
+            "completed_runtime_components": _completed_runtime_components(runtime_root, final_day),
+        }
+        context.update(_historical_post_run_safety_context(runtime_root, final_day))
+        return context
+    return {}
+
+
+def _runtime_roots_match(recorded_root: str, runtime_root: Path) -> bool:
+    if not recorded_root:
+        return False
+    recorded = Path(recorded_root)
+    if not recorded.is_absolute():
+        recorded = Path.cwd() / recorded
+    try:
+        return recorded.resolve() == runtime_root.resolve()
+    except FileNotFoundError:
+        return recorded.absolute() == runtime_root.absolute()
+
+
+def _completed_runtime_components(runtime_root: Path, business_date: str) -> list[str]:
+    manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
+    jobs = {
+        "sell_planning": "sell_planning",
+        "approval": "morning",
+        "submit": "submit",
+        "execution": "execution",
+        "reporting": "execution",
+        "notification": "execution",
+    }
+    completed: set[str] = set()
+    if manifest_dir.is_dir():
+        for path in manifest_dir.glob("*.json"):
+            payload = read_json_optional(path)
+            job = str(payload.get("job") or "")
+            if str(payload.get("exit_code") or "0") not in {"0", ""}:
+                continue
+            for component, expected_job in jobs.items():
+                if job == expected_job:
+                    completed.add(component)
+    return sorted(completed)
+
+
+def _historical_post_run_safety_context(runtime_root: Path, business_date: str) -> dict[str, Any]:
+    manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
+    if not manifest_dir.is_dir():
+        return {"safety_status": "MISSING", "safety_business_date": business_date}
+    candidates = sorted(manifest_dir.glob("*data_readiness*.json")) + sorted(manifest_dir.glob("*submit*.json"))
+    for path in candidates:
+        payload = read_json_optional(path)
+        safety_status = str(payload.get("data_readiness_safety_status") or payload.get("safety_status") or "")
+        safety_date = str(payload.get("data_readiness_safety_authority_business_date") or payload.get("safety_authority_business_date") or "")
+        safety_source = str(payload.get("data_readiness_safety_authority_source") or payload.get("safety_authority_source") or "")
+        if safety_status in {"READY", "PASS"} and safety_date == business_date and safety_source == "data_readiness_historical_temporal_authority":
+            return {
+                "safety_status": safety_status,
+                "safety_business_date": safety_date,
+                "safety_authority_source": safety_source,
+                "safety_authority": str(payload.get("data_readiness_safety_authority") or payload.get("safety_authority") or ""),
+                "safety_policy_version": str(payload.get("data_readiness_safety_authority_policy_version") or payload.get("safety_policy_version") or ""),
+                "safety_decision": str(payload.get("safety_decision") or "ALLOW"),
+                "safety_decision_id": str(payload.get("safety_decision_id") or ""),
+                "safety_authority_path": str(path),
+                "safety_authority_sha256": sha256_file(path),
+            }
+    return {"safety_status": "MISSING", "safety_business_date": business_date}
+
+
+def prepare_isolated_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    if profile.get("mode") != "historical":
+        raise RuntimeTestError("prepare-isolated is only valid for historical profiles", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    run_id = args.run_id or f"runtime-test-{profile['profile_id']}-{timestamp_id()}"
+    target_business_date = args.target_business_date or str((profile.get("window") or {}).get("date_from") or "")
+    if not target_business_date:
+        raise RuntimeTestError("target business date is required", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    result = materialize_isolated_historical_runtime_root(
+        repo_root=Path.cwd(),
+        shared_runtime_root=runtime_root,
+        run_id=run_id,
+        profile=profile,
+        target_business_date=target_business_date,
+    )
+    isolated_runtime_root = Path(result["isolated_runtime_root"])
+    report = build_system_status_report(
+        runtime_root=isolated_runtime_root,
+        expected_business_date=target_business_date,
+        runtime_mode=str(profile.get("mode") or ""),
+        profile_id=str(profile.get("profile_id") or ""),
+        broker_environment=str(profile.get("broker_environment") or ""),
+        target_business_dates=system_status_target_business_dates(profile),
+    )
+    temporal = report["temporal_authority_audit"]
+    result["temporal_preflight"] = {
+        "status": "PASS" if temporal.get("future_state_reference_count") == 0 and temporal.get("temporal_isolation_status") == "PASS" else "BLOCK",
+        "target_business_date": target_business_date,
+        "future_state_reference_count": temporal.get("future_state_reference_count"),
+        "temporal_isolation_status": temporal.get("temporal_isolation_status"),
+    }
+    result["system_status"] = {
+        "status": report["status"],
+        "exit_code": report["exit_code"],
+        "runtime_root": str(isolated_runtime_root),
+        "final_judgment": report["final_judgment"]["final_judgment"],
+    }
+    result["run_id_root_binding"] = {
+        "status": "PASS",
+        "run_id": run_id,
+        "isolated_runtime_root": str(isolated_runtime_root),
+        "day1_to_day5_same_root_required": True,
+        "resume_must_resolve_same_root": True,
+        "different_run_state_sharing": False,
+    }
+    result["day1_pre_run_artifact_inventory"] = day1_pre_run_absent_artifacts(isolated_runtime_root, target_business_date)
+    final_status = "PASS" if (
+        result.get("status") == "PASS"
+        and result["temporal_preflight"]["status"] == "PASS"
+        and result["day1_pre_run_artifact_inventory"]["status"] == "PASS"
+    ) else "BLOCK"
+    result["status"] = final_status
+    result["exit_code"] = EXIT_PASS if final_status == "PASS" else EXIT_BLOCKED
+    evidence_path = ""
+    if args.write_evidence:
+        evidence_path = str(write_prepare_isolated_evidence(result, evidence_root=evidence_root))
+        result["evidence_path"] = evidence_path
+    payload = base_payload("prepare-isolated", final_status)
+    payload.update(result)
+    payload["current_step"] = "prepare-isolated"
+    payload["next_step"] = "AY Day1 manual run" if final_status == "PASS" else "manual review"
+    payload["final_judgment"] = (
+        ["PHASE19_BB_ISOLATED_HISTORICAL_RUNTIME_READY", "PHASE19_AY_DAY1_MANUAL_RUN_READY"]
+        if final_status == "PASS"
+        else ["PHASE19_BB_FAIL", "PHASE19_AY_DAY1_BLOCKED"]
+    )
+    payload["read_only_shared_runtime"] = result.get("shared_runtime_non_mutation") is True
+    return CommandResult(final_status, int(payload["exit_code"]), runner_response(payload))
+
+
+def write_prepare_isolated_evidence(result: dict[str, Any], *, evidence_root: Path) -> Path:
+    run_id = str(result.get("run_id") or timestamp_id())
+    root = Path(evidence_root) / "prepare_isolated" / run_id
+    root.mkdir(parents=True, exist_ok=True)
+    mapping = {
+        "prepare_isolated_result.json": result,
+        "shared_runtime_pre_hashes.json": result.get("shared_runtime_pre_hashes", {}),
+        "shared_runtime_post_hashes.json": result.get("shared_runtime_post_hashes", {}),
+        "isolated_runtime_root_manifest.json": result.get("metadata", {}),
+        "historical_initial_state_materialization.json": result.get("historical_initial_state", {}),
+        "accepted_generation_resolution.json": result.get("accepted_generation_resolution", {}),
+        "temporal_preflight_result.json": result.get("temporal_preflight", {}),
+        "run_id_root_binding.json": result.get("run_id_root_binding", {}),
+        "day1_pre_run_artifact_inventory.json": result.get("day1_pre_run_artifact_inventory", {}),
+    }
+    for name, payload in mapping.items():
+        write_json_atomic(root / name, payload)
+    return root
+
+
 def plan_command(
     args: argparse.Namespace,
     *,
@@ -281,6 +670,7 @@ def plan_command(
     runtime_root: Path,
     evidence_root: Path,
 ) -> CommandResult:
+    validate_plan_namespace(args)
     plan_payload = build_plan(
         profile=profile,
         runtime_root=runtime_root,
@@ -289,6 +679,7 @@ def plan_command(
         start_date=args.start_date,
         date_from=args.date_from,
         date_to=args.date_to,
+        run_id=args.run_id,
     )
     baseline_compatibility = build_baseline_compatibility(
         runtime_root=runtime_root,
@@ -319,6 +710,37 @@ def plan_command(
     exit_code = EXIT_PASS if plan_status == "PASS" else EXIT_REVIEW_REQUIRED
     payload["exit_code"] = exit_code
     return CommandResult(plan_status, exit_code, runner_response(payload))
+
+
+def plan_namespace_from_fresh_run(args: argparse.Namespace, *, run_id: str | None = None) -> argparse.Namespace:
+    """Build the exact internal Namespace required by plan_command."""
+
+    return argparse.Namespace(
+        business_days=args.business_days,
+        start_date=args.start_date,
+        date_from=args.date_from,
+        date_to=args.date_to,
+        run_id=run_id,
+        write_evidence=False,
+        json=False,
+    )
+
+
+def validate_plan_namespace(args: argparse.Namespace) -> dict[str, Any]:
+    required = ("business_days", "start_date", "date_from", "date_to", "run_id")
+    missing = [name for name in required if not hasattr(args, name)]
+    if missing:
+        raise RuntimeTestError(
+            "plan namespace missing required attributes: " + ", ".join(missing),
+            status="INVALID_ARGUMENT",
+            exit_code=EXIT_INVALID_ARGUMENT,
+        )
+    return {
+        "status": "PASS",
+        "required_attributes": list(required),
+        "run_id_present": bool(getattr(args, "run_id")),
+        "run_id_required_before_plan": False,
+    }
 
 
 def backup_command(
@@ -644,6 +1066,158 @@ def resume_command(
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
 
 
+def abandon_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    run_id = str(args.run_id)
+    run_state = load_run_state(evidence_root, run_id)
+    run_dir = runs_root(evidence_root) / run_id
+    current_status = str(run_state.get("status") or "")
+    already_abandoned = is_run_abandoned(evidence_root=evidence_root, run_id=run_id)
+    active = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
+    active_run = str(active.get("run_id") or "") == run_id
+    files_to_create = [
+        str(run_dir / "abandonment.json"),
+        str(run_dir / "final_summary.json"),
+    ]
+    payload = base_payload("abandon", "DRY_RUN" if args.dry_run else "ABANDONED")
+    payload.update(
+        {
+            "run_id": run_id,
+            "profile_id": profile["profile_id"],
+            "current_status": current_status,
+            "previous_status": current_status,
+            "active_run": active_run,
+            "abandonment_possible": current_status == "HALT" or already_abandoned,
+            "already_abandoned": already_abandoned,
+            "resume_disabled": already_abandoned,
+            "files_to_create": files_to_create,
+            "files_to_modify": [],
+            "evidence_to_preserve": [
+                str(run_dir / "run_state.json"),
+                str(run_dir / "plan.json"),
+                str(run_dir / "daily"),
+                str(run_dir / "fresh_run_summary.json"),
+            ],
+            "trading_state_mutation": False,
+            "trading_state_mutated": False,
+            "broker_access": False,
+            "broker_write": False,
+            "external_delivery": False,
+            "evidence_preserved": True,
+            "run_state_preserved": True,
+            "run_state_original_status": current_status,
+            "accepted_generation_changed": False,
+            "registry_changed": False,
+            "state_hashes_before": state_hashes(runtime_root),
+        }
+    )
+    if already_abandoned:
+        abandonment = load_abandonment(evidence_root=evidence_root, run_id=run_id)
+        payload.update(
+            {
+                "status": "ABANDONED",
+                "final_judgment": "ABANDONED",
+                "exit_code": EXIT_PASS,
+                "abandoned_at": abandonment.get("abandoned_at") or "",
+                "resume_disabled": True,
+                "abandonment_path": str(run_dir / "abandonment.json"),
+                "final_summary_path": str(run_dir / "final_summary.json"),
+                "evidence_path": str(run_dir),
+                "state_hashes_after": state_hashes(runtime_root),
+            }
+        )
+        return CommandResult("ABANDONED", EXIT_PASS, runner_response(payload))
+    if current_status == "RUNNING":
+        raise RuntimeTestError(
+            "abandon rejected; RUNNING run must be halted or stopped before abandon",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    if current_status != "HALT":
+        raise RuntimeTestError(
+            f"abandon rejected; run status is not HALT: {current_status}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    if args.dry_run:
+        payload.update(
+            {
+                "dry_run_no_mutation": True,
+                "resume_disabled": False,
+                "state_hashes_after": payload["state_hashes_before"],
+            }
+        )
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    abandoned_at = utc_now()
+    abandon_reason = str(getattr(args, "reason", "") or "operator_abandoned_halt_run")
+    abandonment = {
+        "schema_version": "runtime_test_abandonment_v1",
+        "run_id": run_id,
+        "profile_id": profile["profile_id"],
+        "previous_status": current_status,
+        "abandoned_at": abandoned_at,
+        "abandon_reason": abandon_reason,
+        "abandoned_by": "operator",
+        "resume_disabled": True,
+        "evidence_preserved": True,
+        "trading_state_mutated": False,
+        "broker_access": False,
+        "broker_write": False,
+        "external_delivery": False,
+        "run_state_path": str(run_dir / "run_state.json"),
+        "run_state_preserved": True,
+        "run_state_original_status": current_status,
+        "halted_at": run_state.get("halted_at") or {},
+        "next_job_before_abandon": run_state.get("next_job") or "",
+        "completed_business_days_before_abandon": run_state.get("completed_business_days") or [],
+        "rollback_evidence_preserved": True,
+    }
+    final_summary = {
+        "schema_version": FINAL_SUMMARY_SCHEMA_VERSION,
+        "run_id": run_id,
+        "profile_id": profile["profile_id"],
+        "status": "ABANDONED",
+        "final_judgment": "ABANDONED",
+        "test_validity_judgment": "ABANDONED",
+        "acceptance_gate_judgment": "ABANDONED",
+        "previous_status": current_status,
+        "abandoned_at": abandoned_at,
+        "abandon_reason": abandon_reason,
+        "abandoned_by": "operator",
+        "resume_disabled": True,
+        "evidence_preserved": True,
+        "trading_state_mutated": False,
+        "broker_access": False,
+        "broker_write": False,
+        "external_delivery": False,
+        "final_state_hashes": state_hashes(runtime_root),
+        "post_close_lifecycle_recommendation": "start a new fresh-run; this run is not resumable",
+    }
+    write_json_atomic(run_dir / "abandonment.json", abandonment)
+    write_json_atomic(run_dir / "final_summary.json", final_summary)
+    payload.update(
+        {
+            "status": "ABANDONED",
+            "final_judgment": "ABANDONED",
+            "exit_code": EXIT_PASS,
+            "abandoned_at": abandoned_at,
+            "abandon_reason": abandon_reason,
+            "resume_disabled": True,
+            "abandonment_path": str(run_dir / "abandonment.json"),
+            "final_summary_path": str(run_dir / "final_summary.json"),
+            "evidence_path": str(run_dir),
+            "state_hashes_after": state_hashes(runtime_root),
+        }
+    )
+    return CommandResult("ABANDONED", EXIT_PASS, runner_response(payload))
+
+
 def rollback_command(
     args: argparse.Namespace,
     *,
@@ -710,15 +1284,27 @@ def fresh_run_command(
     fresh_run_id = f"fresh-run-{profile['profile_id']}-{timestamp_id()}"
     started_at = utc_now()
     before = _fresh_run_authority_snapshot(runtime_root)
+    plan_namespace = plan_namespace_from_fresh_run(args)
+    plan_namespace_contract = validate_plan_namespace(plan_namespace)
     plan_preview = build_plan(
         profile=profile,
         runtime_root=runtime_root,
         evidence_root=evidence_root,
-        business_days=args.business_days,
-        start_date=args.start_date,
-        date_from=args.date_from,
-        date_to=args.date_to,
+        business_days=plan_namespace.business_days,
+        start_date=plan_namespace.start_date,
+        date_from=plan_namespace.date_from,
+        date_to=plan_namespace.date_to,
+        run_id=plan_namespace.run_id,
     )
+    dry_run_plan_request_contract = {
+        **plan_namespace_contract,
+        "plan_request_construction": "PASS",
+        "runtime_test_run_id_generated_by": "plan",
+        "fresh_run_id_is_runtime_test_run_id": False,
+        "backup_id_is_runtime_test_run_id": False,
+        "generated_runtime_test_run_id": plan_preview["run_id"],
+        "fresh_run_id": fresh_run_id,
+    }
     active = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
     if args.dry_run:
         payload = _fresh_run_summary(
@@ -741,6 +1327,9 @@ def fresh_run_command(
             active_run=active,
             dry_run=True,
         )
+        payload["plan_request_contract"] = dry_run_plan_request_contract
+        payload["steps"]["plan"]["summary"]["plan_request_construction"] = "PASS"
+        payload["steps"]["plan"]["summary"]["namespace_contract"] = plan_namespace_contract
         return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
     require_confirm(args)
     if active:
@@ -823,10 +1412,14 @@ def fresh_run_command(
             raise RuntimeTestError("reset clean-state invariant failed", status="VALIDATION_FAILURE", exit_code=EXIT_VALIDATION_FAILURE)
         plan_result = execute(
             "plan",
-            lambda: plan_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root),
+            lambda: plan_command(plan_namespace, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root),
         )
         plan_payload = dict(plan_result.payload)
         run_id = str(plan_payload.get("run_id") or "")
+        if not run_id:
+            failed_step = "plan"
+            error = "plan did not generate runtime test run_id"
+            raise RuntimeTestError(error, status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
         execute(
             "run",
             lambda: run_command(
@@ -891,6 +1484,16 @@ def fresh_run_command(
         active_run=active,
         dry_run=False,
     )
+    payload["plan_request_contract"] = {
+        **plan_namespace_contract,
+        "plan_request_construction": "PASS",
+        "runtime_test_run_id_generated_by": "plan",
+        "fresh_run_id_is_runtime_test_run_id": False,
+        "backup_id_is_runtime_test_run_id": False,
+        "generated_runtime_test_run_id": run_id or plan_preview["run_id"],
+        "fresh_run_id": fresh_run_id,
+        "backup_id": backup_id,
+    }
     summary_path = _persist_fresh_run_summary(evidence_root=evidence_root, run_id=run_id, fresh_run_id=fresh_run_id, payload=payload)
     payload["evidence_path"] = str(summary_path.parent)
     payload["fresh_run_summary_path"] = str(summary_path)
@@ -1589,6 +2192,13 @@ def validate_run_preconditions(
     if missing:
         raise RuntimeTestError("run requires valid initial state: " + ", ".join(missing), status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
     if plan_payload:
+        planned_runtime_root = str(plan_payload.get("runtime_root") or "")
+        if planned_runtime_root and Path(planned_runtime_root) != Path(runtime_root):
+            raise RuntimeTestError(
+                f"runtime_root_binding_mismatch: planned={planned_runtime_root}, actual={runtime_root}",
+                status="PRECONDITION_FAILURE",
+                exit_code=EXIT_PRECONDITION_FAILURE,
+            )
         requested_start_date = str((plan_payload.get("business_dates") or [{}])[0].get("business_date") or "")
         compatibility = build_baseline_compatibility(
             runtime_root=runtime_root,
@@ -1958,18 +2568,41 @@ def active_run_for_profile(evidence_root: Path, *, profile_id: str) -> dict[str,
 
 def is_run_closed(*, evidence_root: Path, run_id: str) -> bool:
     final_summary_path = runs_root(evidence_root) / run_id / "final_summary.json"
-    if not final_summary_path.exists():
-        return False
+    if final_summary_path.exists():
+        try:
+            payload = read_json(final_summary_path)
+            validate_schema(
+                payload=payload,
+                artifact_name="runtime test final summary",
+                supported={FINAL_SUMMARY_SCHEMA_VERSION},
+            )
+        except Exception:
+            payload = {}
+        if bool(payload.get("closed_at")):
+            return True
+        if bool(payload.get("abandoned_at")):
+            return True
+        if str(payload.get("status") or "") == "ABANDONED":
+            return True
+    return is_run_abandoned(evidence_root=evidence_root, run_id=run_id)
+
+
+def is_run_abandoned(*, evidence_root: Path, run_id: str) -> bool:
+    abandonment = load_abandonment(evidence_root=evidence_root, run_id=run_id)
+    return bool(abandonment.get("abandoned_at")) and bool(abandonment.get("resume_disabled", True))
+
+
+def load_abandonment(*, evidence_root: Path, run_id: str) -> dict[str, Any]:
+    path = runs_root(evidence_root) / run_id / "abandonment.json"
+    if not path.exists():
+        return {}
     try:
-        payload = read_json(final_summary_path)
-        validate_schema(
-            payload=payload,
-            artifact_name="runtime test final summary",
-            supported={FINAL_SUMMARY_SCHEMA_VERSION},
-        )
+        payload = read_json(path)
     except Exception:
-        return False
-    return bool(payload.get("closed_at"))
+        return {}
+    if str(payload.get("run_id") or "") != run_id:
+        return {}
+    return payload
 
 
 def backups_root(evidence_root: Path) -> Path:
@@ -2452,6 +3085,12 @@ def runner_response(payload: dict[str, Any]) -> dict[str, Any]:
 def emit(payload: dict[str, Any], *, json_output: bool) -> None:
     if json_output:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    if payload.get("subcommand") in {"ai-status", "system-status"} and payload.get("human_summary"):
+        print(payload["human_summary"])
+        if payload.get("evidence_path"):
+            print(f"Evidence Path: {payload['evidence_path']}")
+        print(f"Exit Code: {payload.get('exit_code', '')}")
         return
     keys = ["run_id", "status", "current_step", "completed_days", "next_step", "backup_id", "evidence_path", "final_judgment", "exit_code"]
     for key in keys:

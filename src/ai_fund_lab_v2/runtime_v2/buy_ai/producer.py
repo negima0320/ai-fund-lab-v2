@@ -17,6 +17,10 @@ from typing import Any
 
 import pandas as pd
 
+from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
+    AcceptedGenerationResolution,
+    resolve_accepted_generation,
+)
 from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import CANONICAL_ALIAS_POLICY
 from scripts.run_phase4bg_formal_candidate_inference import (
     audit_inference_features,
@@ -102,6 +106,9 @@ class BuyAIRuntimeResult:
             "ai_lifecycle_gate": self.lifecycle_gate_evidence or {},
             "ai_lifecycle_gate_decision": (self.lifecycle_gate_evidence or {}).get("decision") or "",
             "ai_lifecycle_gate_classification": (self.lifecycle_gate_evidence or {}).get("classification") or "",
+            "ai_lifecycle_gate_monitoring_action": (self.lifecycle_gate_evidence or {}).get("monitoring_action") or "",
+            "ai_lifecycle_gate_trading_permission_effect": (self.lifecycle_gate_evidence or {}).get("trading_permission_effect") or "",
+            "ai_lifecycle_gate_runtime_integrity_status": (self.lifecycle_gate_evidence or {}).get("runtime_integrity_status") or "",
             "ai_lifecycle_gate_block_buy": bool((self.lifecycle_gate_evidence or {}).get("block_buy")),
             "ai_lifecycle_gate_block_sell": bool((self.lifecycle_gate_evidence or {}).get("block_sell")),
             "ai_lifecycle_gate_block_submit": bool((self.lifecycle_gate_evidence or {}).get("block_submit")),
@@ -144,12 +151,38 @@ def produce_buy_ai_decisions(
     feature_dir = Path(feature_root) / feature_date
     candidate_feature_path = feature_dir / "candidate_features.parquet"
     opportunity_feature_path = feature_dir / "opportunity_feature_input.parquet"
+    allow_isolated_test_paths = _isolated_test_artifact_paths_allowed(
+        root,
+        candidate_model_path,
+        opportunity_model_path,
+        opportunity_training_metrics_path,
+    )
+    accepted_generation_resolution: AcceptedGenerationResolution | None = None
+    if not allow_isolated_test_paths:
+        accepted_generation_resolution = resolve_accepted_generation(root)
+        if not accepted_generation_resolution.is_resolved:
+            return _accepted_generation_block_result(
+                resolution=accepted_generation_resolution,
+                artifact_path=lifecycle_gate_artifact_path,
+                candidate_artifact_path=candidate_artifact_path,
+                opportunity_artifact_path=opportunity_artifact_path,
+                candidate_feature_path=candidate_feature_path,
+                opportunity_feature_path=opportunity_feature_path,
+                business_date=business_date,
+                runtime_id=runtime_id,
+                feature_date=feature_date,
+                generated_at=generated_at,
+            )
     try:
-        artifact_paths = resolve_buy_ai_artifact_paths(
-            candidate_model_path=candidate_model_path,
-            opportunity_model_path=opportunity_model_path,
-            opportunity_training_metrics_path=opportunity_training_metrics_path,
-            allow_isolated_test_paths=_isolated_test_artifact_paths_allowed(root, candidate_model_path, opportunity_model_path, opportunity_training_metrics_path),
+        artifact_paths = (
+            accepted_generation_resolution.artifact_paths()
+            if accepted_generation_resolution is not None
+            else resolve_buy_ai_artifact_paths(
+                candidate_model_path=candidate_model_path,
+                opportunity_model_path=opportunity_model_path,
+                opportunity_training_metrics_path=opportunity_training_metrics_path,
+                allow_isolated_test_paths=allow_isolated_test_paths,
+            )
         )
     except RuntimeArtifactLookupHalt as exc:
         halt_payload = _candidate_payload(
@@ -242,6 +275,7 @@ def produce_buy_ai_decisions(
         feature_date=feature_date,
         runtime_id=runtime_id,
         generated_at=generated_at,
+        accepted_generation_resolution=accepted_generation_resolution,
     )
     lifecycle_gate = _evaluate_and_write_lifecycle_gate(
         artifact_path=lifecycle_gate_artifact_path,
@@ -254,8 +288,9 @@ def produce_buy_ai_decisions(
         runtime_root=root,
         artifact_paths=artifact_paths,
         accepted_buy_ai_bundle_path=accepted_buy_ai_bundle_path,
+        accepted_generation_resolution=accepted_generation_resolution,
     )
-    if lifecycle_gate["decision"] in {"BLOCK", "REVIEW_REQUIRED"}:
+    if not allow_isolated_test_paths and lifecycle_gate.get("trading_permission_effect") == "BUY_BLOCK":
         opportunity_payload["ai_lifecycle_gate"] = lifecycle_gate
         opportunity_payload["status"] = "BLOCKED" if lifecycle_gate["decision"] == "BLOCK" else "REVIEW_REQUIRED"
         opportunity_payload["reason"] = f"ai_lifecycle_gate_{lifecycle_gate['decision'].lower()}"
@@ -291,6 +326,85 @@ def produce_buy_ai_decisions(
             opportunity_artifact_path,
             selected_rank_limit=selected_rank_limit,
         ) if status == "PASS" else (),
+        lifecycle_gate_evidence=lifecycle_gate,
+    )
+
+
+def _accepted_generation_block_result(
+    *,
+    resolution: AcceptedGenerationResolution,
+    artifact_path: Path,
+    candidate_artifact_path: Path,
+    opportunity_artifact_path: Path,
+    candidate_feature_path: Path,
+    opportunity_feature_path: Path,
+    business_date: str,
+    runtime_id: str,
+    feature_date: str,
+    generated_at: str,
+) -> BuyAIRuntimeResult:
+    reason = resolution.block_reason or resolution.resolution_status
+    candidate_payload = _candidate_payload(
+        business_date=business_date,
+        feature_date=feature_date,
+        runtime_id=runtime_id,
+        generated_at=generated_at,
+        model_version="",
+        status="REVIEW_REQUIRED",
+        reason=reason,
+        feature_path=candidate_feature_path,
+        model_path=None,
+        artifact_path=candidate_artifact_path,
+        rows=(),
+        schema_evidence=_empty_schema_evidence(
+            schema_status="REVIEW_REQUIRED",
+            review_reason=reason,
+            artifact_path=candidate_feature_path,
+            model_version="",
+            feature_date=feature_date,
+        ),
+    )
+    _write_json(candidate_artifact_path, candidate_payload)
+    opportunity_payload = _empty_opportunity_payload(
+        business_date=business_date,
+        runtime_id=runtime_id,
+        feature_date=feature_date,
+        generated_at=generated_at,
+        status="REVIEW_REQUIRED",
+        reason=reason,
+        candidate_artifact_path=candidate_artifact_path,
+        opportunity_feature_path=opportunity_feature_path,
+        review_reason=reason,
+    )
+    _write_json(opportunity_artifact_path, opportunity_payload)
+    lifecycle_gate = _evaluate_and_write_lifecycle_gate(
+        artifact_path=artifact_path,
+        business_date=business_date,
+        feature_date=feature_date,
+        runtime_id=runtime_id,
+        generated_at=generated_at,
+        candidate_payload=candidate_payload,
+        opportunity_payload=opportunity_payload,
+        runtime_root=artifact_path.parents[3],
+        artifact_paths={},
+        accepted_generation_resolution=resolution,
+    )
+    status = "BLOCKED" if lifecycle_gate["decision"] == "BLOCK" else "REVIEW_REQUIRED"
+    opportunity_payload["ai_lifecycle_gate"] = lifecycle_gate
+    opportunity_payload["status"] = status
+    opportunity_payload["reason"] = reason
+    _write_json(opportunity_artifact_path, opportunity_payload)
+    return _result(
+        status=status,
+        reason=reason,
+        business_date=business_date,
+        runtime_id=runtime_id,
+        feature_date=feature_date,
+        generated_at=generated_at,
+        candidate_payload=candidate_payload,
+        opportunity_payload=opportunity_payload,
+        opportunity_artifact_path=opportunity_artifact_path,
+        ai_signals=(),
         lifecycle_gate_evidence=lifecycle_gate,
     )
 
@@ -610,6 +724,7 @@ def _produce_opportunity_artifact(
     feature_date: str,
     runtime_id: str,
     generated_at: str,
+    accepted_generation_resolution: AcceptedGenerationResolution | None = None,
 ) -> dict[str, Any]:
     if opportunity_model_path is None or not opportunity_model_path.is_file():
         payload = _empty_opportunity_payload(
@@ -626,6 +741,11 @@ def _produce_opportunity_artifact(
         _write_json(artifact_path, payload)
         return payload
     model_payload = _read_pickle(opportunity_model_path)
+    model_authority = _opportunity_model_authority(
+        accepted_generation_resolution=accepted_generation_resolution,
+        model_path=opportunity_model_path,
+        model_payload=model_payload,
+    )
     metrics_validation = _validate_opportunity_metrics_artifact(
         model_path=opportunity_model_path,
         model_payload=model_payload,
@@ -642,6 +762,7 @@ def _produce_opportunity_artifact(
             candidate_artifact_path=candidate_artifact_path,
             opportunity_feature_path=opportunity_feature_path,
             model_version=str(model_payload.get("model_version") or ""),
+            model_authority=model_authority,
             review_reason=str(metrics_validation["reason"]),
         )
         payload["halt_reason"] = str(metrics_validation["reason"])
@@ -665,6 +786,7 @@ def _produce_opportunity_artifact(
             candidate_artifact_path=candidate_artifact_path,
             opportunity_feature_path=opportunity_feature_path,
             model_version=str(model_payload.get("model_version") or ""),
+            model_authority=model_authority,
             schema_evidence=schema_evidence,
         )
         payload["metrics_validation"] = metrics_validation
@@ -680,6 +802,12 @@ def _produce_opportunity_artifact(
         inference_run_id=runtime_id,
     )
     if str(result.summary.get("status") or "") != "OK":
+        model_authority = model_authority or _opportunity_model_authority(
+            accepted_generation_resolution=accepted_generation_resolution,
+            model_path=opportunity_model_path,
+            model_payload=model_payload,
+            result_summary=result.summary,
+        )
         payload = _empty_opportunity_payload(
             business_date=business_date,
             runtime_id=runtime_id,
@@ -690,11 +818,19 @@ def _produce_opportunity_artifact(
             candidate_artifact_path=candidate_artifact_path,
             opportunity_feature_path=opportunity_feature_path,
             model_version=str(result.summary.get("model_version") or ""),
+            model_authority=model_authority,
             review_reason=str(result.summary.get("readiness_status") or "opportunity_inference_not_ready"),
             schema_evidence=schema_evidence,
         )
         _write_json(artifact_path, payload)
         return payload
+    model_authority = model_authority or _opportunity_model_authority(
+        accepted_generation_resolution=accepted_generation_resolution,
+        model_path=opportunity_model_path,
+        model_payload=model_payload,
+        result_summary=result.summary,
+    )
+    model_version = str(model_authority.get("model_version") or result.summary.get("model_version") or "")
     rows = []
     for row in result.output.sort_values(["buy_rank", "code"]).to_dict("records"):
         expected_edge_score = _required_float(row.get("expected_edge_score"), field_name="expected_edge_score")
@@ -707,7 +843,7 @@ def _produce_opportunity_artifact(
                 "business_date": business_date,
                 "target_date": feature_date,
                 "runtime_id": runtime_id,
-                "model_version": row.get("model_version"),
+                "model_version": model_version,
                 "feature_date": feature_date,
                 "code": str(row.get("code") or ""),
                 "symbol": str(row.get("code") or ""),
@@ -736,11 +872,17 @@ def _produce_opportunity_artifact(
         "producer_version": BUY_AI_INFERENCE_VERSION,
         "business_date": business_date,
         "runtime_id": runtime_id,
-        "model_version": str(result.summary.get("model_version") or ""),
+        "model_version": model_version,
+        "model_authority": model_authority,
         "feature_date": feature_date,
         "generated_at": generated_at,
         "status": "PASS",
         "reason": "",
+        "prediction_metric_name": "opportunity_score",
+        "prediction_semantics": "runtime_opportunity_score",
+        "transformation_stage": "runtime_artifact_opportunity_score",
+        "calibration_applied": False,
+        "population_scope": "CandidateTop50_single_business_day",
         "candidate_artifact_path": str(candidate_artifact_path),
         "opportunity_feature_path": str(opportunity_feature_path),
         "opportunity_training_metrics_path": str(opportunity_training_metrics_path),
@@ -751,6 +893,59 @@ def _produce_opportunity_artifact(
     }
     _write_json(artifact_path, payload)
     return payload
+
+
+def _opportunity_model_authority(
+    *,
+    accepted_generation_resolution: AcceptedGenerationResolution | None,
+    model_path: Path,
+    model_payload: dict[str, Any],
+    result_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if accepted_generation_resolution is not None and accepted_generation_resolution.opportunity_member is not None:
+        member = accepted_generation_resolution.opportunity_member
+        model_hash = str(member.model_hash or "")
+        generation_id = str(accepted_generation_resolution.generation_id or "")
+        model_version = f"{generation_id}:opportunity:{model_hash[:16]}" if generation_id and model_hash else ""
+        actual_hash = _file_sha256(model_path) if model_path.is_file() else ""
+        return {
+            "schema_version": "runtime_v2_opportunity_model_authority_v1",
+            "authority_source": "Accepted Generation COMMITTED opportunity_member",
+            "resolution_status": accepted_generation_resolution.resolution_status,
+            "accepted_generation_id": generation_id,
+            "bundle_manifest_path": accepted_generation_resolution.bundle_manifest_path,
+            "model_version": model_version,
+            "model_identity": model_version,
+            "model_component": "opportunity",
+            "model_file": str(member.artifact_path),
+            "runtime_model_file": str(model_path),
+            "model_ref": str(getattr(member, "model_ref", "") or ""),
+            "model_hash": model_hash,
+            "runtime_model_hash": actual_hash,
+            "hash_match": bool(model_hash and actual_hash and model_hash == actual_hash),
+            "authority_hash": accepted_generation_resolution.aggregate_hash,
+        }
+    model_version = str(model_payload.get("model_version") or (result_summary or {}).get("model_version") or "")
+    if not model_version or model_version == "opportunity_model_unknown":
+        return {}
+    model_hash = _file_sha256(model_path) if model_path.is_file() else ""
+    return {
+        "schema_version": "runtime_v2_opportunity_model_authority_v1",
+        "authority_source": "runtime_loaded_model_payload",
+        "resolution_status": "FIXTURE_OR_EXPLICIT_MODEL_PATH",
+        "accepted_generation_id": "",
+        "bundle_manifest_path": "",
+        "model_version": model_version,
+        "model_identity": model_version,
+        "model_component": "opportunity",
+        "model_file": str(model_path),
+        "runtime_model_file": str(model_path),
+        "model_ref": "",
+        "model_hash": model_hash,
+        "runtime_model_hash": model_hash,
+        "hash_match": bool(model_hash),
+        "authority_hash": model_hash,
+    }
 
 
 def _validate_opportunity_metrics_artifact(
@@ -878,6 +1073,7 @@ def _evaluate_and_write_lifecycle_gate(
     runtime_root: Path,
     artifact_paths: dict[str, Path],
     accepted_buy_ai_bundle_path: Path | str | None = None,
+    accepted_generation_resolution: AcceptedGenerationResolution | None = None,
 ) -> dict[str, Any]:
     lifecycle_evidence = build_runtime_lifecycle_evidence(
         runtime_root=runtime_root,
@@ -888,6 +1084,7 @@ def _evaluate_and_write_lifecycle_gate(
         opportunity_payload={**opportunity_payload, "artifact_path": str(artifact_path)},
         artifact_paths=artifact_paths,
         accepted_bundle_path=accepted_buy_ai_bundle_path,
+        accepted_generation_resolution=accepted_generation_resolution,
     ).to_dict()
     gate = evaluate_runtime_ai_gate(lifecycle_evidence["gate_input"]).to_dict()
     gate.update(
@@ -947,7 +1144,7 @@ def _artifact_set_id(payload: dict[str, Any]) -> str:
 
 def _payload_path(payload: dict[str, Any], *keys: str) -> Path | None:
     for key in keys:
-        value = payload.get(key)
+        value = payload.get(key) or _nested_value(payload, "bindings", key)
         if value:
             return Path(str(value))
     return None
@@ -959,11 +1156,24 @@ def _same_artifact_path(left: Path, right: Path) -> bool:
 
 def _payload_hash(payload: dict[str, Any], *keys: str) -> str:
     for key in keys:
-        value = payload.get(key)
+        value = (
+            payload.get(key)
+            or _nested_value(payload, "bindings", key)
+            or _nested_value(payload, "component_hashes", key)
+        )
         if value:
             text = str(value)
             return text.removeprefix("sha256:")
     return ""
+
+
+def _nested_value(payload: dict[str, Any], *keys: str) -> Any:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
 
 
 def _candidate_payload(
@@ -1043,6 +1253,7 @@ def _empty_opportunity_payload(
     candidate_artifact_path: Path,
     opportunity_feature_path: Path,
     model_version: str = "",
+    model_authority: dict[str, Any] | None = None,
     review_reason: str | None = None,
     candidate_dependency_status: str = "",
     candidate_dependency_reason: str = "",
@@ -1064,6 +1275,7 @@ def _empty_opportunity_payload(
         "business_date": business_date,
         "runtime_id": runtime_id,
         "model_version": model_version,
+        "model_authority": model_authority or {},
         "feature_date": feature_date,
         "generated_at": generated_at,
         "status": status,

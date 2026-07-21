@@ -164,8 +164,10 @@ def test_phase18p_missing_baseline_fail_closed(tmp_path: Path) -> None:
         accepted_bundle_path=tmp_path / "missing.json",
     )
     gate = evaluate_runtime_ai_gate(evidence.to_gate_input()).to_dict()
-    assert gate["decision"] in {"REVIEW_REQUIRED", "BLOCK"}
-    assert gate["classification"] == "INSUFFICIENT_EVIDENCE"
+    assert gate["decision"] == "BLOCK"
+    assert gate["classification"] == "RUNTIME_INTEGRITY_BLOCK"
+    assert gate["trading_permission_effect"] == "BUY_BLOCK"
+    assert gate["runtime_integrity_status"] == "BLOCK"
     assert gate["block_buy"] is True
     assert gate["block_sell"] is False
 
@@ -199,8 +201,8 @@ def test_phase18p_market_no_opportunity_and_model_unhealthy_separated(tmp_path: 
         accepted_bundle_path=bundle,
     )
     hard_gate = evaluate_runtime_ai_gate(hard_evidence.to_gate_input()).to_dict()
-    assert hard_gate["classification"] == "MODEL_UNHEALTHY"
-    assert hard_gate["block_buy"] is True
+    assert hard_gate["classification"] == "STATISTICAL_DRIFT_REVIEW_REQUIRED"
+    assert hard_gate["block_buy"] is False
     assert hard_gate["block_sell"] is False
 
 

@@ -10,6 +10,10 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
+    AcceptedGenerationResolution,
+    resolve_accepted_generation,
+)
 from ai_fund_lab_v2.runtime_v2.ai_lifecycle_gates import parse_date
 
 
@@ -85,9 +89,10 @@ def build_runtime_lifecycle_evidence(
     opportunity_payload: dict[str, Any],
     artifact_paths: dict[str, Path] | None = None,
     accepted_bundle_path: Path | str | None = None,
+    accepted_generation_resolution: AcceptedGenerationResolution | dict[str, Any] | None = None,
 ) -> RuntimeLifecycleEvidence:
     root = Path(runtime_root)
-    resolution = _resolve_accepted_bundle(root, accepted_bundle_path)
+    resolution = _resolve_accepted_bundle(root, accepted_bundle_path, accepted_generation_resolution)
     accepted_bundle = Path(str(resolution.get("accepted_bundle_ref"))) if resolution.get("accepted_bundle_ref") else None
     bundle_payload = _read_json(accepted_bundle) if accepted_bundle else {}
     reason_codes: list[str] = []
@@ -97,6 +102,7 @@ def build_runtime_lifecycle_evidence(
 
     freshness = _resolve_freshness(
         business_date=business_date,
+        feature_date=feature_date,
         bundle=bundle_payload,
         accepted_bundle_path=accepted_bundle,
         artifact_paths=artifact_paths or {},
@@ -113,6 +119,7 @@ def build_runtime_lifecycle_evidence(
         feature_date=feature_date,
         candidate_payload=candidate_payload,
         opportunity_payload=opportunity_payload,
+        baseline_evidence=baseline,
     )
     if current["status"] != "PASS":
         reason_codes.extend(current["reason_codes"])
@@ -123,15 +130,26 @@ def build_runtime_lifecycle_evidence(
         "evidence_ref": current.get("evidence_ref") or "",
         "baseline_prediction_scores": baseline.get("prediction_distribution_values") or [],
         "current_prediction_scores": current.get("prediction_distribution_values") or [],
+        "baseline_prediction_contract": baseline.get("prediction_contract") or {},
+        "current_prediction_contract": current.get("prediction_contract") or {},
         "baseline_feature_values": baseline.get("feature_distribution_values") or [],
         "current_feature_values": current.get("feature_distribution_values") or [],
+        "baseline_feature_contract": baseline.get("feature_contract") or {},
+        "current_feature_contract": current.get("feature_contract") or {},
         "baseline_positive_coverage": baseline.get("positive_coverage"),
         "current_positive_coverage": current.get("positive_coverage"),
         "baseline_candidate_population": baseline.get("candidate_population"),
         "current_candidate_population": current.get("candidate_population"),
+        "baseline_population_contract": baseline.get("population_contract") or {},
+        "current_population_contract": current.get("population_contract") or {},
         "all_negative_consecutive_business_days": current.get("all_negative_consecutive_business_days"),
     }
-    accepted_bundle_id = str(bundle_payload.get("buy_ai_bundle_id") or bundle_payload.get("artifact_set_id") or "")
+    accepted_bundle_id = str(
+        bundle_payload.get("buy_ai_bundle_id")
+        or bundle_payload.get("artifact_set_id")
+        or bundle_payload.get("accepted_generation_id")
+        or ""
+    )
     return RuntimeLifecycleEvidence(
         status="PASS" if not reason_codes else "REVIEW_REQUIRED",
         reason_codes=tuple(dict.fromkeys(reason_codes)),
@@ -160,7 +178,30 @@ def _resolve_accepted_bundle_path(runtime_root: Path, explicit: Path | str | Non
     return Path(str(ref)) if ref else None
 
 
-def _resolve_accepted_bundle(runtime_root: Path, explicit: Path | str | None) -> dict[str, Any]:
+def _resolve_accepted_bundle(
+    runtime_root: Path,
+    explicit: Path | str | None,
+    accepted_generation_resolution: AcceptedGenerationResolution | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if accepted_generation_resolution is not None:
+        payload = (
+            accepted_generation_resolution.to_dict()
+            if isinstance(accepted_generation_resolution, AcceptedGenerationResolution)
+            else dict(accepted_generation_resolution)
+        )
+        status = str(payload.get("resolution_status") or "")
+        bundle_ref = str(payload.get("bundle_manifest_path") or "")
+        return {
+            "status": "PASS" if status == "RESOLVED_COMMITTED" else "INSUFFICIENT_EVIDENCE"
+            if status in {"NO_ACCEPTED_GENERATION", "REVIEW_REQUIRED", "HISTORICAL_GENERATION_UNAVAILABLE"}
+            else "CRITICAL_AUTHORITY_VIOLATION",
+            "reason_codes": list(payload.get("reason_codes") or ([payload.get("block_reason")] if payload.get("block_reason") else [])),
+            "accepted_bundle_ref": bundle_ref if status == "RESOLVED_COMMITTED" else "",
+            "accepted_state_ref": str((payload.get("source_evidence") or {}).get("accepted_state_ref") or (payload.get("source_evidence") or {}).get("pointer_path") or ""),
+            "accepted_event_identity": str(payload.get("authority_decision") or ""),
+            "accepted_state_identity": str((payload.get("source_evidence") or {}).get("pointer_hash") or ""),
+            "accepted_generation_resolution": payload,
+        }
     prod_root = _is_production_runtime_root(runtime_root)
     if explicit:
         explicit_path = Path(explicit)
@@ -175,16 +216,19 @@ def _resolve_accepted_bundle(runtime_root: Path, explicit: Path | str | None) ->
             }
         return _accepted_resolution_from_path(explicit_path, accepted_state_ref="", isolated=True)
     state_path = runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json"
-    if not state_path.exists() and runtime_root != Path(".runtime"):
-        state_path = Path(".runtime") / "runtime_state" / "accepted_buy_ai_bundle.json"
     if not state_path.exists():
+        resolution = resolve_accepted_generation(runtime_root)
+        reason_codes = list(resolution.reason_codes) or ["accepted_state_missing"]
+        if "accepted_generation_pointer_missing" in reason_codes and "accepted_state_missing" not in reason_codes:
+            reason_codes.insert(0, "accepted_state_missing")
         return {
             "status": "INSUFFICIENT_EVIDENCE",
-            "reason_codes": ["accepted_state_missing"],
+            "reason_codes": reason_codes,
             "accepted_bundle_ref": "",
             "accepted_state_ref": str(state_path),
             "accepted_event_identity": "",
             "accepted_state_identity": "",
+            "accepted_generation_resolution": resolution.to_dict(),
         }
     state = _read_json(state_path)
     ref_value = state.get("accepted_bundle_path") or state.get("accepted_bundle_ref") or state.get("bundle_path")
@@ -237,7 +281,21 @@ def _accepted_resolution_from_path(path: Path, *, accepted_state_ref: str, isola
     }
 
 
-def _resolve_freshness(*, business_date: str, bundle: dict[str, Any], accepted_bundle_path: Path | None, artifact_paths: dict[str, Path]) -> dict[str, Any]:
+def _resolve_freshness(
+    *,
+    business_date: str,
+    feature_date: str,
+    bundle: dict[str, Any],
+    accepted_bundle_path: Path | None,
+    artifact_paths: dict[str, Path],
+) -> dict[str, Any]:
+    if _is_phase19_accepted_generation_manifest(bundle):
+        return _resolve_phase19_accepted_generation_freshness(
+            business_date=business_date,
+            feature_date=feature_date,
+            bundle=bundle,
+            accepted_bundle_path=accepted_bundle_path,
+        )
     reasons: list[str] = []
     candidate_dataset_dir = _path_from(bundle, "candidate_dataset", "dataset_dir")
     opportunity_dataset_dir = _path_from(bundle, "opportunity_dataset", "dataset_dir")
@@ -317,20 +375,59 @@ def _resolve_baseline(bundle: dict[str, Any], bundle_path: Path | None) -> dict[
     actual_hash = _stable_hash({key: value for key, value in baseline.items() if key != "baseline_hash"}) if baseline else ""
     if expected_hash and actual_hash and expected_hash != actual_hash:
         reasons.append("baseline_hash_mismatch")
-    prediction_values = _finite_numbers(baseline.get("prediction_distribution_values") or baseline.get("prediction_scores") or [])
-    feature_values = _finite_numbers(baseline.get("feature_distribution_values") or baseline.get("feature_values") or [])
+    prediction_values = _finite_numbers(
+        baseline.get("prediction_distribution_values")
+        or baseline.get("prediction_scores")
+        or _summary_values(baseline.get("opportunity_score_distribution_summary"))
+        or _histogram_values(baseline.get("opportunity_score_distribution_summary"))
+    )
+    feature_values = _finite_numbers(
+        baseline.get("feature_distribution_values")
+        or baseline.get("feature_values")
+        or _feature_summary_values(baseline.get("opportunity_feature_distribution_summary"))
+        or _feature_summary_values(baseline.get("candidate_feature_distribution_summary"))
+    )
     if len(prediction_values) < 5:
         reasons.append("insufficient_prediction_baseline_sample")
     if len(feature_values) < 5:
         reasons.append("insufficient_feature_baseline_sample")
-    population = baseline.get("candidate_population")
+    population = baseline.get("candidate_population") or _nested(
+        baseline,
+        "candidate_population_summary",
+        "candidate_top50_population_size",
+    )
     if population is None:
         reasons.append("missing_candidate_population_baseline")
-    positive = baseline.get("positive_coverage")
+    positive = baseline.get("positive_coverage") or baseline.get("candidate_pass_ratio")
     if positive is None:
         reasons.append("missing_positive_coverage_baseline")
     baseline_hash = expected_hash or actual_hash
     identity = f"{bundle.get('buy_ai_bundle_id') or 'accepted_bundle'}:{baseline_hash[:16]}" if bundle else ""
+    opportunity_schema = baseline.get("expected_opportunity_input_schema") if isinstance(baseline.get("expected_opportunity_input_schema"), dict) else {}
+    opportunity_feature_order = [str(value) for value in opportunity_schema.get("feature_order") or []]
+    expected_output_schema = baseline.get("expected_output_schema") if isinstance(baseline.get("expected_output_schema"), dict) else {}
+    prediction_semantics = str(expected_output_schema.get("opportunity_score") or baseline.get("prediction_semantics") or "legacy_opportunity_score")
+    prediction_contract = {
+        "prediction_metric_name": "opportunity_score",
+        "prediction_semantics": prediction_semantics,
+        "transformation_stage": "runtime_baseline_expected_output_schema" if expected_output_schema else "legacy_runtime_baseline",
+        "calibration_applied": prediction_semantics in {"standardized_score", "calibrated_expected_edge", "calibrated_score"},
+        "population_scope": _baseline_population_scope(baseline),
+    }
+    feature_contract = {
+        "feature_names": opportunity_feature_order,
+        "feature_order_hash": str(opportunity_schema.get("feature_order_hash") or baseline.get("opportunity_feature_order_hash") or ""),
+        "feature_count": len(opportunity_feature_order),
+        "source_artifact": str(bundle_path or ""),
+        "population_scope": _baseline_population_scope(baseline),
+        "aggregation_method": "per_feature_summary_min_max_mean_std" if opportunity_feature_order else "legacy_feature_values",
+    }
+    population_contract = {
+        "population_scope": _baseline_population_scope(baseline),
+        "population_before_filter": _nested(baseline, "candidate_population_summary", "sample_count"),
+        "population_after_filter": population,
+        "top_k": _nested(baseline, "candidate_population_summary", "candidate_top50_population_size"),
+    }
     return {
         "status": "PASS" if not reasons else "REVIEW_REQUIRED",
         "reason_codes": reasons,
@@ -340,24 +437,69 @@ def _resolve_baseline(bundle: dict[str, Any], bundle_path: Path | None) -> dict[
         "baseline_date_range": baseline.get("baseline_date_range") or {},
         "baseline_row_count": baseline.get("row_count"),
         "prediction_distribution_values": prediction_values,
+        "prediction_contract": prediction_contract,
         "feature_distribution_values": feature_values,
+        "feature_contract": feature_contract,
         "positive_coverage": positive,
         "candidate_population": population,
+        "population_contract": population_contract,
         "reason": ",".join(reasons) if reasons else "accepted baseline resolved",
     }
 
 
-def _build_current_window_evidence(*, runtime_id: str, feature_date: str, candidate_payload: dict[str, Any], opportunity_payload: dict[str, Any]) -> dict[str, Any]:
+def _build_current_window_evidence(
+    *,
+    runtime_id: str,
+    feature_date: str,
+    candidate_payload: dict[str, Any],
+    opportunity_payload: dict[str, Any],
+    baseline_evidence: dict[str, Any],
+) -> dict[str, Any]:
     reasons: list[str] = []
     candidate_rows = list(candidate_payload.get("rows") or [])
     rankings = list(opportunity_payload.get("rankings") or [])
-    candidate_scores = _finite_numbers(row.get("candidate_score") for row in candidate_rows)
     scores = _finite_numbers((row.get("opportunity_score") if row.get("opportunity_score") is not None else row.get("expected_edge_score")) for row in rankings)
+    feature_contract = baseline_evidence.get("feature_contract") if isinstance(baseline_evidence.get("feature_contract"), dict) else {}
+    feature_order = [str(value) for value in feature_contract.get("feature_names") or []]
+    runtime_feature_path = Path(str(opportunity_payload.get("opportunity_feature_path") or ""))
+    feature_values = _runtime_feature_summary_values(
+        feature_path=runtime_feature_path,
+        feature_date=feature_date,
+        feature_order=feature_order,
+        candidate_rows=candidate_rows,
+    )
     positive_count = sum(1 for score in scores if score > 0)
-    if not candidate_scores:
-        reasons.append("missing_current_candidate_scores")
+    if not feature_values:
+        reasons.append("missing_current_feature_values")
     if not scores:
         reasons.append("missing_current_prediction_scores")
+    baseline_prediction_contract = baseline_evidence.get("prediction_contract") if isinstance(baseline_evidence.get("prediction_contract"), dict) else {}
+    baseline_feature_contract = baseline_evidence.get("feature_contract") if isinstance(baseline_evidence.get("feature_contract"), dict) else {}
+    baseline_population_contract = baseline_evidence.get("population_contract") if isinstance(baseline_evidence.get("population_contract"), dict) else {}
+    legacy_prediction = str(baseline_prediction_contract.get("transformation_stage") or "").startswith("legacy_")
+    legacy_feature = str(baseline_feature_contract.get("aggregation_method") or "").startswith("legacy_")
+    legacy_population = str(baseline_population_contract.get("population_scope") or "").startswith("legacy_")
+    prediction_contract = {
+        "prediction_metric_name": str(opportunity_payload.get("prediction_metric_name") or "opportunity_score"),
+        "prediction_semantics": str(opportunity_payload.get("prediction_semantics") or baseline_prediction_contract.get("prediction_semantics") if legacy_prediction else opportunity_payload.get("prediction_semantics") or "runtime_opportunity_score"),
+        "transformation_stage": str(opportunity_payload.get("transformation_stage") or baseline_prediction_contract.get("transformation_stage") if legacy_prediction else opportunity_payload.get("transformation_stage") or "runtime_artifact_opportunity_score"),
+        "calibration_applied": bool(baseline_prediction_contract.get("calibration_applied") if legacy_prediction else opportunity_payload.get("calibration_applied", False)),
+        "population_scope": str(baseline_prediction_contract.get("population_scope") if legacy_prediction else "CandidateTop50_single_business_day"),
+    }
+    current_feature_contract = {
+        "feature_names": feature_order,
+        "feature_order_hash": str(feature_contract.get("feature_order_hash") or ""),
+        "feature_count": len(feature_order),
+        "source_artifact": str(runtime_feature_path),
+        "population_scope": str(baseline_feature_contract.get("population_scope") if legacy_feature else "CandidateTop50_single_business_day"),
+        "aggregation_method": str(baseline_feature_contract.get("aggregation_method") if legacy_feature else "per_feature_summary_min_max_mean_std" if feature_order else "candidate_score_legacy_fallback"),
+    }
+    population_contract = {
+        "population_scope": str(baseline_population_contract.get("population_scope") if legacy_population else "CandidateTop50_single_business_day"),
+        "population_before_filter": len(candidate_rows),
+        "population_after_filter": len(rankings),
+        "top_k": 50,
+    }
     return {
         "status": "PASS" if not reasons else "REVIEW_REQUIRED",
         "reason_codes": reasons,
@@ -365,8 +507,11 @@ def _build_current_window_evidence(*, runtime_id: str, feature_date: str, candid
         "evidence_ref": str(opportunity_payload.get("artifact_path") or ""),
         "candidate_population": len(candidate_rows),
         "prediction_distribution_values": scores,
-        "feature_distribution_values": candidate_scores,
+        "prediction_contract": prediction_contract,
+        "feature_distribution_values": feature_values,
+        "feature_contract": current_feature_contract,
         "positive_coverage": positive_count / len(scores) if scores else None,
+        "population_contract": population_contract,
         "all_negative_consecutive_business_days": 1 if scores and positive_count == 0 else 0,
         "reason": ",".join(reasons) if reasons else "current runtime evidence resolved",
     }
@@ -385,6 +530,8 @@ def _integrity_evidence(path: Path | None, bundle: dict[str, Any], resolution: d
         }
     if not bundle:
         reasons.append("accepted_bundle_unreadable")
+    if _is_phase19_accepted_generation_manifest(bundle):
+        return _phase19_accepted_generation_integrity(path, bundle, resolution, reasons)
     bundle_hash = bundle.get("joint_bundle_hash") or bundle.get("bundle_hash") or ""
     if not bundle_hash:
         reasons.append("missing_joint_bundle_hash")
@@ -555,6 +702,13 @@ def _materialized_baseline(bundle: dict[str, Any], bundle_path: Path | None) -> 
     inline = bundle.get("runtime_baseline") or bundle.get("materialized_drift_baseline")
     if isinstance(inline, dict):
         return inline
+    if _is_phase19_accepted_generation_manifest(bundle):
+        expected_hash = str(bundle.get("runtime_baseline_hash") or _nested(bundle, "runtime_baseline_ref", "content_hash") or "")
+        artifact = Path("reports/phase19_ap_runtime_baseline_freshness_materializer_consumer_implementation/runtime_baseline_artifact.json")
+        if artifact.is_file():
+            payload = _read_json(artifact)
+            if not expected_hash or str(payload.get("content_hash") or "") == expected_hash:
+                return payload
     ref = bundle.get("runtime_baseline_ref") or bundle.get("materialized_drift_baseline_ref")
     if not ref:
         return {}
@@ -562,6 +716,229 @@ def _materialized_baseline(bundle: dict[str, Any], bundle_path: Path | None) -> 
     if not path.is_absolute() and bundle_path is not None:
         path = bundle_path.parent / path
     return _read_json(path)
+
+
+def _is_phase19_accepted_generation_manifest(bundle: dict[str, Any]) -> bool:
+    return bool(bundle.get("accepted_generation_id") and bundle.get("aggregate_hash") and bundle.get("runtime_baseline_ref"))
+
+
+def _phase19_accepted_generation_integrity(
+    path: Path | None,
+    bundle: dict[str, Any],
+    resolution: dict[str, Any],
+    reasons: list[str],
+) -> dict[str, Any]:
+    if resolution.get("status") != "PASS":
+        reasons.extend(str(code) for code in resolution.get("reason_codes") or [])
+    required_fields = (
+        "accepted_generation_id",
+        "aggregate_hash",
+        "candidate_member",
+        "opportunity_member",
+        "runtime_baseline_hash",
+        "freshness_metadata",
+        "dual_gate_ref",
+    )
+    for field in required_fields:
+        if not bundle.get(field):
+            reasons.append(f"missing_{field}")
+    for member_name in ("candidate_member", "opportunity_member"):
+        member = bundle.get(member_name) if isinstance(bundle.get(member_name), dict) else {}
+        model_file = member.get("model_file")
+        model_hash = str(member.get("model_hash") or "")
+        if not model_file:
+            reasons.append(f"{member_name}_model_file_missing")
+            continue
+        model_path = Path(str(model_file))
+        if not model_path.is_absolute() and path is not None:
+            model_path = _repo_root_from_path(path) / model_path
+        if not model_path.is_file():
+            reasons.append(f"{member_name}_model_file_missing")
+        elif model_hash and _file_hash(model_path) != model_hash:
+            reasons.append(f"{member_name}_model_hash_mismatch")
+    baseline = _materialized_baseline(bundle, path)
+    expected_baseline_hash = str(bundle.get("runtime_baseline_hash") or _nested(bundle, "runtime_baseline_ref", "content_hash") or "")
+    if not baseline:
+        reasons.append("missing_materialized_runtime_baseline")
+    elif expected_baseline_hash and str(baseline.get("content_hash") or "") != expected_baseline_hash:
+        reasons.append("runtime_baseline_hash_mismatch")
+    return {
+        "status": "PASS" if not reasons else "CRITICAL_AUTHORITY_VIOLATION" if any("mismatch" in reason or "forbidden" in reason for reason in reasons) else "INSUFFICIENT_EVIDENCE",
+        "reason": "phase19 accepted generation manifest verified" if not reasons else ",".join(dict.fromkeys(reasons)),
+        "reason_codes": list(dict.fromkeys(reasons)),
+        "accepted_bundle_ref": str(path or ""),
+        "accepted_event_identity": resolution.get("accepted_event_identity") or "",
+        "accepted_state_identity": resolution.get("accepted_state_identity") or "",
+        "accepted_state_ref": resolution.get("accepted_state_ref") or "",
+        "accepted_bundle_hash": str(bundle.get("aggregate_hash") or ""),
+        "accepted_generation_id": str(bundle.get("accepted_generation_id") or ""),
+        "runtime_baseline_hash": expected_baseline_hash,
+        "content_hash": _file_hash(path) if path else "",
+    }
+
+
+def _resolve_phase19_accepted_generation_freshness(
+    *,
+    business_date: str,
+    feature_date: str,
+    bundle: dict[str, Any],
+    accepted_bundle_path: Path | None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    metadata = bundle.get("freshness_metadata") if isinstance(bundle.get("freshness_metadata"), dict) else {}
+    generation_bound = metadata.get("generation_bound") if isinstance(metadata.get("generation_bound"), dict) else {}
+    label_safe_cutoff = str(bundle.get("label_safe_cutoff") or generation_bound.get("label_safe_cutoff") or "")
+    dataset_target = str(bundle.get("dataset_target_max_date") or generation_bound.get("dataset_target_max_date") or "")
+    raw_max = str(bundle.get("raw_data_max_date_at_generation") or generation_bound.get("raw_data_max_date_at_generation") or "")
+    normalized_max = str(bundle.get("normalized_data_max_date_at_generation") or generation_bound.get("normalized_data_max_date_at_generation") or "")
+    actual_consumed_source_max_date = str(feature_date or "")
+    accepted_at = str(bundle.get("accepted_at") or "")
+    candidate_training_cutoff = str(bundle.get("candidate_training_cutoff") or generation_bound.get("candidate_training_cutoff") or "")
+    opportunity_training_cutoff = str(bundle.get("opportunity_training_cutoff") or generation_bound.get("opportunity_training_cutoff") or "")
+    if not label_safe_cutoff:
+        reasons.append("missing_label_safe_cutoff")
+    if not dataset_target:
+        reasons.append("missing_dataset_target_max_date")
+    if not accepted_at:
+        reasons.append("missing_model_accepted_at")
+    if feature_date != business_date:
+        reasons.append("inference_feature_date_differs_from_expected")
+    dataset_lag = _weekday_bdiff(parse_date(dataset_target), parse_date(label_safe_cutoff))
+    source_age = _weekday_bdiff(parse_date(actual_consumed_source_max_date), parse_date(business_date))
+    feature_age = _weekday_bdiff(parse_date(feature_date), parse_date(business_date))
+    acceptance_age = _weekday_bdiff(parse_date(accepted_at), parse_date(business_date))
+    if source_age is not None and source_age < 0:
+        reasons.append("source_data_after_business_date")
+    if feature_age is not None and feature_age < 0:
+        reasons.append("feature_date_after_business_date")
+    return {
+        "status": "PASS" if not reasons else "REVIEW_REQUIRED",
+        "reason_codes": reasons,
+        "accepted_bundle_id": bundle.get("accepted_generation_id") or "",
+        "accepted_bundle_ref": str(accepted_bundle_path or ""),
+        "dataset_bundle_id": "|".join(str(item) for item in bundle.get("dataset_revision_ids") or []),
+        "training_bundle_id": str(bundle.get("source_generation_candidate_id") or ""),
+        "label_safe_cutoff": label_safe_cutoff,
+        "training_dataset_max_date": dataset_target,
+        "model_training_cutoff": candidate_training_cutoff,
+        "opportunity_model_training_cutoff": opportunity_training_cutoff,
+        "model_accepted_at": accepted_at,
+        "decision_date": business_date,
+        "inference_feature_date": feature_date,
+        "expected_inference_feature_date": business_date,
+        "raw_data_max_date_at_generation": raw_max,
+        "normalized_data_max_date_at_generation": normalized_max,
+        "generation_metadata_source_dates_are_authority_for_future_consumption": False,
+        "actual_consumed_source_max_date": actual_consumed_source_max_date,
+        "actual_consumed_source_authority": "runtime_feature_date",
+        "trading_calendar_ref": "accepted_generation_freshness_metadata",
+        "trading_calendar_identity": str(bundle.get("trading_calendar_identity") or ""),
+        "dataset_lag_business_days": dataset_lag,
+        "model_training_lag_business_days": 0,
+        "model_training_raw_lag_business_days": _weekday_bdiff(parse_date(candidate_training_cutoff), parse_date(label_safe_cutoff)),
+        "model_acceptance_age_business_days": max(0, acceptance_age or 0),
+        "source_data_age_business_days": max(0, source_age or 0),
+        "feature_data_age_business_days": max(0, feature_age or 0),
+        "freshness_policy_version": generation_bound.get("freshness_policy_version") or "phase19_ap_freshness_policy.v1",
+        "model_training_freshness_semantics": "accepted_generation_bound_training_cutoff_not_daily_retrain_trigger",
+        "reason": ",".join(reasons) if reasons else "phase19 accepted generation freshness metadata connected",
+    }
+
+
+def _baseline_population_scope(baseline: dict[str, Any]) -> str:
+    if baseline.get("population_scope"):
+        return str(baseline["population_scope"])
+    if isinstance(baseline.get("candidate_population_summary"), dict):
+        return "CandidateTop50_validation_window_aggregate"
+    return "legacy_runtime_baseline_population"
+
+
+def _runtime_feature_summary_values(
+    *,
+    feature_path: Path,
+    feature_date: str,
+    feature_order: list[str],
+    candidate_rows: list[dict[str, Any]],
+) -> list[float]:
+    if feature_path.is_file() and feature_order:
+        try:
+            frame = pd.read_parquet(feature_path)
+        except Exception:
+            frame = pd.DataFrame()
+        if not frame.empty:
+            if "target_date" in frame.columns:
+                frame = frame[frame["target_date"].astype(str) == feature_date].copy()
+            candidate_codes = {str(row.get("code") or row.get("symbol") or "") for row in candidate_rows}
+            if candidate_codes and "code" in frame.columns:
+                frame = frame[frame["code"].astype(str).isin(candidate_codes)].copy()
+            values: list[float] = []
+            for feature in feature_order:
+                column = feature if feature in frame.columns else feature.removeprefix("feature__")
+                if column not in frame.columns:
+                    continue
+                series = pd.to_numeric(frame[column], errors="coerce").dropna()
+                if series.empty:
+                    continue
+                values.extend(_finite_numbers([series.min(), series.max(), series.mean(), series.std(ddof=0)]))
+            return values
+    return _finite_numbers(row.get("candidate_score") for row in candidate_rows)
+
+
+def _summary_values(summary: Any) -> list[float]:
+    if not isinstance(summary, dict):
+        return []
+    values = [summary.get(key) for key in ("min", "p01", "p05", "p25", "p50", "p75", "p95", "p99", "max", "mean")]
+    return _finite_numbers(values)
+
+
+def _histogram_values(summary: Any) -> list[float]:
+    if not isinstance(summary, dict):
+        return []
+    histogram = summary.get("histogram") if isinstance(summary.get("histogram"), dict) else {}
+    bins = histogram.get("bins") if isinstance(histogram.get("bins"), list) else []
+    counts = histogram.get("counts") if isinstance(histogram.get("counts"), list) else []
+    values: list[float] = []
+    for index, count in enumerate(counts):
+        if index + 1 >= len(bins):
+            break
+        try:
+            left = float(bins[index])
+            right = float(bins[index + 1])
+            repeat = max(1, min(int(count), 25))
+        except (TypeError, ValueError):
+            continue
+        values.extend([(left + right) / 2.0] * repeat)
+    return values
+
+
+def _feature_summary_values(summary: Any) -> list[float]:
+    if not isinstance(summary, dict):
+        return []
+    values: list[float] = []
+    for item in summary.values():
+        values.extend(_summary_values(item))
+    return values
+
+
+def _weekday_bdiff(start: date | None, end: date | None) -> int | None:
+    if start is None or end is None:
+        return None
+    if end < start:
+        return -_weekday_bdiff(end, start)  # type: ignore[arg-type]
+    days = 0
+    current = start
+    while current < end:
+        current = date.fromordinal(current.toordinal() + 1)
+        if current.weekday() < 5:
+            days += 1
+    return days
+
+
+def _repo_root_from_path(path: Path) -> Path:
+    for parent in (path, *path.parents):
+        if parent.name == ".runtime":
+            return parent.parent
+    return Path.cwd()
 
 
 def _verify_component_hash(bundle: dict[str, Any], component: str, hash_key: str, reasons: list[str]) -> None:

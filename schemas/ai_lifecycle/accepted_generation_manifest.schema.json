@@ -1,0 +1,264 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/accepted_generation_manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted_at": {
+      "type": "string"
+    },
+    "accepted_by": {
+      "type": "string"
+    },
+    "accepted_decision_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "accepted_decision_id": {
+      "type": "string"
+    },
+    "accepted_generation_id": {
+      "type": "string"
+    },
+    "accepted_generation_version": {
+      "type": "string"
+    },
+    "accepted_generation_age_origin": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "accepted": {
+      "const": true
+    },
+    "aggregate_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "calibration_cutoff": {
+      "type": "string"
+    },
+    "candidate_training_cutoff": {
+      "type": "string"
+    },
+    "component_artifact_ids": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "component_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "dataset_revision_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "dataset_bundle_ref": {
+      "type": "object"
+    },
+    "dataset_source_max_date": {
+      "type": "string"
+    },
+    "dataset_target_max_date": {
+      "type": "string"
+    },
+    "effective_from": {
+      "type": "string"
+    },
+    "freshness_policy_version": {
+      "type": "string"
+    },
+    "freshness_metadata": {
+      "type": "object"
+    },
+    "generation_id": {
+      "type": "string"
+    },
+    "generation_created_at": {
+      "type": "string"
+    },
+    "generation_status": {
+      "const": "ACCEPTED"
+    },
+    "immutability_status": {
+      "const": "IMMUTABLE"
+    },
+    "label_safe_cutoff": {
+      "type": "string"
+    },
+    "lineage_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "manifest_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "normalized_data_max_date_at_generation": {
+      "type": "string"
+    },
+    "opportunity_training_cutoff": {
+      "type": "string"
+    },
+    "policy_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "preprocessing_pipeline_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "previous_generation_ref": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "candidate_member": {
+      "type": "object"
+    },
+    "opportunity_member": {
+      "type": "object"
+    },
+    "authority_decision_ref": {
+      "type": "object"
+    },
+    "dual_gate_ref": {
+      "type": "object"
+    },
+    "validation_ref": {
+      "type": "object"
+    },
+    "runtime_baseline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_baseline_artifact_id": {
+      "type": "string"
+    },
+    "runtime_baseline_ref": {
+      "type": "object"
+    },
+    "runtime_eligibility": {
+      "const": true
+    },
+    "runtime_eligibility_status": {
+      "const": "RUNTIME_ELIGIBLE_ACCEPTED_ONLY"
+    },
+    "raw_data_max_date_at_generation": {
+      "type": "string"
+    },
+    "scaler_artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scaler_hashes": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_hashes": {
+      "additionalProperties": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "source_generation_candidate_id": {
+      "type": "string"
+    },
+    "source_generation_manifest_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "split_ref": {
+      "type": "object"
+    },
+    "source_commit": {
+      "type": "string"
+    },
+    "validation_cutoff": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "generation_id",
+    "accepted_generation_id",
+    "accepted_generation_version",
+    "generation_status",
+    "accepted",
+    "runtime_eligibility",
+    "accepted_at",
+    "accepted_by",
+    "source_generation_candidate_id",
+    "source_generation_manifest_hash",
+    "accepted_decision_id",
+    "accepted_decision_hash",
+    "component_artifact_ids",
+    "candidate_member",
+    "opportunity_member",
+    "component_hashes",
+    "policy_hashes",
+    "dataset_bundle_ref",
+    "dataset_revision_ids",
+    "raw_data_max_date_at_generation",
+    "normalized_data_max_date_at_generation",
+    "dataset_source_max_date",
+    "dataset_target_max_date",
+    "label_safe_cutoff",
+    "candidate_training_cutoff",
+    "opportunity_training_cutoff",
+    "calibration_cutoff",
+    "validation_cutoff",
+    "generation_created_at",
+    "freshness_policy_version",
+    "effective_from",
+    "accepted_generation_age_origin",
+    "split_ids",
+    "split_ref",
+    "schema_hashes",
+    "lineage_hashes",
+    "runtime_baseline_artifact_id",
+    "runtime_baseline_ref",
+    "runtime_baseline_hash",
+    "freshness_metadata",
+    "validation_ref",
+    "dual_gate_ref",
+    "authority_decision_ref",
+    "previous_generation_ref",
+    "aggregate_hash",
+    "source_commit",
+    "immutability_status",
+    "runtime_eligibility_status",
+    "manifest_hash",
+    "authority"
+  ],
+  "title": "accepted_generation_manifest",
+  "type": "object"
+}

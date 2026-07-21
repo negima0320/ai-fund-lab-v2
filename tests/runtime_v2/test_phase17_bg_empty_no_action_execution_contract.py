@@ -77,7 +77,7 @@ def test_phase17_bg_empty_pending_without_submit_no_action_authority_is_review_r
     assert result.orderlist_status == "NOT_EVALUATED"
 
 
-def test_phase17_bg_empty_pending_target_date_mismatch_fails_closed(tmp_path):
+def test_phase17_bg_empty_pending_target_date_metadata_is_not_order_authority(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     payload = _empty_pending_payload(BUSINESS_DATE)
     payload["target_session_date"] = "2026-07-08"
@@ -91,8 +91,10 @@ def test_phase17_bg_empty_pending_target_date_mismatch_fails_closed(tmp_path):
         snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("snapshot not required for invalid EMPTY")),
     )
 
-    assert result.status == "BLOCKED"
-    assert result.reason == "pending EMPTY classification target_session_date mismatch"
+    assert result.status == "PASS"
+    assert result.reason == "no_submitted_orders"
+    assert result.execution_action == "NO_ACTION"
+    assert result.orderlist_required is False
 
 
 def test_phase17_bg_empty_pending_with_items_fails_closed(tmp_path):

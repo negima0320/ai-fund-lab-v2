@@ -1,9 +1,34 @@
 {
-  "schema_version": "runtime_test_specification_v1",
-  "version": "1.1",
-  "date": "2026-07-14",
-  "status": "ACCEPTED",
-  "final_judgment": "RUNTIME_TEST_SPECIFICATION_EXECUTION_PROCEDURE_ACCEPTED",
+  "acceptance_gates": {
+    "ACCEPTANCE_CRITERIA_DEFINED": "PASS",
+    "ALL_TEST_LEVELS_DEFINED": "PASS",
+    "COMMAND_REFERENCE_COMPLETE": "PASS",
+    "COMMAND_SEQUENCE_DEFINED": "PASS",
+    "CONTRACT_REFERENCES_COMPLETE": "PASS",
+    "DATA_PIT_CONTRACT_DEFINED": "PASS",
+    "DEMO_EXCEPTION_DEFINED": "PASS",
+    "ENTRY_GATES_DEFINED": "PASS",
+    "ENVIRONMENT_DIFFERENCES_EXPLICIT": "PASS",
+    "EVIDENCE_REQUIREMENTS_DEFINED": "PASS",
+    "EXECUTION_MODELS_DEFINED": "PASS",
+    "NON_GOALS_DEFINED": "PASS",
+    "NO_CONTRACT_CONTRADICTION": "PASS",
+    "NO_RUNTIME_CHANGE": "PASS",
+    "NO_SPEC_CONTRADICTION": "PASS",
+    "PHASE17_5BD_PROFILE_INCLUDED": "PASS",
+    "PHASE_INDEPENDENT": "PASS",
+    "PRODUCTION_RULES_DEFINED": "PASS",
+    "PROJECT_WIDE_SCOPE": "PASS",
+    "REGRESSION_POLICY_DEFINED": "PASS",
+    "ROLLBACK_DEFINED": "PASS",
+    "RUNTIME_V2_IS_SYSTEM_UNDER_TEST": "PASS",
+    "STANDARD_PROCEDURE_DEFINED": "PASS",
+    "STATE_LIFECYCLE_DEFINED": "PASS",
+    "SYSTEM_STATUS_FULL_INSPECTION_DEFINED": "PASS",
+    "SYSTEM_STATUS_SAFETY_TIMING_DEFINED": "PASS",
+    "TEST_LEVELS_DEFINED": "PASS",
+    "TEST_VALIDITY_DEFINED": "PASS"
+  },
   "authority": [
     "Project-wide Runtime Test Standard",
     "Test Scope Authority",
@@ -11,9 +36,539 @@
     "Test Acceptance Authority",
     "Environment Difference Authority"
   ],
-  "system_under_test": {
-    "runtime": "Normal Runtime v2",
+  "contract_alignment": {
+    "alignment_required": [],
+    "contract_meaning_changed": false,
+    "status": "NO_CONTRACT_CONTRADICTION"
+  },
+  "date": "2026-07-21",
+  "environments": {
+    "demo": {
+      "approved_differences": [
+        "Tachibana Demo API boundary",
+        "real time",
+        "Demo Broker Snapshot"
+      ],
+      "broker_environment": "tachibana_demo",
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime"
+    },
+    "historical": {
+      "approved_differences": [
+        "Historical Clock",
+        "Canonical Data as-of",
+        "PIT Manifest",
+        "HistoricalSubmitAdapter",
+        "HistoricalExecutionSnapshotProvider",
+        "External effect blocking",
+        "Smoke-limited execution assumption",
+        "Initial Trading State Reset"
+      ],
+      "broker_environment": "historical_simulated",
+      "broker_write": false,
+      "external_delivery": false,
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime"
+    },
+    "production": {
+      "approved_differences": [
+        "Tachibana Production API boundary",
+        "Production Broker reconciliation",
+        "Production credentials / capability / approval"
+      ],
+      "broker_environment": "tachibana_production",
+      "runtime_mainline": "normal Runtime v2",
+      "runtime_root": ".runtime"
+    }
+  },
+  "final_judgment": "RUNTIME_TEST_SPECIFICATION_EXECUTION_PROCEDURE_ACCEPTED",
+  "observability": {
+    "historical_freshness_coverage_semantics": {
+      "available_through_date": "actual latest data date",
+      "coverage_ahead_business_days": "available data beyond target date; not called lag",
+      "missing_required_business_days": "zero required for PASS",
+      "required_through_date": "target_business_date"
+    },
+    "system_status_evidence_required_files": [
+      "runtime_stage_contract.json",
+      "ai_data_window_summary.json",
+      "active_trained_ai_inventory.json",
+      "inspection_context.json",
+      "environment_readiness.json",
+      "operational_summary.json",
+      "active_model_summary.json",
+      "active_component_count_summary.json",
+      "data_source_inventory.json",
+      "candidate_input_lineage.json",
+      "opportunity_input_lineage.json",
+      "split_window_statistics.json",
+      "recent_holdout_usage.json",
+      "calibration_validation_independence.json",
+      "runtime_input_lineage_contract.json",
+      "complete_component_inventory.json",
+      "component_dependency_matrix.json",
+      "runtime_chain_inspection.json",
+      "jquants_dependency_matrix.json",
+      "runtime_state_coverage.json",
+      "historical_source_consumer_cutoff.json",
+      "inspection_coverage.json",
+      "historical_source_consumer_cutoff.json",
+      "production_freshness.json",
+      "demo_freshness.json",
+      "baseline_traceability.json",
+      "freshness_policy_traceability.json",
+      "broker_truthfulness_audit.json"
+    ],
+    "system_status_full_inspection_sections": [
+      "Operational Summary",
+      "Environment Readiness",
+      "Inspection Context",
+      "Day1 Start Permission",
+      "Pre-run Readiness",
+      "Runtime Stage",
+      "AI Data Window Summary",
+      "Active Model Summary",
+      "Active Component Count Summary",
+      "Data Source Inventory",
+      "AI Input Lineage",
+      "Runtime Input Lineage",
+      "Complete Component Inventory",
+      "Component Dependency Matrix",
+      "Runtime Chain Inspection",
+      "J-Quants Dependency Matrix",
+      "Runtime State Coverage",
+      "Historical Source / Consumer Cutoff",
+      "Inspection Coverage",
+      "Historical Source / Consumer Cutoff",
+      "Production Freshness",
+      "Demo Freshness",
+      "Baseline Traceability",
+      "Freshness Policy Traceability",
+      "Broker Truthfulness"
+    ],
+    "system_status_model_status_separation": [
+      "model_authority_resolution_status",
+      "model_artifact_resolution_status",
+      "model_hash_validation_status",
+      "scaler_resolution_status",
+      "calibration_resolution_status",
+      "model_loader_validation_status",
+      "target_date_feature_status",
+      "target_date_inference_status"
+    ],
+    "system_status_operational_truthfulness": {
+      "broker_truthfulness_fields": [
+        "broker_configuration_status",
+        "broker_connectivity_check_status",
+        "credential_access_status",
+        "broker_write_status",
+        "submit_guard_configuration_status"
+      ],
+      "historical_pass_does_not_imply": [
+        "demo_current_data_readiness",
+        "production_current_data_readiness",
+        "broker_connectivity_readiness",
+        "broker_write_readiness",
+        "BUY_READY",
+        "PRODUCTION_READY",
+        "AUTONOMOUS_OPERATION_COMPLETE"
+      ],
+      "not_evaluated_not_pass": true,
+      "not_performed_not_pass": true,
+      "pass_scope": "inspection_context_only",
+      "placeholder_path_policy": {
+        "forbidden": [
+          ".",
+          ""
+        ],
+        "required_examples": [
+          "NOT_YET_MATERIALIZED",
+          "NOT_APPLICABLE",
+          "NOT_RESOLVED"
+        ]
+      }
+    },
+    "system_status_complete_ai_input_lineage": {
+      "human_json_parity_required": true,
+      "candidate_and_opportunity_required_fields": [
+        "training_dataset_revision",
+        "dataset_artifact_path",
+        "dataset_manifest_path",
+        "source_authority",
+        "source_earliest_date",
+        "source_latest_date",
+        "source_row_count",
+        "source_symbol_count",
+        "source_schema_hash",
+        "source_content_hash",
+        "split_window_statistics",
+        "recent_holdout_usage",
+        "calibration_validation_independence"
+      ],
+      "runtime_input_lineage_stage": "PRE_RUN_CONTRACT_UNTIL_FEATURE_AND_INFERENCE_MATERIALIZATION"
+    },
+    "system_status_complete_component_inspection": {
+      "human_json_parity_required": true,
+      "missing_component_policy": "COMPONENT_NOT_INSPECTED_REVIEW_REQUIRED",
+      "required_contract_fields": [
+        "component_name",
+        "component_type",
+        "active_or_inactive",
+        "authority",
+        "implementation",
+        "implementation_status",
+        "input_artifact",
+        "output_artifact",
+        "input_components",
+        "input_business_date",
+        "output_business_date",
+        "configuration_status",
+        "authority_resolution_status",
+        "runtime_status",
+        "target_date_execution_status",
+        "runtime_result_status",
+        "inspection_status",
+        "jquants_dependency_type",
+        "jquants_dependency_path",
+        "jquants_direct_input_artifacts",
+        "jquants_dependency_reason"
+      ],
+      "required_runtime_chain": [
+        "market_refresh",
+        "feature_refresh",
+        "candidate_ai",
+        "opportunity_ai",
+        "lifecycle_monitoring",
+        "safety_decision",
+        "buy_planning",
+        "sell_planning_continuity",
+        "approval",
+        "submit_guard",
+        "execution_guard",
+        "ledger_update",
+        "reporting",
+        "notification"
+      ]
+    },
+    "system_status_runtime_semantics": {
+      "status_fields_are_distinct": [
+        "implementation_status",
+        "configuration_status",
+        "authority_resolution_status",
+        "inspection_status",
+        "target_date_execution_status",
+        "runtime_result_status"
+      ],
+      "pre_run_not_executed_values": [
+        "NOT_YET_APPLICABLE",
+        "NOT_PERFORMED",
+        "NOT_YET_MATERIALIZED"
+      ],
+      "jquants_dependency_types": [
+        "DIRECT",
+        "INDIRECT",
+        "NONE"
+      ],
+      "historical_source_consumer_cutoff_required_fields": [
+        "source_available_from_date",
+        "source_available_through_date",
+        "required_through_date",
+        "consumer_cutoff_date",
+        "actual_consumed_from_date",
+        "actual_consumed_through_date",
+        "future_rows_available",
+        "future_rows_consumed"
+      ],
+      "overall_pass_scope": "inspection_context_and_runtime_stage_only"
+    },
+    "system_status_pre_run_artifact_semantics": {
+      "AI Lifecycle Gate": {
+        "expected_stage": "LIFECYCLE_GATE_DONE",
+        "post_stage_missing": "BLOCK/POST_STAGE_MATERIALIZATION_MISSING",
+        "pre_run_missing": "NOT_YET_APPLICABLE/PRE_RUN_NOT_MATERIALIZED"
+      },
+      "BUY Planning": {
+        "expected_stage": "DAILY_PLAN_CREATED",
+        "post_stage_missing": "BLOCK/POST_STAGE_MATERIALIZATION_MISSING",
+        "pre_run_missing": "NOT_YET_APPLICABLE/PRE_RUN_NOT_MATERIALIZED"
+      },
+      "Candidate Inference": {
+        "expected_stage": "AI_INFERENCE_DONE",
+        "post_stage_missing": "BLOCK/POST_STAGE_MATERIALIZATION_MISSING",
+        "pre_run_missing": "NOT_YET_APPLICABLE/PRE_RUN_NOT_MATERIALIZED"
+      },
+      "Opportunity Inference": {
+        "expected_stage": "AI_INFERENCE_DONE",
+        "post_stage_missing": "BLOCK/POST_STAGE_MATERIALIZATION_MISSING",
+        "pre_run_missing": "NOT_YET_APPLICABLE/PRE_RUN_NOT_MATERIALIZED"
+      },
+      "Runtime Features": {
+        "expected_stage": "FEATURE_READY",
+        "post_stage_missing": "BLOCK/POST_STAGE_MATERIALIZATION_MISSING",
+        "pre_run_missing": "NOT_YET_APPLICABLE/PRE_RUN_NOT_MATERIALIZED"
+      }
+    }
+  },
+  "phase17_5bd_profile": {
+    "broker": "historical_simulated",
+    "external_delivery": false,
+    "feature_carryover": {
+      "2026-07-08": "2026-07-07",
+      "2026-07-09": "2026-07-08"
+    },
+    "initial_capital_jpy": 1000000,
+    "jquants_fetch": false,
+    "mode": "historical",
     "runtime_root": ".runtime",
+    "window": {
+      "end": "2026-07-10",
+      "start": "2026-07-06"
+    }
+  },
+  "recommended_next_prefix": "Phase17-L",
+  "recommended_next_work_name": "Historical Runtime 5BD Smoke Test Command Execution",
+  "schema_version": "runtime_test_specification_v1",
+  "standard_execution_procedure": {
+    "ai_status_exit_codes": {
+      "0": "PASS",
+      "10": "REVIEW_REQUIRED",
+      "20": "BLOCK",
+      "30": "COMMAND_OR_INTERNAL_ERROR"
+    },
+    "ai_status_non_mutation": [
+      "no training",
+      "no calibration",
+      "no validation rerun",
+      "no generation creation",
+      "no authority history append",
+      "no runtime pointer write",
+      "no trading state mutation",
+      "no BUY restart",
+      "no Broker access",
+      "no Broker write"
+    ],
+    "ai_status_statistical_drift_policy": "statistical drift alone returns REVIEW_REQUIRED and does not automatically stop BUY planning",
+    "authority": "Runtime Test Specification section 26",
+    "commands": {
+      "ai-status": {
+        "broker_access": "NOT_PERFORMED",
+        "evidence_root": "reports/runtime_tests/ai_status/<run_id>/",
+        "normal_operator_entrypoint": false,
+        "options": [
+          "--detailed",
+          "--json",
+          "--write-evidence",
+          "--check-runtime-readiness"
+        ],
+        "responsibility": "read-only AI Artifact Inspection",
+        "state_change": false
+      },
+      "backup": {
+        "responsibility": "backup resettable Trading State",
+        "state_change": true
+      },
+      "close": {
+        "responsibility": "freeze final evidence and judgments",
+        "state_change": false
+      },
+      "plan": {
+        "responsibility": "execution plan, dates, job sequence, evidence paths, commands",
+        "state_change": false
+      },
+      "reset": {
+        "responsibility": "all-or-nothing initial Trading State setup",
+        "state_change": true
+      },
+      "resume": {
+        "responsibility": "continue from last valid checkpoint without skipping failed jobs",
+        "state_change": true
+      },
+      "rollback": {
+        "responsibility": "restore full resettable Trading State bundle",
+        "state_change": true
+      },
+      "run": {
+        "responsibility": "invoke normal Runtime v2 CLI by business date and job",
+        "state_change": true
+      },
+      "status": {
+        "responsibility": "read-only Runtime Test state summary",
+        "state_change": false
+      },
+      "system-status": {
+        "broker_access": "NOT_PERFORMED",
+        "evidence_root": "reports/runtime_tests/system_status/<run_id>/",
+        "normal_operator_entrypoint": true,
+        "options": [
+          "--json",
+          "--write-evidence"
+        ],
+        "responsibility": "daily read-only whole-system health inspection",
+        "state_change": false
+      },
+      "validate": {
+        "responsibility": "validate state, temporal, authority, and evidence consistency",
+        "state_change": false
+      }
+    },
+    "entrypoint": "PYTHONPATH=src python3 scripts/runtime_test.py <subcommand> [options]",
+    "exit_codes": {
+      "0": "PASS",
+      "10": "REVIEW_REQUIRED",
+      "20": "BLOCKED",
+      "30": "HALT",
+      "40": "VALIDATION_FAILURE",
+      "50": "ROLLBACK_FAILURE",
+      "60": "INVALID_ARGUMENT",
+      "70": "PRECONDITION_FAILURE",
+      "80": "TEST_INVALID",
+      "90": "INTERNAL_ERROR"
+    },
+    "failure_flow": [
+      "classify_failure",
+      "resume_if_baselines_match",
+      "rollback_if_state_validity_or_lifecycle_safety_is_uncertain",
+      "validate",
+      "evidence_freeze"
+    ],
+    "mutating_commands_require": [
+      "--confirm",
+      "--yes-i-understand-this-mutates-trading-state"
+    ],
+    "operator_guidance": "Use system-status for normal daily pre-operation health inspection; use ai-status for focused AI Artifact Inspection.",
+    "standard_flow": [
+      "status",
+      "plan",
+      "backup",
+      "reset",
+      "run",
+      "validate",
+      "close"
+    ],
+    "system_status_count_semantics": {
+      "candidate": [
+        "evaluated_symbols",
+        "candidate_output_count",
+        "candidate_top50_count"
+      ],
+      "opportunity": [
+        "input_candidate_count",
+        "ranking_count",
+        "top20_count"
+      ]
+    },
+    "system_status_evidence_required_files": [
+      "active_component_inventory.json",
+      "active_component_count_summary.json",
+      "ai_system_inventory.md",
+      "data_inspection.json",
+      "candidate_input_lineage.json",
+      "opportunity_input_lineage.json",
+      "split_window_statistics.json",
+      "recent_holdout_usage.json",
+      "calibration_validation_independence.json",
+      "runtime_input_lineage_contract.json",
+      "complete_component_inventory.json",
+      "component_dependency_matrix.json",
+      "runtime_chain_inspection.json",
+      "jquants_dependency_matrix.json",
+      "runtime_state_coverage.json",
+      "inspection_coverage.json",
+      "decision_subsystems.json",
+      "authority_generation.json",
+      "freshness_matrix.json",
+      "system_status_report.md"
+    ],
+    "system_status_exit_codes": {
+      "0": "PASS",
+      "10": "REVIEW_REQUIRED",
+      "20": "BLOCK",
+      "30": "COMMAND_OR_INTERNAL_ERROR"
+    },
+    "system_status_full_inspection_sections": [
+      "Header / Overall",
+      "Active Component Inventory",
+      "Active Component Count Summary",
+      "Data Sources",
+      "Complete Data Source Inventory",
+      "Datasets",
+      "Runtime Features",
+      "AI Models",
+      "AI Data Window Summary",
+      "AI Input Lineage",
+      "Runtime Input Lineage",
+      "Complete Component Inventory",
+      "Component Dependency Matrix",
+      "Runtime Chain Inspection",
+      "J-Quants Dependency Matrix",
+      "Runtime State Coverage",
+      "Inspection Coverage",
+      "Runtime Baseline Traceability",
+      "Freshness Policy Traceability",
+      "Decision Subsystems",
+      "Accepted Generation / Authority",
+      "Runtime State",
+      "Broker Layer",
+      "Freshness Matrix",
+      "Findings",
+      "Non-mutation Guarantee",
+      "Exit Code"
+    ],
+    "system_status_non_mutation": [
+      "no training",
+      "no calibration",
+      "no validation rerun",
+      "no generation creation",
+      "no authority history append",
+      "no runtime pointer write",
+      "no trading state mutation",
+      "no BUY restart",
+      "no Broker access",
+      "no Broker write",
+      "no notification send"
+    ],
+    "system_status_safety_artifact_timing": {
+      "ARTIFACT_DATE_MISMATCH": {
+        "meaning": "latest Safety Decision exists but business_date does not match expected target date",
+        "system_status": "REVIEW_REQUIRED"
+      },
+      "MATERIALIZED": {
+        "meaning": "latest Safety Decision exists and expected business_date matches artifact business_date",
+        "system_status": "READY"
+      },
+      "POST_RUN_MATERIALIZATION_MISSING": {
+        "meaning": "target-date Safety or Morning route evidence exists but latest Safety Decision is missing",
+        "system_status": "BLOCK"
+      },
+      "PRE_RUN_NOT_MATERIALIZED": {
+        "blocks_day1_start_by_itself": false,
+        "meaning": "expected target-date Runtime Safety Decision has not yet been produced because target-date Runtime route has not started",
+        "system_status": "NOT_YET_APPLICABLE"
+      }
+    },
+    "system_status_scope": [
+      "Data",
+      "AI",
+      "Runtime",
+      "Runtime State",
+      "Broker Layer",
+      "Overall"
+    ],
+    "test_invalid_conditions": [
+      "Future Data",
+      "Manual Repair",
+      "State Repair",
+      "Authority mismatch",
+      "Runtime bypass",
+      "Guard bypass",
+      "Unexpected API access",
+      "Feature patch",
+      "Partial reset",
+      "Partial restore"
+    ]
+  },
+  "status": "ACCEPTED",
+  "system_under_test": {
     "forbidden_runtime_roots": [
       ".runtime/demo",
       ".runtime/production",
@@ -41,46 +596,9 @@
       "normal Execution Processor",
       "normal Registry Resolver",
       "normal Accepted Artifact Authority"
-    ]
-  },
-  "environments": {
-    "historical": {
-      "runtime_mainline": "normal Runtime v2",
-      "runtime_root": ".runtime",
-      "broker_environment": "historical_simulated",
-      "broker_write": false,
-      "external_delivery": false,
-      "approved_differences": [
-        "Historical Clock",
-        "Canonical Data as-of",
-        "PIT Manifest",
-        "HistoricalSubmitAdapter",
-        "HistoricalExecutionSnapshotProvider",
-        "External effect blocking",
-        "Smoke-limited execution assumption",
-        "Initial Trading State Reset"
-      ]
-    },
-    "demo": {
-      "runtime_mainline": "normal Runtime v2",
-      "runtime_root": ".runtime",
-      "broker_environment": "tachibana_demo",
-      "approved_differences": [
-        "Tachibana Demo API boundary",
-        "real time",
-        "Demo Broker Snapshot"
-      ]
-    },
-    "production": {
-      "runtime_mainline": "normal Runtime v2",
-      "runtime_root": ".runtime",
-      "broker_environment": "tachibana_production",
-      "approved_differences": [
-        "Tachibana Production API boundary",
-        "Production Broker reconciliation",
-        "Production credentials / capability / approval"
-      ]
-    }
+    ],
+    "runtime": "Normal Runtime v2",
+    "runtime_root": ".runtime"
   },
   "test_levels": [
     "5BD Historical Runtime Smoke Test",
@@ -92,18 +610,6 @@
     "Production Acceptance"
   ],
   "test_validity": {
-    "valid_conditions": [
-      "normal Runtime v2 Mainline used",
-      "no alternate path",
-      "no external effect violation",
-      "no future data",
-      "no manual state repair",
-      "no duplicate submit / execution / ledger",
-      "authority consistency",
-      "temporal consistency",
-      "state consistency",
-      "evidence completeness"
-    ],
     "invalid_conditions": [
       "Runtime bypass",
       "Guard bypass",
@@ -117,143 +623,19 @@
       "Authority mismatch",
       "Temporal violation",
       "Test-only Runtime / State Authority"
+    ],
+    "valid_conditions": [
+      "normal Runtime v2 Mainline used",
+      "no alternate path",
+      "no external effect violation",
+      "no future data",
+      "no manual state repair",
+      "no duplicate submit / execution / ledger",
+      "authority consistency",
+      "temporal consistency",
+      "state consistency",
+      "evidence completeness"
     ]
   },
-  "phase17_5bd_profile": {
-    "window": {
-      "start": "2026-07-06",
-      "end": "2026-07-10"
-    },
-    "runtime_root": ".runtime",
-    "mode": "historical",
-    "broker": "historical_simulated",
-    "feature_carryover": {
-      "2026-07-08": "2026-07-07",
-      "2026-07-09": "2026-07-08"
-    },
-    "external_delivery": false,
-    "jquants_fetch": false,
-    "initial_capital_jpy": 1000000
-  },
-  "standard_execution_procedure": {
-    "authority": "Runtime Test Specification section 26",
-    "entrypoint": "PYTHONPATH=src python3 scripts/runtime_test.py <subcommand> [options]",
-    "standard_flow": [
-      "status",
-      "plan",
-      "backup",
-      "reset",
-      "run",
-      "validate",
-      "close"
-    ],
-    "failure_flow": [
-      "classify_failure",
-      "resume_if_baselines_match",
-      "rollback_if_state_validity_or_lifecycle_safety_is_uncertain",
-      "validate",
-      "evidence_freeze"
-    ],
-    "mutating_commands_require": [
-      "--confirm",
-      "--yes-i-understand-this-mutates-trading-state"
-    ],
-    "commands": {
-      "status": {
-        "state_change": false,
-        "responsibility": "read-only Runtime Test state summary"
-      },
-      "plan": {
-        "state_change": false,
-        "responsibility": "execution plan, dates, job sequence, evidence paths, commands"
-      },
-      "backup": {
-        "state_change": true,
-        "responsibility": "backup resettable Trading State"
-      },
-      "reset": {
-        "state_change": true,
-        "responsibility": "all-or-nothing initial Trading State setup"
-      },
-      "run": {
-        "state_change": true,
-        "responsibility": "invoke normal Runtime v2 CLI by business date and job"
-      },
-      "validate": {
-        "state_change": false,
-        "responsibility": "validate state, temporal, authority, and evidence consistency"
-      },
-      "resume": {
-        "state_change": true,
-        "responsibility": "continue from last valid checkpoint without skipping failed jobs"
-      },
-      "rollback": {
-        "state_change": true,
-        "responsibility": "restore full resettable Trading State bundle"
-      },
-      "close": {
-        "state_change": false,
-        "responsibility": "freeze final evidence and judgments"
-      }
-    },
-    "exit_codes": {
-      "0": "PASS",
-      "10": "REVIEW_REQUIRED",
-      "20": "BLOCKED",
-      "30": "HALT",
-      "40": "VALIDATION_FAILURE",
-      "50": "ROLLBACK_FAILURE",
-      "60": "INVALID_ARGUMENT",
-      "70": "PRECONDITION_FAILURE",
-      "80": "TEST_INVALID",
-      "90": "INTERNAL_ERROR"
-    },
-    "test_invalid_conditions": [
-      "Future Data",
-      "Manual Repair",
-      "State Repair",
-      "Authority mismatch",
-      "Runtime bypass",
-      "Guard bypass",
-      "Unexpected API access",
-      "Feature patch",
-      "Partial reset",
-      "Partial restore"
-    ]
-  },
-  "acceptance_gates": {
-    "PROJECT_WIDE_SCOPE": "PASS",
-    "PHASE_INDEPENDENT": "PASS",
-    "RUNTIME_V2_IS_SYSTEM_UNDER_TEST": "PASS",
-    "ENVIRONMENT_DIFFERENCES_EXPLICIT": "PASS",
-    "TEST_LEVELS_DEFINED": "PASS",
-    "STATE_LIFECYCLE_DEFINED": "PASS",
-    "DATA_PIT_CONTRACT_DEFINED": "PASS",
-    "EXECUTION_MODELS_DEFINED": "PASS",
-    "ENTRY_GATES_DEFINED": "PASS",
-    "TEST_VALIDITY_DEFINED": "PASS",
-    "ACCEPTANCE_CRITERIA_DEFINED": "PASS",
-    "REGRESSION_POLICY_DEFINED": "PASS",
-    "EVIDENCE_REQUIREMENTS_DEFINED": "PASS",
-    "DEMO_EXCEPTION_DEFINED": "PASS",
-    "PRODUCTION_RULES_DEFINED": "PASS",
-    "NON_GOALS_DEFINED": "PASS",
-    "PHASE17_5BD_PROFILE_INCLUDED": "PASS",
-    "CONTRACT_REFERENCES_COMPLETE": "PASS",
-    "NO_CONTRACT_CONTRADICTION": "PASS",
-    "NO_RUNTIME_CHANGE": "PASS",
-    "STANDARD_PROCEDURE_DEFINED": "PASS",
-    "COMMAND_SEQUENCE_DEFINED": "PASS",
-    "ALL_TEST_LEVELS_DEFINED": "PASS",
-    "ROLLBACK_DEFINED": "PASS",
-    "COMMAND_REFERENCE_COMPLETE": "PASS",
-    "NO_SPEC_CONTRADICTION": "PASS"
-  },
-  "contract_alignment": {
-    "status": "NO_CONTRACT_CONTRADICTION",
-    "contract_meaning_changed": false,
-    "alignment_required": []
-  },
-  "recommended_next_prefix": "Phase17-L",
-  "recommended_next_work_name": "Historical Runtime 5BD Smoke Test Command Execution"
+  "version": "1.6"
 }

@@ -1,0 +1,330 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/runtime_baseline_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "artifact_type": {
+          "const": "RUNTIME_BASELINE"
+        }
+      }
+    },
+    {
+      "properties": {
+        "component": {
+          "const": "RuntimeBaseline"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "DRAFT",
+        "TRAINING_OUTPUT",
+        "FIXTURE_TRAINING_OUTPUT",
+        "VALIDATION_PENDING",
+        "VALIDATION_PASS",
+        "VALIDATION_BLOCK",
+        "GENERATION_CANDIDATE",
+        "REVIEW_REQUIRED",
+        "ACCEPTED",
+        "REJECTED",
+        "RETIRED",
+        "INVALIDATED",
+        "NOT_APPLICABLE"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "baseline_id": {
+      "type": "string"
+    },
+    "bootstrap_or_retraining": {
+      "enum": [
+        "BOOTSTRAP",
+        "RETRAINING"
+      ],
+      "type": "string"
+    },
+    "component": {
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corporate_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_input_contract_id": {
+      "type": "string"
+    },
+    "dataset_lineage_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision_id": {
+      "type": "string"
+    },
+    "dataset_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "embargo_business_days": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "expected_candidate_input_schema": {
+      "type": "object"
+    },
+    "expected_opportunity_input_schema": {
+      "type": "object"
+    },
+    "expected_output_schema": {
+      "type": "object"
+    },
+    "candidate_feature_distribution_summary": {
+      "type": "object"
+    },
+    "candidate_feature_order_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "candidate_feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "candidate_pass_ratio": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "candidate_population_summary": {
+      "type": "object"
+    },
+    "candidate_score_distribution_summary": {
+      "type": "object"
+    },
+    "collapse_checks": {
+      "type": "object"
+    },
+    "explosion_checks": {
+      "type": "object"
+    },
+    "feature_schema_identity": {
+      "type": "string"
+    },
+    "finite_checks": {
+      "type": "object"
+    },
+    "forbidden_runtime_fallbacks": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "label_schema_identity": {
+      "type": "string"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "opportunity_feature_distribution_summary": {
+      "type": "object"
+    },
+    "opportunity_feature_order_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "opportunity_feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "opportunity_score_distribution_summary": {
+      "type": "object"
+    },
+    "preprocessing_pipeline_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "required_runtime_capabilities": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "rolling_split_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_compatibility_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_dependency_versions": {
+      "type": "object"
+    },
+    "runtime_baseline_policy_version": {
+      "type": "string"
+    },
+    "runtime_feature_contract": {
+      "type": "object"
+    },
+    "runtime_model_loader_contract": {
+      "type": "object"
+    },
+    "scaled_feature_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_artifact_id": {
+      "type": "string"
+    },
+    "scaler_method": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "source_business_date_end": {
+      "type": "string"
+    },
+    "source_business_date_start": {
+      "type": "string"
+    },
+    "source_corrective_run_id": {
+      "type": "string"
+    },
+    "source_validation_id": {
+      "type": "string"
+    },
+    "split_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_id": {
+      "type": "string"
+    },
+    "threshold_policy": {
+      "type": "object"
+    },
+    "top10_summary": {
+      "type": "object"
+    },
+    "top20_summary": {
+      "type": "object"
+    },
+    "top5_summary": {
+      "type": "object"
+    },
+    "target_horizon_business_days": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "trading_calendar_identity": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_type",
+    "artifact_version",
+    "artifact_status",
+    "baseline_id",
+    "created_at",
+    "producer",
+    "source_phase",
+    "component",
+    "generation_candidate_id",
+    "content_hash",
+    "schema_version",
+    "authority",
+    "dataset_input_contract_id",
+    "dataset_revision_id",
+    "dataset_content_hash",
+    "dataset_schema_hash",
+    "dataset_lineage_hash",
+    "split_id",
+    "split_content_hash",
+    "rolling_split_policy_hash",
+    "corporate_action_policy_hash",
+    "model_quality_policy_hash",
+    "feature_schema_identity",
+    "label_schema_identity",
+    "trading_calendar_identity",
+    "target_horizon_business_days",
+    "embargo_business_days",
+    "bootstrap_or_retraining",
+    "source_validation_id",
+    "source_corrective_run_id",
+    "source_business_date_start",
+    "source_business_date_end",
+    "candidate_feature_schema_hash",
+    "candidate_feature_order_hash",
+    "candidate_feature_distribution_summary",
+    "candidate_score_distribution_summary",
+    "candidate_pass_ratio",
+    "candidate_population_summary",
+    "opportunity_feature_schema_hash",
+    "opportunity_feature_order_hash",
+    "opportunity_feature_distribution_summary",
+    "opportunity_score_distribution_summary",
+    "top5_summary",
+    "top10_summary",
+    "top20_summary",
+    "finite_checks",
+    "collapse_checks",
+    "explosion_checks",
+    "runtime_baseline_policy_version",
+    "threshold_policy",
+    "expected_candidate_input_schema",
+    "expected_opportunity_input_schema",
+    "expected_output_schema",
+    "runtime_feature_contract",
+    "runtime_model_loader_contract",
+    "runtime_dependency_versions",
+    "runtime_compatibility_hash",
+    "required_runtime_capabilities",
+    "forbidden_runtime_fallbacks"
+  ],
+  "title": "runtime_baseline_artifact",
+  "type": "object"
+}

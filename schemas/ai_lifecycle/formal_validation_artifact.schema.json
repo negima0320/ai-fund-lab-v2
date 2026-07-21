@@ -1,0 +1,151 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/formal_validation_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "FORMAL_VALIDATION_OUTPUT",
+        "FORMAL_VALIDATION_PASS",
+        "FORMAL_VALIDATION_FAIL",
+        "REVIEW_REQUIRED"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "FORMAL_VALIDATION",
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "bootstrap_or_retraining": {
+      "type": "string"
+    },
+    "candidate_result": {
+      "type": "object"
+    },
+    "combined_quality_gate": {
+      "type": "object"
+    },
+    "component": {
+      "const": "Validation",
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_usage_contract_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "formal_cycle_number": {
+      "type": "integer"
+    },
+    "formal_validation_policy": {
+      "type": "object"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_eligibility": {
+      "type": "boolean"
+    },
+    "hash_inventory": {
+      "type": "object"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "opportunity_result": {
+      "type": "object"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "recent_holdout_review": {
+      "type": "object"
+    },
+    "runtime_eligibility": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "source_bindings": {
+      "type": "object"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "validated_artifact_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "validated_artifact_hashes": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "validation_run_id": {
+      "type": "string"
+    },
+    "window_usage": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "artifact_type",
+    "artifact_version",
+    "artifact_status",
+    "created_at",
+    "producer",
+    "source_phase",
+    "component",
+    "generation_candidate_id",
+    "schema_version",
+    "authority",
+    "validation_run_id",
+    "formal_cycle_number",
+    "formal_validation_policy",
+    "source_bindings",
+    "validated_artifact_ids",
+    "validated_artifact_hashes",
+    "dataset_usage_contract_hash",
+    "model_quality_policy_hash",
+    "candidate_result",
+    "opportunity_result",
+    "combined_quality_gate",
+    "recent_holdout_review",
+    "window_usage",
+    "runtime_eligibility",
+    "generation_eligibility",
+    "accepted",
+    "hash_inventory",
+    "content_hash"
+  ],
+  "title": "formal_validation_artifact",
+  "type": "object"
+}

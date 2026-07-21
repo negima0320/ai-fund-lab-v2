@@ -726,6 +726,8 @@ def _validate_pm_input_contract(
         "pm_feature_date": feature_date,
         "pm_opportunity_source": str(opportunity_path),
         "pm_opportunity_status": opportunity_status["status"],
+        "pm_opportunity_model_version": opportunity_status.get("model_version") or "",
+        "pm_opportunity_model_authority": opportunity_status.get("model_authority") or {},
         "pm_opportunity_contract_schema": opportunity_status.get("schema_name") or "",
         "pm_opportunity_artifact_role": opportunity_status.get("artifact_role") or "",
         "pm_opportunity_row_universe": opportunity_status.get("row_universe") or "",
@@ -916,6 +918,8 @@ def _pm_opportunity_status(
         "unranked_symbols": unranked_symbols,
         "missing_symbol_semantics": "symbol_not_ranked_is_valid_pm_context_default" if unranked_symbols and not missing_symbols else "",
         "empty_semantics": contract.get("empty_semantics") or "",
+        "model_version": contract.get("model_version") or "",
+        "model_authority": contract.get("model_authority") or {},
     }
 
 
@@ -937,6 +941,8 @@ def _pm_opportunity_contract(*, opportunity_path: Path, business_date: str = "",
                 "row_universe": "review_required_legacy_payload",
                 "ranked_symbol_count": 0,
                 "empty_semantics": "",
+                "model_version": "",
+                "model_authority": {},
             }
         schema_name = str(payload.get("schema_name") or BUY_OPPORTUNITY_SCHEMA_NAME)
         artifact_role = str(payload.get("artifact_role") or BUY_OPPORTUNITY_ARTIFACT_ROLE)
@@ -959,6 +965,7 @@ def _pm_opportunity_contract(*, opportunity_path: Path, business_date: str = "",
         missing_fields: list[str] = []
         if not payload.get("model_version"):
             missing_fields.append("opportunity.model_version")
+        missing_fields.extend(_opportunity_model_authority_mismatches(payload))
         if not payload.get("generated_at"):
             missing_fields.append("opportunity.generated_at")
         rows_payload = payload.get("rankings")
@@ -982,6 +989,8 @@ def _pm_opportunity_contract(*, opportunity_path: Path, business_date: str = "",
             "row_universe": "ranked_buy_candidates_only",
             "ranked_symbol_count": len(frame),
             "empty_semantics": empty_semantics,
+            "model_version": str(payload.get("model_version") or ""),
+            "model_authority": dict(payload.get("model_authority") or {}) if isinstance(payload.get("model_authority"), dict) else {},
         }
     frame = _read_table(opportunity_path)
     _validate_pm_opportunity_frame(frame, feature_date=feature_date)
@@ -997,7 +1006,29 @@ def _pm_opportunity_contract(*, opportunity_path: Path, business_date: str = "",
         "row_universe": "pm_opportunity_context",
         "ranked_symbol_count": len(frame),
         "empty_semantics": "confirmed_empty" if frame.empty else "",
+        "model_version": "",
+        "model_authority": {},
     }
+
+
+def _opportunity_model_authority_mismatches(payload: dict[str, Any]) -> list[str]:
+    authority = payload.get("model_authority")
+    if authority in (None, {}, ""):
+        # Legacy fixture artifacts are allowed to supply only model_version.
+        return []
+    if not isinstance(authority, dict):
+        return ["opportunity.model_authority.invalid"]
+    missing: list[str] = []
+    for key in ("model_version", "model_hash", "authority_source", "resolution_status"):
+        if not authority.get(key):
+            missing.append(f"opportunity.model_authority.{key}")
+    if payload.get("model_version") and authority.get("model_version") and payload.get("model_version") != authority.get("model_version"):
+        missing.append("opportunity.model_authority.model_version_mismatch")
+    if authority.get("runtime_model_hash") and authority.get("model_hash") and authority.get("runtime_model_hash") != authority.get("model_hash"):
+        missing.append("opportunity.model_authority.model_hash_mismatch")
+    if authority.get("hash_match") is False:
+        missing.append("opportunity.model_authority.hash_match_false")
+    return missing
 
 
 def _canonical_pm_opportunity_row(row: Any, *, default_target_date: str) -> dict[str, Any]:

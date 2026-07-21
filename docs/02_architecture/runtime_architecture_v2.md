@@ -1052,6 +1052,14 @@ REVIEW_REQUIRED
 
 Submit は `state == APPROVED` かつ対象日、承認 hash、source order plan hash、承認期限、promotion 条件を満たす場合のみ許可する。
 
+`EMPTY` の扱い:
+
+- `state/status == EMPTY`、`active_pending == false`、注文 item 数 0 の Pending Slot は、注文を消費しない No-Action terminal である。
+- `EMPTY` Slot は Submit 対象の注文 Authority ではないため、`environment`、`target_session_date`、`intended_submit_date`、`safety_context`、Runtime Test identity を必須にしない。
+- Reset 直後の canonical `EMPTY` Slot と、当日 Planning 結果 0 件の `EMPTY` Slot は、Submit で `NO_ACTION` として正常完了できる。
+- `EMPTY` Slot に item または approved item id が存在する場合、または `active_pending == true` の場合は矛盾した Pending として fail-closed する。
+- Active / carry-forward Pending を Submit で消費する場合は、従来どおり environment、business date、session date、Safety、Approval、Runtime Test identity の整合性を検証する。
+
 `CONSUMED` の扱い:
 
 - `CONSUMED` は Submit 対象として消費済みであることを示す。
@@ -2279,6 +2287,69 @@ Environment Matrix は Submit Guard の先頭で確認する。Matrix 不一致�
 Historical は Runtime v2 の正式 environment である。ただし Current / Ledger / Pending / Runtime State は mode-rooted path へ分岐しない。Current object path は通常 `.runtime/...` に固定し、`--mode historical` と environment evidence で実行境界を識別する。
 
 Phase17-G の Historical Fill Model は 5BD Historical Runtime Smoke Test 用の最小実行仮定である。Market order は対象営業日の Canonical OHLCV `Open` を fill price とし、PIT manifest hash、Listed Issues PIT universe、Corporate Action no-impact guard、duplicate submit evidence、cash / quantity guard を必須 evidence とする。Fees、tax、slippage、partial fill、long-term performance 用の厳密 execution model は 20BD 以降の別 acceptance とする。
+
+## Phase19-AV 追補: AI Status Inspection
+
+Runtime Test `ai-status` は Runtime Authority を変更するコマンドではなく、COMMITTED Accepted Generation と Runtime Readiness を確認する read-only operational observability command である。
+
+確認対象:
+
+```text
+COMMITTED Accepted Generation pointer
+Accepted Generation Manifest
+Candidate / Opportunity model, scaler, calibration binding
+Dataset lineage
+Versioned split
+Latest J-Quants
+Latest BUY feature
+Eight-part freshness taxonomy
+Runtime lifecycle gate
+Legacy fallback absence
+Broker access absence
+```
+
+`ai-status` は Authority Resolver の結果を表示するだけであり、`latest`、mtime、legacy fallback、manual path、promotion candidate を Runtime authority として選択してはならない。`--write-evidence` は監査レポートを `reports/runtime_tests/ai_status/<run_id>/` に保存するだけで、Accepted Generation pointer、authority history、Current、Pending、Ledger、Safety、Broker、BUY/SELL state を変更してはならない。
+
+Structural issue は BLOCK、統計 Drift のみは REVIEW_REQUIRED として扱う。統計 Drift の REVIEW_REQUIRED は BUY 自動停止ではなく、Human monitoring / review の信号である。
+
+## Phase19-AX 追補: System Status
+
+Runtime Test `system-status` は、日次運用開始前に実行する正式な read-only system health command である。通常運用の推奨入口は `system-status` とし、`ai-status` は AI Artifact Inspection 専用に位置付ける。
+
+`system-status` は以下を一度に確認する。
+
+```text
+Data
+AI
+Runtime
+Runtime State
+Broker Layer
+Overall
+```
+
+Broker Layer の Broker Connection は、このコマンド内では外部接続を実行しない。`NOT_PERFORMED` を明示し、Broker credential access、Broker API access、Broker write、notification send は禁止する。
+
+`system-status` の標準出力は省略 summary ではなく、完全な human inspection report とする。少なくとも Runtime Stage、Pre-run Readiness、Day1 Start Permission、Active Component Inventory、Data Sources、Datasets、Runtime Features、AI Models、AI Data Window Summary、Decision Subsystems、Accepted Generation / Authority、Runtime State、Broker Layer、Freshness Matrix、Findings、Non-mutation Guarantee、Exit Code を表示する。Candidate は evaluated_symbols と candidate_output_count を分離し、Opportunity は input_candidate_count、ranking_count、top20_count を分離して表示する。
+
+Phase19-BE 以降、`system-status` の human inspection report は AI input lineage を JSON と同じ粒度で表示しなければならない。Candidate / Opportunity それぞれについて、training dataset revision、dataset artifact / manifest path、source authority、source earliest/latest date、source row/symbol count、schema/content hash、Training / Calibration / Validation / Test / Recent Holdout split window statistics、recent holdout non-use、calibration / validation independence を表示する。Runtime input lineage は pre-run では計画契約として表示し、target-date feature / inference が未生成の場合は空欄ではなく `NOT_YET_MATERIALIZED` を用いる。
+
+Phase19-BF 以降、`system-status` は Runtime の全運用Component監査を含む。Market Refresh、Feature Refresh、Candidate AI、Opportunity AI、Lifecycle Monitoring、Safety、BUY Planning、SELL Planning、Approval、Submit Guard、Execution Guard、Ledger Update、Reporting、Notification までのRuntime chainを表示し、各Componentの責務、Authority、Implementation、Input/Output Artifact、Input Components、Input/Output Business Date、Configuration Status、Runtime Status、Inspection Status、J-Quants依存有無を human / JSON の両方へ出す。Repository上の運用Componentが未監査の場合は `COMPONENT_NOT_INSPECTED` / `REVIEW_REQUIRED` とし、PASSしてはならない。
+
+Phase19-BG 以降、`system-status` の status semantics は完全に分離する。`implementation_status`、`configuration_status`、`authority_resolution_status`、`inspection_status`、`target_date_execution_status`、`runtime_result_status` は別フィールドであり、PRE_RUNで対象日処理が未実行のComponentをRuntime結果PASSとして表示してはならない。J-Quants依存は `DIRECT` / `INDIRECT` / `NONE` と dependency path / direct input artifacts / reason で示す。Historical source coverage の最新日と Runtime consumer cutoff date は別概念であり、sourceが対象日より未来まで存在しても consumer cutoff が対象日で future rows consumed がない限り異常ではない。
+
+Runtime State Safety は Safety Decision artifact の実行タイミングを区別する。対象 business date の Runtime route がまだ開始していない場合、`.runtime/runtime_state/safety/latest_safety_decision.json` の missing は `PRE_RUN_NOT_MATERIALIZED` / `NOT_YET_APPLICABLE` として扱い、これだけで Day1 開始を止めない。対象 business date の Safety または Morning route が実行済みなのに artifact がない場合は `POST_RUN_MATERIALIZATION_MISSING` / `BLOCK` とする。artifact が存在する場合は expected business date と artifact business date の一致を確認し、不一致は `REVIEW_REQUIRED` とする。
+
+Pre-run artifact semantics are stage-aware. Runtime Features、Candidate/Opportunity Inference、AI Lifecycle Gate、Runtime Baseline/Freshness target-date decision、BUY Planning、SELL Planning、Approval、Submit、Execution、Reporting、Notification は、それぞれの expected generation stage 前なら `NOT_YET_APPLICABLE` とし、stage 通過後も欠落している場合だけ `POST_STAGE_MATERIALIZATION_MISSING` / `BLOCK` とする。`system-status` は COMMITTED Accepted Generation の authority、model artifact、scaler、calibration、hash、read-only loader validation と、target-date feature/inference artifact の有無を混同してはならない。
+
+Historical freshness is coverage-based. Historical mode では `required_through_date`、`available_through_date`、`missing_required_business_days`、`coverage_ahead_business_days` を分離し、target date より先までデータがある状態を lag と呼ばない。Temporal Guard は Runtime consumer input が target business date より未来の行を利用しないことを別途検証する。
+
+`system-status` の PASS は `inspection_context` 内でのみ有効である。Historical isolated pre-run の PASS は Production/Demo current-data readiness、Broker connectivity readiness、BUY_READY、PRODUCTION_READY、Autonomous Operation Complete を意味しない。これらは `environment_readiness` で `NOT_EVALUATED`、`NOT_PERFORMED`、または `PROHIBITED` として分離表示する。
+
+Historical Runtime Test 完了後に active run が存在せず、最新の compatible closed run が inspected runtime root と一致する場合、`system-status` は `HISTORICAL_POST_RUN` context を表示する。この場合の target business date は profile の `date_from` ではなく closed run の最終 completed business date である。Ledger / Current / Pending / Runtime Feature / AI inference / Lifecycle / Safety の日付比較は同一 context に揃え、Day1 と Day5 を混在させて `TEMPORAL_STATE_CONTAMINATION` としてはならない。ただし実際に target business date より未来の consumer state を参照した場合、または closed run の Safety authority が欠落・不一致の場合は fail-closed を維持する。
+
+Broker Layer は truthfulness-first で表示する。Broker Configuration と Submit Guard Configuration が PASS でも、Broker Connectivity Check、Credential Access、Broker Write が未実施なら `NOT_PERFORMED` / `PROHIBITED` とし、aggregate は `CONFIGURATION_PASS_CONNECTIVITY_NOT_PERFORMED` のように誤解できない値にする。
+
+`system-status` の Evidence 書き込みは `reports/runtime_tests/system_status/<run_id>/` に限定する。Current、Pending、Ledger、PM、Safety、Accepted Generation pointer、authority history、Runtime transition history、Broker state を変更してはならない。
 
 Runtime Architecture v2 の設計および Phase13 design-only 作業では、以下を禁止する。
 

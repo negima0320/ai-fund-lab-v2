@@ -1,0 +1,232 @@
+{
+  "$id": "https://ai-fund-lab-v2.local/schemas/ai_lifecycle/scaler_artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "artifact_id": {
+      "type": "string"
+    },
+    "artifact_status": {
+      "enum": [
+        "SCALER_TRAINING_OUTPUT",
+        "FIXTURE_SCALER_OUTPUT",
+        "INVALID",
+        "REJECTED"
+      ],
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "SCALER",
+      "type": "string"
+    },
+    "artifact_version": {
+      "type": "string"
+    },
+    "authority": {
+      "type": "string"
+    },
+    "component": {
+      "enum": [
+        "Candidate",
+        "Opportunity"
+      ],
+      "type": "string"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corporate_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "corrective_action_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "dataset_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_input_contract_id": {
+      "type": "string"
+    },
+    "dataset_lineage_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "dataset_revision_id": {
+      "type": "string"
+    },
+    "dataset_schema_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "environment_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "excluded_feature_columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "feature_dtypes": {
+      "type": "object"
+    },
+    "feature_schema_identity": {
+      "type": "string"
+    },
+    "fit_business_days": {
+      "type": "integer"
+    },
+    "fit_row_count": {
+      "type": "integer"
+    },
+    "fit_window": {
+      "type": "object"
+    },
+    "fitted_parameters": {
+      "type": "object"
+    },
+    "generation_candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation_eligibility": {
+      "type": "boolean"
+    },
+    "input_feature_columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "model_quality_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "parameter_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "randomness_contract": {
+      "type": "object"
+    },
+    "rolling_split_policy_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime_eligibility": {
+      "type": "boolean"
+    },
+    "scaled_feature_columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scaler_config": {
+      "type": "object"
+    },
+    "scaler_config_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "scaler_file": {
+      "type": "string"
+    },
+    "scaler_library": {
+      "type": "string"
+    },
+    "scaler_library_version": {
+      "type": "string"
+    },
+    "scaler_method": {
+      "type": "string"
+    },
+    "source_phase": {
+      "type": "string"
+    },
+    "split_content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "split_id": {
+      "type": "string"
+    },
+    "training_code_commit": {
+      "type": "string"
+    },
+    "training_config_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "accepted",
+    "artifact_id",
+    "artifact_status",
+    "artifact_type",
+    "artifact_version",
+    "authority",
+    "component",
+    "content_hash",
+    "corrective_action_policy_hash",
+    "corporate_action_policy_hash",
+    "created_at",
+    "dataset_content_hash",
+    "dataset_input_contract_id",
+    "dataset_lineage_hash",
+    "dataset_revision_id",
+    "dataset_schema_hash",
+    "environment_fingerprint",
+    "excluded_feature_columns",
+    "feature_dtypes",
+    "feature_schema_identity",
+    "fit_business_days",
+    "fit_row_count",
+    "fit_window",
+    "fitted_parameters",
+    "generation_candidate_id",
+    "input_feature_columns",
+    "model_quality_policy_hash",
+    "parameter_hash",
+    "producer",
+    "randomness_contract",
+    "rolling_split_policy_hash",
+    "runtime_eligibility",
+    "scaled_feature_columns",
+    "scaler_config",
+    "scaler_config_hash",
+    "scaler_content_hash",
+    "scaler_file",
+    "scaler_library",
+    "scaler_library_version",
+    "scaler_method",
+    "source_phase",
+    "split_content_hash",
+    "split_id",
+    "training_code_commit",
+    "training_config_hash",
+    "generation_eligibility"
+  ],
+  "title": "scaler_artifact",
+  "type": "object"
+}
