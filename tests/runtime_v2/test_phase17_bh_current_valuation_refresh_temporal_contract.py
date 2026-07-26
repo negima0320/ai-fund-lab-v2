@@ -261,3 +261,77 @@ def test_phase17_bh_historical_asof_market_authority_used_for_same_business_date
     assert result.market_date == VALUATION_BUSINESS_DATE
     assert result.projection_source_market_date == VALUATION_BUSINESS_DATE
     assert result.candidate_current["positions"][0]["current_price"] == 1110.0
+
+
+def test_phase20_bv_historical_current_valuation_prefers_run_scoped_logical_input(tmp_path: Path) -> None:
+    try:
+        import pandas as pd
+    except ImportError:
+        return
+
+    root = _valuation_runtime_root(tmp_path)
+    _write_valuation_current(root, valuation_as_of="2026-07-09", source_market_date="2026-07-09")
+    run_root = tmp_path / "reports" / "runtime_tests" / "runs" / "run-bv"
+    market_refresh_root = run_root / "daily" / VALUATION_BUSINESS_DATE / "market_refresh"
+    asof_view = market_refresh_root / "historical_asof_view.json"
+    physical = tmp_path / "physical_without_target_row.parquet"
+    logical = (
+        market_refresh_root
+        / "inputs"
+        / "historical_asof"
+        / VALUATION_BUSINESS_DATE
+        / "raw_normalized"
+        / "jquants"
+        / "equities_bars_daily"
+        / "data.parquet"
+    )
+    pd.DataFrame([{"target_date": "2026-07-09", "code": "7203", "close": 900.0}]).to_parquet(physical, index=False)
+    logical.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"target_date": VALUATION_BUSINESS_DATE, "code": "7203", "close": 1130.0}]).to_parquet(logical, index=False)
+    manifest_path = market_refresh_root / "inputs" / "historical_asof" / VALUATION_BUSINESS_DATE / "logical_input_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_historical_logical_input_manifest_v1",
+                "status": "PASS",
+                "business_date": VALUATION_BUSINESS_DATE,
+                "logical_paths": {"normalized_ohlcv": str(logical)},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    asof_view.parent.mkdir(parents=True, exist_ok=True)
+    asof_view.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_historical_asof_view_v1",
+                "status": "PASS",
+                "business_date": VALUATION_BUSINESS_DATE,
+                "latest_available_market_date": VALUATION_BUSINESS_DATE,
+                "authorities": [
+                    {
+                        "authority": "normalized_ohlcv",
+                        "status": "PASS",
+                        "physical_source_path": str(physical),
+                    }
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_current_valuation_refresh(
+        runtime_root=root,
+        business_date=VALUATION_BUSINESS_DATE,
+        apply_current_valuation=True,
+        market_evidence_path=asof_view,
+        now=datetime(2026, 7, 10, 6, 35, tzinfo=timezone.utc),
+    )
+
+    assert result.status == "READY"
+    assert result.candidate_current["positions"][0]["current_price"] == 1130.0
+    assert result.candidate_current["positions"][0]["valuation_source"] == str(logical)

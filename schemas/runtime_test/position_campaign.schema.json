@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/runtime_test/position_campaign.schema.json",
+  "title": "Runtime Test Position Campaign Observability",
+  "type": "object",
+  "required": ["schema_version", "run_id", "business_date", "authority", "generated_at", "source_artifacts", "temporal_safety", "position_campaigns"],
+  "properties": {
+    "schema_version": { "const": "position_campaign_observability.v1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "minLength": 1 },
+    "authority": { "type": "string" },
+    "contract_version": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "source_artifacts": { "type": "object" },
+    "temporal_safety": { "type": "object" },
+    "identity_policy": { "type": "string" },
+    "symbol_only_identity": { "const": "PROHIBITED" },
+    "position_campaigns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["position_campaign_id", "run_id", "symbol", "campaign_status", "events"],
+        "properties": {
+          "position_campaign_id": { "type": "string", "minLength": 1 },
+          "run_id": { "type": "string" },
+          "symbol": { "type": "string" },
+          "campaign_status": { "enum": ["OPEN", "CLOSED", "MISSING"] },
+          "events": { "type": "array" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

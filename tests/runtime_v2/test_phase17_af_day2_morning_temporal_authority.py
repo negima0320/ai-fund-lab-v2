@@ -172,11 +172,36 @@ def _runtime_root(
         },
     )
     _write_pending(root, historical=historical)
+    if historical:
+        _write_historical_calendar_authority(root.parent / "reports" / "runtime_tests" / "runs" / RUN_ID)
     if not safety_missing:
         _write_safety(root, mode=mode)
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_historical_calendar_authority(evidence_root: Path) -> None:
+    base = evidence_root / "daily" / BUSINESS_DATE / "market_refresh" / "inputs" / "historical_asof" / BUSINESS_DATE
+    calendar_path = base / "raw" / "jquants" / "trading_calendar" / "data.parquet"
+    calendar_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"Date": "2026-07-03", "HolDiv": "1"},
+            {"Date": "2026-07-06", "HolDiv": "1"},
+            {"Date": "2026-07-07", "HolDiv": "1"},
+            {"Date": "2026-07-08", "HolDiv": "1"},
+        ]
+    ).to_parquet(calendar_path, index=False)
+    _write_json(
+        base / "logical_input_manifest.json",
+        {
+            "status": "PASS",
+            "business_date": BUSINESS_DATE,
+            "logical_cutoff": BUSINESS_DATE,
+            "logical_paths": {"trading_calendar": str(calendar_path)},
+        },
+    )
 
 
 def _write_pending(root: Path, *, historical: bool) -> None:
@@ -218,6 +243,7 @@ def _write_feature_inputs(feature_root: Path) -> Path:
         [
             {
                 "target_date": BUSINESS_DATE,
+                "feature_as_of_date": BUSINESS_DATE,
                 "position_state_as_of": PREVIOUS_TRADING_DATE,
                 "entry_date": PREVIOUS_TRADING_DATE,
                 "code": "81050",
@@ -227,6 +253,19 @@ def _write_feature_inputs(feature_root: Path) -> Path:
                 "current_price": 101.0,
                 "unrealized_return": 0.01,
                 "quantity": 100.0,
+                "price_momentum_return_5d": 0.01,
+                "price_momentum_return_20d": 0.02,
+                "trend_close_over_ma_20d": 1.01,
+                "trend_ma_5_20_ratio": 1.01,
+                "volume_momentum_ratio_5d": 1.0,
+                "volatility_return_std_20d": 0.02,
+                "feature_source_artifact": "fixture",
+                "feature_source_hash": "fixture",
+                "required_features": [],
+                "optional_features": [],
+                "missing_features": [],
+                "defaulted_features": [],
+                "temporal_validation_status": "PASS",
                 "feature_version": "runtime_v2_pm_feature_input_v1",
                 "data_until": BUSINESS_DATE,
                 "created_at": BUSINESS_DATE + "T08:00:00+09:00",

@@ -20,10 +20,7 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import (
 )
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
-from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import (
-    get_broker_capability,
-    is_symbol_allowed_by_capability,
-)
+from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
 from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     FeatureDateContract,
     load_feature_date_contract,
@@ -374,7 +371,7 @@ def run_morning_ai_planning_pending_pipeline(
             status=safety_status,
             evaluation_capital=None,
             price_source_status="NOT_EVALUATED",
-            price_source_path=str(_price_source_path(Path(feature_root))),
+            price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             policy_context=_empty_morning_policy_context(operator_max_orders=max_orders),
             safety_decision=runtime_safety_decision,
         )
@@ -397,7 +394,7 @@ def run_morning_ai_planning_pending_pipeline(
             status="REVIEW_REQUIRED",
             evaluation_capital=None,
             price_source_status="NOT_EVALUATED",
-            price_source_path=str(_price_source_path(Path(feature_root))),
+            price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             policy_context=_empty_morning_policy_context(operator_max_orders=max_orders),
             safety_decision=runtime_safety_decision,
         )
@@ -486,7 +483,7 @@ def run_morning_ai_planning_pending_pipeline(
             current_exposure=current_exposure,
             current_position_symbols=current_position_symbols,
             price_source_status="NOT_EVALUATED",
-            price_source_path=str(_price_source_path(Path(feature_root))),
+            price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             policy_context=policy_context,
             safety_decision=runtime_safety_decision,
         )
@@ -531,7 +528,12 @@ def run_morning_ai_planning_pending_pipeline(
             safety_decision=runtime_safety_decision,
         )
 
-    price_source = _load_price_source(Path(feature_root), resolved_feature_date)
+    price_source = _load_price_source(
+        Path(feature_root),
+        resolved_feature_date,
+        mode=mode,
+        environment_capability_context=environment_capability_context,
+    )
     if price_source is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -550,7 +552,7 @@ def run_morning_ai_planning_pending_pipeline(
             current_position_symbols=current_position_symbols,
             candidate_count=len(candidate_rows),
             price_source_status="MISSING",
-            price_source_path=str(_price_source_path(Path(feature_root))),
+            price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             policy_context=policy_context,
             safety_decision=runtime_safety_decision,
         )
@@ -574,9 +576,6 @@ def run_morning_ai_planning_pending_pipeline(
     opportunity_buy_eligibility_evidence: list[dict[str, Any]] = []
     for signal in candidate_rows:
         symbol = signal.symbol
-        if not is_symbol_allowed_by_capability(symbol, capability):
-            demo_filtered_9000_count += 1
-            continue
         broker_symbol = _broker_symbol(symbol, {})
         if broker_symbol in current_position_symbols:
             existing_position_excluded_count += 1
@@ -633,11 +632,7 @@ def run_morning_ai_planning_pending_pipeline(
         if len(selected_rows) >= effective_order_limit:
             break
     if not selected_rows:
-        reason = (
-            "NO_SIGNAL:demo_capability_filtered_all_9000_series"
-            if demo_filtered_9000_count >= len(candidate_rows)
-            else "NO_SIGNAL:no_affordable_candidates_with_reliable_price"
-        )
+        reason = "NO_SIGNAL:no_affordable_candidates_with_reliable_price"
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
             environment=mode,
@@ -655,7 +650,7 @@ def run_morning_ai_planning_pending_pipeline(
             candidate_count=len(candidate_rows),
             demo_filtered_9000_count=demo_filtered_9000_count,
             price_source_status="PASS",
-            price_source_path=str(_price_source_path(Path(feature_root))),
+            price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             price_missing_count=price_missing_count,
             budget_excluded_count=budget_excluded_count,
             existing_position_excluded_count=existing_position_excluded_count,
@@ -822,7 +817,7 @@ def run_morning_ai_planning_pending_pipeline(
         existing_position_excluded_count=existing_position_excluded_count,
         selected_price_source="jquants_raw_normalized_daily_quotes_close",
         price_source_status="PASS",
-        price_source_path=str(_price_source_path(Path(feature_root))),
+        price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
         buy_eligibility_status="REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
@@ -1614,10 +1609,16 @@ def _round_lot_quantity(budget: float, price: float) -> float:
     return float(max(lots, 0) * 100)
 
 
-def _load_price_source(feature_root: Path, feature_date: str) -> dict[str, PriceEvidence] | None:
+def _load_price_source(
+    feature_root: Path,
+    feature_date: str,
+    *,
+    mode: str = "",
+    environment_capability_context: dict[str, Any] | None = None,
+) -> dict[str, PriceEvidence] | None:
     import pandas as pd
 
-    path = _price_source_path(feature_root)
+    path = _price_source_path(feature_root, feature_date, mode, environment_capability_context)
     if not path.exists():
         return None
     frame = pd.read_parquet(path, columns=["Code", "Date", "Close", "PriceSource"])
@@ -1643,9 +1644,65 @@ def _load_price_source(feature_root: Path, feature_date: str) -> dict[str, Price
     return result
 
 
-def _price_source_path(feature_root: Path) -> Path:
+def _price_source_path(
+    feature_root: Path,
+    feature_date: str = "",
+    mode: str = "",
+    environment_capability_context: dict[str, Any] | None = None,
+) -> Path:
+    if mode == "historical" and feature_date:
+        historical_path = _historical_logical_price_source_path(
+            feature_root,
+            feature_date,
+            environment_capability_context=environment_capability_context,
+        )
+        if historical_path is not None:
+            return historical_path
     operations_root = feature_root.parent
     return operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+
+
+def _historical_logical_price_source_path(
+    feature_root: Path,
+    feature_date: str,
+    *,
+    environment_capability_context: dict[str, Any] | None = None,
+) -> Path | None:
+    candidate_manifests: list[Path] = []
+    evidence_root = str((environment_capability_context or {}).get("runtime_test_evidence_root") or "")
+    if evidence_root:
+        candidate_manifests.append(
+            Path(evidence_root)
+            / "daily"
+            / feature_date
+            / "market_refresh"
+            / "inputs"
+            / "historical_asof"
+            / feature_date
+            / "logical_input_manifest.json"
+        )
+    candidate_manifests.append(
+        feature_root.parent
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / feature_date
+        / "logical_input_manifest.json"
+    )
+    manifest_path = next((path for path in candidate_manifests if path.exists()), None)
+    if manifest_path is None:
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return manifest_path.parent / "__invalid_historical_logical_price_source__.parquet"
+    if str(payload.get("status") or "") != "PASS":
+        return manifest_path.parent / "__blocked_historical_logical_price_source__.parquet"
+    logical_paths = payload.get("logical_paths")
+    if not isinstance(logical_paths, dict):
+        return manifest_path.parent / "__missing_historical_logical_price_source__.parquet"
+    normalized = str(logical_paths.get("normalized_ohlcv") or "")
+    return Path(normalized) if normalized else manifest_path.parent / "__missing_historical_logical_price_source__.parquet"
 
 
 def _sizing_summary(item: PendingOrderItem) -> dict[str, Any]:

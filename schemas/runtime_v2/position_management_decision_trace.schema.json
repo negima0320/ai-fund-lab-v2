@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/runtime_v2/position_management_decision_trace.schema.json",
+  "title": "Position Management Decision Trace",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "contract_version",
+    "business_date",
+    "runtime_id",
+    "feature_date",
+    "confidence_semantics",
+    "threshold_change_performed",
+    "score_formula_change_performed",
+    "decision_order_change_performed",
+    "source_artifacts",
+    "decision_count",
+    "traces"
+  ],
+  "properties": {
+    "schema_version": { "const": "position_management_decision_trace.v1" },
+    "contract_version": { "const": "runtime_v2_pm_decision_trace_contract_v1" },
+    "business_date": { "type": "string" },
+    "runtime_id": { "type": "string" },
+    "environment": { "type": "string" },
+    "feature_date": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "confidence_semantics": { "const": "selected_action_score_not_calibrated_probability" },
+    "threshold_change_performed": { "const": false },
+    "score_formula_change_performed": { "const": false },
+    "decision_order_change_performed": { "const": false },
+    "source_artifacts": {
+      "type": "object",
+      "required": ["holding_snapshot", "opportunity_context", "feature_snapshot", "inference_output", "decision_artifact"]
+    },
+    "decision_count": { "type": "integer", "minimum": 0 },
+    "traces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "contract_version",
+          "symbol",
+          "business_date",
+          "feature_business_date",
+          "price_market_date",
+          "input_authority",
+          "position_state",
+          "opportunity_risk",
+          "technical_features",
+          "score_components",
+          "trigger_booleans",
+          "decision_result"
+        ],
+        "properties": {
+          "contract_version": { "const": "runtime_v2_pm_decision_trace_contract_v1" },
+          "symbol": { "type": "string" },
+          "business_date": { "type": "string" },
+          "feature_business_date": { "type": "string" },
+          "price_market_date": { "type": "string" },
+          "input_authority": { "type": "object" },
+          "position_state": { "type": "object" },
+          "non_canonical_feature_position_state_copy": { "type": "object" },
+          "position_state_copy_mismatch": { "type": "object" },
+          "opportunity_risk": { "type": "object" },
+          "technical_features": { "type": "object" },
+          "score_components": { "type": "object" },
+          "trigger_booleans": { "type": "object" },
+          "decision_result": {
+            "type": "object",
+            "required": [
+              "decision_type",
+              "dominant_cause",
+              "decision_reason_codes",
+              "selected_action_score",
+              "confidence_semantics"
+            ],
+            "properties": {
+              "decision_type": { "enum": ["HOLD", "ADD", "REDUCE", "EXIT"] },
+              "dominant_cause": { "type": "string" },
+              "secondary_causes": { "type": "array" },
+              "decision_reason_codes": { "type": "array" },
+              "selected_action_score": { "type": "number" },
+              "confidence_semantics": { "const": "selected_action_score_not_calibrated_probability" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

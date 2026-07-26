@@ -87,6 +87,8 @@ def produce_market_quote_evidence(
     current_symbols: tuple[str, ...] = (),
     pending_symbols: tuple[str, ...] = (),
     candidate_symbols: tuple[str, ...] = (),
+    quote_source_path: Path | str | None = None,
+    source_authority: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> MarketEvidenceProducerResult:
     now_dt = now or datetime.now(timezone.utc)
@@ -114,6 +116,7 @@ def produce_market_quote_evidence(
         operations_root=operations_root_path,
         market_date=market_date,
         required_symbols=_required_symbols(current_symbols, pending_symbols),
+        quote_source_path=quote_source_path,
     )
     if temporal.status in {FreshnessStatus.DATA_NOT_YET_AVAILABLE, FreshnessStatus.STALE}:
         quotes = []
@@ -154,6 +157,10 @@ def produce_market_quote_evidence(
         publication_status=_publication_status(temporal.status),
         provider_status=provider_status,
     )
+    authority = dict(source_authority or {})
+    quote_source_authority = str(authority.get("quote_source_authority") or quote_source)
+    source_business_date = str(authority.get("source_business_date") or runtime_business_date)
+    logical_cutoff = str(authority.get("logical_cutoff") or market_date or runtime_business_date)
     payload = {
         "schema_version": MARKET_EVIDENCE_SCHEMA_VERSION,
         "runtime_business_date": runtime_business_date,
@@ -189,7 +196,17 @@ def produce_market_quote_evidence(
         "monitored_symbols": sorted(_required_symbols(current_symbols, pending_symbols)),
         "candidate_universe_symbol_count": len(set(candidate_symbols)),
         "missing_quote_symbols": sorted(missing_symbols),
+        "reason": reason,
         "quote_source": quote_source,
+        "source_role": str(authority.get("source_role") or "operations_canonical"),
+        "quote_source_authority": quote_source_authority,
+        "source_business_date": source_business_date,
+        "logical_cutoff": logical_cutoff,
+        "historical_asof_status": str(authority.get("historical_asof_status") or ""),
+        "historical_logical_input_manifest_path": str(authority.get("historical_logical_input_manifest_path") or ""),
+        "historical_logical_input_manifest_hash": str(authority.get("historical_logical_input_manifest_hash") or ""),
+        "future_rows_excluded": bool(authority.get("future_rows_excluded", False)),
+        "source_authority": authority,
         "no_feature_artifact_price_derivation": True,
         "fake_or_default_quote_generated": False,
     }
@@ -226,8 +243,9 @@ def _load_quotes(
     operations_root: Path,
     market_date: str,
     required_symbols: set[str],
+    quote_source_path: Path | str | None = None,
 ) -> tuple[list[dict[str, Any]], set[str], str]:
-    source_path = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    source_path = Path(quote_source_path) if quote_source_path else operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
     if not source_path.exists() or not market_date:
         return [], set(required_symbols), str(source_path)
     try:

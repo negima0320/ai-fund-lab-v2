@@ -1,16 +1,23 @@
 import json
 import pickle
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
+from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
     CANDIDATE_REQUIRED_COLUMNS,
     OPPORTUNITY_REQUIRED_COLUMNS,
     PM_REQUIRED_COLUMNS,
 )
+from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
+from ai_fund_lab_v2.runtime_v2.pending.reader import pending_order_plan_from_payload
+from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal
+from ai_fund_lab_v2.runtime_v2.planning.morning_pipeline import run_morning_ai_planning_pending_pipeline
+from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
 from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
 
 
@@ -75,19 +82,84 @@ def test_phase14e15_morning_job_generates_approved_pending_from_feature_inputs(t
     assert pending["intended_submit_date"] == "2026-07-08"
     assert pending["approval"]["approval_status"] == "APPROVED"
     assert pending["items"]
-    assert all(item["symbol"] != "9432" for item in pending["items"])
+    assert any(item["symbol"] == "9432" for item in pending["items"])
     assert all(item["quantity"] > 0 for item in pending["items"])
-    assert all(item["estimated_price"] != 1000.0 for item in pending["items"])
     assert all(item["price_source"] == "jquants_raw_normalized_daily_quotes_close" for item in pending["items"])
     assert all(item["price_as_of"] == "2026-07-07" for item in pending["items"])
     assert all(item["price_required"] is True for item in pending["items"])
     assert sum(item["estimated_amount"] for item in pending["items"]) <= 1_000_000
     assert morning_stage["status"] == "PASS"
     assert morning_stage["details"]["evaluation_capital"] == 1_000_000
-    assert morning_stage["details"]["demo_filtered_9000_count"] >= 1
+    assert morning_stage["details"]["demo_filtered_9000_count"] == 0
     assert morning_stage["details"]["price_source_status"] == "PASS"
     assert morning_stage["details"]["selected_price_source"] == "jquants_raw_normalized_daily_quotes_close"
     assert "7203" in morning_stage["details"]["selected_symbols"]
+
+
+def test_phase20_bs_historical_morning_uses_logical_asof_price_source(tmp_path):
+    runtime_root = _write_fixed_current(tmp_path / ".runtime")
+    business_date = "2022-09-01"
+    _rewrite_asset_state_date(runtime_root, business_date=business_date, environment="historical")
+    feature_root = _write_feature_inputs(
+        runtime_root / "operations" / "feature_artifacts",
+        candidate_codes=("9432",),
+        write_price_source=False,
+        feature_date=business_date,
+        pm_target_date=business_date,
+    )
+    materialize_feature_date_contract(runtime_root, business_date=business_date, selected_feature_date=business_date)
+    _write_safety_decision(runtime_root, business_date=business_date)
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "phase20-bs-test"
+    logical_price_path = _write_historical_logical_price_source(
+        evidence_root,
+        business_date=business_date,
+        rows=[{"Code": "9432", "Date": business_date, "Close": 150.0, "PriceSource": "historical_asof_close"}],
+    )
+    policy = _write_policy(tmp_path / "capital_deployment_policy.json")
+
+    result = run_morning_ai_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        feature_root=feature_root,
+        feature_date=business_date,
+        capital_deployment_policy_path=policy,
+        ai_signals=(
+            AIPlanningSignal(
+                signal_id="candidate-9432",
+                symbol="9432",
+                side="BUY",
+                rank=1,
+                score=0.9,
+                reason="fixture",
+                source_ai="candidate",
+            ),
+        ),
+        environment_capability_context={
+            "runtime_mode": "historical",
+            "historical_replay": True,
+            "broker_environment": "historical_simulated",
+            "simulation": True,
+            "broker_write": False,
+            "external_delivery": False,
+            "tachibana_demo_write": False,
+            "tachibana_production_write": False,
+            "submit_enabled": False,
+            "runtime_test_run_id": "phase20-bs-test",
+            "runtime_test_profile_id": "historical-extended-smoke",
+            "runtime_test_evidence_root": str(evidence_root),
+        },
+    )
+
+    pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+
+    assert result.status == "PASS"
+    assert result.price_source_path == str(logical_price_path)
+    assert result.price_missing_count == 0
+    assert result.selected_symbols == ("9432",)
+    assert pending["state"] == "APPROVED"
+    assert pending["items"][0]["price_as_of"] == business_date
+    assert pending["items"][0]["price_confidence"] == "historical_asof_close"
 
 
 def test_phase14e15_morning_job_generates_new_pending_plan_on_same_day_retry(tmp_path):
@@ -138,7 +210,7 @@ def test_phase14e15_morning_job_generates_new_pending_plan_on_same_day_retry(tmp
     )
 
 
-def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9000(tmp_path):
+def test_phase20_bp_morning_job_keeps_9000_series_in_buy_planning(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(
         tmp_path / ".runtime" / "operations" / "feature_artifacts",
@@ -188,12 +260,88 @@ def test_phase14e15_morning_job_records_no_signal_when_all_demo_candidates_are_9
     morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
 
     assert exit_code == 0
-    assert pending["state"] == "EMPTY"
-    assert pending["active_pending"] is False
-    assert pending["items"] == []
-    assert morning_stage["status"] == "NO_SIGNAL"
-    assert morning_stage["details"]["reason"] == "NO_SIGNAL:demo_capability_filtered_all_9000_series"
+    assert pending["state"] == "APPROVED"
+    assert {item["symbol"] for item in pending["items"]} == {"9432", "9501"}
+    assert morning_stage["status"] == "PASS"
+    assert morning_stage["details"]["demo_filtered_9000_count"] == 0
+    assert morning_stage["details"]["selected_symbols"] == ["9432", "9501"]
     assert manifest["prohibited_actions"]["demo_submit_executed"] is False
+
+
+def test_phase20_bp_demo_submit_guard_still_blocks_9000_series_at_broker_boundary(tmp_path):
+    runtime_root = _write_fixed_current(tmp_path / ".runtime")
+    feature_root = _write_feature_inputs(
+        tmp_path / ".runtime" / "operations" / "feature_artifacts",
+        candidate_codes=("9432",),
+    )
+    materialize_feature_date_contract(runtime_root, business_date="2026-07-08", selected_feature_date="2026-07-07")
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+
+    assert main(
+        [
+            "--mode",
+            "demo",
+            "--job",
+            "morning",
+            "--business-date",
+            "2026-07-08",
+            "--feature-date",
+            "2026-07-07",
+            "--feature-root",
+            str(feature_root),
+            "--submit-enabled",
+            "false",
+            "--notification-mode",
+            "payload-only",
+            "--runtime-root",
+            str(runtime_root),
+            "--reports-root",
+            str(tmp_path / "reports" / "runtime_v2"),
+            "--public-reports-root",
+            str(tmp_path / "reports" / "public" / "runtime_v2"),
+            "--manifest-root",
+            str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
+            "--log-root",
+            str(tmp_path / ".runtime" / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            *_buy_ai_args(tmp_path),
+        ]
+    ) == 0
+
+    pending_payload = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+    pending_plan = pending_order_plan_from_payload(pending_payload)
+    item = replace(pending_plan.items[0], order_type="MARKET")
+    pending_plan = replace(pending_plan, items=(item,))
+    approval_artifact = ApprovalArtifact(
+        approval_id="approval-phase20-bp",
+        approval_request_id=f"request-{pending_plan.pending_plan_id}",
+        pending_plan_id=pending_plan.pending_plan_id,
+        order_plan_id=pending_plan.source_order_plan.order_plan_id,
+        status=ApprovalStatus.APPROVED,
+        approved_item_ids=(item.pending_item_id,),
+        rejected_item_ids=(),
+        approval_hash=pending_plan.approval.approval_hash,
+        approved_at=pending_plan.updated_at,
+        expires_at=pending_plan.approval.approval_expires_at,
+        review_required=False,
+        reason="phase20_bp_submit_guard_probe",
+    )
+
+    result = run_submit_preflight(
+        pending_plan=pending_plan,
+        approval_artifact=approval_artifact,
+        approved_item_id=item.pending_item_id,
+        environment="demo",
+        base_url_is_demo=True,
+        base_url_is_production=False,
+        live_order_allowed=True,
+        existing_order_dedup_keys=set(),
+        broker_capability=get_broker_capability("demo"),
+    )
+
+    assert result.blocked is True
+    assert result.reason == "symbol not supported by broker capability"
 
 
 def test_phase14e28_morning_job_blocks_when_reliable_price_source_is_missing(tmp_path):
@@ -263,6 +411,7 @@ def test_phase14e29_next_planning_uses_current_cash_and_excludes_existing_positi
         candidate_codes=("72030", "65010", "67580", "99840"),
         position_codes=("7203",),
         feature_date="2026-07-08",
+        pm_target_date="2026-07-09",
     )
     materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
@@ -455,6 +604,7 @@ def _write_feature_inputs(
     position_codes: tuple[str, ...] = (),
     write_price_source: bool = True,
     feature_date: str = "2026-07-07",
+    pm_target_date: str = "2026-07-08",
 ) -> Path:
     feature_dir = root / feature_date
     feature_dir.mkdir(parents=True, exist_ok=True)
@@ -486,25 +636,37 @@ def _write_feature_inputs(
         ]
     )
     opportunity.to_parquet(feature_dir / "opportunity_feature_input.parquet", index=False)
-    pm_rows = [
-        {
-            "target_date": feature_date,
-            "position_state_as_of": "2026-07-09",
-            "entry_date": feature_date,
-            "code": code,
-            "broker_issue_code": code,
-            "holding_days": 2,
-            "average_price": 3000.0,
-            "current_price": 3000.0,
-            "unrealized_return": 0.0,
-            "quantity": 100,
-            "feature_version": "runtime_v2_pm_feature_input_fixture",
-            "data_until": feature_date,
-            "created_at": "2026-07-08T00:00:00Z",
-            "no_position_reason": "",
-        }
-        for code in position_codes
-    ]
+    if position_codes:
+        pm_rows = [
+            {
+                **{column: _feature_value(column, code=code, index=index) for column in PM_REQUIRED_COLUMNS},
+                "target_date": pm_target_date,
+                "feature_as_of_date": pm_target_date,
+                "position_state_as_of": pm_target_date,
+                "entry_date": pm_target_date,
+                "code": code,
+                "broker_issue_code": code,
+                "holding_days": 2,
+                "average_price": 3000.0,
+                "current_price": 3000.0,
+                "unrealized_return": 0.0,
+                "quantity": 100,
+                "feature_source_artifact": str(feature_dir / "position_feature_input.parquet"),
+                "feature_source_hash": "phase14e15_fixture_hash",
+                "required_features": "[]",
+                "optional_features": "[]",
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "feature_version": "runtime_v2_pm_feature_input_fixture",
+                "data_until": pm_target_date,
+                "created_at": "2026-07-08T00:00:00Z",
+                "no_position_reason": "",
+            }
+            for index, code in enumerate(position_codes)
+        ]
+    else:
+        pm_rows = [{"target_date": pm_target_date, "code": "__NO_POSITION__", "no_position_reason": "current_positions_confirmed_empty"}]
     pd.DataFrame(pm_rows, columns=[*PM_REQUIRED_COLUMNS, "no_position_reason"]).to_parquet(
         feature_dir / "position_feature_input.parquet",
         index=False,
@@ -568,6 +730,47 @@ def _fixture_price(code: str) -> float:
         "9432": 150.0,
         "9501": 800.0,
     }.get(str(code), 750.0)
+
+
+def _write_historical_logical_price_source(
+    evidence_root: Path,
+    *,
+    business_date: str,
+    rows: list[dict[str, object]],
+) -> Path:
+    input_root = evidence_root / "daily" / business_date / "market_refresh" / "inputs" / "historical_asof" / business_date
+    price_path = input_root / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    price_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(price_path, index=False)
+    _write_json(
+        input_root / "logical_input_manifest.json",
+        {
+            "schema_version": "historical_logical_input_manifest_v1",
+            "status": "PASS",
+            "reason": "fixture",
+            "business_date": business_date,
+            "input_root": str(input_root),
+            "logical_paths": {
+                "normalized_ohlcv": str(price_path),
+            },
+        },
+    )
+    return price_path
+
+
+def _rewrite_asset_state_date(runtime_root: Path, *, business_date: str, environment: str) -> None:
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update(
+        {
+            "environment": environment,
+            "as_of": business_date,
+            "business_date": business_date,
+            "position_state_as_of": business_date,
+            "updated_at": business_date,
+        }
+    )
+    _write_json(state_path, state)
 
 
 def _write_policy(path: Path) -> Path:

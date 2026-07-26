@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,14 @@ class MockFetcher:
 
     def fetch_trading_calendar(self, *, from_date: str, to_date: str):
         self.calls.append("trading_calendar")
-        return [{"Date": to_date, "HolDiv": "1"}]
+        current = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+        rows = []
+        while current <= end:
+            if current.weekday() < 5:
+                rows.append({"Date": current.isoformat(), "HolDiv": "1"})
+            current += timedelta(days=1)
+        return rows
 
 
 def test_dry_run_no_api_call_and_no_overwrite(tmp_path: Path) -> None:

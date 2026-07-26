@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,84 @@ def test_historical_environment_composition_manifest_and_boundaries() -> None:
     assert manifest["tachibana_production_write"] is False
     assert isinstance(composition.submit_adapter, HistoricalSubmitAdapter)
     assert isinstance(composition.execution_snapshot_provider, HistoricalExecutionSnapshotProvider)
+
+
+def test_historical_environment_composition_wires_logical_submit_authority_paths(tmp_path: Path) -> None:
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "run-1"
+    market_refresh_root = evidence_root / "daily" / BUSINESS_DATE / "market_refresh"
+    input_root = market_refresh_root / "inputs" / "historical_asof" / BUSINESS_DATE
+    manifest_path = input_root / "logical_input_manifest.json"
+    normalized_path = input_root / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    raw_path = input_root / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"
+    listed_path = input_root / "raw" / "jquants" / "listed_issues" / "data.parquet"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_historical_logical_input_manifest_v1",
+                "status": "PASS",
+                "business_date": BUSINESS_DATE,
+                "logical_paths": {
+                    "normalized_ohlcv": str(normalized_path),
+                    "raw_ohlcv": str(raw_path),
+                    "listed_issues": str(listed_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    composition = resolve_environment_composition(
+        mode="historical",
+        broker_environment="historical_simulated",
+        external_delivery=False,
+        broker_write=False,
+        business_date=BUSINESS_DATE,
+        evaluation_time=EVALUATION_TIME,
+        historical_asof_view_path=market_refresh_root / "historical_asof_view.json",
+    )
+
+    adapter = composition.submit_adapter
+    assert isinstance(adapter, HistoricalSubmitAdapter)
+    assert Path(adapter.ohlcv_path) == normalized_path
+    assert Path(adapter.raw_ohlcv_path) == raw_path
+    assert Path(adapter.listed_issues_path) == listed_path
+
+
+def test_historical_environment_composition_does_not_fallback_when_logical_manifest_is_invalid(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "run-1"
+    market_refresh_root = evidence_root / "daily" / BUSINESS_DATE / "market_refresh"
+    input_root = market_refresh_root / "inputs" / "historical_asof" / BUSINESS_DATE
+    manifest_path = input_root / "logical_input_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_historical_logical_input_manifest_v1",
+                "status": "HALT",
+                "business_date": BUSINESS_DATE,
+                "logical_paths": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    composition = resolve_environment_composition(
+        mode="historical",
+        broker_environment="historical_simulated",
+        external_delivery=False,
+        broker_write=False,
+        business_date=BUSINESS_DATE,
+        evaluation_time=EVALUATION_TIME,
+        historical_asof_view_path=market_refresh_root / "historical_asof_view.json",
+    )
+
+    adapter = composition.submit_adapter
+    assert isinstance(adapter, HistoricalSubmitAdapter)
+    assert "__missing_historical_logical_authority__" in str(adapter.raw_ohlcv_path)
+    assert "operations/jquants/raw" not in str(adapter.raw_ohlcv_path)
 
 
 @pytest.mark.parametrize(

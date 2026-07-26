@@ -21,6 +21,10 @@ import pandas as pd
 from ai_fund_lab_v2.position_management_ai.inference import (
     FEATURE_VERSION,
     MODEL_VERSION,
+    build_position_feature_frame,
+    calculate_opportunity_continuation_score,
+    calculate_position_risk_score,
+    calculate_trend_continuation_score,
     run_position_management_inference,
 )
 from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
@@ -39,6 +43,8 @@ INFERENCE_VERSION = "position_management_ai_phase6a_regular_path_v1"
 PM_INPUT_SCHEMA_VERSION = "runtime_v2_pm_input_v2"
 PM_FEATURE_CONTRACT_VERSION = "runtime_v2_pm_feature_input_contract_v2"
 PM_REDUCE_INTENSITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_intensity_v1"
+PM_DECISION_TRACE_CONTRACT_VERSION = "runtime_v2_pm_decision_trace_contract_v1"
+PM_CONFIDENCE_SEMANTICS = "selected_action_score_not_calibrated_probability"
 CURRENT_REQUIRED_FIELDS = ("symbol", "quantity", "as_of", "source", "average_price")
 PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS = (
     "price_momentum_return_5d",
@@ -292,7 +298,29 @@ def produce_position_management_decisions(
         inference_run_id=runtime_id,
     )
     output = inference.output
-    decisions = tuple(_decision_payload(row, current=current, generated_at=generated_at) for row in output.to_dict("records"))
+    trace_records = _build_decision_trace_records(
+        holding=holding,
+        feature_path=resolved_pm_feature_path,
+        inference_output=output,
+        business_date=business_date,
+        feature_date=resolved_feature_date,
+        generated_at=generated_at,
+        holding_path=holding_path,
+        context_opportunity_path=pm_opportunity_context_path,
+        input_opportunity_path=resolved_opportunity_path,
+        contract=contract,
+    )
+    trace_by_symbol = {str(item.get("symbol") or ""): item for item in trace_records}
+    trace_path = artifact_dir / "position_management_decision_trace.json"
+    decisions = tuple(
+        _decision_payload(
+            row,
+            current=current,
+            generated_at=generated_at,
+            decision_trace=trace_by_symbol.get(str(row.get("code") or "")),
+        )
+        for row in output.to_dict("records")
+    )
     status = "PASS" if str(inference.summary.get("status") or "") == "OK" else "REVIEW_REQUIRED"
     reason = "" if status == "PASS" else str(inference.summary.get("readiness_status") or "position_management_inference_not_ready")
     payload = _artifact_payload(
@@ -312,6 +340,23 @@ def produce_position_management_decisions(
         reason=reason,
         decisions=decisions,
         input_contract=contract,
+        decision_trace_path=trace_path,
+    )
+    _write_json(
+        trace_path,
+        _decision_trace_artifact_payload(
+            business_date=business_date,
+            runtime_id=runtime_id,
+            mode=mode,
+            feature_date=resolved_feature_date,
+            generated_at=generated_at,
+            holding_path=holding_path,
+            opportunity_path=pm_opportunity_context_path,
+            feature_path=resolved_pm_feature_path,
+            inference_output_path=artifact_dir / "position_management_inference.parquet",
+            decision_artifact_path=artifact_path,
+            trace_records=trace_records,
+        ),
     )
     _write_json(artifact_path, payload)
     return _result_from_payload(
@@ -520,7 +565,13 @@ def _holding_frame_from_current(
     return pd.DataFrame(rows)
 
 
-def _decision_payload(row: dict[str, Any], *, current: dict[str, Any], generated_at: str) -> dict[str, Any]:
+def _decision_payload(
+    row: dict[str, Any],
+    *,
+    current: dict[str, Any],
+    generated_at: str,
+    decision_trace: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     symbol = str(row.get("code") or "")
     decision = str(row.get("action") or "HOLD").upper()
     position_quantity = _current_quantity(current, symbol)
@@ -544,6 +595,8 @@ def _decision_payload(row: dict[str, Any], *, current: dict[str, Any], generated
     if decision == "ADD":
         runtime_action = "NO_SELL_ORDER_ADD_OUT_OF_SELL_SCOPE"
         reason = reason + "; ADD is outside SELL Planning scope"
+    trace = dict(decision_trace or {})
+    decision_reason_codes = list(trace.get("decision_reason_codes") or _reason_codes(reason))
     return {
         "decision_id": f"pm-{str(row.get('target_date') or '')}-{symbol}-{decision.lower()}",
         "business_date": str(row.get("target_date") or ""),
@@ -551,10 +604,18 @@ def _decision_payload(row: dict[str, Any], *, current: dict[str, Any], generated
         "decision": decision,
         "reason": reason,
         "confidence": confidence,
+        "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
+        "action_score": confidence,
         "hold_score": _float(row.get("hold_score")),
         "exit_score": _float(row.get("exit_score")),
         "add_score": _float(row.get("add_score")),
         "reduce_score": _float(row.get("reduce_score")),
+        "selected_action_score": confidence,
+        "decision_reason_codes": decision_reason_codes,
+        "dominant_cause": str(trace.get("dominant_cause") or ""),
+        "secondary_causes": list(trace.get("secondary_causes") or []),
+        "decision_trace_contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+        "decision_trace": trace,
         "continue_holding": bool(row.get("continue_holding")),
         "exit_candidate": bool(row.get("exit_candidate")),
         "reduce_candidate": bool(row.get("reduce_candidate")),
@@ -587,6 +648,334 @@ def _reduce_intensity(*, row: dict[str, Any], reason: str) -> str:
     return "LIGHT"
 
 
+def _build_decision_trace_records(
+    *,
+    holding: pd.DataFrame,
+    context_opportunity_path: Path,
+    feature_path: Path,
+    inference_output: pd.DataFrame,
+    business_date: str,
+    feature_date: str,
+    generated_at: str,
+    holding_path: Path,
+    input_opportunity_path: Path,
+    contract: dict[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    if inference_output.empty:
+        return ()
+    opportunity = _read_table(context_opportunity_path)
+    feature = _read_table(feature_path)
+    frame = build_position_feature_frame(holding_frame=holding, opportunity_frame=opportunity, feature_frame=feature)
+    if frame.empty:
+        return ()
+    scored = _trace_scored_frame(frame)
+    feature_copies = _feature_position_state_copies(feature, feature_date=feature_date)
+    records: list[dict[str, Any]] = []
+    output_rows = inference_output.copy()
+    output_rows["code"] = output_rows["code"].astype(str)
+    scored["code"] = scored["code"].astype(str)
+    scored_by_symbol = {str(row.get("code") or ""): row for row in scored.to_dict("records")}
+    for row in output_rows.to_dict("records"):
+        symbol = str(row.get("code") or "")
+        scored_row = dict(scored_by_symbol.get(symbol) or {})
+        if not scored_row:
+            continue
+        decision_type = str(row.get("action") or "HOLD").upper()
+        score_components = {
+            "trend_score": _float(scored_row.get("trend_score")),
+            "opportunity_score": _float(scored_row.get("opportunity_score")),
+            "profit_score": _float(scored_row.get("profit_score")),
+            "risk_penalty": _float(scored_row.get("risk_penalty")),
+            "hold_score": _float(row.get("hold_score")),
+            "exit_score": _float(row.get("exit_score")),
+            "reduce_score": _float(row.get("reduce_score")),
+            "add_score": _float(row.get("add_score")),
+        }
+        triggers = _decision_trigger_booleans(scored_row=scored_row, scores=score_components, decision_type=decision_type)
+        dominant_cause, secondary_causes = _dominant_cause(decision_type=decision_type, triggers=triggers)
+        reason = str(row.get("exit_reason") or row.get("action_reason") or decision_type)
+        feature_copy = dict(feature_copies.get(symbol) or {})
+        records.append(
+            {
+                "contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+                "symbol": symbol,
+                "business_date": business_date,
+                "feature_business_date": feature_date,
+                "price_market_date": str(contract.get("pm_valuation_as_of") or contract.get("pm_current_as_of") or business_date),
+                "generation_id": str(row.get("created_at") or generated_at),
+                "input_authority": {
+                    "holding_snapshot_ref": str(holding_path),
+                    "feature_snapshot_ref": str(feature_path),
+                    "opportunity_context_ref": str(context_opportunity_path),
+                    "source_opportunity_ref": str(input_opportunity_path),
+                    "current_source_ref": str(contract.get("pm_current_source") or ""),
+                    "position_state_authority": "current_holdings_snapshot_csv_derived_from_runtime_current",
+                    "technical_feature_authority": "position_feature_input_artifact",
+                    "opportunity_authority": "position_management_opportunity_context",
+                    "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
+                },
+                "position_state": {
+                    "quantity": _float(scored_row.get("position_size")),
+                    "average_price": _float(scored_row.get("entry_price")),
+                    "current_price": _float(scored_row.get("current_price")),
+                    "current_return": _float(scored_row.get("current_return")),
+                    "peak_return": _float(scored_row.get("peak_return")),
+                    "drawdown_from_peak": _float(scored_row.get("drawdown_from_peak")),
+                    "market_value": _float(_float(scored_row.get("position_size")) * _float(scored_row.get("current_price"))),
+                    "unrealized_pnl": _float((_float(scored_row.get("current_price")) - _float(scored_row.get("entry_price"))) * _float(scored_row.get("position_size"))),
+                    "holding_days": int(_float(scored_row.get("holding_days"))),
+                },
+                "non_canonical_feature_position_state_copy": feature_copy,
+                "position_state_copy_mismatch": _position_state_copy_mismatch(scored_row=scored_row, feature_copy=feature_copy),
+                "opportunity_risk": {
+                    "expected_edge_score": _float(scored_row.get("expected_edge_score")),
+                    "buy_rank": int(_float(scored_row.get("buy_rank"))),
+                    "downside_risk_score": _float(scored_row.get("downside_risk_score")),
+                    "risk_guard_status": str(scored_row.get("risk_guard_status") or ""),
+                },
+                "technical_features": {
+                    column: _float(scored_row.get(f"feature__{column}"))
+                    for column in PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS
+                },
+                "score_components": score_components,
+                "trigger_booleans": triggers,
+                "decision_result": {
+                    "decision_type": decision_type,
+                    "dominant_cause": dominant_cause,
+                    "secondary_causes": secondary_causes,
+                    "decision_reason_codes": _reason_codes(reason),
+                    "legacy_reason": reason,
+                    "selected_action_score": _confidence(row, decision_type),
+                    "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
+                },
+                "decision_type": decision_type,
+                "dominant_cause": dominant_cause,
+                "secondary_causes": secondary_causes,
+                "decision_reason_codes": _reason_codes(reason),
+            }
+        )
+    return tuple(records)
+
+
+def _trace_scored_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    scored = frame.copy()
+    scored["current_return"] = pd.to_numeric(scored.get("current_return"), errors="coerce").fillna(0.0).map(_float)
+    scored["peak_return"] = pd.to_numeric(scored.get("peak_return", scored["current_return"]), errors="coerce").fillna(scored["current_return"])
+    scored["drawdown_from_peak"] = (scored["current_return"] - scored["peak_return"]).map(_float)
+    scored["downside_risk_score"] = pd.to_numeric(scored.get("downside_risk_score"), errors="coerce").fillna(0.50).clip(0.0, 1.0)
+    scored["expected_edge_score"] = pd.to_numeric(scored.get("expected_edge_score"), errors="coerce").fillna(0.0)
+    scored["buy_rank"] = pd.to_numeric(scored.get("buy_rank"), errors="coerce").fillna(999).astype(int)
+    scored["position_size"] = pd.to_numeric(scored.get("position_size"), errors="coerce").fillna(0.0)
+    scored["holding_days"] = pd.to_numeric(scored.get("holding_days"), errors="coerce").fillna(0).astype(int)
+    scored["trend_score"] = calculate_trend_continuation_score(scored).map(_float)
+    scored["opportunity_score"] = calculate_opportunity_continuation_score(scored).map(_float)
+    scored["profit_score"] = (((scored["current_return"] + 0.08) / 0.28).clip(0.0, 1.0)).map(_float)
+    scored["risk_penalty"] = calculate_position_risk_score(scored).map(_float)
+    return scored
+
+
+def _decision_trigger_booleans(*, scored_row: dict[str, Any], scores: dict[str, Any], decision_type: str) -> dict[str, bool]:
+    current_return = _float(scored_row.get("current_return"))
+    drawdown = _float(scored_row.get("drawdown_from_peak"))
+    trend_score = _float(scores.get("trend_score"))
+    expected_edge = _float(scored_row.get("expected_edge_score"))
+    downside = _float(scored_row.get("downside_risk_score"))
+    risk_guard_status = str(scored_row.get("risk_guard_status") or "").lower()
+    exit_score = _float(scores.get("exit_score"))
+    reduce_score = _float(scores.get("reduce_score"))
+    hold_score = _float(scores.get("hold_score"))
+    add_score = _float(scores.get("add_score"))
+    buy_rank = int(_float(scored_row.get("buy_rank")))
+    triggers = {
+        "hard_stop_current_return": current_return <= -0.08,
+        "profit_retention_break": drawdown <= -0.12,
+        "trend_and_opportunity_broken": trend_score < 0.30 and expected_edge <= 0.0,
+        "risk_guard_status_bad": risk_guard_status in {"bad", "ng", "blocked", "risk_bad", "high_risk"},
+        "exit_score_high": exit_score >= 0.80,
+        "high_downside_risk": downside >= 0.75,
+        "peak_drawdown_warning": drawdown <= -0.07,
+        "reduce_score_threshold": reduce_score >= 0.62,
+        "weak_hold_score_threshold": hold_score < 0.42,
+        "trend_or_opportunity_alive": trend_score >= 0.35 or expected_edge > 0.0,
+        "strong_trend_continuation": add_score >= 0.72,
+        "opportunity_rank_still_high": buy_rank <= 5,
+        "no_loss_averaging": current_return > 0.0,
+        "add_downside_risk_contained": downside < 0.50,
+        "trend_continuation": trend_score >= 0.50,
+        "positive_expected_edge": expected_edge > 0.0,
+        "downside_risk_contained": downside < 0.50,
+    }
+    reduction_branch = (
+        downside >= 0.65
+        or drawdown <= -0.07
+        or reduce_score >= 0.62
+        or hold_score < 0.42
+    )
+    base_exit = (
+        triggers["hard_stop_current_return"]
+        or triggers["profit_retention_break"]
+        or triggers["trend_and_opportunity_broken"]
+        or triggers["risk_guard_status_bad"]
+        or triggers["exit_score_high"]
+    )
+    triggers["weak_hold_score"] = bool(reduction_branch and not triggers["trend_or_opportunity_alive"] and not base_exit)
+    triggers["fallback_hold"] = bool(
+        decision_type == "HOLD"
+        and not (
+            triggers["trend_continuation"]
+            or triggers["positive_expected_edge"]
+            or triggers["downside_risk_contained"]
+        )
+    )
+    return triggers
+
+
+def _dominant_cause(*, decision_type: str, triggers: dict[str, bool]) -> tuple[str, list[str]]:
+    if decision_type == "EXIT":
+        ordered = (
+            ("hard_stop_current_return", "EXIT_BY_HARD_STOP"),
+            ("profit_retention_break", "EXIT_BY_PEAK_DRAWDOWN"),
+            ("trend_and_opportunity_broken", "EXIT_BY_TREND_AND_EDGE_BREAK"),
+            ("risk_guard_status_bad", "EXIT_BY_RISK_GUARD"),
+            ("exit_score_high", "EXIT_BY_EXIT_SCORE_HIGH"),
+            ("weak_hold_score", "EXIT_BY_WEAK_HOLD_SCORE"),
+        )
+        default = "EXIT_BY_UNCLASSIFIED"
+    elif decision_type == "REDUCE":
+        ordered = (
+            ("high_downside_risk", "REDUCE_BY_HIGH_DOWNSIDE_RISK"),
+            ("peak_drawdown_warning", "REDUCE_BY_PEAK_DRAWDOWN_WARNING"),
+            ("reduce_score_threshold", "REDUCE_BY_REDUCE_SCORE_THRESHOLD"),
+            ("weak_hold_score_threshold", "REDUCE_BY_WEAK_HOLD_SCORE"),
+        )
+        default = "REDUCE_BY_RISK_INCREASED_BUT_TREND_NOT_BROKEN"
+    elif decision_type == "ADD":
+        return "ADD_BY_STRONG_TREND_AND_RANK", []
+    elif decision_type == "HOLD":
+        if triggers.get("fallback_hold"):
+            return "HOLD_BY_FALLBACK", []
+        if triggers.get("trend_continuation") and triggers.get("positive_expected_edge") and triggers.get("downside_risk_contained"):
+            return "HOLD_BY_STRONG_CONTINUATION", []
+        return "HOLD_BY_PARTIAL_CONTINUATION", []
+    else:
+        return f"{decision_type}_UNCLASSIFIED", []
+    primary = next((label for trigger, label in ordered if triggers.get(trigger)), default)
+    secondary = [label for trigger, label in ordered if triggers.get(trigger) and label != primary]
+    return primary, secondary
+
+
+def _feature_position_state_copies(feature: pd.DataFrame, *, feature_date: str) -> dict[str, dict[str, Any]]:
+    if feature.empty or "code" not in feature.columns:
+        return {}
+    frame = feature.copy()
+    if "target_date" in frame.columns:
+        frame = frame[frame["target_date"].astype(str) == feature_date]
+    copies: dict[str, dict[str, Any]] = {}
+    fields = (
+        "average_price",
+        "current_price",
+        "current_return",
+        "unrealized_return",
+        "quantity",
+        "market_value",
+        "holding_days",
+        "peak_return",
+        "position_state_as_of",
+        "feature_as_of_date",
+        "data_until",
+    )
+    for row in frame.to_dict("records"):
+        symbol = str(row.get("broker_issue_code") or row.get("code") or "").strip()
+        if not symbol:
+            continue
+        copies[symbol] = {field: _json_scalar(row.get(field)) for field in fields if field in row}
+    return copies
+
+
+def _position_state_copy_mismatch(*, scored_row: dict[str, Any], feature_copy: dict[str, Any]) -> dict[str, Any]:
+    comparisons = {
+        "average_price": ("entry_price", "average_price"),
+        "current_price": ("current_price", "current_price"),
+        "current_return": ("current_return", "current_return"),
+        "quantity": ("position_size", "quantity"),
+        "holding_days": ("holding_days", "holding_days"),
+        "peak_return": ("peak_return", "peak_return"),
+    }
+    mismatches: list[str] = []
+    values: dict[str, dict[str, Any]] = {}
+    for name, (canonical_field, copy_field) in comparisons.items():
+        if copy_field not in feature_copy:
+            continue
+        canonical = _float(scored_row.get(canonical_field))
+        copied = _float(feature_copy.get(copy_field))
+        values[name] = {"canonical": canonical, "feature_copy": copied}
+        if abs(canonical - copied) > 1e-8:
+            mismatches.append(name)
+    return {
+        "status": "MISMATCH" if mismatches else "MATCH" if values else "NO_FEATURE_POSITION_COPY",
+        "mismatched_fields": mismatches,
+        "compared_values": values,
+        "canonical_authority": "current_holdings_snapshot_csv",
+        "feature_copy_semantics": "non_canonical_observability_copy_not_used_for_pm_position_state_scoring",
+    }
+
+
+def _decision_trace_artifact_payload(
+    *,
+    business_date: str,
+    runtime_id: str,
+    mode: str,
+    feature_date: str,
+    generated_at: str,
+    holding_path: Path,
+    opportunity_path: Path,
+    feature_path: Path,
+    inference_output_path: Path,
+    decision_artifact_path: Path,
+    trace_records: tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "position_management_decision_trace.v1",
+        "contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+        "business_date": business_date,
+        "runtime_id": runtime_id,
+        "environment": mode,
+        "feature_date": feature_date,
+        "generated_at": generated_at,
+        "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
+        "threshold_change_performed": False,
+        "score_formula_change_performed": False,
+        "decision_order_change_performed": False,
+        "source_artifacts": {
+            "holding_snapshot": str(holding_path),
+            "opportunity_context": str(opportunity_path),
+            "feature_snapshot": str(feature_path),
+            "inference_output": str(inference_output_path),
+            "decision_artifact": str(decision_artifact_path),
+        },
+        "decision_count": len(trace_records),
+        "traces": list(trace_records),
+    }
+
+
+def _reason_codes(reason: str) -> list[str]:
+    normalized = str(reason or "").replace(";", "|")
+    return [part.strip() for part in normalized.split("|") if part.strip()]
+
+
+def _json_scalar(value: Any) -> Any:
+    if value in (None, ""):
+        return None if value is None else ""
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    if isinstance(value, (int, float, str, bool)):
+        return value
+    return str(value)
+
+
 def _artifact_payload(
     *,
     business_date: str,
@@ -605,6 +994,7 @@ def _artifact_payload(
     reason: str,
     decisions: tuple[dict[str, Any], ...],
     input_contract: dict[str, Any] | None = None,
+    decision_trace_path: Path | None = None,
 ) -> dict[str, Any]:
     counts = _counts(decisions)
     contract = dict(input_contract or {})
@@ -648,6 +1038,9 @@ def _artifact_payload(
         "action_csv_path": str(action_csv_path),
         "summary_path": str(summary_path),
         "audit_path": str(audit_path),
+        "decision_trace_contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+        "decision_trace_path": str(decision_trace_path or ""),
+        "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
         "decision_count": len(decisions),
         "exit_count": counts["EXIT"],
         "hold_count": counts["HOLD"],

@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import (
-    BrokerCapability,
-    is_symbol_allowed_by_capability,
-)
+from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import BrokerCapability
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.planning.models import OrderPlan, PlanningResult
@@ -42,32 +39,13 @@ def order_plan_to_pending_items_with_capability(
     order_plan: OrderPlan,
     capability: BrokerCapability,
 ) -> tuple[PendingOrderItem, ...]:
-    """Convert order plan items after applying broker capability guards."""
+    """Convert order plan items without changing the investment decision.
 
-    return tuple(
-        PendingOrderItem(
-            pending_item_id=item.order_plan_item_id,
-            symbol=item.symbol,
-            side=item.side,
-            quantity=item.quantity,
-            order_type="PLACEHOLDER",
-            estimated_price=item.estimated_price,
-            estimated_amount=item.estimated_amount,
-            approved=False,
-            state=item.status.value,
-            price_source=item.price_source,
-            price_as_of=item.price_as_of,
-            price_confidence=item.price_confidence,
-            price_required=item.price_required,
-            safety_decision_id=item.safety_decision_id,
-            safety_policy_version=item.safety_policy_version,
-            safety_source=item.safety_source,
-            safety_decision=item.safety_decision,
-            safety_reason=item.safety_reason,
-        )
-        for item in order_plan.items
-        if not item.blocked and is_symbol_allowed_by_capability(item.symbol, capability)
-    )
+    Broker capability is enforced by Submit Guard at the broker boundary.
+    """
+
+    _ = capability
+    return order_plan_to_pending_items(order_plan)
 
 
 def promote_order_plan_result_to_pending(

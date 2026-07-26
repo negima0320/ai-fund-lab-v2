@@ -186,6 +186,72 @@ def test_phase15aw_missing_monitored_quote_requires_review(tmp_path):
     assert payload["missing_quote_symbols"] == ["9999"]
 
 
+def test_phase20_bl_historical_quote_source_override_uses_resolver_logical_input(tmp_path):
+    runtime_root, operations_root = _roots(tmp_path)
+    operations_source = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    operations_source.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"target_date": "2026-07-10", "code": "9999", "close": 1.0}]).to_parquet(operations_source, index=False)
+    logical_source = tmp_path / "run" / "inputs" / "historical_asof" / "2022-08-01" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    logical_source.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": "2022-08-01", "Code": "72030", "Close": 1000.0}]).to_parquet(logical_source, index=False)
+
+    result = produce_market_quote_evidence(
+        runtime_root=runtime_root,
+        operations_root=operations_root,
+        runtime_business_date="2022-08-01",
+        latest_available_market_date="2022-08-01",
+        mode="historical",
+        quote_source_path=logical_source,
+        source_authority={
+            "runtime_mode": "historical",
+            "source_role": "acquisition_staging",
+            "quote_source_authority": "physical/acquisition/data.parquet",
+            "logical_cutoff": "2022-08-01",
+            "source_business_date": "2022-08-01",
+            "historical_asof_status": "PASS",
+            "historical_logical_input_manifest_path": "logical_input_manifest.json",
+            "historical_logical_input_manifest_hash": "sha256",
+            "future_rows_excluded": True,
+        },
+        now=datetime(2022, 8, 1, 9, 0, tzinfo=JST),
+    )
+    payload = _load_json(Path(result.artifact_path))
+
+    assert result.status == "READY"
+    assert result.quote_count == 1
+    assert payload["quote_source"] == str(logical_source)
+    assert payload["source_role"] == "acquisition_staging"
+    assert payload["quote_source_authority"] == "physical/acquisition/data.parquet"
+    assert payload["logical_cutoff"] == "2022-08-01"
+    assert payload["historical_asof_status"] == "PASS"
+    assert payload["future_rows_excluded"] is True
+
+
+def test_phase20_bl_review_required_market_artifact_is_not_reported_missing(tmp_path):
+    runtime_root, _ = _roots(tmp_path)
+    _write_json(
+        runtime_root / "runtime_state" / "market" / BUSINESS_DATE / "market_evidence.json",
+        {
+            "schema_version": "runtime_v2_market_evidence_v1",
+            "runtime_business_date": BUSINESS_DATE,
+            "business_date": BUSINESS_DATE,
+            "market_date": BUSINESS_DATE,
+            "market_status": "REVIEW_REQUIRED",
+            "market_freshness_status": "READY",
+            "quote_status": "NOT_REQUIRED",
+            "reason": "quote_source_empty",
+            "market_summary": {"quote_count": 0},
+        },
+    )
+
+    payload = _market_readiness_payload(root=runtime_root, business_date=BUSINESS_DATE, market_open=True, override=False)
+
+    assert payload["status"] == "REVIEW_REQUIRED"
+    assert payload["reason"] == "quote_source_empty"
+    assert payload["quote_reason"] == "quote_source_empty"
+    assert payload["missing_evidence"] == []
+
+
 def test_phase15aw_runtime_business_date_and_market_date_are_separate(tmp_path):
     runtime_root, operations_root = _roots(tmp_path)
     _write_daily_quotes(operations_root, "2026-07-09", symbols=("7203",))

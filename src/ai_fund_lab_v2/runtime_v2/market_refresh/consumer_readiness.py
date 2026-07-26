@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd
 
+from ai_fund_lab_v2.runtime_v2.current_position_authority import resolve_current_position_authority
+
 
 CANONICAL_SCHEMA_VERSION = "runtime_v2_feature_contract_v2"
 
@@ -370,12 +372,14 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         )
     frame = pd.read_parquet(artifact_path)
     columns = tuple(str(column) for column in frame.columns)
-    current_authority = _current_authority(runtime_root)
+    feature_target_date = _feature_target_date(frame) or artifact_path.parent.name
+    current_authority = _current_authority(runtime_root, target_data_until=feature_target_date)
     current_position_count = int(current_authority.get("current_position_count") or 0)
     has_no_position_reason = "no_position_reason" in columns
     required_columns = PM_REQUIRED_COLUMNS if current_position_count > 0 else ("target_date", "code")
     missing = tuple(column for column in required_columns if column not in columns)
-    if current_authority.get("current_authority_status") != "READY":
+    authority_status = str(current_authority.get("current_authority_status") or "")
+    if authority_status not in {"READY", "READY_EMPTY"}:
         status = "REVIEW_REQUIRED"
         reason = str(current_authority.get("reason") or "current_authority_not_ready")
     elif current_position_count > 0 and len(frame) == 0:
@@ -392,8 +396,7 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         reason = "required_pm_feature_columns_missing"
     else:
         status = "READY"
-        reason = "consumer_schema_ready"
-    feature_target_date = _feature_target_date(frame)
+        reason = "consumer_schema_ready_empty_position" if authority_status == "READY_EMPTY" and current_position_count == 0 else "consumer_schema_ready"
     position_state_as_of = str(current_authority.get("current_position_state_as_of") or "")
     no_fill_carry_used = bool(position_state_as_of and feature_target_date and position_state_as_of < feature_target_date)
     return ConsumerSchemaResult(
@@ -408,60 +411,27 @@ def _validate_pm_feature(*, artifact_path: Path, runtime_root: Path) -> Consumer
         reason=reason,
         evidence={
             **current_authority,
-            "feature_target_date": _feature_target_date(frame),
+            "feature_target_date": feature_target_date,
             "input_symbol_count": current_position_count,
             "matched_symbol_count": int(len(frame)),
             "unmatched_symbols": [],
             "output_row_count": int(len(frame)),
             "no_fill_carry_used": no_fill_carry_used,
+            "position_feature_status": "READY_EMPTY" if authority_status == "READY_EMPTY" and int(len(frame)) == 0 else "FEATURES_READY",
+            "position_feature_reason": "current_positions_confirmed_empty" if authority_status == "READY_EMPTY" and int(len(frame)) == 0 else "position_feature_ready",
+            "pm_consumer_status": "NOT_REQUIRED" if authority_status == "READY_EMPTY" and current_position_count == 0 else status,
+            "pm_inference_required": not (authority_status == "READY_EMPTY" and current_position_count == 0),
+            "runtime_continuation_status": "PASS" if status == "READY" else "REVIEW_REQUIRED",
             "reason": reason,
         },
     )
 
 
-def _current_authority(runtime_root: Path) -> dict[str, Any]:
-    runtime_state_path = runtime_root / "runtime_state" / "current_state.json"
-    runtime_state = _read_json_or_empty(runtime_state_path)
-    source = str(runtime_state.get("asset_state_source") or "persistent_ledger/state.json").strip()
-    source_path = Path(source) if source else Path("persistent_ledger/state.json")
-    current_path = source_path if source_path.is_absolute() else runtime_root / source_path
-    if not current_path.is_file():
-        return {
-            "current_authority_status": "MISSING",
-            "current_authority_path": str(current_path),
-            "current_position_count": 0,
-            "current_position_state_as_of": "",
-            "no_fill_carry_used": False,
-            "reason": "current_authority_missing_asset_sot",
-        }
-    payload = _read_json_or_empty(current_path)
-    positions = payload.get("positions")
-    if payload.get("current_positions_unknown") is True or not isinstance(positions, list):
-        return {
-            "current_authority_status": "UNKNOWN",
-            "current_authority_path": str(current_path),
-            "current_position_count": 0,
-            "current_position_state_as_of": "",
-            "no_fill_carry_used": False,
-            "reason": "current_positions_unknown",
-        }
-    position_state_as_of = str(payload.get("position_state_as_of") or payload.get("business_date") or payload.get("as_of") or "")
-    if not positions and payload.get("current_state_confirmed_empty") is not True:
-        return {
-            "current_authority_status": "UNKNOWN",
-            "current_authority_path": str(current_path),
-            "current_position_count": 0,
-            "current_position_state_as_of": position_state_as_of[:10],
-            "no_fill_carry_used": False,
-            "reason": "current_positions_unknown",
-        }
+def _current_authority(runtime_root: Path, *, target_data_until: str) -> dict[str, Any]:
+    authority = resolve_current_position_authority(runtime_root=runtime_root, target_data_until=target_data_until)
     return {
-        "current_authority_status": "READY",
-        "current_authority_path": str(current_path),
-        "current_position_count": len(positions),
-        "current_position_state_as_of": position_state_as_of[:10],
-        "no_fill_carry_used": False,
-        "reason": "current_authority_ready",
+        **authority,
+        "reason": "current_authority_ready_empty" if authority["status"] == "READY_EMPTY" else authority["reason"],
     }
 
 

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/runtime_test/runtime_fill_observability.schema.json",
+  "title": "Runtime Test Fill Observability",
+  "type": "object",
+  "required": ["schema_version", "run_id", "business_date", "authority", "generated_at", "source_artifacts", "temporal_safety", "fills"],
+  "properties": {
+    "schema_version": { "const": "runtime_fill_observability.v1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "minLength": 1 },
+    "authority": { "type": "string" },
+    "contract_version": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "source_artifacts": { "type": "object" },
+    "temporal_safety": { "type": "object" },
+    "fills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "business_date", "position_campaign_id", "symbol", "side", "execution_id", "quantity", "execution_price", "gross_notional", "fees", "tax", "slippage", "cash_effect", "source_decision_type", "source_decision_id"],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

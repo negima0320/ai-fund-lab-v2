@@ -65,6 +65,10 @@ Required fields:
 - `rounded_reduce_quantity`
 - `final_sell_quantity`
 - `expected_remaining_quantity`
+- `execution_feasibility_status`
+- `effective_action`
+- `pending_order_generated`
+- `runtime_continuation_status`
 - `status`
 - `reason`
 
@@ -80,15 +84,35 @@ expected_remaining_quantity = position_quantity_before - final_sell_quantity
 
 Default tradable unit is `100` shares. The rounding policy is floor-to-tradable-unit. `REDUCE` must leave a remaining position; it must not implicitly escalate into `EXIT`.
 
+## Non-executable Minimum Tradable Quantity
+
+When a valid `REDUCE` decision has known Current quantity, known tradable unit, known reduce intensity, and deterministic rounding produces zero executable quantity, Sell Planning must preserve the original PM `REDUCE` decision but generate no SELL order.
+
+This is not a silent `HOLD`, not an implicit `EXIT`, and not a 0-share order. It is an execution-feasibility result:
+
+```text
+status = NOT_EXECUTABLE
+reason = REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY
+execution_feasibility_status = NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY
+final_sell_quantity = 0
+rounded_executable_quantity = 0
+effective_action = NO_SELL_ORDER
+pending_order_generated = false
+position_quantity_after = position_quantity_before
+runtime_continuation_status = PASS
+position_lifecycle_event = REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY
+```
+
+Sell Planning writes this evidence to the no-action Order Plan and Pending Plan under `non_executable_sell_decisions`. The Pending Plan remains empty and inactive. Position Campaign remains open and no realized slice or execution event is created.
+
 ## Fail-Closed Conditions
 
-Sell Planning must stop with `REVIEW_REQUIRED` instead of silently changing PM intent when:
+Sell Planning must stop with `REVIEW_REQUIRED` instead of silently changing PM intent when quantity authority or calculation safety is uncertain:
 
 - Current position is missing or zero.
 - Trading unit is unknown or invalid.
 - Reduce intensity is unknown.
-- Sellable quantity is below the tradable unit.
-- Rounded quantity is zero.
+- Sellable quantity is negative or authority is ambiguous.
 - Final sell quantity is greater than or equal to the current position quantity.
 - Minimum remaining quantity would be violated.
 - A same-symbol active pending SELL conflict exists.
@@ -98,9 +122,7 @@ Representative reasons:
 - `REVIEW_REQUIRED_REDUCE_CURRENT_POSITION_MISSING`
 - `REVIEW_REQUIRED_REDUCE_TRADABLE_UNIT_UNKNOWN`
 - `REVIEW_REQUIRED_REDUCE_INTENSITY_UNKNOWN`
-- `REVIEW_REQUIRED_REDUCE_SELLABLE_QUANTITY_BELOW_TRADABLE_UNIT`
-- `REVIEW_REQUIRED_REDUCE_NOT_EXECUTABLE_AT_TRADABLE_UNIT`
-- `REVIEW_REQUIRED_REDUCE_ROUNDED_QUANTITY_ZERO`
+- `REVIEW_REQUIRED_REDUCE_SELLABLE_QUANTITY_NEGATIVE`
 - `REVIEW_REQUIRED_REDUCE_QUANTITY_EXCEEDS_OR_EQUALS_POSITION`
 - `REVIEW_REQUIRED_REDUCE_MINIMUM_REMAINING_QUANTITY_VIOLATION`
 - `REVIEW_REQUIRED_REDUCE_PENDING_SELL_CONFLICT:<symbols>`
@@ -128,4 +150,3 @@ This cap prevents a known broker-available preflight failure while preserving Su
 The same Position Management producer, Sell Planning pipeline, Order Plan model, Pending model, Pending reader, Submit Guard, Execution read-only pipeline, Ledger projection, and Current refresh path are used by Historical, Demo, and Production. Historical uses `historical_simulated_broker_authority` to emulate broker available quantity from Runtime-owned Current and open SELL order ledger. Demo and Production use broker read-only available quantity snapshots when available, falling back to Current with Submit Guard as final authority when no snapshot exists.
 
 Historical open SELL order evidence counts only unresolved submitted SELL orders. It excludes rejected/cancelled orders and execution-equivalent filled order records so that filled orders are not counted again as restricted quantity.
-

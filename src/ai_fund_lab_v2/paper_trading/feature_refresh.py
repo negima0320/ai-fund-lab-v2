@@ -11,6 +11,7 @@ import pandas as pd
 
 from ai_fund_lab_v2.opportunity_ai.market_sector_completion import build_market_sector_features
 from ai_fund_lab_v2.paper_trading.canonical_data_source import DEFAULT_CONFIG_PATH, resolve_data_source
+from ai_fund_lab_v2.runtime_v2.current_position_authority import resolve_current_position_authority
 
 
 FEATURES_READY = "FEATURES_READY"
@@ -784,88 +785,10 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 
 
 def _resolve_current_authority(*, runtime_root: Path | None, target_data_until: str) -> dict[str, Any]:
-    if runtime_root is None:
-        return _current_authority_payload(
-            status="READY",
-            path="",
-            payload={"positions": [], "current_state_confirmed_empty": True},
-            target_data_until=target_data_until,
-            reason="position_feature_ready_no_runtime_root",
-        )
-    runtime_root = Path(runtime_root)
-    runtime_state_path = runtime_root / "runtime_state" / "current_state.json"
-    runtime_state = _load_json_object(runtime_state_path) if runtime_state_path.is_file() else {}
-    source = str(runtime_state.get("asset_state_source") or "persistent_ledger/state.json").strip()
-    if not source:
-        source = "persistent_ledger/state.json"
-    source_path = Path(source)
-    path = source_path if source_path.is_absolute() else runtime_root / source_path
-    if not path.is_file():
-        return _current_authority_payload(
-            status="MISSING",
-            path=str(path),
-            payload={},
-            target_data_until=target_data_until,
-            reason="current_authority_missing_asset_sot",
-        )
-    payload = _load_json_object(path)
-    if not payload:
-        return _current_authority_payload(
-            status="UNKNOWN",
-            path=str(path),
-            payload={},
-            target_data_until=target_data_until,
-            reason="current_authority_unreadable_asset_sot",
-        )
-    positions = payload.get("positions")
-    if payload.get("current_positions_unknown") is True or not isinstance(positions, list):
-        return _current_authority_payload(
-            status="UNKNOWN",
-            path=str(path),
-            payload=payload,
-            target_data_until=target_data_until,
-            reason="current_positions_unknown",
-        )
-    position_state_as_of = str(payload.get("position_state_as_of") or payload.get("business_date") or payload.get("as_of") or "")
-    if positions and not position_state_as_of:
-        return _current_authority_payload(
-            status="REVIEW_REQUIRED",
-            path=str(path),
-            payload=payload,
-            target_data_until=target_data_until,
-            reason="current_position_state_as_of_missing",
-        )
-    if position_state_as_of and position_state_as_of[:10] > target_data_until:
-        return _current_authority_payload(
-            status="REVIEW_REQUIRED",
-            path=str(path),
-            payload=payload,
-            target_data_until=target_data_until,
-            reason="current_position_state_as_of_after_feature_target_date",
-        )
-    if not positions and payload.get("current_state_confirmed_empty") is True:
-        return _current_authority_payload(
-            status="READY",
-            path=str(path),
-            payload=payload,
-            target_data_until=target_data_until,
-            reason="position_feature_ready_confirmed_empty_current",
-        )
-    if not positions:
-        return _current_authority_payload(
-            status="UNKNOWN",
-            path=str(path),
-            payload=payload,
-            target_data_until=target_data_until,
-            reason="current_positions_unknown",
-        )
-    return _current_authority_payload(
-        status="READY",
-        path=str(path),
-        payload=payload,
-        target_data_until=target_data_until,
-        reason="position_feature_ready",
-    )
+    authority = resolve_current_position_authority(runtime_root=runtime_root, target_data_until=target_data_until)
+    if authority["status"] == "READY_EMPTY" and authority["reason"] == "current_positions_confirmed_empty":
+        return {**authority, "reason": "position_feature_ready_confirmed_empty_current"}
+    return authority
 
 
 def _current_authority_payload(
@@ -1033,14 +956,14 @@ def _inspect_artifact(
                 "output_row_count": str(len(frame)),
                 "position_feature_reason": str(current_authority.get("reason") or ""),
             }
-        if str(current_authority.get("status") or "") != "READY":
+        if str(current_authority.get("status") or "") not in {"READY", "READY_EMPTY"}:
             blocked.append(str(current_authority.get("reason") or "current_authority_not_ready"))
             reason = str(current_authority.get("reason") or "current_authority_not_ready")
         elif current_position_count > 0 and len(frame) == 0:
             blocked.append("position_feature_current_output_mismatch")
             reason = "position_feature_current_output_mismatch"
         elif current_position_count == 0 and len(frame) == 0:
-            reason = "position_feature_ready_confirmed_empty_current"
+            reason = str(current_authority.get("reason") or "position_feature_ready_confirmed_empty_current")
         else:
             reason = "position_feature_ready"
     if frame.empty and ai_name == "position" and not blocked:

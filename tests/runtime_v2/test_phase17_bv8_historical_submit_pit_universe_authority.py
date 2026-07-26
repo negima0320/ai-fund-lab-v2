@@ -102,6 +102,17 @@ def test_phase17_bv8_corporate_action_guard_still_halts_target_symbol(tmp_path: 
     assert result.response_classification["corporate_action_status"] == "IMPACT_DETECTED"
 
 
+def test_phase20_bu_corporate_action_authority_missing_fails_closed(tmp_path: Path) -> None:
+    adapter, _ = _adapter(tmp_path, symbols=("33500",))
+    Path(adapter.raw_ohlcv_path).unlink()
+
+    result = adapter.preflight(_command("33500"))
+
+    assert result.status == "HALT"
+    assert result.reason == "corporate action guard failed"
+    assert result.response_classification["corporate_action_status"] == "MISSING"
+
+
 def _adapter(
     tmp_path: Path,
     *,

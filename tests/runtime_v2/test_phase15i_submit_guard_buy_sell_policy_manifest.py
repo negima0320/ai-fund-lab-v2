@@ -59,6 +59,10 @@ def test_phase15i_buy_over_100k_uses_policy_not_hidden_max_order_amount(tmp_path
     assert evidence["policy_source"] == str(policy_path)
     assert evidence["notional_guard_source"] == "derived_from_capital_allocation_and_constraints"
     assert evidence["max_buy_order_amount"] is None
+    assert evidence["broker_available_quantity_source"] == "not_applicable_buy"
+    assert evidence["broker_available_quantity_checked"] is False
+    assert evidence["broker_available_quantity_review_required"] is False
+    assert evidence["broker_available_quantity_reason"] == "broker available quantity is sell-only authority"
     assert evidence["violated_policy"] == ""
 
 

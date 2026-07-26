@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.ai_status import build_ai_status_report
+from ai_fund_lab_v2.runtime_v2.market_data_bootstrap import build_market_data_warmup_sufficiency
 
 
 SYSTEM_STATUS_SCHEMA_VERSION = "runtime_test_system_status_report.v1"
@@ -107,6 +108,7 @@ def build_system_status_report(
         feature_manifest_path=feature_manifest_path,
         expected_business_date=expected_business_date or runtime_date,
         runtime_stage=str(runtime_stage_contract["runtime_stage"]),
+        post_run_context=post_run_context,
     )
     data_status = _data_status(
         ai_report,
@@ -197,6 +199,11 @@ def build_system_status_report(
         target_business_dates=target_business_dates or [],
         post_run_context=post_run_context,
     )
+    runtime_market_data_warmup_sufficiency = _runtime_market_data_warmup_sufficiency(
+        root=root,
+        target_business_dates=target_business_dates or [],
+        expected_business_date=expected_business_date or "",
+    )
     inspection_context = _inspection_context(
         root=root,
         created_at=created_at,
@@ -275,8 +282,14 @@ def build_system_status_report(
         runtime_state_coverage=runtime_state_coverage,
     )
 
+    data_layer_status = _combine_status([data_status["status"], runtime_market_data_warmup_sufficiency.get("warmup_sufficiency_judgment", "PASS")])
+    data_status = {
+        **data_status,
+        "status": data_layer_status,
+        "runtime_market_data_warmup_sufficiency": runtime_market_data_warmup_sufficiency,
+    }
     layer_statuses = {
-        "data": data_status["status"],
+        "data": data_layer_status,
         "ai": ai_status["status"],
         "runtime": runtime_status["status"],
         "runtime_state": runtime_state_status["status"],
@@ -391,6 +404,7 @@ def build_system_status_report(
         "temporal_authority_audit": temporal_authority_audit,
         "freshness_matrix": freshness_matrix,
         "target_period_data_sufficiency": target_period_data_sufficiency,
+        "runtime_market_data_warmup_sufficiency": runtime_market_data_warmup_sufficiency,
         "data_status": data_status,
         "ai_status": ai_status,
         "runtime_status": runtime_status,
@@ -1748,6 +1762,7 @@ def _system_status_sections(report: dict[str, Any]) -> dict[str, Any]:
             "data_sources": report.get("data_inspection", {}).get("data_sources", []),
             "runtime_features": report.get("data_inspection", {}).get("runtime_features", []),
             "target_period_data_sufficiency": report.get("target_period_data_sufficiency", {}),
+            "runtime_market_data_warmup_sufficiency": report.get("runtime_market_data_warmup_sufficiency", {}),
             "freshness_matrix": report.get("freshness_matrix", {}),
             "historical_source_consumer_cutoff": report.get("historical_source_consumer_cutoff", {}),
         },
@@ -2007,6 +2022,7 @@ def write_system_status_evidence(report: dict[str, Any], *, evidence_root: Path,
         "temporal_authority_audit.json": report["temporal_authority_audit"],
         "freshness_matrix.json": report["freshness_matrix"],
         "target_period_data_sufficiency.json": report["target_period_data_sufficiency"],
+        "runtime_market_data_warmup_sufficiency.json": report["runtime_market_data_warmup_sufficiency"],
         "data_status.json": report["data_status"],
         "ai_status.json": report["ai_status"],
         "runtime_status.json": report["runtime_status"],
@@ -3122,6 +3138,33 @@ def _target_period_data_sufficiency(
     }
 
 
+def _runtime_market_data_warmup_sufficiency(
+    *,
+    root: Path,
+    target_business_dates: list[str],
+    expected_business_date: str,
+) -> dict[str, Any]:
+    dates = sorted(str(day) for day in target_business_dates if str(day))
+    target_start = dates[0] if dates else str(expected_business_date or "")
+    target_end = dates[-1] if dates else target_start
+    if not target_start:
+        return {
+            "schema_version": "phase20_bb_runtime_market_data_warmup_sufficiency.v1",
+            "component_id": "runtime_market_data_warmup_sufficiency",
+            "target_start_date": "",
+            "target_end_date": "",
+            "maximum_required_warmup_business_days": 61,
+            "warmup_sufficiency_judgment": "REVIEW_REQUIRED",
+            "reason": "TARGET_PERIOD_NOT_CONFIGURED",
+            "affected_components": ["Candidate Feature", "Opportunity Feature"],
+        }
+    return build_market_data_warmup_sufficiency(
+        runtime_root=root,
+        target_start_date=target_start,
+        target_end_date=target_end,
+    )
+
+
 def _parquet_unique_dates(path: Path) -> set[str]:
     if not path.is_file():
         return set()
@@ -3151,7 +3194,9 @@ def _data_inspection(
     feature_manifest_path: Path,
     expected_business_date: str,
     runtime_stage: str,
+    post_run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    post_run_context = post_run_context or {}
     raw_path = root / "operations" / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"
     normalized_path = root / "operations" / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
     listed_path = root / "operations" / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet"
@@ -3235,7 +3280,13 @@ def _data_inspection(
             and str(source_refs.get("position_feature_reason") or "") == "current_position_state_as_of_after_feature_target_date"
             and int(_numeric_or_zero(artifact.get("row_count", parquet_stats.get("row_count", 0)))) == 0
         )
-        final_positions = _read_json_optional(root / "persistent_ledger" / "state.json").get("positions") or []
+        if _valid_post_run_context(post_run_context):
+            final_position_count: Any = post_run_context.get("final_position_count", "NOT_AVAILABLE")
+            final_position_authority = str(post_run_context.get("final_position_count_authority") or "POST_RUN_CONTEXT")
+        else:
+            final_positions = _read_json_optional(root / "persistent_ledger" / "state.json").get("positions") or []
+            final_position_count = len(final_positions)
+            final_position_authority = "CURRENT_RUNTIME_ROOT"
         if position_temporal_isolation:
             feature_status = "PASS"
         runtime_features.append(
@@ -3256,7 +3307,8 @@ def _data_inspection(
                 "position_feature_authority_status": "TEMPORAL_ISOLATION_PASS" if position_temporal_isolation else "NOT_APPLICABLE",
                 "position_feature_authority_reason": source_refs.get("position_feature_reason", "") if ai_name == "position" else "",
                 "position_feature_target_date_position_count": _numeric_or_zero(source_refs.get("current_position_count", 0)) if ai_name == "position" else "",
-                "final_post_run_position_count": len(final_positions) if ai_name == "position" else "",
+                "final_post_run_position_count": final_position_count if ai_name == "position" else "",
+                "final_post_run_position_count_authority": final_position_authority if ai_name == "position" else "",
                 "position_feature_final_position_semantics": "target-date feature rows and final post-run positions are distinct authorities" if ai_name == "position" else "",
                 "target_date_resolution_status": target_resolution_status,
                 "fallback_used": bool(artifact.get("fallback_used", False)),

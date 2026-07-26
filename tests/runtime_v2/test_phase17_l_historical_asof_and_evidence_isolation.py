@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.historical_support.asof import (
+    materialize_historical_logical_inputs,
     resolve_historical_market_data_asof,
 )
 from ai_fund_lab_v2.runtime_v2.market_refresh import pipeline
@@ -47,6 +48,58 @@ def write_market_authorities(root: Path) -> None:
     pd.DataFrame([{"Date": "2026-07-06", "Code": "7203"}, {"Date": "2026-07-10", "Code": "7203"}]).to_parquet(listed / "data.parquet", index=False)
 
 
+def _normalized_quotes(days: list[str], codes: tuple[str, ...] = ("13010",)) -> pd.DataFrame:
+    rows = []
+    for day in days:
+        for code in codes:
+            rows.append(
+                {
+                    "Date": day,
+                    "Code": code,
+                    "Open": 100.0,
+                    "High": 101.0,
+                    "Low": 99.0,
+                    "Close": 100.0,
+                    "Volume": 1000.0,
+                    "PriceSource": "adjusted",
+                    "SchemaVersion": 2,
+                    "source_endpoint": "/v2/equities/bars/daily",
+                    "target_date": day,
+                    "code": code,
+                    "business_key": code,
+                    "endpoint": "daily_quotes_normalized",
+                    "source": "jquants",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def write_phase20_bi_market_authorities(root: Path, *, current_days: list[str], acquisition_days: list[str] | None = None) -> None:
+    operations = root / "operations"
+    normalized = operations / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily"
+    raw = operations / "jquants" / "raw" / "jquants" / "equities_bars_daily"
+    calendar = operations / "jquants" / "raw" / "jquants" / "trading_calendar"
+    listed = operations / "jquants" / "raw" / "jquants" / "listed_issues"
+    for path in (normalized, raw, calendar, listed):
+        path.mkdir(parents=True, exist_ok=True)
+    current = _normalized_quotes(current_days)
+    current.to_parquet(normalized / "data.parquet", index=False)
+    current.to_parquet(raw / "data.parquet", index=False)
+    pd.DataFrame([{"Date": day, "HolidayDivision": "1"} for day in sorted(set(current_days + (acquisition_days or [])))]).to_parquet(calendar / "data.parquet", index=False)
+    pd.DataFrame([{"Date": "2026-03-24", "Code": "13010"}]).to_parquet(listed / "data.parquet", index=False)
+    if acquisition_days is None:
+        return
+    run_root = root / "market_data_acquisition" / "runs" / "jquants-acquisition-test"
+    acquisition = _normalized_quotes(acquisition_days)
+    for prefix in ("raw", "raw_normalized"):
+        target = run_root / prefix / "jquants" / "equities_bars_daily"
+        target.mkdir(parents=True, exist_ok=True)
+        acquisition.to_parquet(target / "data.parquet", index=False)
+    calendar_target = run_root / "raw" / "jquants" / "trading_calendar"
+    calendar_target.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in acquisition_days]).to_parquet(calendar_target / "data.parquet", index=False)
+
+
 def test_phase17_l_asof_resolver_excludes_physical_future_rows(tmp_path: Path) -> None:
     write_market_authorities(tmp_path / ".runtime")
     result = resolve_historical_market_data_asof(
@@ -59,6 +112,46 @@ def test_phase17_l_asof_resolver_excludes_physical_future_rows(tmp_path: Path) -
     assert normalized.logical_max_date == "2026-07-06"
     assert normalized.future_rows_excluded_count == 1
     assert result.to_payload()["future_rows_excluded_from_consumer"] is True
+
+
+def test_phase20_bi_historical_logical_input_uses_acquisition_source_when_operations_lookback_is_short(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-02-16", "2026-03-24").strftime("%Y-%m-%d").tolist()
+    acquisition_days = pd.bdate_range("2025-12-01", "2026-04-30").strftime("%Y-%m-%d").tolist()
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days, acquisition_days=acquisition_days)
+
+    logical = materialize_historical_logical_inputs(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-03-24",
+        evidence_root=tmp_path / "evidence",
+        require_feature_lookback=True,
+    )
+
+    assert logical.status == "PASS"
+    coverage = logical.resolution.feature_lookback_coverage or {}
+    assert coverage["selected_source_role"] == "acquisition_staging"
+    assert coverage["status"] == "PASS"
+    frame = pd.read_parquet(Path(logical.logical_paths["normalized_ohlcv"]))
+    assert frame["Date"].astype(str).min() == "2025-12-01"
+    assert frame["Date"].astype(str).max() == "2026-03-24"
+    assert "2026-03-25" not in set(frame["Date"].astype(str))
+
+
+def test_phase20_bi_historical_asof_fails_closed_when_no_source_has_feature_lookback(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-02-16", "2026-03-24").strftime("%Y-%m-%d").tolist()
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days)
+
+    result = resolve_historical_market_data_asof(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-03-24",
+        require_feature_lookback=True,
+    )
+
+    assert result.status == "HALT"
+    assert result.reason == "historical_feature_lookback_insufficient"
+    coverage = result.feature_lookback_coverage or {}
+    assert coverage["status"] == "BLOCK"
+    assert coverage["selected_source_role"] == "operations_canonical"
+    assert "feature_lookback_insufficient" in coverage["candidate_sources"][0]["blocked_reasons"]
 
 
 def test_phase17_l_asof_resolver_fails_closed_on_hash_mismatch(tmp_path: Path) -> None:
@@ -138,6 +231,16 @@ def test_phase17_l_historical_market_refresh_uses_asof_view_and_run_scoped_evide
     monkeypatch,
 ) -> None:
     write_market_authorities(tmp_path / ".runtime")
+    acquisition_days = pd.bdate_range("2026-04-01", "2026-07-10").strftime("%Y-%m-%d").tolist()
+    run_root = tmp_path / ".runtime" / "market_data_acquisition" / "runs" / "jquants-acquisition-test"
+    acquisition = _normalized_quotes(acquisition_days, codes=("7203",))
+    for prefix in ("raw", "raw_normalized"):
+        target = run_root / prefix / "jquants" / "equities_bars_daily"
+        target.mkdir(parents=True, exist_ok=True)
+        acquisition.to_parquet(target / "data.parquet", index=False)
+    calendar_target = run_root / "raw" / "jquants" / "trading_calendar"
+    calendar_target.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in acquisition_days]).to_parquet(calendar_target / "data.parquet", index=False)
     evidence_roots: list[Path | None] = []
 
     def fake_operations_refresh(**kwargs):
@@ -157,7 +260,13 @@ def test_phase17_l_historical_market_refresh_uses_asof_view_and_run_scoped_evide
     monkeypatch.setattr(pipeline, "_run_operations_market_refresh", fake_operations_refresh)
     monkeypatch.setattr(pipeline, "resolve_feature_date_contract", lambda **kwargs: DummyContract(generated_feature_artifacts={}))
     monkeypatch.setattr(pipeline, "write_feature_date_contract", lambda **kwargs: tmp_path / "contract.json")
-    monkeypatch.setattr(pipeline, "produce_market_quote_evidence", lambda **kwargs: DummyMarketEvidence())
+    market_evidence_kwargs: list[dict] = []
+
+    def fake_market_evidence(**kwargs):
+        market_evidence_kwargs.append(kwargs)
+        return DummyMarketEvidence()
+
+    monkeypatch.setattr(pipeline, "produce_market_quote_evidence", fake_market_evidence)
     result = pipeline.run_runtime_v2_market_refresh_pipeline(
         business_date="2026-07-06",
         operations_root=tmp_path / ".runtime" / "operations",
@@ -177,6 +286,25 @@ def test_phase17_l_historical_market_refresh_uses_asof_view_and_run_scoped_evide
     assert "future_row_detected" not in result.blocked_reasons
     assert evidence_roots == [tmp_path / "reports" / "runtime_tests" / "runs" / "runtime-test-fixture" / "daily" / "2026-07-06" / "market_refresh"]
     assert Path(result.historical_asof_evidence_path).is_file()
+    assert market_evidence_kwargs[0]["quote_source_path"] == (
+        tmp_path
+        / "reports"
+        / "runtime_tests"
+        / "runs"
+        / "runtime-test-fixture"
+        / "daily"
+        / "2026-07-06"
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / "2026-07-06"
+        / "raw_normalized"
+        / "jquants"
+        / "equities_bars_daily"
+        / "data.parquet"
+    )
+    assert market_evidence_kwargs[0]["source_authority"]["source_role"] == "acquisition_staging"
+    assert market_evidence_kwargs[0]["source_authority"]["future_rows_excluded"] is True
 
 
 def test_phase17_l_demo_market_refresh_keeps_future_row_block(monkeypatch, tmp_path: Path) -> None:

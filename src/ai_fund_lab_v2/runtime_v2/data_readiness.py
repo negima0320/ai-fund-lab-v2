@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_fund_lab_v2.operations.market_calendar import resolve_operation_date
+from ai_fund_lab_v2.operations.market_calendar import _read_calendar_records
 from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
     validate_feature_consumer_readiness,
 )
@@ -236,6 +237,292 @@ def _feature_date_contract_payload(
         return payload
 
 
+def _resolve_data_readiness_operation_date(
+    *,
+    business_date: str,
+    mode: str,
+    broker_environment: str | None,
+    base_dir: Path,
+    operations_root: Path,
+    runtime_test_evidence_root: Path | str | None,
+) -> dict[str, Any]:
+    historical = mode == "historical" or broker_environment == "historical_simulated"
+    if not historical:
+        calendar = resolve_operation_date(business_date, root=base_dir)
+        calendar["calendar_authority_status"] = "PASS"
+        calendar["calendar_authority_type"] = "operations_calendar_or_fallback"
+        calendar["calendar_authority_path"] = ""
+        calendar["calendar_authority_reason"] = calendar.get("calendar_source") or ""
+        return calendar
+
+    evidence_root = Path(runtime_test_evidence_root) if runtime_test_evidence_root else None
+    manifest_path = (
+        evidence_root
+        / "daily"
+        / business_date
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "logical_input_manifest.json"
+        if evidence_root
+        else None
+    )
+    if manifest_path and manifest_path.exists():
+        return _operation_date_from_logical_manifest(
+            manifest_path=manifest_path,
+            business_date=business_date,
+            base_dir=base_dir,
+        )
+
+    asof_view_path = (
+        evidence_root / "daily" / business_date / "market_refresh" / "historical_asof_view.json"
+        if evidence_root
+        else None
+    )
+    if asof_view_path and asof_view_path.exists():
+        return _operation_date_from_historical_asof_view(
+            asof_view_path=asof_view_path,
+            business_date=business_date,
+            base_dir=base_dir,
+        )
+
+    return _operation_date_from_contract_calendar(
+        operations_root=operations_root,
+        business_date=business_date,
+        base_dir=base_dir,
+    )
+
+
+def _operation_date_from_logical_manifest(*, manifest_path: Path, business_date: str, base_dir: Path) -> dict[str, Any]:
+    payload, status, reason, _ = _read_json_object(manifest_path, corrupt_status="REVIEW_REQUIRED")
+    if status != "READY":
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_logical_input_manifest",
+            authority_path=manifest_path,
+            reason=reason or "historical_logical_input_manifest_invalid",
+        )
+    if str(payload.get("status") or "") != "PASS":
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_logical_input_manifest",
+            authority_path=manifest_path,
+            reason="historical_logical_input_manifest_not_pass",
+        )
+    manifest_date = str(payload.get("business_date") or payload.get("logical_cutoff") or "")
+    if manifest_date and manifest_date != business_date:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_logical_input_manifest",
+            authority_path=manifest_path,
+            reason="historical_logical_input_manifest_date_mismatch",
+        )
+    logical_paths = payload.get("logical_paths") if isinstance(payload.get("logical_paths"), dict) else {}
+    calendar_path = _resolve_authority_file(logical_paths.get("trading_calendar"), base_dir=base_dir)
+    if calendar_path is None:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_logical_input_manifest",
+            authority_path=manifest_path,
+            reason="historical_logical_trading_calendar_missing",
+        )
+    return _operation_date_from_calendar_file(
+        calendar_path=calendar_path,
+        business_date=business_date,
+        authority_type="historical_logical_input_manifest_trading_calendar",
+        manifest_path=manifest_path,
+    )
+
+
+def _operation_date_from_historical_asof_view(*, asof_view_path: Path, business_date: str, base_dir: Path) -> dict[str, Any]:
+    payload, status, reason, _ = _read_json_object(asof_view_path, corrupt_status="REVIEW_REQUIRED")
+    if status != "READY":
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_asof_view",
+            authority_path=asof_view_path,
+            reason=reason or "historical_asof_view_invalid",
+        )
+    if str(payload.get("status") or "") != "PASS":
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_asof_view",
+            authority_path=asof_view_path,
+            reason="historical_asof_view_not_pass",
+        )
+    if str(payload.get("business_date") or "") not in {"", business_date}:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_asof_view",
+            authority_path=asof_view_path,
+            reason="historical_asof_view_date_mismatch",
+        )
+    authorities = payload.get("authorities")
+    if isinstance(authorities, dict):
+        authority = authorities.get("trading_calendar") or {}
+    elif isinstance(authorities, list):
+        authority = next(
+            (
+                item
+                for item in authorities
+                if isinstance(item, dict) and str(item.get("authority") or item.get("name") or "") == "trading_calendar"
+            ),
+            {},
+        )
+    else:
+        authority = {}
+    if not isinstance(authority, dict) or str(authority.get("status") or "") != "PASS":
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_asof_view_trading_calendar",
+            authority_path=asof_view_path,
+            reason="historical_asof_view_trading_calendar_not_pass",
+        )
+    calendar_path = _resolve_authority_file(authority.get("physical_source_path"), base_dir=base_dir)
+    if calendar_path is None:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type="historical_asof_view_trading_calendar",
+            authority_path=asof_view_path,
+            reason="historical_asof_view_trading_calendar_path_missing",
+        )
+    return _operation_date_from_calendar_file(
+        calendar_path=calendar_path,
+        business_date=business_date,
+        authority_type="historical_asof_view_trading_calendar",
+        manifest_path=asof_view_path,
+    )
+
+
+def _operation_date_from_contract_calendar(*, operations_root: Path, business_date: str, base_dir: Path) -> dict[str, Any]:
+    candidates = [
+        operations_root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet",
+        operations_root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.jsonl",
+        operations_root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.json",
+    ]
+    for candidate in candidates:
+        path = _resolve_authority_file(candidate, base_dir=base_dir)
+        if path is not None:
+            return _operation_date_from_calendar_file(
+                calendar_path=path,
+                business_date=business_date,
+                authority_type="historical_contract_trading_calendar",
+                manifest_path=None,
+            )
+    return _missing_historical_calendar(
+        business_date=business_date,
+        authority_type="historical_contract_trading_calendar",
+        authority_path=operations_root,
+        reason="historical_trading_calendar_authority_missing",
+    )
+
+
+def _operation_date_from_calendar_file(
+    *,
+    calendar_path: Path,
+    business_date: str,
+    authority_type: str,
+    manifest_path: Path | None,
+) -> dict[str, Any]:
+    try:
+        records = _read_calendar_records(calendar_path)
+    except Exception:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type=authority_type,
+            authority_path=calendar_path,
+            reason="historical_trading_calendar_unreadable",
+        )
+    business_days = sorted(
+        {
+            day
+            for record in records
+            for day in [_calendar_record_date(record)]
+            if day and _calendar_record_is_business_day(record)
+        }
+    )
+    if business_date not in {_calendar_record_date(record) for record in records if _calendar_record_date(record)}:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type=authority_type,
+            authority_path=calendar_path,
+            reason="historical_trading_calendar_target_date_missing",
+        )
+    previous_days = [day for day in business_days if day < business_date]
+    next_days = [day for day in business_days if day > business_date]
+    if not previous_days:
+        return _missing_historical_calendar(
+            business_date=business_date,
+            authority_type=authority_type,
+            authority_path=calendar_path,
+            reason="historical_trading_calendar_previous_date_missing",
+        )
+    is_business_day = business_date in business_days
+    previous_day = previous_days[-1]
+    return {
+        "trade_date": business_date,
+        "is_business_day": is_business_day,
+        "market_closed": not is_business_day,
+        "market_closed_reason": "" if is_business_day else "JQUANTS_NON_BUSINESS_DAY",
+        "calendar_source": authority_type,
+        "latest_available_market_date": business_date if is_business_day else previous_day,
+        "previous_business_day": previous_day,
+        "next_business_day": next_days[0] if next_days else "",
+        "calendar_authority_status": "PASS",
+        "calendar_authority_type": authority_type,
+        "calendar_authority_path": str(calendar_path),
+        "calendar_authority_manifest_path": str(manifest_path or ""),
+        "calendar_authority_reason": "historical_trading_calendar_authority_pass",
+    }
+
+
+def _missing_historical_calendar(
+    *,
+    business_date: str,
+    authority_type: str,
+    authority_path: Path,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "trade_date": business_date,
+        "is_business_day": False,
+        "market_closed": True,
+        "market_closed_reason": reason,
+        "calendar_source": authority_type,
+        "latest_available_market_date": "",
+        "previous_business_day": "",
+        "next_business_day": "",
+        "calendar_authority_status": "REVIEW_REQUIRED",
+        "calendar_authority_type": authority_type,
+        "calendar_authority_path": str(authority_path),
+        "calendar_authority_manifest_path": "",
+        "calendar_authority_reason": reason,
+    }
+
+
+def _resolve_authority_file(value: Any, *, base_dir: Path) -> Path | None:
+    if not value:
+        return None
+    raw = Path(str(value))
+    candidates = [raw]
+    if not raw.is_absolute():
+        candidates.extend([base_dir / raw, Path.cwd() / raw])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _calendar_record_date(record: dict[str, Any]) -> str:
+    return str(record.get("target_date") or record.get("Date") or "")[:10]
+
+
+def _calendar_record_is_business_day(record: dict[str, Any]) -> bool:
+    holdiv = str(record.get("HolDiv") or record.get("HolidayDivision") or "")
+    return holdiv == "1"
+
+
 def evaluate_runtime_data_readiness(
     *,
     runtime_root: Path | str,
@@ -299,9 +586,22 @@ def evaluate_runtime_data_readiness(
         "source_paths": {},
     }
 
-    calendar = resolve_operation_date(business_date, root=base_dir)
+    calendar = _resolve_data_readiness_operation_date(
+        business_date=business_date,
+        mode=mode,
+        broker_environment=broker_environment,
+        base_dir=base_dir,
+        operations_root=operations_root,
+        runtime_test_evidence_root=runtime_test_evidence_root,
+    )
     business_day = bool(calendar.get("is_business_day"))
     market_open = not bool(calendar.get("market_closed"))
+    if calendar.get("calendar_authority_status") == "REVIEW_REQUIRED":
+        review_reasons.append(str(calendar.get("calendar_authority_reason") or "historical_trading_calendar_authority_missing"))
+        component_reasons["market"].append(
+            str(calendar.get("calendar_authority_reason") or "historical_trading_calendar_authority_missing")
+        )
+        missing_evidence.append("historical_trading_calendar_authority")
     override = bool(mode == "demo" and allow_non_trading_day_demo and not business_day and not market_open)
     market_payload = _market_readiness_payload(root=root, business_date=business_date, market_open=market_open, override=override)
     source_paths.update(market_payload["source_paths"])
@@ -620,6 +920,12 @@ def evaluate_runtime_data_readiness(
         "review_required": overall_status == "REVIEW_REQUIRED",
         "halt_required": overall_status == "HALT",
         "market_calendar_status": "READY" if market_open or override else "REVIEW_REQUIRED",
+        "market_calendar_authority_status": calendar.get("calendar_authority_status") or "",
+        "market_calendar_authority_type": calendar.get("calendar_authority_type") or "",
+        "market_calendar_authority_path": calendar.get("calendar_authority_path") or "",
+        "market_calendar_authority_manifest_path": calendar.get("calendar_authority_manifest_path") or "",
+        "market_calendar_authority_reason": calendar.get("calendar_authority_reason") or "",
+        "calendar_source": calendar.get("calendar_source") or "",
         "market_data_status": market_payload["market_data_status"],
         "quote_status": effective_quote_status,
         "market_summary_status": market_payload["market_summary_status"],
@@ -1076,14 +1382,15 @@ def _market_readiness_payload(*, root: Path, business_date: str, market_open: bo
     market_status = str(payload.get("market_status") or payload.get("status") or "READY")
     quote_status = str(payload.get("quote_status") or "READY")
     if market_status in {"DATA_NOT_YET_AVAILABLE", "STALE", "REVIEW_REQUIRED", "HALT"}:
+        artifact_reason = str(payload.get("reason") or payload.get("temporal_evidence", {}).get("reason") or market_status.lower())
         return {
             "status": "REVIEW_REQUIRED" if market_status != "HALT" else "HALT",
-            "reason": str(payload.get("temporal_evidence", {}).get("reason") or payload.get("reason") or market_status.lower()),
+            "reason": artifact_reason,
             "market_data_status": market_status,
             "quote_status": quote_status if quote_status != "READY" else market_status,
-            "quote_reason": str(payload.get("reason") or market_status.lower()),
+            "quote_reason": artifact_reason,
             "market_summary_status": "READY" if payload.get("market_summary") else "REVIEW_REQUIRED",
-            "missing_evidence": [] if market_status in {"DATA_NOT_YET_AVAILABLE", "STALE"} else ["market_evidence"],
+            "missing_evidence": [],
             "source_paths": {"market_evidence": str(path)},
             "market_date": market_date,
             "latest_expected_trading_date": payload.get("latest_expected_trading_date") or "",

@@ -32,12 +32,71 @@ def test_phase19_bt_reduce_quantity_normal_tiers_and_rounding():
     assert strong["expected_remaining_quantity"] == 500
 
 
-def test_phase19_bt_reduce_small_position_review_required():
+def test_phase19_bt_reduce_small_position_non_executable_no_order_contract():
     contract = calculate_reduce_quantity_contract(position_quantity=100, reduce_intensity="LIGHT")
 
-    assert contract["status"] == "REVIEW_REQUIRED"
-    assert contract["reason"] == "REVIEW_REQUIRED_REDUCE_NOT_EXECUTABLE_AT_TRADABLE_UNIT"
+    assert contract["status"] == "NOT_EXECUTABLE"
+    assert contract["reason"] == "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+    assert contract["execution_feasibility_status"] == "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+    assert contract["effective_action"] == "NO_SELL_ORDER"
     assert contract["final_sell_quantity"] == 0
+
+
+def test_phase20_m_zero_rounded_reduce_generates_no_order_and_runtime_can_continue(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="demo")
+    _write_current_state(runtime_root, mode="demo", positions=[_position("50310", quantity=300, price=100)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="50310",
+                quantity=0,
+                reason="risk_increased_but_trend_not_broken",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-06-18-50310-reduce",
+            ),
+        ),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+    non_executable = order_plan["non_executable_sell_decisions"][0]
+    contract = non_executable["quantity_contract"]
+
+    assert result.status == "PASS"
+    assert result.selected_count == 0
+    assert pending["items"] == []
+    assert pending["active_pending"] is False
+    assert pending["non_executable_sell_decisions"][0]["original_decision"] == "REDUCE"
+    assert contract["position_quantity_before"] == 300
+    assert contract["raw_reduce_quantity"] == 75
+    assert contract["rounded_executable_quantity"] == 0
+    assert contract["pending_order_generated"] is False
+    assert contract["effective_action"] == "NO_SELL_ORDER"
+    assert contract["position_quantity_after"] == 300
+    assert contract["runtime_continuation_status"] == "PASS"
+    assert contract["position_lifecycle_event"] == "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY"
+
+
+def test_phase20_m_reduce_boundary_and_invalid_quantity_contracts():
+    below = calculate_reduce_quantity_contract(position_quantity=396, reduce_intensity="LIGHT")
+    exact = calculate_reduce_quantity_contract(position_quantity=400, reduce_intensity="LIGHT")
+    above = calculate_reduce_quantity_contract(position_quantity=404, reduce_intensity="LIGHT")
+    negative = calculate_reduce_quantity_contract(position_quantity=-100, reduce_intensity="LIGHT")
+    missing_unit = calculate_reduce_quantity_contract(position_quantity=1000, reduce_intensity="LIGHT", tradable_unit=None)
+
+    assert below["raw_reduce_quantity"] == 99
+    assert below["status"] == "NOT_EXECUTABLE"
+    assert exact["raw_reduce_quantity"] == 100
+    assert exact["final_sell_quantity"] == 100
+    assert above["raw_reduce_quantity"] == 101
+    assert above["final_sell_quantity"] == 100
+    assert negative["status"] == "REVIEW_REQUIRED"
+    assert missing_unit["status"] == "REVIEW_REQUIRED"
+    assert missing_unit["reason"] == "REVIEW_REQUIRED_REDUCE_TRADABLE_UNIT_UNKNOWN"
 
 
 def test_phase19_bt_reduce_unknown_intensity_fail_closed():

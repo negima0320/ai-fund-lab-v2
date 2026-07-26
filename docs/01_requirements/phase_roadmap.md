@@ -111,14 +111,58 @@ docs/README
 現在
 
 ```text
-Phase18 COMPLETE WITH OPERATIONAL EXTENSION
+Phase20 COMPLETE_WITH_PERFORMANCE_IMPROVEMENT_REQUIRED
 ```
 
-Phase18-UでAI Lifecycle v2 Contract Closureは完了。
+Primary:
 
-Phase18-VでPhase19開始前のHistorical Runtime Test Fresh Run Operatorを追加。
+```text
+PHASE20_CLOSURE_COMPLETE_WITH_PERFORMANCE_IMPROVEMENT_REQUIRED
+```
 
-次はPhase19へ進める状態。
+Phase20でHistorical Runtime Authority Wiring再認証を完了。
+
+主な完了事項:
+
+```text
+BT / BU / BV / BW Historical Authority Wiring修正
+Bull 20BD PASS
+Range 20BD PASS
+Lifecycle Contract PASS
+現行戦略の収益不足確認
+Runtime課題とStrategy Performance課題の分離
+```
+
+Open Handoff:
+
+```text
+245BD Run in progress; Phase21 primary diagnostic dataset after completion
+Performance Metrics不足
+PM / Holding / Capital Deployment改善必要
+```
+
+次はPhase21へ進める状態。
+
+Phase21:
+
+```text
+Strategy and Performance Improvement
+```
+
+Goal:
+
+```text
+Evidence-firstで現行戦略を改善し、
+年率+50%目標への到達可能性を高める。
+```
+
+Phase21-A:
+
+```text
+245BD Long-run Finalization and Diagnostic Dataset Certification
+```
+
+現在実行中の245BD / 1年Historical Runは、完走後にPhase21の主要調査データとして認証する。ただし、この単一期間のみを改善採用判定に使わず、Validation / Holdoutを分離する。
 
 ---
 

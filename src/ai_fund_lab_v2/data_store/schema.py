@@ -52,6 +52,11 @@ RAW_SCHEMAS: dict[str, RawSchema] = {
             "L": ("L", "Low", "AdjustmentLow", "AdjL"),
             "C": ("C", "Close", "AdjustmentClose", "AdjC"),
             "Vo": ("Vo", "Volume", "AdjustmentVolume", "AdjVo"),
+            "AdjO": ("AdjO", "AdjustmentOpen"),
+            "AdjH": ("AdjH", "AdjustmentHigh"),
+            "AdjL": ("AdjL", "AdjustmentLow"),
+            "AdjC": ("AdjC", "AdjustmentClose"),
+            "AdjVo": ("AdjVo", "AdjustmentVolume"),
         },
     ),
     "listed_issues": RawSchema(

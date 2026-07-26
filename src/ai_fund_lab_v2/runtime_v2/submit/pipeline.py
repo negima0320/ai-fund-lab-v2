@@ -1273,6 +1273,7 @@ def _submit_guard_item_evidence(
         "broker_total_quantity": broker_available_quantity_evidence.total_quantity,
         "broker_restricted_quantity": broker_available_quantity_evidence.restricted_quantity,
         "broker_available_quantity_account_type": broker_available_quantity_evidence.account_type,
+        "broker_available_quantity_reason": broker_available_quantity_evidence.reason,
         "safety_decision_id": safety_decision.safety_decision_id,
         "safety_policy_version": safety_decision.safety_policy_version,
         "safety_source": safety_decision.safety_source,
@@ -1297,6 +1298,23 @@ def _submit_guard_item_evidence(
         "should_have_been_blocked_at_planning": False,
         "blocked_at_submit_reason": "",
     }
+    if side == "BUY":
+        evidence.update(
+            {
+                "broker_available_quantity_source": "not_applicable_buy",
+                "broker_available_quantity": None,
+                "broker_available_quantity_symbol": str(item.symbol),
+                "broker_available_quantity_issue_code": "",
+                "broker_available_quantity_snapshot_path": "",
+                "broker_available_quantity_snapshot_at": "",
+                "broker_available_quantity_review_required": False,
+                "broker_available_quantity_production_equivalent": False,
+                "broker_total_quantity": None,
+                "broker_restricted_quantity": None,
+                "broker_available_quantity_account_type": "",
+                "broker_available_quantity_reason": "broker available quantity is sell-only authority",
+            }
+        )
     safety_allowed, safety_status, safety_reason = safety_allows_action(
         safety_decision,
         action="submit",

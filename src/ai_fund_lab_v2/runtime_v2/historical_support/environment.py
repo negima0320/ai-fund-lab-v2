@@ -188,6 +188,10 @@ class HistoricalSubmitAdapter:
             "runtime_root": str(self.runtime_root),
             "business_date": self.business_date,
             "evaluation_time": self.evaluation_time,
+            "historical_asof_view_path": str(self.historical_asof_view_path),
+            "ohlcv_path": str(self.ohlcv_path),
+            "listed_issues_path": str(self.listed_issues_path),
+            "raw_ohlcv_path": str(self.raw_ohlcv_path),
         }
 
     def _validate_command(self, command: RuntimeV2SubmitCommand) -> dict[str, Any]:
@@ -569,6 +573,10 @@ def _historical(
         raise EnvironmentCompositionError("historical mode requires external_delivery=false")
     if broker_write:
         raise EnvironmentCompositionError("historical mode requires broker_write=false")
+    submit_authority_paths = _historical_submit_authority_paths(
+        historical_asof_view_path=historical_asof_view_path,
+        business_date=business_date,
+    )
     return RuntimeEnvironmentComposition(
         runtime_mode="historical",
         run_type="HISTORICAL",
@@ -578,6 +586,18 @@ def _historical(
             business_date=business_date,
             evaluation_time=evaluation_time,
             historical_asof_view_path=historical_asof_view_path,
+            ohlcv_path=submit_authority_paths.get(
+                "normalized_ohlcv",
+                ".runtime/operations/jquants/raw_normalized/jquants/equities_bars_daily/data.parquet",
+            ),
+            listed_issues_path=submit_authority_paths.get(
+                "listed_issues",
+                ".runtime/operations/jquants/raw/jquants/listed_issues/data.parquet",
+            ),
+            raw_ohlcv_path=submit_authority_paths.get(
+                "raw_ohlcv",
+                ".runtime/operations/jquants/raw/jquants/equities_bars_daily/data.parquet",
+            ),
         ),
         execution_snapshot_provider=HistoricalExecutionSnapshotProvider(
             runtime_root=runtime_root,
@@ -593,6 +613,49 @@ def _historical(
         tachibana_demo_write=False,
         tachibana_production_write=False,
     )
+
+
+def _historical_submit_authority_paths(
+    *,
+    historical_asof_view_path: Path | str,
+    business_date: str,
+) -> dict[str, str]:
+    if not str(historical_asof_view_path):
+        return {}
+    asof_view_path = Path(historical_asof_view_path)
+    manifest_path = (
+        asof_view_path.parent
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "logical_input_manifest.json"
+    )
+    if not manifest_path.exists():
+        return {}
+    manifest = _read_json(manifest_path)
+    if str(manifest.get("business_date") or "") != business_date:
+        return _missing_historical_submit_authority_paths(manifest_path)
+    if str(manifest.get("status") or "") != "PASS":
+        return _missing_historical_submit_authority_paths(manifest_path)
+    logical_paths = manifest.get("logical_paths")
+    if not isinstance(logical_paths, dict):
+        return _missing_historical_submit_authority_paths(manifest_path)
+    resolved: dict[str, str] = {}
+    for key in ("normalized_ohlcv", "raw_ohlcv", "listed_issues"):
+        value = str(logical_paths.get(key) or "")
+        resolved[key] = value or _missing_historical_submit_authority_paths(manifest_path)[key]
+    return resolved
+
+
+def _missing_historical_submit_authority_paths(manifest_path: Path) -> dict[str, str]:
+    missing_root = manifest_path.parent / "__missing_historical_logical_authority__"
+    return {
+        "normalized_ohlcv": str(
+            missing_root / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+        ),
+        "raw_ohlcv": str(missing_root / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"),
+        "listed_issues": str(missing_root / "raw" / "jquants" / "listed_issues" / "data.parquet"),
+    }
 
 
 def _blocked(reason: str) -> RuntimeV2SubmitResult:

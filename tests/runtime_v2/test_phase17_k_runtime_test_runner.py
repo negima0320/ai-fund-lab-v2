@@ -102,6 +102,31 @@ def test_phase17_k_status_is_read_only(tmp_path: Path, capsys: pytest.CaptureFix
     assert before == after
 
 
+def test_phase20_h_run_status_matches_status_json_and_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    args = ["--runtime-root", str(root), "--evidence-root", str(tmp_path / "reports")]
+
+    run_status = call_main(runner, ["run-status", *args], capsys)
+    status = call_main(runner, ["status", *args], capsys)
+
+    assert run_status["_exit_code"] == status["_exit_code"] == runner.EXIT_PASS
+    assert run_status == status
+
+
+def test_phase20_h_run_status_human_output_matches_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    args = ["--runtime-root", str(root), "--evidence-root", str(tmp_path / "reports")]
+
+    assert runner.main(["run-status", *args]) == runner.EXIT_PASS
+    run_status_output = capsys.readouterr().out
+    assert runner.main(["status", *args]) == runner.EXIT_PASS
+    status_output = capsys.readouterr().out
+
+    assert run_status_output == status_output
+
+
 def test_phase17_k_plan_is_read_only_and_uses_runtime_cli_sequence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     runner = load_runner()
     root = make_runtime_root(tmp_path)
@@ -158,6 +183,83 @@ def test_phase17_k_reset_initial_state_after_confirmed_backup(tmp_path: Path, ca
     assert state["positions"] == []
     assert pending["status"] == "EMPTY"
     assert (root / "persistent_ledger" / "orders.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_phase20_o_reset_initial_state_separates_logical_date_from_wall_clock(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence = tmp_path / "reports"
+    backup = call_main(runner, ["backup", "--runtime-root", str(root), "--evidence-root", str(evidence), "--confirm", CONFIRM_FLAG], capsys)
+
+    reset = call_main(
+        runner,
+        [
+            "reset",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(evidence),
+            "--backup-id",
+            backup["backup_id"],
+            "--initial-position-state-date",
+            "2026-06-15",
+            "--initial-cash",
+            "1000000",
+            "--confirm",
+            CONFIRM_FLAG,
+        ],
+        capsys,
+    )
+    state = json.loads((root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+
+    assert reset["status"] == "PASS"
+    assert reset["initial_date_policy"] == "historical_fresh_run_first_business_date"
+    assert reset["resolved_initial_position_state_date"] == "2026-06-15"
+    assert state["business_date"] == "2026-06-15"
+    assert state["as_of"] == "2026-06-15"
+    assert state["position_state_as_of"] == "2026-06-15"
+    assert state["current_position_status"] == "READY"
+    assert state["current_positions_unknown"] is False
+    assert state["current_state_confirmed_empty"] is True
+    assert state["no_position"] is True
+    assert state["no_position_reason"] == "runtime_test_initial_empty_portfolio"
+    assert state["position_state_source"] == "runtime_test_reset"
+    assert state["temporal_status"] == "READY"
+    assert state["review_required"] is False
+    assert state["cash"] == 1_000_000.0
+    assert state["total_equity"] == 1_000_000.0
+    assert state["created_at"] > "2026-06-15"
+    assert state["reset_executed_at"] == state["created_at"]
+    assert state["wall_clock_fields"]["created_at"] == state["created_at"]
+    assert state["logical_time_fields"]["position_state_as_of"] == "2026-06-15"
+
+
+def test_phase20_o_reset_invalid_initial_position_state_date_fails_closed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence = tmp_path / "reports"
+    backup = call_main(runner, ["backup", "--runtime-root", str(root), "--evidence-root", str(evidence), "--confirm", CONFIRM_FLAG], capsys)
+
+    reset = call_main(
+        runner,
+        [
+            "reset",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(evidence),
+            "--backup-id",
+            backup["backup_id"],
+            "--initial-position-state-date",
+            "2026/06/15",
+            "--confirm",
+            CONFIRM_FLAG,
+        ],
+        capsys,
+    )
+
+    assert reset["status"] == "PRECONDITION_FAILURE"
+    assert reset["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
 
 
 def test_phase17_k_reset_clears_historical_broker_evidence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -232,6 +334,62 @@ def test_phase17_k_run_marks_execution_success_when_runtime_cli_jobs_pass(
     assert payload["status"] == "PASS"
     assert any("--job" in command and command[command.index("--job") + 1] == "execution" for command in commands)
     assert len(commands) == len(runner.JOB_SEQUENCE)
+
+
+def test_phase20_u_run_halts_when_pm_artifact_halts_despite_cli_exit_zero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence = tmp_path / "reports"
+    call_main(runner, ["backup", "--runtime-root", str(root), "--evidence-root", str(evidence), "--confirm", CONFIRM_FLAG], capsys)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], *, cwd: Path):
+        commands.append(command)
+        job = command[command.index("--job") + 1]
+        business_date = command[command.index("--business-date") + 1]
+        if job == "sell_planning":
+            pm_dir = root / "runtime_state" / "position_management" / business_date
+            pm_dir.mkdir(parents=True)
+            (pm_dir / "position_management_decisions.json").write_text(
+                json.dumps(
+                    {
+                        "status": "HALT",
+                        "reason": "artifact member hash mismatch: POSITION_MANAGEMENT_POLICY_SET:RUNTIME_ADAPTER",
+                        "decisions": [],
+                        "input_contract": {
+                            "pm_input_schema_status": "HALT",
+                            "pm_runtime_adapter_authority_status": "HALT",
+                            "pm_runtime_adapter_authority_reason": "artifact member hash mismatch: POSITION_MANAGEMENT_POLICY_SET:RUNTIME_ADAPTER",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(runner, "run_runtime_cli", fake_run)
+    payload = call_main(
+        runner,
+        ["run", "--runtime-root", str(root), "--evidence-root", str(evidence), "--business-days", "1", "--start-date", "2026-07-06", "--confirm", CONFIRM_FLAG],
+        capsys,
+    )
+    run_id = next((evidence / "runs").iterdir()).name
+    run_state = json.loads((evidence / "runs" / run_id / "run_state.json").read_text(encoding="utf-8"))
+    pm_snapshot = json.loads((evidence / "runs" / run_id / "daily" / "2026-07-06" / "position_management" / "pm_decisions.json").read_text(encoding="utf-8"))
+
+    assert payload["status"] == "HALT"
+    assert payload["_exit_code"] == runner.EXIT_HALT
+    assert run_state["status"] == "HALT"
+    assert run_state["halted_at"]["runtime_test_job_status"] == "HALT_PM_POSITION_MANAGEMENT"
+    assert pm_snapshot["source_status"] == "AVAILABLE"
+    assert pm_snapshot["pm_status"] == "HALT"
+    assert pm_snapshot["pm_authority_status"] == "HALT"
+    assert pm_snapshot["pm_decision_count"] == 0
+    assert [command[command.index("--job") + 1] for command in commands][-1] == "sell_planning"
 
 
 def test_phase17_k_run_dry_run_never_executes_runtime_cli(

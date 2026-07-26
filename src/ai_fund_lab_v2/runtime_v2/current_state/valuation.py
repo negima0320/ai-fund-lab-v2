@@ -557,7 +557,11 @@ def _market_evidence_from_historical_asof_view(
         ),
         {},
     )
-    source_path = Path(str(authority.get("physical_source_path") or ""))
+    source_path = _historical_logical_normalized_ohlcv_path_from_asof_view(
+        asof_view_path=path,
+        business_date=business_date,
+        fallback_physical_path=Path(str(authority.get("physical_source_path") or "")),
+    )
     if not authority or not source_path.is_file():
         return _market_review_payload(path=path, business_date=business_date, reason="historical_normalized_ohlcv_missing")
     quotes, missing = _quotes_from_parquet(source_path=source_path, market_date=business_date, required_symbols=required_symbols)
@@ -578,8 +582,43 @@ def _market_evidence_from_historical_asof_view(
         "historical_asof_view_path": str(path),
         "historical_market_authority": "normalized_ohlcv",
         "historical_market_source_path": str(source_path),
+        "historical_market_source_scope": (
+            "run_scoped_logical_input"
+            if "inputs/historical_asof" in str(source_path)
+            else "historical_asof_physical_authority"
+        ),
         "missing_symbols": sorted(missing),
     }
+
+
+def _historical_logical_normalized_ohlcv_path_from_asof_view(
+    *,
+    asof_view_path: Path,
+    business_date: str,
+    fallback_physical_path: Path,
+) -> Path:
+    manifest_path = (
+        asof_view_path.parent
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "logical_input_manifest.json"
+    )
+    if not manifest_path.exists():
+        return fallback_physical_path
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return manifest_path.parent / "__invalid_historical_logical_valuation_source__.parquet"
+    if str(manifest.get("business_date") or "") != business_date:
+        return manifest_path.parent / "__mismatched_historical_logical_valuation_source__.parquet"
+    if str(manifest.get("status") or "") != "PASS":
+        return manifest_path.parent / "__blocked_historical_logical_valuation_source__.parquet"
+    logical_paths = manifest.get("logical_paths")
+    if not isinstance(logical_paths, dict):
+        return manifest_path.parent / "__missing_historical_logical_valuation_source__.parquet"
+    normalized = str(logical_paths.get("normalized_ohlcv") or "")
+    return Path(normalized) if normalized else manifest_path.parent / "__missing_historical_logical_valuation_source__.parquet"
 
 
 def _market_review_payload(*, path: Path, business_date: str, reason: str) -> dict[str, Any]:

@@ -44,6 +44,17 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     load_feature_date_contract,
     resolve_feature_date_contract,
 )
+from ai_fund_lab_v2.runtime_v2.market_data_bootstrap import (
+    build_market_data_bootstrap_plan,
+    execute_market_data_bootstrap,
+)
+from ai_fund_lab_v2.runtime_v2.market_data_acquisition import (
+    FETCH_CONFIRM_FLAG,
+    acquisition_status,
+    build_acquisition_plan,
+    resume_acquisition,
+    run_acquisition,
+)
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import reject_mode_rooted_runtime_root
 
 
@@ -72,6 +83,7 @@ EXIT_CODES = {
 }
 
 SCOPED_BUY_ONLY_JOB_STATUSES = {"REVIEW_REQUIRED_BUY_ONLY", "BLOCKED_BUY_ONLY"}
+PM_RUNTIME_TEST_FATAL_STATUSES = {"HALT"}
 
 PROFILE_PATHS = {
     "historical-smoke": Path("config/runtime_tests/historical_smoke_5bd.json"),
@@ -85,6 +97,16 @@ BACKUP_MANIFEST_SCHEMA_VERSION = "runtime_test_backup_manifest_v1"
 RESET_MANIFEST_SCHEMA_VERSION = "runtime_test_reset_manifest_v1"
 FINAL_SUMMARY_SCHEMA_VERSION = "runtime_test_final_summary_v1"
 FRESH_RUN_SUMMARY_SCHEMA_VERSION = "runtime_test_fresh_run_summary_v1"
+SUMMARY_SCHEMA_VERSION = "runtime_test_summary_v2"
+SUMMARY_SCOPE_CONTRACT_VERSION = "runtime_test_summarize_scope_contract.v1"
+PERFORMANCE_METRIC_CONTRACT_VERSION = "phase20_b_performance_metric_contract.v1"
+PERFORMANCE_OBSERVABILITY_CONTRACT_VERSION = "phase20_j_performance_observability_contract.v1"
+PERFORMANCE_OBSERVABILITY_SCHEMA_VERSION = "runtime_test_performance_observability_v1"
+POSITION_QUANTITY_EPSILON = 1e-6
+REDUCE_NON_EXECUTABLE_FEASIBILITY_STATUS = "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+REDUCE_NON_EXECUTABLE_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+REDUCE_NON_EXECUTABLE_LIFECYCLE_EVENT = "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY"
+SUMMARY_SCOPES = ("overview", "performance", "positions", "lifecycle", "full")
 LEGACY_RUN_STATE_SCHEMA_VERSIONS = {"phase17_k_run_state_v1"}
 LEGACY_PLAN_SCHEMA_VERSIONS = {"phase17_k_runtime_test_plan_v1"}
 LEGACY_BACKUP_MANIFEST_SCHEMA_VERSIONS = {"phase17_k_backup_manifest_v1"}
@@ -95,6 +117,7 @@ SUPPORTED_BACKUP_MANIFEST_SCHEMA_VERSIONS = {
     *LEGACY_BACKUP_MANIFEST_SCHEMA_VERSIONS,
 }
 MUTATION_CONFIRM_FLAG = "--yes-i-understand-this-mutates-trading-state"
+MARKET_DATA_MUTATION_CONFIRM_FLAG = "--yes-i-understand-this-mutates-market-data"
 EVIDENCE_ROOT = Path("reports/runtime_tests")
 BACKUP_ROOT = EVIDENCE_ROOT / "backups"
 RUNS_ROOT = EVIDENCE_ROOT / "runs"
@@ -169,12 +192,16 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--confirm", action="store_true")
         sub.add_argument(MUTATION_CONFIRM_FLAG, dest="explicit_mutation_confirm", action="store_true")
 
-    status = subparsers.add_parser("status")
+    run_status = subparsers.add_parser("run-status")
+    add_common(run_status)
+
+    status = subparsers.add_parser("status", help="Compatibility alias for run-status")
     add_common(status)
 
     summarize = subparsers.add_parser("summarize")
     add_common(summarize)
     summarize.add_argument("--run-id", required=True)
+    summarize.add_argument("--scope", choices=SUMMARY_SCOPES)
     summarize.add_argument("--write-evidence", action="store_true")
 
     ai_status = subparsers.add_parser("ai-status")
@@ -188,6 +215,59 @@ def build_parser() -> argparse.ArgumentParser:
     system_status.add_argument("--write-evidence", action="store_true")
     system_status.add_argument("--scope", default="overview", choices=sorted(SYSTEM_STATUS_SCOPES))
     system_status.add_argument("--full", action="store_true", help="Alias for --scope full")
+    system_status.add_argument("--target-start-date")
+    system_status.add_argument("--target-end-date")
+
+    market_data_bootstrap = subparsers.add_parser("market-data-bootstrap")
+    add_common(market_data_bootstrap)
+    market_data_bootstrap_sub = market_data_bootstrap.add_subparsers(dest="market_data_bootstrap_action")
+    market_data_bootstrap_plan = market_data_bootstrap_sub.add_parser("plan")
+    add_common(market_data_bootstrap_plan)
+    market_data_bootstrap_plan.add_argument("--years", type=int, default=5)
+    market_data_bootstrap_plan.add_argument("--source-path", default=".runtime/data/raw_normalized_real_runtime/jquants/equities_bars_daily/data.parquet")
+    market_data_bootstrap_plan.add_argument("--target-start-date")
+    market_data_bootstrap_plan.add_argument("--target-end-date")
+    market_data_bootstrap_plan.add_argument("--write-evidence", action="store_true")
+    market_data_bootstrap_run = market_data_bootstrap_sub.add_parser("run")
+    add_common(market_data_bootstrap_run)
+    market_data_bootstrap_run.add_argument("--years", type=int, default=5)
+    market_data_bootstrap_run.add_argument("--source-path", default=".runtime/data/raw_normalized_real_runtime/jquants/equities_bars_daily/data.parquet")
+    market_data_bootstrap_run.add_argument("--target-start-date")
+    market_data_bootstrap_run.add_argument("--target-end-date")
+    market_data_bootstrap_run.add_argument("--write-evidence", action="store_true")
+    market_data_bootstrap_run.add_argument("--confirm", action="store_true")
+    market_data_bootstrap_run.add_argument(MARKET_DATA_MUTATION_CONFIRM_FLAG, dest="explicit_market_data_mutation_confirm", action="store_true")
+
+    market_data_acquisition = subparsers.add_parser("market-data-acquisition")
+    add_common(market_data_acquisition)
+    market_data_acquisition_sub = market_data_acquisition.add_subparsers(dest="market_data_acquisition_action")
+    market_data_acquisition_plan = market_data_acquisition_sub.add_parser("plan")
+    add_common(market_data_acquisition_plan)
+    market_data_acquisition_plan.add_argument("--start-date", required=True)
+    market_data_acquisition_plan.add_argument("--end-date", required=True)
+    market_data_acquisition_plan.add_argument("--run-id")
+    market_data_acquisition_plan.add_argument("--chunk", choices=("day", "week", "month"), default="month")
+    market_data_acquisition_plan.add_argument("--write-evidence", action="store_true")
+    market_data_acquisition_run = market_data_acquisition_sub.add_parser("run")
+    add_common(market_data_acquisition_run)
+    market_data_acquisition_run.add_argument("--start-date", required=True)
+    market_data_acquisition_run.add_argument("--end-date", required=True)
+    market_data_acquisition_run.add_argument("--run-id")
+    market_data_acquisition_run.add_argument("--chunk", choices=("day", "week", "month"), default="month")
+    market_data_acquisition_run.add_argument("--max-pages-per-chunk", type=int, default=100)
+    market_data_acquisition_run.add_argument("--confirm", action="store_true")
+    market_data_acquisition_run.add_argument(FETCH_CONFIRM_FLAG, dest="explicit_fetch_confirm", action="store_true")
+    market_data_acquisition_run.add_argument("--write-evidence", action="store_true")
+    market_data_acquisition_resume = market_data_acquisition_sub.add_parser("resume")
+    add_common(market_data_acquisition_resume)
+    market_data_acquisition_resume.add_argument("--run-id", required=True)
+    market_data_acquisition_resume.add_argument("--max-pages-per-chunk", type=int, default=100)
+    market_data_acquisition_resume.add_argument("--confirm", action="store_true")
+    market_data_acquisition_resume.add_argument(FETCH_CONFIRM_FLAG, dest="explicit_fetch_confirm", action="store_true")
+    market_data_acquisition_resume.add_argument("--write-evidence", action="store_true")
+    market_data_acquisition_status = market_data_acquisition_sub.add_parser("status")
+    add_common(market_data_acquisition_status)
+    market_data_acquisition_status.add_argument("--run-id", required=True)
 
     prepare_isolated = subparsers.add_parser("prepare-isolated")
     add_common(prepare_isolated)
@@ -210,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_mutation_safety(reset)
     reset.add_argument("--backup-id")
     reset.add_argument("--initial-cash", type=float)
+    reset.add_argument("--initial-position-state-date")
 
     run = subparsers.add_parser("run")
     add_common(run)
@@ -272,7 +353,7 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
     evidence_root = Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT)))
     validate_environment(profile=profile, runtime_root=runtime_root)
 
-    if args.subcommand == "status":
+    if args.subcommand in {"run-status", "status"}:
         return status(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "summarize":
         return summarize_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
@@ -280,6 +361,10 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return ai_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "system-status":
         return system_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "market-data-bootstrap":
+        return market_data_bootstrap_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "market-data-acquisition":
+        return market_data_acquisition_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "prepare-isolated":
         return prepare_isolated_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "plan":
@@ -376,8 +461,11 @@ def summarize_command(
         )
     final_hashes = final_summary.get("final_state_hashes") if isinstance(final_summary.get("final_state_hashes"), dict) else {}
     current_hashes = state_hashes(runtime_root) if runtime_root.exists() else {}
+    final_snapshot_state, final_snapshot_authority = _load_verified_final_state_snapshot(run_dir=run_dir, final_summary=final_summary)
     runtime_authority = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH"
     runtime_state_available = bool(final_hashes) and current_hashes == final_hashes
+    final_state_available = runtime_state_available or bool(final_snapshot_state)
+    final_state_authority = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH" if runtime_state_available else final_snapshot_authority.get("status", "NOT_AVAILABLE")
     if not final_hashes:
         runtime_authority = "FINAL_STATE_HASH_NOT_AVAILABLE"
         findings.append(_summary_finding("REVIEW_REQUIRED", "RUN_EVIDENCE_INCOMPLETE", {"missing": ["final_state_hashes"]}))
@@ -385,13 +473,22 @@ def summarize_command(
         runtime_authority = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MISMATCH"
         findings.append(
             _summary_finding(
-                "BLOCKED",
+                "INFO",
                 "RUN_FINAL_STATE_HASH_MISMATCH",
-                {"final_state_hashes": final_hashes, "current_state_hashes": current_hashes},
+                {
+                    "final_state_hashes": final_hashes,
+                    "current_state_hashes": current_hashes,
+                    "past_run_summary_impact": "NONE_WHEN_RUN_SCOPED_EVIDENCE_EXISTS",
+                },
             )
         )
 
     completed_business_days = _completed_business_days(run_state=run_state, fresh_summary=fresh_summary)
+    observability = _load_performance_observability(
+        run_dir=run_dir,
+        run_id=run_id,
+        completed_business_days=completed_business_days,
+    )
     pm = _summarize_pm_decisions(
         runtime_root=runtime_root,
         run_dir=run_dir,
@@ -413,20 +510,27 @@ def summarize_command(
             include_without_business_date=True,
         )
         if runtime_state_available
-        else []
+        else _run_scoped_orders_from_fills(observability)
     )
     executions = (
         _filter_rows_by_business_days(_read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl"), completed_business_days)
         if runtime_state_available
-        else []
+        else _run_scoped_executions_from_fills(observability)
     )
-    current_state = read_json_optional(runtime_root / "persistent_ledger" / "state.json") if runtime_state_available else {}
+    current_state = read_json_optional(runtime_root / "persistent_ledger" / "state.json") if runtime_state_available else final_snapshot_state
     pending_state = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json") if runtime_state_available else {}
 
     if runtime_state_available and not (runtime_root / "persistent_ledger" / "state.json").exists():
         findings.append(_summary_finding("REVIEW_REQUIRED", "LEDGER_NOT_AVAILABLE", {"path": str(runtime_root / "persistent_ledger" / "state.json")}))
-    elif not runtime_state_available:
-        findings.append(_summary_finding("REVIEW_REQUIRED", "LEDGER_NOT_AVAILABLE", {"reason": runtime_authority}))
+    elif not final_state_available:
+        severity = "INFO" if observability.get("status") == "AVAILABLE" else "REVIEW_REQUIRED"
+        findings.append(
+            _summary_finding(
+                severity,
+                "CURRENT_RUNTIME_ROOT_LEDGER_NOT_USED_FOR_PAST_RUN",
+                {"reason": runtime_authority, "run_scoped_observability_status": observability.get("status")},
+            )
+        )
 
     trading = _summarize_trading(plans=plans, orders=orders, executions=executions, pending_state=pending_state)
     reduce_exit = _summarize_reduce_exit(plans=plans)
@@ -448,14 +552,26 @@ def summarize_command(
         fresh_summary=fresh_summary,
         current_state=current_state,
         realized_pnl_from_trades=realized_pnl_from_trades,
-        runtime_state_available=runtime_state_available,
+        runtime_state_available=final_state_available,
+        current_state_authority=final_state_authority,
+        current_state_authority_status="CANONICAL_FINAL_STATE_SNAPSHOT" if final_snapshot_state and not runtime_state_available else "CANONICAL_CURRENT_STATE",
+        observability=observability,
     )
     current_positions = _summarize_current_positions(current_state)
-    lifecycle = _summarize_lifecycle(pm=pm, trading=trading, reduce_exit=reduce_exit, current_state=current_state, pending_state=pending_state)
+    lifecycle = _summarize_lifecycle(
+        pm=pm,
+        trading=trading,
+        reduce_exit=reduce_exit,
+        current_state=current_state,
+        pending_state=pending_state,
+        run_scoped_position_authority=observability.get("status") == "AVAILABLE",
+    )
     if lifecycle["status"] != "PASS":
         findings.append(_summary_finding("REVIEW_REQUIRED", "LIFECYCLE_CONSISTENCY_REVIEW_REQUIRED", lifecycle))
 
     external_effects = _summarize_external_effects(run_dir=run_dir, fresh_summary=fresh_summary)
+    observability_judgment = _observability_completeness_judgment(observability)
+    performance_analysis_readiness = _performance_analysis_readiness_judgment(observability)
     run_summary = {
         "profile_id": plan.get("profile_id") or fresh_summary.get("profile_id") or profile.get("profile_id", ""),
         "status": run_state.get("status") or final_summary.get("status") or "UNKNOWN",
@@ -467,6 +583,8 @@ def summarize_command(
         "run_dir": str(run_dir),
         "runtime_root": str(runtime_root),
         "runtime_state_authority": runtime_authority,
+        "final_state_authority": final_state_authority,
+        "final_state_snapshot_authority": final_snapshot_authority,
         "event_collection_authority": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
         "final_state_hashes": final_hashes,
         "current_state_hashes": current_hashes,
@@ -477,11 +595,56 @@ def summarize_command(
         runtime_judgment = "REVIEW_REQUIRED"
     status_value = runtime_judgment
     exit_code = EXIT_PASS if status_value == "PASS" else EXIT_BLOCKED if status_value == "BLOCKED" else EXIT_REVIEW_REQUIRED
+    scope = str(getattr(args, "scope", "") or "full")
+    scope_sections = _build_summarize_scope_sections(
+        run_id=run_id,
+        run_summary=run_summary,
+        external_effects=external_effects,
+        performance=performance,
+        pm=pm,
+        trading=trading,
+        reduce_exit=reduce_exit,
+        trade_attribution=trade_attribution,
+        current_positions=current_positions,
+        lifecycle=lifecycle,
+        findings=findings,
+        plans=plans,
+        executions=executions,
+        observability=observability,
+    )
     payload = {
         "schema_version": "runtime_test_summary_v1",
+        "summary_scope_schema_version": SUMMARY_SCHEMA_VERSION,
         "subcommand": "summarize",
         "summary_id": summary_id,
         "run_id": run_id,
+        "generated_at": utc_now(),
+        "scope": scope,
+        "scope_default": "legacy-compatible full" if not getattr(args, "scope", None) else "explicit",
+        "available_scopes": list(SUMMARY_SCOPES),
+        "contract_versions": {
+            "summarize_scope_contract": SUMMARY_SCOPE_CONTRACT_VERSION,
+            "performance_metric_contract": PERFORMANCE_METRIC_CONTRACT_VERSION,
+            "performance_observability_contract": PERFORMANCE_OBSERVABILITY_CONTRACT_VERSION,
+        },
+        "authority": {
+            "run_event_aggregation": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
+            "runtime_root_detail": runtime_authority,
+            "shared_runtime_event_authority": "PROHIBITED",
+        },
+        "source_evidence": {
+            "run_dir": str(run_dir),
+            "plan": str(run_dir / "plan.json"),
+            "run_state": str(run_dir / "run_state.json"),
+            "final_summary": str(run_dir / "final_summary.json"),
+            "fresh_run_summary": str(run_dir / "fresh_run_summary.json"),
+        },
+        "missing_evidence": [],
+        "warnings": [],
+        "overview": scope_sections["overview"] if scope in {"overview", "full"} else None,
+        "performance_scope": scope_sections["performance"] if scope in {"performance", "full"} else None,
+        "positions_scope": scope_sections["positions"] if scope in {"positions", "full"} else None,
+        "lifecycle_scope": scope_sections["lifecycle"] if scope in {"lifecycle", "full"} else None,
         "run": run_summary,
         "external_effects": external_effects,
         "performance": performance,
@@ -489,6 +652,9 @@ def summarize_command(
         "trading": trading,
         "reduce_exit": reduce_exit,
         "trade_attribution": trade_attribution,
+        "performance_observability": observability,
+        "observability_completeness_judgment": observability_judgment,
+        "performance_analysis_readiness_judgment": performance_analysis_readiness,
         "current_positions": current_positions,
         "lifecycle_consistency": lifecycle,
         "findings": findings,
@@ -596,6 +762,76 @@ def _matches_requested_run(payload: dict[str, Any], *, run_id: str, run_dir: Pat
     return (not payload_run_id or payload_run_id == run_id) and evidence_matches
 
 
+def _pm_artifact_status(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = payload or {}
+    input_contract = payload.get("input_contract") if isinstance(payload.get("input_contract"), dict) else {}
+    status = str(payload.get("status") or payload.get("pm_status") or input_contract.get("status") or "")
+    authority_status = str(
+        payload.get("pm_runtime_adapter_authority_status")
+        or payload.get("position_management_authority_status")
+        or input_contract.get("pm_runtime_adapter_authority_status")
+        or ""
+    )
+    input_status = str(payload.get("pm_input_schema_status") or input_contract.get("pm_input_schema_status") or "")
+    reason = str(
+        payload.get("reason")
+        or payload.get("pm_reason")
+        or payload.get("pm_review_reason")
+        or input_contract.get("pm_runtime_adapter_authority_reason")
+        or input_contract.get("pm_review_reason")
+        or ""
+    )
+    decision_count = int(payload.get("pm_decision_count") or len(payload.get("decisions") or []))
+    trace_status = "NOT_REQUIRED_EMPTY" if decision_count == 0 else ("AVAILABLE" if payload.get("decision_trace_path") else "EMBEDDED_OR_NOT_RETAINED")
+    return {
+        "position_management_status": status or "UNKNOWN",
+        "position_management_authority_status": authority_status or "UNKNOWN",
+        "position_management_input_status": input_status or "UNKNOWN",
+        "position_management_reason": reason,
+        "position_management_decision_count": decision_count,
+        "position_management_trace_status": trace_status,
+    }
+
+
+def _is_pm_artifact_fatal(payload: dict[str, Any] | None) -> bool:
+    status = _pm_artifact_status(payload)
+    return any(
+        str(status.get(field) or "").upper() in PM_RUNTIME_TEST_FATAL_STATUSES
+        for field in (
+            "position_management_status",
+            "position_management_authority_status",
+            "position_management_input_status",
+        )
+    )
+
+
+def _pm_fatal_evidence_for_run(run_dir: Path, *, completed_business_days: set[str] | None = None) -> list[dict[str, Any]]:
+    completed = completed_business_days or set()
+    findings: list[dict[str, Any]] = []
+    patterns = (
+        ("sell_planning_position_management_evidence", "daily/*/sell_planning/position_management_evidence.json"),
+        ("run_scoped_pm_decision_snapshot", "daily/*/position_management/pm_decisions.json"),
+    )
+    for source, pattern in patterns:
+        for path in sorted(run_dir.glob(pattern)):
+            business_date = path.parts[-3]
+            if completed and business_date not in completed:
+                continue
+            payload = read_json_optional(path)
+            if not payload or not _is_pm_artifact_fatal(payload):
+                continue
+            status = _pm_artifact_status(payload)
+            findings.append(
+                {
+                    "business_date": business_date,
+                    "source": source,
+                    "path": str(path),
+                    **status,
+                }
+            )
+    return findings
+
+
 def _summarize_pm_decisions(
     *,
     runtime_root: Path,
@@ -607,6 +843,7 @@ def _summarize_pm_decisions(
     records: list[dict[str, Any]] = []
     run_evidence_seen = False
     run_evidence_counts: Counter[str] = Counter()
+    fatal_statuses: list[dict[str, Any]] = []
     for path in sorted(run_dir.glob("daily/*/sell_planning/position_management_evidence.json")):
         business_date = path.parts[-3]
         if completed_business_days and business_date not in completed_business_days:
@@ -614,6 +851,17 @@ def _summarize_pm_decisions(
         payload = read_json_optional(path)
         if payload and _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
             run_evidence_seen = True
+            pm_status = _pm_artifact_status(payload)
+            if _is_pm_artifact_fatal(payload):
+                fatal_statuses.append(
+                    {
+                        "business_date": business_date,
+                        "path": str(path),
+                        "status": pm_status["position_management_status"],
+                        "authority_status": pm_status["position_management_authority_status"],
+                        "reason": pm_status["position_management_reason"],
+                    }
+                )
             run_evidence_counts["HOLD"] += int(payload.get("pm_hold_count") or 0)
             run_evidence_counts["ADD"] += int(payload.get("pm_add_count") or 0)
             run_evidence_counts["REDUCE"] += int(payload.get("pm_reduce_count") or 0)
@@ -625,10 +873,24 @@ def _summarize_pm_decisions(
             payload = read_json_optional(path)
             for decision in payload.get("decisions") or []:
                 if isinstance(decision, dict) and _in_completed_business_days(decision, completed_business_days, fallback=path.parent.name):
-                    record = dict(decision)
+                    record = _normalize_pm_decision_record(decision, fallback_business_date=path.parent.name)
                     record["_artifact_path"] = str(path)
                     record["_run_authority"] = "runtime_root_final_hash_match_completed_business_day_filter"
                     records.append(record)
+    for path in sorted(run_dir.glob("daily/*/position_management/pm_decisions.json")):
+        business_date = path.parts[-3]
+        if completed_business_days and business_date not in completed_business_days:
+            continue
+        payload = read_json_optional(path)
+        if payload and not _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
+            continue
+        for decision in payload.get("decisions") or []:
+            if isinstance(decision, dict) and _in_completed_business_days(decision, completed_business_days, fallback=business_date):
+                record = _normalize_pm_decision_record(decision, fallback_business_date=business_date)
+                record["_artifact_path"] = str(path)
+                record["_run_authority"] = "run_scoped_pm_decision_observability"
+                records.append(record)
+    records = _dedupe_pm_decision_records(records)
     decision_counts = Counter(str(row.get("decision") or "UNKNOWN") for row in records)
     for decision, count in run_evidence_counts.items():
         if count and not decision_counts.get(decision):
@@ -660,7 +922,40 @@ def _summarize_pm_decisions(
         "add_count": decision_counts.get("ADD", 0),
         "decision_records": records,
         "completed_business_day_filter": sorted(completed_business_days),
+        "fatal_status_count": len(fatal_statuses),
+        "fatal_statuses": fatal_statuses,
     }
+
+
+def _normalize_pm_decision_record(decision: dict[str, Any], *, fallback_business_date: str) -> dict[str, Any]:
+    record = dict(decision)
+    decision_type = str(record.get("decision") or record.get("decision_type") or "UNKNOWN")
+    decision_id = str(record.get("decision_id") or record.get("pm_decision_id") or "")
+    reason = record.get("reason") if record.get("reason") not in (None, "") else record.get("decision_reason")
+    runtime_action = record.get("runtime_action") if record.get("runtime_action") not in (None, "") else record.get("decision_status")
+    record["decision"] = decision_type
+    record["decision_type"] = decision_type
+    record["decision_id"] = decision_id
+    record["pm_decision_id"] = decision_id
+    record["reason"] = reason or ""
+    record["runtime_action"] = runtime_action or ""
+    record["business_date"] = str(record.get("business_date") or fallback_business_date)
+    return record
+
+
+def _dedupe_pm_decision_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in records:
+        key = (
+            str(row.get("business_date") or ""),
+            str(row.get("symbol") or ""),
+            str(row.get("decision") or ""),
+            str(row.get("decision_id") or ""),
+        )
+        existing = by_key.get(key)
+        if not existing or existing.get("_run_authority") != "run_scoped_pm_decision_observability":
+            by_key[key] = row
+    return sorted(by_key.values(), key=lambda row: (str(row.get("business_date") or ""), str(row.get("symbol") or ""), str(row.get("decision_id") or "")))
 
 
 def _collect_order_plan_items(
@@ -671,35 +966,45 @@ def _collect_order_plan_items(
     available: bool,
     completed_business_days: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    result = {"buy": [], "sell": []}
-    if not available:
-        return result
-    for path in sorted((runtime_root / "runtime_state" / "morning_pipeline").glob("*/order_plan.json")):
-        if completed_business_days and path.parent.name not in completed_business_days:
-            continue
-        for item in _items(read_json_optional(path)):
-            if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
-                result["buy"].append(
-                    {
-                        **item,
-                        "_artifact_path": str(path),
-                        "_plan_date": path.parent.name,
-                        "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
-                    }
-                )
-    for path in sorted((runtime_root / "runtime_state" / "sell_pipeline").glob("*/order_plan.json")):
-        if completed_business_days and path.parent.name not in completed_business_days:
-            continue
-        for item in _items(read_json_optional(path)):
-            if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
-                result["sell"].append(
-                    {
-                        **item,
-                        "_artifact_path": str(path),
-                        "_plan_date": path.parent.name,
-                        "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
-                    }
-                )
+    result = {"buy": [], "sell": [], "non_executable_sell_decisions": []}
+    if available:
+        for path in sorted((runtime_root / "runtime_state" / "morning_pipeline").glob("*/order_plan.json")):
+            if completed_business_days and path.parent.name not in completed_business_days:
+                continue
+            for item in _items(read_json_optional(path)):
+                if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
+                    result["buy"].append(
+                        {
+                            **item,
+                            "_artifact_path": str(path),
+                            "_plan_date": path.parent.name,
+                            "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
+                        }
+                    )
+        for path in sorted((runtime_root / "runtime_state" / "sell_pipeline").glob("*/order_plan.json")):
+            if completed_business_days and path.parent.name not in completed_business_days:
+                continue
+            payload = read_json_optional(path)
+            for item in _items(payload):
+                if isinstance(item, dict) and _in_completed_business_days(item, completed_business_days, fallback=path.parent.name):
+                    result["sell"].append(
+                        {
+                            **item,
+                            "_artifact_path": str(path),
+                            "_plan_date": path.parent.name,
+                            "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
+                        }
+                    )
+            for item in payload.get("non_executable_sell_decisions") or []:
+                if isinstance(item, dict):
+                    result["non_executable_sell_decisions"].append(
+                        {
+                            **item,
+                            "_artifact_path": str(path),
+                            "_plan_date": path.parent.name,
+                            "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
+                        }
+                    )
     for path in sorted(run_dir.glob("daily/*/sell_planning/sell_planning_manifest.json")):
         business_date = path.parts[-3]
         if completed_business_days and business_date not in completed_business_days:
@@ -710,7 +1015,94 @@ def _collect_order_plan_items(
         manifest = _manifest_payload(payload)
         if int(manifest.get("pm_decision_count") or 0) == 0 and int(manifest.get("pm_exit_count") or 0) == 0 and int(manifest.get("pm_reduce_count") or 0) == 0:
             result["sell"] = [item for item in result["sell"] if str(item.get("_plan_date") or item.get("business_date") or "") != business_date]
+    if not result["buy"] or not result["sell"]:
+        fill_plans = _run_scoped_plan_proxies_from_fills(run_dir=run_dir, run_id=run_id, completed_business_days=completed_business_days)
+        if not result["buy"]:
+            result["buy"] = fill_plans["buy"]
+        if not result["sell"]:
+            result["sell"] = fill_plans["sell"]
     return result
+
+
+def _run_scoped_plan_proxies_from_fills(*, run_dir: Path, run_id: str, completed_business_days: set[str]) -> dict[str, list[dict[str, Any]]]:
+    result = {"buy": [], "sell": []}
+    for path in sorted(run_dir.glob("daily/*/execution/fills.json")):
+        business_date = path.parts[-3]
+        if completed_business_days and business_date not in completed_business_days:
+            continue
+        payload = read_json_optional(path)
+        if payload and not _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
+            continue
+        for fill in payload.get("fills") or []:
+            if not isinstance(fill, dict):
+                continue
+            side = str(fill.get("side") or "").upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            source_decision = str(fill.get("source_decision_type") or ("BUY" if side == "BUY" else "UNKNOWN")).upper()
+            plan = {
+                "business_date": fill.get("business_date") or business_date,
+                "symbol": fill.get("symbol") or "",
+                "side": side,
+                "quantity": _float(fill.get("quantity")),
+                "price": fill.get("execution_price"),
+                "order_plan_item_id": fill.get("order_plan_item_id") or "",
+                "pending_item_id": fill.get("pending_item_id") or "",
+                "quantity_contract": {
+                    "source_decision": source_decision,
+                    "source_decision_id": fill.get("source_decision_id") or "",
+                    "final_sell_quantity": _float(fill.get("quantity")) if side == "SELL" else 0.0,
+                    "status": "DERIVED_FROM_RUN_SCOPED_FILL_OBSERVABILITY",
+                },
+                "_artifact_path": str(path),
+                "_plan_date": business_date,
+                "_run_authority": "run_scoped_fill_observability_execution_equivalent_plan_proxy",
+            }
+            result["buy" if side == "BUY" else "sell"].append(plan)
+    return result
+
+
+def _run_scoped_orders_from_fills(observability: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for fill in observability.get("fills") if isinstance(observability.get("fills"), list) else []:
+        if not isinstance(fill, dict):
+            continue
+        rows.append(
+            {
+                "record_type": "order",
+                "dedup_key": f"runtime_v2_submit:run-scoped-fill:{fill.get('execution_id') or fill.get('order_id') or ''}",
+                "business_date": fill.get("business_date") or "",
+                "pending_item_id": fill.get("pending_item_id") or fill.get("execution_id") or "",
+                "side": str(fill.get("side") or "UNKNOWN").upper(),
+                "symbol": fill.get("symbol") or "",
+                "quantity": _float(fill.get("quantity")),
+                "order_id": fill.get("order_id") or "",
+                "_run_authority": "run_scoped_fill_observability_execution_equivalent_order",
+            }
+        )
+    return rows
+
+
+def _run_scoped_executions_from_fills(observability: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for fill in observability.get("fills") if isinstance(observability.get("fills"), list) else []:
+        if not isinstance(fill, dict):
+            continue
+        rows.append(
+            {
+                "record_type": "execution",
+                "business_date": fill.get("business_date") or "",
+                "side": str(fill.get("side") or "UNKNOWN").upper(),
+                "symbol": fill.get("symbol") or "",
+                "filled_quantity": _float(fill.get("quantity")),
+                "quantity": _float(fill.get("quantity")),
+                "price": fill.get("execution_price"),
+                "execution_id": fill.get("execution_id") or "",
+                "pending_item_id": fill.get("pending_item_id") or "",
+                "_run_authority": "run_scoped_fill_observability",
+            }
+        )
+    return rows
 
 
 def _is_submitted_order_record(row: dict[str, Any]) -> bool:
@@ -759,7 +1151,9 @@ def _summarize_trading(
 
 def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     source_counter = Counter()
+    terminal_counter = Counter()
     rows: list[dict[str, Any]] = []
+    non_executable_rows: list[dict[str, Any]] = []
     unknown = 0
     for item in plans["sell"]:
         contract = item.get("quantity_contract") if isinstance(item.get("quantity_contract"), dict) else {}
@@ -784,11 +1178,43 @@ def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[st
                 "artifact_path": item.get("_artifact_path") or "",
             }
         )
+    for item in plans.get("non_executable_sell_decisions", []):
+        contract = item.get("quantity_contract") if isinstance(item.get("quantity_contract"), dict) else {}
+        feasibility_status = str(item.get("execution_feasibility_status") or contract.get("execution_feasibility_status") or "")
+        reason = str(contract.get("reason") or item.get("reason") or "")
+        terminal_counter[feasibility_status or "UNKNOWN"] += 1
+        non_executable_rows.append(
+            {
+                "business_date": item.get("_plan_date") or item.get("business_date") or "",
+                "symbol": item.get("symbol") or "",
+                "source_decision": contract.get("source_decision") or item.get("original_decision") or "",
+                "source_decision_id": item.get("source_decision_id") or contract.get("source_decision_id") or "",
+                "execution_feasibility_status": feasibility_status,
+                "reason": reason,
+                "status": contract.get("status") or item.get("status") or "",
+                "effective_action": item.get("effective_action") or contract.get("effective_action") or "",
+                "pending_order_generated": item.get("pending_order_generated", contract.get("pending_order_generated")),
+                "runtime_continuation_status": item.get("runtime_continuation_status") or contract.get("runtime_continuation_status") or "",
+                "position_lifecycle_event": contract.get("position_lifecycle_event") or item.get("position_lifecycle_event") or "",
+                "position_quantity_before": _float(contract.get("position_quantity_before")),
+                "position_quantity_after": _float(item.get("position_quantity_after", contract.get("position_quantity_after"))),
+                "expected_remaining_quantity": _float(contract.get("expected_remaining_quantity")),
+                "final_sell_quantity": _float(contract.get("final_sell_quantity")),
+                "rounded_executable_quantity": _float(contract.get("rounded_executable_quantity", contract.get("rounded_reduce_quantity"))),
+                "quantity_contract_version": contract.get("quantity_contract_version") or "",
+                "artifact_path": item.get("_artifact_path") or "",
+            }
+        )
     return {
         "sell_plan_source_decision_distribution": dict(sorted(source_counter.items())),
         "reduce_sell_plan_count": source_counter.get("REDUCE", 0),
         "exit_sell_plan_count": source_counter.get("EXIT", 0),
         "sell_plan_items_with_unknown_source_decision": unknown,
+        "non_executable_sell_decision_count": len(non_executable_rows),
+        "non_executable_reduce_terminal_count": len([row for row in non_executable_rows if row.get("source_decision") == "REDUCE"]),
+        "non_executable_reduce_reason_distribution": dict(sorted(Counter(str(row.get("reason") or "UNKNOWN") for row in non_executable_rows if row.get("source_decision") == "REDUCE").items())),
+        "non_executable_reduce_feasibility_distribution": dict(sorted(terminal_counter.items())),
+        "non_executable_items": non_executable_rows,
         "items": rows,
     }
 
@@ -888,15 +1314,39 @@ def _summarize_performance(
     current_state: dict[str, Any],
     realized_pnl_from_trades: float | None,
     runtime_state_available: bool,
+    current_state_authority: str = "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH",
+    current_state_authority_status: str = "CANONICAL_CURRENT_STATE",
+    observability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     initial = _float(fresh_summary.get("initial_cash") or current_state.get("runtime_evaluation_capital"))
     final_equity = _float(current_state.get("total_equity") or (_float(current_state.get("cash")) + _float(current_state.get("market_value"))))
+    derived = _derive_performance_from_run_scoped_campaigns(initial=initial, observability=observability or {})
+    if not runtime_state_available and derived:
+        return {
+            "initial_equity": initial if initial else None,
+            "final_cash": "MISSING",
+            "final_market_value": derived["final_market_value"],
+            "final_equity": derived["final_equity"],
+            "total_return_amount": derived["total_return_amount"],
+            "total_return_percent": derived["total_return_percent"],
+            "realized_pnl": derived["realized_pnl"],
+            "realized_pnl_method": derived["realized_pnl_method"],
+            "unrealized_pnl": derived["unrealized_pnl"],
+            "position_count": derived["position_count"],
+            "performance_authority": derived["authority"],
+            "performance_authority_status": derived["status"],
+            "canonical_final_equity_status": "MISSING",
+            "negative_return_runtime_effect": "DOES_NOT_FAIL_RUNTIME_JUDGMENT",
+        }
     total_return = final_equity - initial if runtime_state_available and initial else None
     realized = current_state.get("realized_pnl")
     realized_method = "current_state.realized_pnl"
     if realized in (None, ""):
         realized = realized_pnl_from_trades
         realized_method = "trade_attribution_average_cost" if realized is not None else "NOT_TRACEABLE"
+    unrealized = current_state.get("new_unrealized_pnl")
+    if unrealized in (None, "") and not (current_state.get("positions") or []):
+        unrealized = 0.0
     return {
         "initial_equity": initial if initial else None,
         "final_cash": current_state.get("cash"),
@@ -906,9 +1356,57 @@ def _summarize_performance(
         "total_return_percent": (total_return / initial * 100.0) if total_return is not None and initial else None,
         "realized_pnl": realized,
         "realized_pnl_method": realized_method,
-        "unrealized_pnl": current_state.get("new_unrealized_pnl"),
+        "unrealized_pnl": unrealized,
+        "position_count": len(current_state.get("positions") or []),
+        "performance_authority": current_state_authority if runtime_state_available else "NOT_AVAILABLE",
+        "performance_authority_status": current_state_authority_status if runtime_state_available else "NOT_AVAILABLE",
+        "canonical_final_equity_status": "AVAILABLE" if runtime_state_available else "MISSING",
         "negative_return_runtime_effect": "DOES_NOT_FAIL_RUNTIME_JUDGMENT",
     }
+
+
+def _derive_performance_from_run_scoped_campaigns(*, initial: float, observability: dict[str, Any]) -> dict[str, Any]:
+    campaigns = observability.get("position_campaigns") if isinstance(observability.get("position_campaigns"), list) else []
+    fills = observability.get("fills") if isinstance(observability.get("fills"), list) else []
+    if campaigns:
+        realized = _sum_available_values(campaign.get("realized_pnl") for campaign in campaigns if isinstance(campaign, dict))
+        unrealized = _sum_available_values(campaign.get("unrealized_pnl") for campaign in campaigns if isinstance(campaign, dict))
+        total_return = realized + unrealized
+        open_count = len(
+            [
+                campaign
+                for campaign in campaigns
+                if isinstance(campaign, dict)
+                and str(campaign.get("campaign_status") or "").upper() == "OPEN"
+                and _float(campaign.get("current_quantity")) > POSITION_QUANTITY_EPSILON
+            ]
+        )
+        return {
+            "status": "DERIVABLE_EXACT_FROM_RUN_SCOPED_POSITION_CAMPAIGNS",
+            "authority": "RUN_SCOPED_POSITION_CAMPAIGN_OBSERVABILITY",
+            "final_market_value": "MISSING",
+            "final_equity": initial + total_return if initial else None,
+            "total_return_amount": total_return,
+            "total_return_percent": (total_return / initial * 100.0) if initial else None,
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+            "realized_pnl_method": "run_scoped_position_campaigns_gross",
+            "position_count": open_count,
+        }
+    if initial and observability.get("status") == "AVAILABLE" and not fills:
+        return {
+            "status": "DERIVABLE_EXACT_FROM_RUN_SCOPED_NO_TRADE_EVIDENCE",
+            "authority": "RUN_SCOPED_NO_TRADE_OBSERVABILITY",
+            "final_market_value": 0.0,
+            "final_equity": initial,
+            "total_return_amount": 0.0,
+            "total_return_percent": 0.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "realized_pnl_method": "run_scoped_no_trade_observability",
+            "position_count": 0,
+        }
+    return {}
 
 
 def _summarize_current_positions(current_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -937,14 +1435,16 @@ def _summarize_lifecycle(
     reduce_exit: dict[str, Any],
     current_state: dict[str, Any],
     pending_state: dict[str, Any],
+    run_scoped_position_authority: bool = False,
 ) -> dict[str, Any]:
     pending_consistent = _pending_empty_or_explained(trading=trading, pending_state=pending_state)
+    reduce_resolution = _classify_pm_reduce_lifecycle_outcomes(pm=pm, reduce_exit=reduce_exit)
     checks = {
         "PM_EXIT_TO_SELL_PLAN": pm.get("exit_count", 0) == reduce_exit.get("exit_sell_plan_count", 0),
-        "PM_REDUCE_TO_PARTIAL_SELL_PLAN": pm.get("reduce_count", 0) == reduce_exit.get("reduce_sell_plan_count", 0),
+        "PM_REDUCE_TO_PARTIAL_SELL_PLAN": reduce_resolution["status"] == "PASS",
         "SELL_PLAN_TO_SUBMIT": trading.get("sell_plan_count", 0) == trading.get("submitted_order_distribution", {}).get("SELL", 0),
         "SELL_SUBMIT_TO_EXECUTION": trading.get("submitted_order_distribution", {}).get("SELL", 0) == trading.get("execution_distribution", {}).get("SELL", 0),
-        "LEDGER_TO_CURRENT": bool(current_state),
+        "LEDGER_TO_CURRENT": bool(current_state) or run_scoped_position_authority,
         "PENDING_EMPTY_OR_EXPLAINED": pending_consistent,
     }
     return {
@@ -952,17 +1452,155 @@ def _summarize_lifecycle(
         "checks": checks,
         "check_semantics": {
             "PM_EXIT_TO_SELL_PLAN": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
-            "PM_REDUCE_TO_PARTIAL_SELL_PLAN": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "PM_REDUCE_TO_PARTIAL_SELL_PLAN": "PASS_WHEN_EACH_PM_REDUCE_RESOLVES_TO_EXACTLY_ONE_EXECUTABLE_SELL_PLAN_OR_APPROVED_NON_EXECUTABLE_TERMINAL_OUTCOME",
             "SELL_PLAN_TO_SUBMIT": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
             "SELL_SUBMIT_TO_EXECUTION": "PASS_WHEN_COUNTS_MATCH_OR_BOTH_ZERO",
+            "LEDGER_TO_CURRENT": "PASS_WHEN_FINAL_CURRENT_STATE_AVAILABLE_OR_RUN_SCOPED_POSITION_CAMPAIGN_AUTHORITY_AVAILABLE_FOR_PAST_RUN",
             "PENDING_EMPTY_OR_EXPLAINED": "PASS_WHEN_EMPTY_CONSUMED_TERMINALIZED_OR_EXECUTION_EXPLAINS_FINAL_PENDING_STATE",
         },
         "pm_reduce_count": pm.get("reduce_count", 0),
+        "executable_reduce_sell_plan_count": reduce_resolution["executable_reduce_sell_plan_count"],
+        "non_executable_reduce_terminal_count": reduce_resolution["non_executable_reduce_terminal_count"],
+        "unresolved_reduce_count": reduce_resolution["unresolved_reduce_count"],
+        "conflicting_reduce_count": reduce_resolution["conflicting_reduce_count"],
+        "non_executable_reduce_reason_distribution": reduce_resolution["non_executable_reduce_reason_distribution"],
+        "reduce_lifecycle_outcome_distribution": reduce_resolution["outcome_distribution"],
+        "reduce_lifecycle_items": reduce_resolution["items"],
+        "non_executable_reduce_items": reduce_resolution["non_executable_items"],
+        "unresolved_reduce_items": reduce_resolution["unresolved_items"],
+        "conflicting_reduce_items": reduce_resolution["conflicting_items"],
         "pm_exit_count": pm.get("exit_count", 0),
         "sell_plan_count": trading.get("sell_plan_count", 0),
         "submitted_sell_order_count": trading.get("submitted_order_distribution", {}).get("SELL", 0),
         "sell_execution_count": trading.get("execution_distribution", {}).get("SELL", 0),
     }
+
+
+def _classify_pm_reduce_lifecycle_outcomes(*, pm: dict[str, Any], reduce_exit: dict[str, Any]) -> dict[str, Any]:
+    pm_reduce_records = [row for row in pm.get("decision_records", []) if str(row.get("decision") or row.get("decision_type") or "") == "REDUCE"]
+    reduce_plans = [row for row in reduce_exit.get("items", []) if str(row.get("source_decision") or "") == "REDUCE"]
+    terminal_rows = [row for row in reduce_exit.get("non_executable_items", []) if str(row.get("source_decision") or "") == "REDUCE"]
+    items: list[dict[str, Any]] = []
+    if not pm_reduce_records:
+        fallback_pm_reduce_count = int(pm.get("reduce_count") or 0)
+        executable_count = int(reduce_exit.get("reduce_sell_plan_count") or 0)
+        terminal_count = int(reduce_exit.get("non_executable_reduce_terminal_count") or 0)
+        unresolved = max(fallback_pm_reduce_count - executable_count - terminal_count, 0)
+        return {
+            "status": "PASS" if fallback_pm_reduce_count == executable_count + terminal_count and unresolved == 0 else "REVIEW_REQUIRED",
+            "executable_reduce_sell_plan_count": executable_count,
+            "non_executable_reduce_terminal_count": terminal_count,
+            "unresolved_reduce_count": unresolved,
+            "conflicting_reduce_count": 0,
+            "non_executable_reduce_reason_distribution": reduce_exit.get("non_executable_reduce_reason_distribution", {}),
+            "outcome_distribution": {
+                "EXECUTABLE_WITH_SELL_PLAN": executable_count,
+                "NON_EXECUTABLE_TERMINAL": terminal_count,
+                "UNRESOLVED": unresolved,
+                "CONFLICTING": 0,
+            },
+            "items": [],
+            "non_executable_items": terminal_rows,
+            "unresolved_items": [],
+            "conflicting_items": [],
+        }
+
+    outcome_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    non_executable_items: list[dict[str, Any]] = []
+    unresolved_items: list[dict[str, Any]] = []
+    conflicting_items: list[dict[str, Any]] = []
+    for decision in pm_reduce_records:
+        plans = _matching_reduce_plans(decision=decision, plans=reduce_plans)
+        terminals = _matching_reduce_terminals(decision=decision, terminals=terminal_rows)
+        valid_terminals = [row for row in terminals if _is_approved_non_executable_reduce_terminal(row)]
+        invalid_terminals = [row for row in terminals if not _is_approved_non_executable_reduce_terminal(row)]
+        if len(plans) == 1 and not terminals:
+            outcome = "EXECUTABLE_WITH_SELL_PLAN"
+        elif not plans and len(valid_terminals) == 1 and not invalid_terminals:
+            outcome = "NON_EXECUTABLE_TERMINAL"
+        elif plans and terminals:
+            outcome = "CONFLICTING"
+        elif len(plans) > 1 or len(valid_terminals) > 1:
+            outcome = "CONFLICTING"
+        else:
+            outcome = "UNRESOLVED"
+        row = {
+            "business_date": decision.get("business_date") or "",
+            "symbol": decision.get("symbol") or "",
+            "pm_decision_id": decision.get("decision_id") or decision.get("pm_decision_id") or "",
+            "position_campaign_id": decision.get("position_campaign_id") or "",
+            "outcome": outcome,
+            "compatible_sell_plan_count": len(plans),
+            "compatible_non_executable_terminal_count": len(terminals),
+            "valid_non_executable_terminal_count": len(valid_terminals),
+            "invalid_non_executable_terminal_count": len(invalid_terminals),
+            "sell_plan_artifact_paths": sorted({str(plan.get("artifact_path") or "") for plan in plans if plan.get("artifact_path")}),
+            "terminal_artifact_paths": sorted({str(item.get("artifact_path") or "") for item in terminals if item.get("artifact_path")}),
+        }
+        outcome_counts[outcome] += 1
+        if outcome == "NON_EXECUTABLE_TERMINAL":
+            reason = str(valid_terminals[0].get("reason") or "UNKNOWN")
+            reason_counts[reason] += 1
+            non_executable_items.append({**row, "reason": reason, "execution_feasibility_status": valid_terminals[0].get("execution_feasibility_status") or ""})
+        elif outcome == "UNRESOLVED":
+            unresolved_items.append(row)
+        elif outcome == "CONFLICTING":
+            conflicting_items.append(row)
+        items.append(row)
+    return {
+        "status": "PASS" if not unresolved_items and not conflicting_items else "REVIEW_REQUIRED",
+        "executable_reduce_sell_plan_count": outcome_counts["EXECUTABLE_WITH_SELL_PLAN"],
+        "non_executable_reduce_terminal_count": outcome_counts["NON_EXECUTABLE_TERMINAL"],
+        "unresolved_reduce_count": outcome_counts["UNRESOLVED"],
+        "conflicting_reduce_count": outcome_counts["CONFLICTING"],
+        "non_executable_reduce_reason_distribution": dict(sorted(reason_counts.items())),
+        "outcome_distribution": dict(sorted(outcome_counts.items())),
+        "items": items,
+        "non_executable_items": non_executable_items,
+        "unresolved_items": unresolved_items,
+        "conflicting_items": conflicting_items,
+    }
+
+
+def _matching_reduce_plans(*, decision: dict[str, Any], plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [plan for plan in plans if _same_reduce_decision_key(decision=decision, row=plan)]
+
+
+def _matching_reduce_terminals(*, decision: dict[str, Any], terminals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [terminal for terminal in terminals if _same_reduce_decision_key(decision=decision, row=terminal)]
+
+
+def _same_reduce_decision_key(*, decision: dict[str, Any], row: dict[str, Any]) -> bool:
+    if str(decision.get("business_date") or "") != str(row.get("business_date") or ""):
+        return False
+    if str(decision.get("symbol") or "") != str(row.get("symbol") or ""):
+        return False
+    decision_id = str(decision.get("decision_id") or decision.get("pm_decision_id") or "")
+    row_decision_id = str(row.get("source_decision_id") or "")
+    if decision_id and row_decision_id:
+        return decision_id == row_decision_id
+    return True
+
+
+def _is_approved_non_executable_reduce_terminal(row: dict[str, Any]) -> bool:
+    before = _float(row.get("position_quantity_before"))
+    after = _float(row.get("position_quantity_after"))
+    expected_remaining = _float(row.get("expected_remaining_quantity"))
+    return (
+        str(row.get("source_decision") or "") == "REDUCE"
+        and str(row.get("execution_feasibility_status") or "") == REDUCE_NON_EXECUTABLE_FEASIBILITY_STATUS
+        and str(row.get("reason") or "") == REDUCE_NON_EXECUTABLE_REASON
+        and str(row.get("status") or "") == "NOT_EXECUTABLE"
+        and str(row.get("effective_action") or "") == "NO_SELL_ORDER"
+        and row.get("pending_order_generated") is False
+        and str(row.get("runtime_continuation_status") or "") == "PASS"
+        and str(row.get("position_lifecycle_event") or "") == REDUCE_NON_EXECUTABLE_LIFECYCLE_EVENT
+        and abs(_float(row.get("final_sell_quantity"))) <= POSITION_QUANTITY_EPSILON
+        and abs(_float(row.get("rounded_executable_quantity"))) <= POSITION_QUANTITY_EPSILON
+        and abs(after - before) <= POSITION_QUANTITY_EPSILON
+        and abs(expected_remaining - before) <= POSITION_QUANTITY_EPSILON
+    )
 
 
 def _pending_empty_or_explained(*, trading: dict[str, Any], pending_state: dict[str, Any]) -> bool:
@@ -996,7 +1634,903 @@ def _summarize_external_effects(*, run_dir: Path, fresh_summary: dict[str, Any])
     }
 
 
+def _metric(
+    value: Any,
+    *,
+    status: str,
+    authority: str,
+    confidence: str = "DERIVABLE_PARTIAL",
+    limitations: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "value": value,
+        "status": status,
+        "authority": authority,
+        "confidence_class": confidence,
+        "limitations": limitations or [],
+        "warnings": warnings or [],
+        "contract_version": PERFORMANCE_METRIC_CONTRACT_VERSION,
+    }
+
+
+def _load_run_matched_json(path: Path, *, run_id: str) -> dict[str, Any]:
+    payload = read_json_optional(path)
+    if str(payload.get("run_id") or "") != run_id:
+        return {}
+    return payload
+
+
+def _phase20_baseline_metrics(*, run_id: str) -> dict[str, Any]:
+    root = Path("reports") / "performance_baselines" / run_id
+    payload = _load_run_matched_json(root / "performance_metrics.json", run_id=run_id)
+    if not payload:
+        return {}
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, list):
+        return {}
+    return {str(row.get("metric_name") or row.get("metric_id") or ""): row for row in metrics if isinstance(row, dict)}
+
+
+def _phase20_attribution_payload(path_name: str, *, run_id: str) -> Any:
+    path = Path("reports") / "performance_attribution" / run_id / path_name
+    if not path.exists():
+        return None
+    payload = read_json_optional(path)
+    if isinstance(payload, dict) and str(payload.get("run_id") or "") not in {"", run_id}:
+        return None
+    return payload
+
+
+def _missing_value() -> dict[str, str]:
+    return {"value": "MISSING", "status": "NOT_AVAILABLE"}
+
+
+def _status_value(value: Any, status: str = "AVAILABLE") -> dict[str, Any]:
+    if value in (None, ""):
+        return _missing_value()
+    return {"value": value, "status": status}
+
+
+def _sum_available_values(values: Any) -> float:
+    total = 0.0
+    for value in values:
+        if isinstance(value, dict):
+            if value.get("status") == "NOT_AVAILABLE":
+                continue
+            value = value.get("value")
+        if value in (None, "", "MISSING", "NOT_AVAILABLE"):
+            continue
+        total += _float(value)
+    return total
+
+
+def _sum_observability_pnl_by_symbol(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        if not symbol:
+            continue
+        pnl = row.get("gross_realized_pnl")
+        if isinstance(pnl, dict):
+            pnl = pnl.get("value") if pnl.get("status") != "NOT_AVAILABLE" else None
+        if pnl not in (None, "", "MISSING", "NOT_AVAILABLE"):
+            totals[symbol] += _float(pnl)
+    return dict(sorted(totals.items()))
+
+
+def _field_status_from_observability(rows: list[dict[str, Any]], field: str) -> str:
+    if not rows:
+        return "NOT_RETAINED"
+    statuses = {
+        str((row.get(field) or {}).get("status") or "AVAILABLE") if isinstance(row.get(field), dict) else "AVAILABLE"
+        for row in rows
+    }
+    if statuses == {"NOT_AVAILABLE"}:
+        return "NOT_AVAILABLE"
+    if "NOT_AVAILABLE" in statuses:
+        return "PARTIAL"
+    return "AVAILABLE"
+
+
+def _load_performance_observability(*, run_dir: Path, run_id: str, completed_business_days: set[str]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "schema_version": PERFORMANCE_OBSERVABILITY_SCHEMA_VERSION,
+        "contract_version": PERFORMANCE_OBSERVABILITY_CONTRACT_VERSION,
+        "status": "NOT_RETAINED",
+        "position_campaigns": [],
+        "fills": [],
+        "realized_slices": [],
+        "pm_decisions": [],
+        "benchmark_snapshots": [],
+        "read_issues": [],
+    }
+    loaders = (
+        ("position_campaigns", "daily/*/positions/position_campaigns.json", "position_campaigns", "position_campaign_observability.v1"),
+        ("fills", "daily/*/execution/fills.json", "fills", "runtime_fill_observability.v1"),
+        ("realized_slices", "daily/*/execution/realized_slices.json", "realized_slices", "realized_slice_observability.v1"),
+        ("pm_decisions", "daily/*/position_management/pm_decisions.json", "decisions", "pm_decision_snapshot.v1"),
+        ("benchmark_snapshots", "daily/*/benchmark/benchmark_snapshot.json", None, "benchmark_snapshot_observability.v1"),
+    )
+    seen = False
+    for target_key, pattern, body_key, expected_schema in loaders:
+        for path in sorted(run_dir.glob(pattern)):
+            business_date = path.parts[-3]
+            if completed_business_days and business_date not in completed_business_days:
+                continue
+            try:
+                payload = read_json(path)
+            except Exception as exc:
+                result["read_issues"].append(
+                    {
+                        "severity": "REVIEW_REQUIRED",
+                        "reason": "OBSERVABILITY_EVIDENCE_JSON_READ_FAILED",
+                        "path": str(path),
+                        "error": str(exc),
+                    }
+                )
+                continue
+            if str(payload.get("run_id") or "") != run_id:
+                result["read_issues"].append(
+                    {
+                        "severity": "REVIEW_REQUIRED",
+                        "reason": "OBSERVABILITY_EVIDENCE_RUN_ID_MISMATCH",
+                        "path": str(path),
+                        "expected_run_id": run_id,
+                        "actual_run_id": str(payload.get("run_id") or ""),
+                    }
+                )
+                continue
+            payload_business_date = str(payload.get("business_date") or "")
+            if payload_business_date and payload_business_date != business_date:
+                result["read_issues"].append(
+                    {
+                        "severity": "REVIEW_REQUIRED",
+                        "reason": "OBSERVABILITY_EVIDENCE_BUSINESS_DATE_MISMATCH",
+                        "path": str(path),
+                        "path_business_date": business_date,
+                        "payload_business_date": payload_business_date,
+                    }
+                )
+                continue
+            if str(payload.get("schema_version") or "") not in {"", expected_schema}:
+                result["read_issues"].append(
+                    {
+                        "severity": "REVIEW_REQUIRED",
+                        "reason": "OBSERVABILITY_EVIDENCE_SCHEMA_VERSION_UNKNOWN",
+                        "path": str(path),
+                        "expected_schema_version": expected_schema,
+                        "actual_schema_version": str(payload.get("schema_version") or ""),
+                    }
+                )
+                continue
+            seen = True
+            if body_key is None:
+                result[target_key].append(payload)
+            else:
+                rows = payload.get(body_key)
+                if isinstance(rows, list):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        copied = dict(row)
+                        copied.setdefault("_snapshot_business_date", business_date)
+                        result[target_key].append(copied)
+    if seen:
+        result["status"] = "AVAILABLE"
+    result["position_campaign_snapshot_count"] = len(result["position_campaigns"])
+    result["position_campaigns"] = _dedupe_position_campaign_snapshots(result["position_campaigns"])
+    result["position_campaign_count"] = len(result["position_campaigns"])
+    if result["read_issues"]:
+        result["status"] = "REVIEW_REQUIRED"
+    return result
+
+
+def _dedupe_position_campaign_snapshots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        campaign_id = str(row.get("position_campaign_id") or "")
+        if not campaign_id:
+            continue
+        current = selected.get(campaign_id)
+        if current is None or _campaign_snapshot_rank(row) > _campaign_snapshot_rank(current):
+            selected[campaign_id] = row
+    return sorted(selected.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("position_campaign_id") or "")))
+
+
+def _observability_completeness_judgment(observability: dict[str, Any]) -> dict[str, Any]:
+    read_issues = observability.get("read_issues") if isinstance(observability.get("read_issues"), list) else []
+    status = str(observability.get("status") or "NOT_RETAINED")
+    if read_issues:
+        judgment = "REVIEW_REQUIRED"
+    elif status == "AVAILABLE":
+        judgment = "PASS"
+    else:
+        judgment = "NOT_RETAINED"
+    return {
+        "judgment": judgment,
+        "status": status,
+        "read_issue_count": len(read_issues),
+        "position_campaign_count": observability.get("position_campaign_count", 0),
+        "position_campaign_snapshot_count": observability.get("position_campaign_snapshot_count", 0),
+        "runtime_judgment_impact": "NONE",
+    }
+
+
+def _performance_analysis_readiness_judgment(observability: dict[str, Any]) -> dict[str, Any]:
+    read_issues = observability.get("read_issues") if isinstance(observability.get("read_issues"), list) else []
+    campaigns = observability.get("position_campaigns") if isinstance(observability.get("position_campaigns"), list) else []
+    fills = observability.get("fills") if isinstance(observability.get("fills"), list) else []
+    realized_slices = observability.get("realized_slices") if isinstance(observability.get("realized_slices"), list) else []
+    gaps = []
+    if read_issues:
+        gaps.append("observability_read_issues")
+    if not campaigns:
+        gaps.append("position_campaigns_missing")
+    if not fills:
+        gaps.append("fills_missing")
+    if not realized_slices:
+        gaps.append("realized_slices_missing_or_no_sell_executions")
+    judgment = "REVIEW_REQUIRED" if read_issues else "READY_WITH_NON_BLOCKING_GAPS" if gaps else "READY"
+    return {
+        "judgment": judgment,
+        "gaps": gaps,
+        "benchmark_status": "MISSING_SOURCE_NOT_CONFIRMED",
+        "net_realized_pnl_status": "NOT_AVAILABLE_FEES_TAX_MISSING",
+        "runtime_judgment_impact": "NONE",
+    }
+
+
+def _campaign_snapshot_rank(row: dict[str, Any]) -> tuple[str, int, int]:
+    status_rank = 1 if str(row.get("campaign_status") or "").upper() == "CLOSED" else 0
+    return (
+        str(row.get("_snapshot_business_date") or row.get("business_date") or row.get("opened_business_date") or ""),
+        len(row.get("events") or []),
+        status_rank,
+    )
+
+
+def _metric_has_available_value(row: dict[str, Any]) -> bool:
+    value = row.get("value")
+    return value not in (None, "", "MISSING", "NOT_AVAILABLE")
+
+
+def _realized_pnl_reconciliation(current_realized: Any, slice_total: float, has_slices: bool) -> dict[str, Any]:
+    if current_realized not in (None, "", "MISSING", "NOT_AVAILABLE") and has_slices:
+        difference = _float(current_realized) - slice_total
+        if abs(difference) < 0.0001:
+            return {
+                "status": "PASS",
+                "metric_status": "DERIVABLE_EXACT",
+                "authority": "FINAL_CURRENT_STATE_REALIZED_PNL_RECONCILED_TO_RUN_SCOPED_REALIZED_SLICES_GROSS",
+                "confidence_class": "DERIVABLE_EXACT",
+                "current_state_realized_pnl": _float(current_realized),
+                "realized_slice_gross_pnl": slice_total,
+                "difference": difference,
+                "warnings": [],
+                "limitations": ["Net realized PnL remains NOT_AVAILABLE when fees/tax are missing."],
+            }
+        return {
+            "status": "REVIEW_REQUIRED",
+            "metric_status": "REVIEW_REQUIRED",
+            "authority": "REALIZED_PNL_RECONCILIATION_MISMATCH",
+            "confidence_class": "UNKNOWN",
+            "current_state_realized_pnl": _float(current_realized),
+            "realized_slice_gross_pnl": slice_total,
+            "difference": difference,
+            "warnings": ["REALIZED_PNL_RECONCILIATION_MISMATCH"],
+            "limitations": ["Do not choose one value silently when current state and realized slices disagree."],
+        }
+    if current_realized not in (None, "", "MISSING", "NOT_AVAILABLE"):
+        return {
+            "status": "CURRENT_STATE_ONLY",
+            "metric_status": "DERIVABLE_PARTIAL",
+            "authority": "FINAL_CURRENT_STATE_REALIZED_PNL",
+            "confidence_class": "DERIVABLE_PARTIAL",
+            "current_state_realized_pnl": _float(current_realized),
+            "realized_slice_gross_pnl": "NOT_RETAINED",
+            "difference": "NOT_AVAILABLE",
+            "warnings": [],
+            "limitations": ["Run-scoped realized slice evidence was not retained."],
+        }
+    if has_slices:
+        return {
+            "status": "REALIZED_SLICE_ONLY",
+            "metric_status": "DERIVABLE_EXACT",
+            "authority": "RUN_SCOPED_REALIZED_SLICES_GROSS",
+            "confidence_class": "DERIVABLE_EXACT",
+            "current_state_realized_pnl": "NOT_AVAILABLE",
+            "realized_slice_gross_pnl": slice_total,
+            "difference": "NOT_AVAILABLE",
+            "warnings": [],
+            "limitations": ["Final current state realized_pnl was not available for reconciliation."],
+        }
+    return {
+        "status": "NOT_AVAILABLE",
+        "metric_status": "NOT_AVAILABLE",
+        "authority": "REALIZED_PNL_EVIDENCE_NOT_RETAINED",
+        "confidence_class": "UNKNOWN",
+        "current_state_realized_pnl": "NOT_AVAILABLE",
+        "realized_slice_gross_pnl": "NOT_RETAINED",
+        "difference": "NOT_AVAILABLE",
+        "warnings": [],
+        "limitations": ["Neither current state realized_pnl nor run-scoped realized slices were available."],
+    }
+
+
+def _summary_metric_from_baseline(metrics: dict[str, Any], name: str) -> dict[str, Any] | None:
+    row = metrics.get(name)
+    if not isinstance(row, dict):
+        return None
+    return _metric(
+        row.get("value"),
+        status=str(row.get("status") or "AVAILABLE"),
+        authority=str(row.get("authority") or "phase20_baseline_metric"),
+        confidence=str(row.get("confidence_class") or "DERIVABLE_EXACT"),
+        limitations=[str(item) for item in row.get("limitations") or []],
+        warnings=[str(item) for item in row.get("warnings") or []],
+    )
+
+
+def _build_performance_scope(
+    *,
+    run_id: str,
+    performance: dict[str, Any],
+    trading: dict[str, Any],
+    current_positions: list[dict[str, Any]],
+    observability: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observability = observability or {}
+    baseline = _phase20_baseline_metrics(run_id=run_id)
+    authority = (
+        "PHASE20_BASELINE_ARTIFACT_RUN_MATCHED"
+        if baseline
+        else str(performance.get("performance_authority") or "RUNTIME_TEST_SUMMARY_DERIVED")
+    )
+    realized_slices = observability.get("realized_slices") if isinstance(observability.get("realized_slices"), list) else []
+    realized_slice_total = _sum_available_values(row.get("gross_realized_pnl") for row in realized_slices if isinstance(row, dict))
+    symbol_realized_pnl = _sum_observability_pnl_by_symbol(realized_slices)
+    fills = observability.get("fills") if isinstance(observability.get("fills"), list) else []
+    buy_execution_notional = _sum_available_values(
+        row.get("gross_notional") for row in fills if isinstance(row, dict) and str(row.get("side") or "").upper() == "BUY"
+    )
+    sell_execution_notional = _sum_available_values(
+        row.get("gross_notional") for row in fills if isinstance(row, dict) and str(row.get("side") or "").upper() == "SELL"
+    )
+    total_execution_notional = buy_execution_notional + sell_execution_notional
+    realized_reconciliation = _realized_pnl_reconciliation(performance.get("realized_pnl"), realized_slice_total, bool(realized_slices))
+    benchmark_snapshots = observability.get("benchmark_snapshots") if isinstance(observability.get("benchmark_snapshots"), list) else []
+    benchmark_statuses = sorted({str(row.get("status") or "MISSING") for row in benchmark_snapshots if isinstance(row, dict)})
+    metrics: dict[str, Any] = {
+        "Initial Equity": _metric(performance.get("initial_equity"), status="DERIVABLE_EXACT" if performance.get("initial_equity") is not None else "NOT_AVAILABLE", authority=authority),
+        "Final Equity": _metric(performance.get("final_equity"), status="DERIVABLE_EXACT" if performance.get("final_equity") is not None else "NOT_AVAILABLE", authority=authority),
+        "Total Return": _metric(performance.get("total_return_amount"), status="DERIVABLE_EXACT" if performance.get("total_return_amount") is not None else "NOT_AVAILABLE", authority=authority),
+        "Return Rate": _metric(performance.get("total_return_percent"), status="DERIVABLE_EXACT" if performance.get("total_return_percent") is not None else "NOT_AVAILABLE", authority=authority),
+        "Realized PnL": _metric(
+            performance.get("realized_pnl") if performance.get("realized_pnl") is not None else realized_slice_total if realized_slices else "NOT_AVAILABLE",
+            status=realized_reconciliation["metric_status"],
+            authority=realized_reconciliation["authority"],
+            confidence=realized_reconciliation["confidence_class"],
+            warnings=realized_reconciliation["warnings"],
+            limitations=realized_reconciliation["limitations"],
+        ),
+        "Realized Slice Gross PnL": _metric(
+            realized_slice_total if realized_slices else "MISSING",
+            status="DERIVABLE_EXACT" if realized_slices else "MISSING",
+            authority="RUN_SCOPED_REALIZED_SLICE_OBSERVABILITY" if realized_slices else "RUN_SCOPED_REALIZED_SLICE_OBSERVABILITY_NOT_RETAINED",
+            confidence="DERIVABLE_EXACT" if realized_slices else "UNKNOWN",
+            limitations=[] if realized_slices else ["Only Phase20-J and later runs retain realized slice evidence."],
+        ),
+        "Unrealized PnL": _metric(performance.get("unrealized_pnl"), status="DERIVABLE_EXACT" if performance.get("unrealized_pnl") is not None else "NOT_AVAILABLE", authority=authority),
+        "BUY Count": _metric(trading.get("execution_distribution", {}).get("BUY", 0), status="DERIVABLE_EXACT", authority="RUN_SCOPED_EXECUTION_EVIDENCE"),
+        "SELL Count": _metric(trading.get("execution_distribution", {}).get("SELL", 0), status="DERIVABLE_EXACT", authority="RUN_SCOPED_EXECUTION_EVIDENCE"),
+        "Position Count": _metric(
+            performance.get("position_count", len(current_positions)),
+            status="DERIVABLE_EXACT" if performance.get("position_count", len(current_positions)) is not None else "NOT_AVAILABLE",
+            authority=authority,
+        ),
+    }
+    for name in (
+        "Daily Equity Curve",
+        "Maximum Drawdown",
+        "Gross Exposure",
+        "Cash Ratio",
+        "Cash Utilization",
+        "Turnover",
+        "Single-name Concentration",
+    ):
+        baseline_metric = _summary_metric_from_baseline(baseline, name)
+        metrics[name] = baseline_metric or _metric(
+            "NOT_AVAILABLE",
+            status="NOT_AVAILABLE",
+            authority="RUN_EVIDENCE_NOT_SUFFICIENT_FOR_SCOPE_METRIC",
+            confidence="UNKNOWN",
+            limitations=["Metric requires retained daily valuation or Phase20 baseline artifact for this run."],
+        )
+    metrics["Execution Notional"] = _summary_metric_from_baseline(baseline, "Execution Notional") or _metric(
+        {
+            "buy_execution_notional": buy_execution_notional,
+            "sell_execution_notional": sell_execution_notional,
+            "total_execution_notional": total_execution_notional,
+        }
+        if fills
+        else "NOT_AVAILABLE",
+        status="DERIVABLE_EXACT" if fills else "NOT_AVAILABLE",
+        authority="RUN_SCOPED_FILL_OBSERVABILITY" if fills else "RUN_SCOPED_FILL_OBSERVABILITY_NOT_RETAINED",
+        confidence="DERIVABLE_EXACT" if fills else "UNKNOWN",
+        limitations=[] if fills else ["Only Phase20-J and later runs retain fill observability."],
+    )
+    for name in ("Benchmark", "Sector", "lot-level realized PnL"):
+        metrics[name] = _metric(
+            "MISSING",
+            status="MISSING",
+            authority="NOT_PRESENT_IN_RUNTIME_TEST_RUN_EVIDENCE",
+            confidence="UNKNOWN",
+            limitations=["No inference or external lookup is allowed."],
+        )
+    drawdown = metrics["Maximum Drawdown"]["value"] if isinstance(metrics.get("Maximum Drawdown"), dict) else "NOT_AVAILABLE"
+    daily_curve = metrics["Daily Equity Curve"]["value"] if isinstance(metrics.get("Daily Equity Curve"), dict) else []
+    peak_date = bottom_date = recovery = "NOT_AVAILABLE"
+    if isinstance(daily_curve, list) and daily_curve:
+        peak_date = str((daily_curve[0] or {}).get("peak_date") or "")
+        bottom_row = min(daily_curve, key=lambda row: _float((row or {}).get("drawdown_amount")), default={})
+        bottom_date = str((bottom_row or {}).get("business_date") or "")
+        recovery = "UNRECOVERED" if _float((daily_curve[-1] or {}).get("drawdown_amount")) < 0 else "RECOVERED"
+    return {
+        "operator_question": "How did this run perform?",
+        "status": "AVAILABLE_WITH_GAPS" if baseline else "DERIVABLE_PARTIAL",
+        "authority": authority,
+        "metrics": metrics,
+        "daily_equity_curve_summary": {
+            "points": len(daily_curve) if isinstance(daily_curve, list) else 0,
+            "first": daily_curve[0] if isinstance(daily_curve, list) and daily_curve else None,
+            "last": daily_curve[-1] if isinstance(daily_curve, list) and daily_curve else None,
+        },
+        "drawdown": {
+            "maximum_drawdown": drawdown,
+            "peak_date": peak_date,
+            "bottom_date": bottom_date,
+            "recovery": recovery,
+        },
+        "realized_slice_observability": {
+            "status": "AVAILABLE" if realized_slices else "NOT_RETAINED",
+            "slice_count": len(realized_slices),
+            "gross_realized_pnl": realized_slice_total if realized_slices else "MISSING",
+            "symbol_level_realized_pnl": symbol_realized_pnl,
+            "reconciliation": realized_reconciliation,
+            "fees_status": _field_status_from_observability(realized_slices, "fees"),
+            "tax_status": _field_status_from_observability(realized_slices, "tax"),
+        },
+        "execution_notional": {
+            "status": "DERIVABLE_EXACT" if fills else "NOT_RETAINED",
+            "buy_execution_notional": buy_execution_notional if fills else "MISSING",
+            "sell_execution_notional": sell_execution_notional if fills else "MISSING",
+            "total_execution_notional": total_execution_notional if fills else "MISSING",
+        },
+        "benchmark_observability": {
+            "status": benchmark_statuses[-1] if benchmark_statuses else "MISSING",
+            "snapshot_count": len(benchmark_snapshots),
+            "source": "NOT_CONFIRMED",
+            "excess_return_status": "MISSING",
+        },
+    }
+
+
+def _build_positions_scope(
+    *,
+    run_id: str,
+    plans: dict[str, list[dict[str, Any]]],
+    current_positions: list[dict[str, Any]],
+    trade_attribution: list[dict[str, Any]],
+    observability: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observability = observability or {}
+    observed_campaigns = observability.get("position_campaigns") if isinstance(observability.get("position_campaigns"), list) else []
+    if observed_campaigns:
+        rows = [_position_scope_row_from_campaign(campaign) for campaign in observed_campaigns if isinstance(campaign, dict)]
+        return {
+            "operator_question": "What happened to each position campaign?",
+            "status": "AVAILABLE_WITH_PHASE20_J_OBSERVABILITY",
+            "lot_level_claim": "PROHIBITED_STABLE_LOT_ID_NOT_AVAILABLE",
+            "position_campaign_identity": "POSITION_CAMPAIGN_ID_AVAILABLE",
+            "campaign_count": len(rows),
+            "daily_snapshot_count": observability.get("position_campaign_snapshot_count", len(rows)),
+            "positions": sorted(rows, key=lambda row: (str(row.get("symbol") or ""), str(row.get("position_campaign_id") or ""))),
+        }
+    buy_rows = _phase20_attribution_payload("buy_attribution.json", run_id=run_id)
+    diagnosis = _load_run_matched_json(Path("reports") / "performance_diagnosis" / run_id / "performance_diagnosis.json", run_id=run_id)
+    diagnosis_rows = ((diagnosis.get("buy_performance_diagnosis") or {}).get("rows") or []) if diagnosis else []
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for item in plans.get("buy", []):
+        symbol = str(item.get("symbol") or "")
+        by_symbol.setdefault(symbol, {}).update(
+            {
+                "symbol": symbol,
+                "buy_date": item.get("_plan_date") or item.get("business_date") or "",
+                "buy_price": item.get("price") or item.get("limit_price") or "MISSING",
+                "buy_quantity": item.get("quantity") or "MISSING",
+                "initial_capital_allocated": (_float(item.get("quantity")) * _float(item.get("price") or item.get("limit_price"))) if item.get("price") or item.get("limit_price") else "MISSING",
+                "evidence_status": "DERIVABLE_PARTIAL",
+                "limitations": ["Stable lot ID is not available; row is a symbol-level position campaign."],
+            }
+        )
+    if isinstance(buy_rows, list):
+        for row in buy_rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "")
+            by_symbol.setdefault(symbol, {"symbol": symbol}).update(
+                {
+                    "buy_date": row.get("business_date") or row.get("buy_date") or by_symbol.get(symbol, {}).get("buy_date", ""),
+                    "buy_price": row.get("buy_price", by_symbol.get(symbol, {}).get("buy_price", "MISSING")),
+                    "buy_quantity": row.get("buy_quantity", row.get("quantity", by_symbol.get(symbol, {}).get("buy_quantity", "MISSING"))),
+                    "initial_capital_allocated": row.get("capital_allocated", by_symbol.get(symbol, {}).get("initial_capital_allocated", "MISSING")),
+                    "opportunity_rank": row.get("opportunity_rank", "MISSING"),
+                    "candidate_score": row.get("candidate_score", "MISSING"),
+                    "opportunity_score": row.get("opportunity_score", "MISSING"),
+                    "confidence": row.get("confidence", "MISSING"),
+                    "evidence_status": row.get("evidence_status", "DERIVABLE_PARTIAL"),
+                }
+            )
+    for row in diagnosis_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "")
+        by_symbol.setdefault(symbol, {"symbol": symbol}).update(
+            {
+                "opportunity_rank": row.get("opportunity_rank", "MISSING"),
+                "candidate_score": row.get("candidate_score", "MISSING"),
+                "opportunity_score": row.get("opportunity_score", "MISSING"),
+                "confidence": row.get("confidence", "MISSING"),
+                "open_closed": row.get("status_open_closed", "MISSING"),
+                "final_last_observed_return": row.get("final_return", "MISSING"),
+                "mfe": row.get("maximum_favorable_excursion", "NOT_AVAILABLE"),
+                "mae": row.get("maximum_adverse_excursion", "NOT_AVAILABLE"),
+                "post_hoc_classification": "POST_HOC_ATTRIBUTION_ONLY",
+                "evidence_status": row.get("evidence_status", "DERIVABLE_PARTIAL"),
+                "limitations": row.get("limitations", []),
+            }
+        )
+    for pos in current_positions:
+        symbol = str(pos.get("symbol") or "")
+        by_symbol.setdefault(symbol, {"symbol": symbol}).update(
+            {
+                "open_closed": "OPEN",
+                "final_quantity": pos.get("quantity"),
+                "average_price": pos.get("average_price"),
+                "final_last_observed_price": pos.get("current_price"),
+                "open_unrealized_pnl": pos.get("unrealized_pnl"),
+            }
+        )
+    for row in trade_attribution:
+        symbol = str(row.get("symbol") or "")
+        if symbol:
+            by_symbol.setdefault(symbol, {"symbol": symbol}).setdefault("available_realized_pnl", 0.0)
+            if row.get("realized_pnl") is not None:
+                by_symbol[symbol]["available_realized_pnl"] = _float(by_symbol[symbol]["available_realized_pnl"]) + _float(row.get("realized_pnl"))
+    for campaign in observed_campaigns:
+        if not isinstance(campaign, dict):
+            continue
+        symbol = str(campaign.get("symbol") or "")
+        if not symbol:
+            continue
+        by_symbol.setdefault(symbol, {"symbol": symbol}).update(
+            {
+                "position_campaign_id": campaign.get("position_campaign_id", "MISSING"),
+                "open_closed": campaign.get("campaign_status", "MISSING"),
+                "final_quantity": campaign.get("current_quantity", "MISSING"),
+                "available_realized_pnl": campaign.get("realized_pnl", "MISSING"),
+                "open_unrealized_pnl": campaign.get("unrealized_pnl", "MISSING"),
+                "buy_notional": campaign.get("buy_notional", "MISSING"),
+                "sell_notional": campaign.get("sell_notional", "MISSING"),
+                "total_campaign_pnl": campaign.get("total_campaign_pnl", "MISSING"),
+                "evidence_status": "AVAILABLE",
+                "limitations": campaign.get("limitations", []),
+            }
+        )
+    rows = []
+    for row in by_symbol.values():
+        rows.append(
+            {
+                "symbol": row.get("symbol", ""),
+                "position_campaign_id": row.get("position_campaign_id", "MISSING"),
+                "buy_date": row.get("buy_date", "MISSING"),
+                "buy_price": row.get("buy_price", "MISSING"),
+                "buy_quantity": row.get("buy_quantity", "MISSING"),
+                "initial_capital_allocated": row.get("initial_capital_allocated", "MISSING"),
+                "opportunity_rank": row.get("opportunity_rank", "MISSING"),
+                "candidate_score": row.get("candidate_score", "MISSING"),
+                "opportunity_score": row.get("opportunity_score", "MISSING"),
+                "confidence": row.get("confidence", "MISSING"),
+                "open_closed": row.get("open_closed", "MISSING"),
+                "final_quantity": row.get("final_quantity", "MISSING"),
+                "average_price": row.get("average_price", "MISSING"),
+                "final_last_observed_price": row.get("final_last_observed_price", "MISSING"),
+                "open_unrealized_pnl": row.get("open_unrealized_pnl", "MISSING"),
+                "available_realized_pnl": row.get("available_realized_pnl", "MISSING"),
+                "buy_notional": row.get("buy_notional", "MISSING"),
+                "sell_notional": row.get("sell_notional", "MISSING"),
+                "total_campaign_pnl": row.get("total_campaign_pnl", "MISSING"),
+                "final_last_observed_return": row.get("final_last_observed_return", "MISSING"),
+                "mfe": row.get("mfe", "NOT_AVAILABLE"),
+                "mae": row.get("mae", "NOT_AVAILABLE"),
+                "post_hoc_classification": row.get("post_hoc_classification", "POST_HOC_ATTRIBUTION_ONLY"),
+                "evidence_status": row.get("evidence_status", "DERIVABLE_PARTIAL"),
+                "limitations": row.get("limitations", ["Stable lot ID is not available; symbol-level campaign only."]),
+            }
+        )
+    return {
+        "operator_question": "What happened to each symbol-level position campaign?",
+        "status": "DERIVABLE_PARTIAL" if rows else "MISSING",
+        "lot_level_claim": "PROHIBITED_STABLE_LOT_ID_NOT_AVAILABLE",
+        "position_campaign_identity": "POSITION_CAMPAIGN_ID_AVAILABLE" if observed_campaigns else "NOT_RETAINED_FOR_OLD_RUN",
+        "positions": sorted(rows, key=lambda row: str(row.get("symbol") or "")),
+    }
+
+
+def _position_scope_row_from_campaign(campaign: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": campaign.get("symbol", ""),
+        "position_campaign_id": campaign.get("position_campaign_id", "MISSING"),
+        "buy_date": campaign.get("opened_business_date", "MISSING"),
+        "closed_business_date": campaign.get("closed_business_date", ""),
+        "buy_price": "MISSING",
+        "buy_quantity": "MISSING",
+        "initial_capital_allocated": campaign.get("buy_notional", "MISSING"),
+        "opportunity_rank": "MISSING",
+        "candidate_score": "MISSING",
+        "opportunity_score": "MISSING",
+        "confidence": "MISSING",
+        "open_closed": campaign.get("campaign_status", "MISSING"),
+        "campaign_status": campaign.get("campaign_status", "MISSING"),
+        "final_quantity": campaign.get("current_quantity", "MISSING"),
+        "current_quantity": campaign.get("current_quantity", "MISSING"),
+        "average_price": campaign.get("average_cost", "MISSING"),
+        "final_last_observed_price": "MISSING",
+        "open_unrealized_pnl": campaign.get("unrealized_pnl", "MISSING"),
+        "unrealized_pnl": campaign.get("unrealized_pnl", "MISSING"),
+        "available_realized_pnl": campaign.get("realized_pnl", "MISSING"),
+        "realized_pnl": campaign.get("realized_pnl", "MISSING"),
+        "buy_notional": campaign.get("buy_notional", "MISSING"),
+        "sell_notional": campaign.get("sell_notional", "MISSING"),
+        "total_campaign_pnl": campaign.get("total_campaign_pnl", "MISSING"),
+        "final_last_observed_return": "MISSING",
+        "mfe": "NOT_AVAILABLE",
+        "mae": "NOT_AVAILABLE",
+        "post_hoc_classification": "POST_HOC_ATTRIBUTION_ONLY",
+        "evidence_status": "AVAILABLE",
+        "event_count": len(campaign.get("events") or []),
+        "limitations": campaign.get("limitations", ["Stable lot ID is not available; realized_slice is the formal realized PnL unit."]),
+    }
+
+
+def _build_lifecycle_scope(
+    *,
+    run_id: str,
+    plans: dict[str, list[dict[str, Any]]],
+    pm: dict[str, Any],
+    trade_attribution: list[dict[str, Any]],
+    current_positions: list[dict[str, Any]],
+    observability: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observability = observability or {}
+    observed_campaigns = observability.get("position_campaigns") if isinstance(observability.get("position_campaigns"), list) else []
+    if observed_campaigns:
+        return {
+            "operator_question": "How did BUY to HOLD/ADD/REDUCE/EXIT evolve?",
+            "status": "AVAILABLE_WITH_PHASE20_J_OBSERVABILITY",
+            "authority": "RUN_SCOPED_POSITION_CAMPAIGN_OBSERVABILITY",
+            "post_hoc_policy": "POST_HOC_ATTRIBUTION_ONLY",
+            "campaign_count": len(observed_campaigns),
+            "daily_snapshot_count": observability.get("position_campaign_snapshot_count", len(observed_campaigns)),
+            "position_lifecycles": observed_campaigns,
+            "pm_decision_snapshots": observability.get("pm_decisions", []),
+            "fills": observability.get("fills", []),
+            "realized_slices": observability.get("realized_slices", []),
+        }
+    phase20_lifecycle = _phase20_attribution_payload("trade_lifecycle.json", run_id=run_id)
+    if isinstance(phase20_lifecycle, list):
+        return {
+            "operator_question": "How did BUY to HOLD/ADD/REDUCE/EXIT evolve?",
+            "status": "AVAILABLE_WITH_DERIVABLE_GAPS",
+            "authority": "PHASE20_ATTRIBUTION_ARTIFACT_RUN_MATCHED",
+            "post_hoc_policy": "POST_HOC_ATTRIBUTION_ONLY",
+            "position_lifecycles": phase20_lifecycle,
+        }
+    symbols = sorted(
+        {
+            *(str(item.get("symbol") or "") for item in plans.get("buy", [])),
+            *(str(row.get("symbol") or "") for row in trade_attribution),
+            *(str(row.get("symbol") or "") for row in current_positions),
+        }
+        - {""}
+    )
+    records = []
+    for symbol in symbols:
+        events: list[dict[str, Any]] = []
+        for item in plans.get("buy", []):
+            if str(item.get("symbol") or "") == symbol:
+                events.append(
+                    {
+                        "stage": "BUY decision / execution",
+                        "business_date": item.get("_plan_date") or item.get("business_date") or "",
+                        "decision_type": "BUY",
+                        "decision_reason": item.get("reason") or "MISSING",
+                        "quantity_before": "MISSING",
+                        "quantity_after": item.get("quantity", "MISSING"),
+                        "price": item.get("price") or item.get("limit_price") or "MISSING",
+                        "pnl": "NOT_AVAILABLE",
+                        "evidence_status": "DERIVABLE_PARTIAL",
+                        "evidence_type": "decision-time evidence",
+                    }
+                )
+        for row in trade_attribution:
+            if str(row.get("symbol") or "") == symbol:
+                events.append(
+                    {
+                        "stage": row.get("source_decision") or "REDUCE/EXIT",
+                        "business_date": row.get("business_date") or "",
+                        "decision_type": row.get("source_decision") or "SELL",
+                        "decision_reason": row.get("pm_reason") or "MISSING",
+                        "quantity_before": "MISSING",
+                        "quantity_after": row.get("remaining_quantity_after_trade", "MISSING"),
+                        "price": row.get("price", "MISSING"),
+                        "pnl": row.get("realized_pnl", "MISSING"),
+                        "post_hoc_return": "NOT_AVAILABLE",
+                        "mfe": "NOT_AVAILABLE",
+                        "mae": "NOT_AVAILABLE",
+                        "post_hoc_classification": "POST_HOC_ATTRIBUTION_ONLY",
+                        "evidence_status": row.get("pnl_traceability", "DERIVABLE_PARTIAL"),
+                        "evidence_type": "execution evidence",
+                    }
+                )
+        final_pos = next((row for row in current_positions if str(row.get("symbol") or "") == symbol), {})
+        events.append(
+            {
+                "stage": "Final Position",
+                "business_date": final_pos.get("valuation_as_of") or "",
+                "decision_type": "FINAL_POSITION",
+                "decision_reason": "end-of-day valuation",
+                "quantity_before": "MISSING",
+                "quantity_after": final_pos.get("quantity", 0),
+                "price": final_pos.get("current_price", "MISSING"),
+                "pnl": final_pos.get("unrealized_pnl", "MISSING"),
+                "evidence_status": "DERIVABLE_PARTIAL" if final_pos else "MISSING",
+                "evidence_type": "end-of-day valuation",
+            }
+        )
+        records.append({"symbol": symbol, "status": "DERIVABLE_PARTIAL", "events": events})
+    if not records and pm.get("decision_count", 0):
+        records.append({"symbol": "MISSING", "status": "MISSING", "events": [], "limitations": ["PM decision body was not retained in summary payload."]})
+    return {
+        "operator_question": "How did BUY to HOLD/ADD/REDUCE/EXIT evolve?",
+        "status": "DERIVABLE_PARTIAL" if records else "MISSING",
+        "authority": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
+        "post_hoc_policy": "POST_HOC_ATTRIBUTION_ONLY",
+        "position_lifecycles": records,
+    }
+
+
+def _build_summarize_scope_sections(
+    *,
+    run_id: str,
+    run_summary: dict[str, Any],
+    external_effects: dict[str, Any],
+    performance: dict[str, Any],
+    pm: dict[str, Any],
+    trading: dict[str, Any],
+    reduce_exit: dict[str, Any],
+    trade_attribution: list[dict[str, Any]],
+    current_positions: list[dict[str, Any]],
+    lifecycle: dict[str, Any],
+    findings: list[dict[str, Any]],
+    plans: dict[str, list[dict[str, Any]]],
+    executions: list[dict[str, Any]],
+    observability: dict[str, Any],
+) -> dict[str, Any]:
+    overview = {
+        "operator_question": "What happened in this run overall?",
+        "run_identity": {
+            "run_id": run_id,
+            "profile_id": run_summary.get("profile_id"),
+            "business_dates": run_summary.get("completed_business_days", []),
+            "runtime_state_authority": run_summary.get("runtime_state_authority"),
+        },
+        "runtime_judgment": run_summary.get("final_judgment"),
+        "external_effect_judgment": "PASS" if external_effects.get("historical_external_effects_disabled") else "REVIEW_REQUIRED",
+        "initial_equity": performance.get("initial_equity"),
+        "final_equity": performance.get("final_equity"),
+        "total_return": performance.get("total_return_amount"),
+        "return_rate": performance.get("total_return_percent"),
+        "buy_count": trading.get("execution_distribution", {}).get("BUY", 0),
+        "sell_count": trading.get("execution_distribution", {}).get("SELL", 0),
+        "pm_counts": {
+            "HOLD": pm.get("hold_count", 0),
+            "ADD": pm.get("add_count", 0),
+            "REDUCE": pm.get("reduce_count", 0),
+            "EXIT": pm.get("exit_count", 0),
+        },
+        "lifecycle_consistency": lifecycle,
+        "review_block_summary": findings,
+        "current_positions_summary": {"count": len(current_positions), "symbols": [row.get("symbol") for row in current_positions]},
+        "operator_judgment": "REVIEW_REQUIRED" if findings else "PASS",
+    }
+    return {
+        "overview": overview,
+        "performance": _build_performance_scope(run_id=run_id, performance=performance, trading=trading, current_positions=current_positions, observability=observability),
+        "positions": _build_positions_scope(run_id=run_id, plans=plans, current_positions=current_positions, trade_attribution=trade_attribution, observability=observability),
+        "lifecycle": _build_lifecycle_scope(run_id=run_id, plans=plans, pm=pm, trade_attribution=trade_attribution, current_positions=current_positions, observability=observability),
+    }
+
+
 def _format_runtime_test_summary(payload: dict[str, Any]) -> str:
+    scope = str(payload.get("scope") or "full")
+    if scope == "overview":
+        overview = payload.get("overview") or {}
+        return "\n".join(
+            [
+                "Run Overview",
+                f"- run_id: {payload['run_id']}",
+                f"- runtime_judgment: {payload.get('runtime_judgment')}",
+                f"- business_dates: {overview.get('run_identity', {}).get('business_dates', [])}",
+                f"- equity: {overview.get('initial_equity')} -> {overview.get('final_equity')} / return: {overview.get('total_return')} ({overview.get('return_rate')}%)",
+                f"- executions: BUY={overview.get('buy_count')} SELL={overview.get('sell_count')}",
+                f"- pm_counts: {overview.get('pm_counts')}",
+                f"- lifecycle_consistency: {(overview.get('lifecycle_consistency') or {}).get('status')}",
+                f"- current_positions: {overview.get('current_positions_summary')}",
+                f"- findings: {len(overview.get('review_block_summary') or [])}",
+            ]
+        )
+    if scope == "performance":
+        performance_scope = payload.get("performance_scope") or {}
+        metrics = performance_scope.get("metrics") or {}
+        return "\n".join(
+            [
+                "Performance Summary",
+                f"- run_id: {payload['run_id']}",
+                f"- status: {performance_scope.get('status')} / authority: {performance_scope.get('authority')}",
+                f"- initial_equity: {(metrics.get('Initial Equity') or {}).get('value')}",
+                f"- final_equity: {(metrics.get('Final Equity') or {}).get('value')}",
+                f"- total_return: {(metrics.get('Total Return') or {}).get('value')}",
+                f"- return_rate: {(metrics.get('Return Rate') or {}).get('value')}",
+                f"- maximum_drawdown: {(metrics.get('Maximum Drawdown') or {}).get('value')}",
+                f"- turnover: {(metrics.get('Turnover') or {}).get('value')}",
+                f"- cash_utilization: {(metrics.get('Cash Utilization') or {}).get('value')}",
+                f"- execution_notional: {(metrics.get('Execution Notional') or {}).get('value')}",
+                f"- realized_slice_gross_pnl: {(metrics.get('Realized Slice Gross PnL') or {}).get('value')}",
+                f"- metric_warnings: {_metric_warning_names(metrics)}",
+            ]
+        )
+    if scope == "positions":
+        positions_scope = payload.get("positions_scope") or {}
+        rows = positions_scope.get("positions") or []
+        lines = [
+            "Position Campaign Summary",
+            f"- run_id: {payload['run_id']}",
+            f"- status: {positions_scope.get('status')}",
+            f"- lot_level_claim: {positions_scope.get('lot_level_claim')}",
+            f"- position_campaigns: {positions_scope.get('campaign_count', len(rows))}",
+        ]
+        for row in rows[:20]:
+            lines.append(
+                f"- {row.get('symbol')} / {row.get('position_campaign_id')}: status={row.get('campaign_status', row.get('open_closed'))} qty={row.get('current_quantity', row.get('final_quantity'))} realized={row.get('realized_pnl', row.get('available_realized_pnl'))} unrealized={row.get('unrealized_pnl', row.get('open_unrealized_pnl'))} total={row.get('total_campaign_pnl')}"
+            )
+        return "\n".join(lines)
+    if scope == "lifecycle":
+        lifecycle_scope = payload.get("lifecycle_scope") or {}
+        rows = lifecycle_scope.get("position_lifecycles") or []
+        lines = [
+            "Position Lifecycle Summary",
+            f"- run_id: {payload['run_id']}",
+            f"- status: {lifecycle_scope.get('status')}",
+            f"- post_hoc_policy: {lifecycle_scope.get('post_hoc_policy')}",
+            f"- position_campaigns: {lifecycle_scope.get('campaign_count', len(rows))}",
+        ]
+        for row in rows[:10]:
+            lines.append(
+                f"- {row.get('symbol')} / {row.get('position_campaign_id')}: status={row.get('campaign_status', row.get('status'))} events={len(row.get('events') or [])} opened={row.get('opened_business_date', 'MISSING')} closed={row.get('closed_business_date', '')} realized={row.get('realized_pnl', 'MISSING')} unrealized={row.get('unrealized_pnl', 'MISSING')} total={row.get('total_campaign_pnl', 'MISSING')}"
+            )
+        return "\n".join(lines)
     run = payload["run"]
     performance = payload["performance"]
     pm = payload["pm_decisions"]
@@ -1036,6 +2570,7 @@ def _format_runtime_test_summary(payload: dict[str, Any]) -> str:
         "",
         "Lifecycle Consistency",
         f"- status: {lifecycle.get('status')} checks={lifecycle.get('checks')}",
+        f"- PM REDUCE Lifecycle: decisions={lifecycle.get('pm_reduce_count')} executable={lifecycle.get('executable_reduce_sell_plan_count')} non_executable={lifecycle.get('non_executable_reduce_terminal_count')} unresolved={lifecycle.get('unresolved_reduce_count')} conflicting={lifecycle.get('conflicting_reduce_count')}",
         "",
         "Review / Block Summary",
         f"- findings: {len(findings)} {[finding.get('reason') for finding in findings]}",
@@ -1048,6 +2583,17 @@ def _format_runtime_test_summary(payload: dict[str, Any]) -> str:
     if payload.get("evidence_path"):
         lines.append(f"- evidence_path: {payload['evidence_path']}")
     return "\n".join(lines)
+
+
+def _metric_warning_names(metrics: dict[str, Any]) -> list[str]:
+    warnings = []
+    for name, row in metrics.items():
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        if status in {"MISSING", "NOT_AVAILABLE", "NOT_RETAINED", "REVIEW_REQUIRED"}:
+            warnings.append(name)
+    return warnings
 
 
 def ai_status_command(
@@ -1117,13 +2663,23 @@ def system_status_command(
         )
         if post_run_context:
             expected_business_date = str(post_run_context.get("final_business_date") or expected_business_date)
+        target_business_dates = post_run_context.get("completed_business_days") if post_run_context else system_status_target_business_dates(profile)
+        explicit_target_start = str(getattr(args, "target_start_date", "") or "")
+        explicit_target_end = str(getattr(args, "target_end_date", "") or "")
+        if explicit_target_start:
+            post_run_context = {}
+            expected_business_date = explicit_target_start
+            if explicit_target_end:
+                target_business_dates = [explicit_target_start, explicit_target_end]
+            else:
+                target_business_dates = [explicit_target_start]
         report = build_system_status_report(
             runtime_root=runtime_root,
             expected_business_date=expected_business_date or None,
             runtime_mode=str(profile.get("mode") or ""),
             profile_id=str(profile.get("profile_id") or ""),
             broker_environment=str(profile.get("broker_environment") or ""),
-            target_business_dates=post_run_context.get("completed_business_days") if post_run_context else system_status_target_business_dates(profile),
+            target_business_dates=target_business_dates,
             post_run_context=post_run_context,
         )
         evidence_path = ""
@@ -1170,6 +2726,167 @@ def system_status_command(
             }
         )
         return CommandResult("COMMAND_ERROR", EXIT_HALT, runner_response(payload))
+
+
+def market_data_bootstrap_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    del profile
+    action = str(getattr(args, "market_data_bootstrap_action", "") or "")
+    if action not in {"plan", "run"}:
+        payload = base_payload("market-data-bootstrap", "INVALID_ARGUMENT")
+        payload.update(
+            {
+                "status": "INVALID_ARGUMENT",
+                "exit_code": EXIT_INVALID_ARGUMENT,
+                "error": "market-data-bootstrap requires one of: plan, run",
+                "read_only": True,
+                "broker_access": "NOT_PERFORMED",
+            }
+        )
+        return CommandResult("INVALID_ARGUMENT", EXIT_INVALID_ARGUMENT, runner_response(payload))
+    phase_evidence_root = Path(evidence_root).parent / "phase20_bb_runtime_market_data_bootstrap"
+    kwargs = {
+        "runtime_root": runtime_root,
+        "source_path": Path(str(getattr(args, "source_path", "") or ".runtime/data/raw_normalized_real_runtime/jquants/equities_bars_daily/data.parquet")),
+        "evidence_root": phase_evidence_root,
+        "years": int(getattr(args, "years", 5) or 5),
+        "target_start_date": getattr(args, "target_start_date", None),
+        "target_end_date": getattr(args, "target_end_date", None),
+        "write_evidence": bool(getattr(args, "write_evidence", False)),
+    }
+    if action == "plan":
+        result = build_market_data_bootstrap_plan(**kwargs)
+    else:
+        result = execute_market_data_bootstrap(
+            **kwargs,
+            confirm=bool(getattr(args, "confirm", False)),
+            explicit_mutation_confirm=bool(getattr(args, "explicit_market_data_mutation_confirm", False)),
+        )
+    status = "PASS" if result.get("status") == "PASS" else "BLOCKED"
+    exit_code = EXIT_PASS if status == "PASS" else EXIT_BLOCKED
+    payload = runner_response(
+        {
+            "schema_version": result.get("schema_version", RUNNER_SCHEMA_VERSION),
+            "subcommand": "market-data-bootstrap",
+            "action": action,
+            "status": status,
+            "current_step": "market-data-bootstrap",
+            "completed_days": [],
+            "next_step": "operator review" if status != "PASS" else "",
+            "backup_id": "",
+            "evidence_path": str(phase_evidence_root) if bool(getattr(args, "write_evidence", False)) else "",
+            "final_judgment": result.get("final_judgment", status),
+            "exit_code": exit_code,
+            "runtime_root": str(runtime_root),
+            "read_only": action == "plan",
+            "broker_access": "NOT_PERFORMED",
+            "jquants_api_fetch_executed": False,
+            "runtime_market_data_mutated": bool(result.get("runtime_market_data_mutated", False)),
+            "bootstrap_result": result,
+        }
+    )
+    return CommandResult(status, exit_code, payload)
+
+
+def market_data_acquisition_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    del profile
+    action = str(getattr(args, "market_data_acquisition_action", "") or "")
+    phase_evidence_root = Path(evidence_root).parent / "phase20_bh_historical_trading_calendar_business_day_authority"
+    try:
+        if action == "plan":
+            result = build_acquisition_plan(
+                runtime_root=runtime_root,
+                start_date=str(getattr(args, "start_date")),
+                end_date=str(getattr(args, "end_date")),
+                run_id=getattr(args, "run_id", None),
+                evidence_root=phase_evidence_root,
+                chunk=str(getattr(args, "chunk", "month") or "month"),
+                write_evidence=bool(getattr(args, "write_evidence", False)),
+            )
+        elif action == "run":
+            result = run_acquisition(
+                runtime_root=runtime_root,
+                start_date=str(getattr(args, "start_date")),
+                end_date=str(getattr(args, "end_date")),
+                run_id=getattr(args, "run_id", None),
+                evidence_root=phase_evidence_root,
+                chunk=str(getattr(args, "chunk", "month") or "month"),
+                confirm=bool(getattr(args, "confirm", False)),
+                explicit_fetch_confirm=bool(getattr(args, "explicit_fetch_confirm", False)),
+                write_evidence=bool(getattr(args, "write_evidence", False)),
+                max_pages_per_chunk=int(getattr(args, "max_pages_per_chunk", 100) or 100),
+            )
+        elif action == "resume":
+            result = resume_acquisition(
+                runtime_root=runtime_root,
+                run_id=str(getattr(args, "run_id")),
+                evidence_root=phase_evidence_root,
+                confirm=bool(getattr(args, "confirm", False)),
+                explicit_fetch_confirm=bool(getattr(args, "explicit_fetch_confirm", False)),
+                write_evidence=bool(getattr(args, "write_evidence", False)),
+                max_pages_per_chunk=int(getattr(args, "max_pages_per_chunk", 100) or 100),
+            )
+        elif action == "status":
+            result = acquisition_status(
+                runtime_root=runtime_root,
+                run_id=str(getattr(args, "run_id")),
+                evidence_root=phase_evidence_root,
+            )
+        else:
+            result = {
+                "schema_version": RUNNER_SCHEMA_VERSION,
+                "operation": action,
+                "status": "BLOCK",
+                "final_judgment": "ACQUISITION_INVALID_ACTION",
+                "blocked_reasons": ["market-data-acquisition requires one of: plan, run, resume, status"],
+                "runtime_market_data_mutated": False,
+                "jquants_api_fetch_executed": False,
+            }
+    except Exception as exc:  # noqa: BLE001
+        result = {
+            "schema_version": RUNNER_SCHEMA_VERSION,
+            "operation": action,
+            "status": "BLOCK",
+            "final_judgment": "ACQUISITION_COMMAND_ERROR",
+            "blocked_reasons": [str(exc)],
+            "runtime_market_data_mutated": False,
+            "jquants_api_fetch_executed": False,
+        }
+    status = "PASS" if result.get("status") == "PASS" else "REVIEW_REQUIRED" if result.get("status") == "IN_PROGRESS" else "BLOCKED"
+    exit_code = EXIT_PASS if status == "PASS" else EXIT_REVIEW_REQUIRED if status == "REVIEW_REQUIRED" else EXIT_BLOCKED
+    payload = runner_response(
+        {
+            "schema_version": result.get("schema_version", RUNNER_SCHEMA_VERSION),
+            "subcommand": "market-data-acquisition",
+            "action": action,
+            "status": status,
+            "current_step": "market-data-acquisition",
+            "completed_days": [],
+            "next_step": "resume" if status == "REVIEW_REQUIRED" else "operator review" if status == "BLOCKED" else "",
+            "backup_id": "",
+            "evidence_path": str(phase_evidence_root) if bool(getattr(args, "write_evidence", False)) else "",
+            "final_judgment": result.get("final_judgment", status),
+            "exit_code": exit_code,
+            "runtime_root": str(runtime_root),
+            "read_only": action in {"plan", "status"},
+            "broker_access": "NOT_PERFORMED",
+            "jquants_api_fetch_executed": bool(result.get("jquants_api_fetch_executed", False)),
+            "runtime_market_data_mutated": bool(result.get("runtime_market_data_mutated", False)),
+            "acquisition_result": result,
+        }
+    )
+    return CommandResult(status, exit_code, payload)
 
 
 def system_status_target_business_dates(profile: dict[str, Any]) -> list[str]:
@@ -1226,6 +2943,11 @@ def latest_closed_runtime_test_system_status_context(
             continue
         if not _runtime_roots_match(str(summary.get("runtime_root") or ""), runtime_root):
             continue
+        final_state_hashes = final_summary.get("final_state_hashes") if isinstance(final_summary.get("final_state_hashes"), dict) else {}
+        current_state_hashes = state_hashes(runtime_root) if runtime_root.exists() else {}
+        final_state_hash_match = bool(final_state_hashes) and current_state_hashes == final_state_hashes
+        current_state = read_json_optional(runtime_root / "persistent_ledger" / "state.json") if final_state_hash_match else {}
+        final_positions = current_state.get("positions") if isinstance(current_state.get("positions"), list) else []
         final_day = completed_days[-1]
         context = {
             "schema_version": "system_status_historical_post_run_context.v1",
@@ -1241,6 +2963,15 @@ def latest_closed_runtime_test_system_status_context(
             "closed_at": str(final_summary.get("closed_at") or ""),
             "fresh_run_summary_path": str(summary_path),
             "final_summary_path": str(runs_root(evidence_root) / run_id / "final_summary.json"),
+            "final_state_hashes": final_state_hashes,
+            "current_state_hashes": current_state_hashes,
+            "final_state_hash_match": final_state_hash_match,
+            "final_position_count": len(final_positions) if final_state_hash_match else "NOT_AVAILABLE",
+            "final_position_count_authority": (
+                "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH"
+                if final_state_hash_match
+                else "NOT_AVAILABLE_FINAL_STATE_HASH_MISMATCH"
+            ),
             "runtime_stage": "EXECUTION_DONE",
             "completed_runtime_components": _completed_runtime_components(runtime_root, final_day),
         }
@@ -1542,6 +3273,9 @@ def reset_command(
     if args.initial_cash is not None:
         initial_state["cash"] = args.initial_cash
         initial_state["buying_power"] = args.initial_cash
+    initial_position_state_date = str(getattr(args, "initial_position_state_date", "") or "")
+    if initial_position_state_date:
+        validate_initial_position_state_date(initial_position_state_date)
     manifest = {
         "schema_version": RESET_MANIFEST_SCHEMA_VERSION,
         "status": "DRY_RUN" if args.dry_run else "PASS",
@@ -1554,12 +3288,21 @@ def reset_command(
         "all_or_nothing": True,
         "partial_reset_prohibited": True,
         "created_at": utc_now(),
+        "initial_date_policy": "historical_fresh_run_first_business_date" if initial_position_state_date else "legacy_reset_without_logical_date",
+        "resolved_initial_position_state_date": initial_position_state_date,
+        "logical_time_fields": ["business_date", "as_of", "position_state_as_of"],
+        "wall_clock_fields": ["created_at", "updated_at", "reset_executed_at"],
         "dry_run": bool(args.dry_run),
     }
     if not args.dry_run:
         require_confirm(args)
         try:
-            apply_reset(runtime_root=runtime_root, initial_state=initial_state, profile=profile)
+            apply_reset(
+                runtime_root=runtime_root,
+                initial_state=initial_state,
+                profile=profile,
+                initial_position_state_date=initial_position_state_date,
+            )
         except Exception as exc:
             restore_from_backup(runtime_root=runtime_root, backup_manifest=backup)
             raise RuntimeTestError(
@@ -1651,6 +3394,13 @@ def run_command(
                 business_date=day["business_date"],
                 job=job["job"],
             )
+            write_performance_observability_evidence(
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                run_id=run_id,
+                business_date=day["business_date"],
+                job=job["job"],
+            )
             scoped_block = classify_scoped_buy_only_result(
                 run_dir=run_dir,
                 business_date=day["business_date"],
@@ -1660,8 +3410,21 @@ def run_command(
             if scoped_block:
                 job_record["runtime_test_job_status"] = scoped_block["status"]
                 job_record["scoped_block_continuation"] = scoped_block
+            pm_fatal = _pm_fatal_evidence_for_run(run_dir, completed_business_days={day["business_date"]})
+            if pm_fatal:
+                job_record["runtime_test_job_status"] = "HALT_PM_POSITION_MANAGEMENT"
+                job_record["position_management_halt"] = pm_fatal
             run_state["completed_jobs"].append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
+            if pm_fatal:
+                run_state["status"] = "HALT"
+                run_state["halted_at"] = job_record
+                write_json_atomic(run_dir / "run_state.json", run_state)
+                raise RuntimeTestError(
+                    f"Runtime Test stopped at {run_state['next_job']} because Position Management artifact status is HALT",
+                    status="HALT",
+                    exit_code=EXIT_HALT,
+                )
             if completed.returncode != 0 and not scoped_block:
                 run_state["status"] = "HALT"
                 run_state["halted_at"] = job_record
@@ -1688,6 +3451,9 @@ def validate_command(
     evidence_root: Path,
 ) -> CommandResult:
     run_state = load_run_state(evidence_root, args.run_id) if args.run_id else {}
+    run_dir = runs_root(evidence_root) / args.run_id if args.run_id else Path()
+    completed_days = set(str(day) for day in (run_state.get("completed_business_days") or []))
+    pm_fatal = _pm_fatal_evidence_for_run(run_dir, completed_business_days=completed_days) if args.run_id else []
     checks = {
         "normal_runtime_root": str(runtime_root).endswith(".runtime"),
         "current_exists": (runtime_root / "persistent_ledger" / "state.json").exists(),
@@ -1695,6 +3461,7 @@ def validate_command(
         "runtime_state_exists": (runtime_root / "runtime_state" / "current_state.json").exists(),
         "external_effect_absence": profile["external_effect_policy"].get("broker_write") is False,
         "run_state_present": bool(run_state) if args.run_id else True,
+        "position_management_halt_absent": not pm_fatal,
     }
     status_value = "PASS" if all(checks.values()) else "VALIDATION_FAILURE"
     payload = base_payload("validate", status_value)
@@ -1703,6 +3470,7 @@ def validate_command(
             "run_id": args.run_id or "",
             "business_date": args.business_date or "",
             "checks": checks,
+            "position_management_halt_evidence": pm_fatal,
             "state_hashes": state_hashes(runtime_root),
             "repair_performed": False,
         }
@@ -1779,6 +3547,13 @@ def resume_command(
                 business_date=day["business_date"],
                 job=job["job"],
             )
+            write_performance_observability_evidence(
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                run_id=str(args.run_id),
+                business_date=day["business_date"],
+                job=job["job"],
+            )
             scoped_block = classify_scoped_buy_only_result(
                 run_dir=run_dir,
                 business_date=day["business_date"],
@@ -1788,8 +3563,21 @@ def resume_command(
             if scoped_block:
                 job_record["runtime_test_job_status"] = scoped_block["status"]
                 job_record["scoped_block_continuation"] = scoped_block
+            pm_fatal = _pm_fatal_evidence_for_run(run_dir, completed_business_days={day["business_date"]})
+            if pm_fatal:
+                job_record["runtime_test_job_status"] = "HALT_PM_POSITION_MANAGEMENT"
+                job_record["position_management_halt"] = pm_fatal
             run_state.setdefault("completed_jobs", []).append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
+            if pm_fatal:
+                run_state["status"] = "HALT"
+                run_state["halted_at"] = job_record
+                write_json_atomic(run_dir / "run_state.json", run_state)
+                raise RuntimeTestError(
+                    f"resume stopped at {run_state['next_job']} because Position Management artifact status is HALT",
+                    status="HALT",
+                    exit_code=EXIT_HALT,
+                )
             if completed.returncode != 0 and not scoped_block:
                 run_state["status"] = "HALT"
                 run_state["halted_at"] = job_record
@@ -1896,6 +3684,7 @@ def abandon_command(
         return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
     require_confirm(args)
     abandoned_at = utc_now()
+    final_state_snapshot = write_final_state_snapshot(run_dir=run_dir, runtime_root=runtime_root)
     abandon_reason = str(getattr(args, "reason", "") or "operator_abandoned_halt_run")
     abandonment = {
         "schema_version": "runtime_test_abandonment_v1",
@@ -1938,6 +3727,10 @@ def abandon_command(
         "broker_write": False,
         "external_delivery": False,
         "final_state_hashes": state_hashes(runtime_root),
+        "final_state_snapshot": {
+            "status": final_state_snapshot.get("status"),
+            "manifest_path": str(run_dir / "final_state_snapshot" / "manifest.json"),
+        },
         "post_close_lifecycle_recommendation": "start a new fresh-run; this run is not resumable",
     }
     write_json_atomic(run_dir / "abandonment.json", abandonment)
@@ -1994,7 +3787,11 @@ def close_command(
 ) -> CommandResult:
     run_state = load_run_state(evidence_root, args.run_id)
     validation = validate_command(argparse.Namespace(run_id=args.run_id, business_date="", json=False), profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
-    status_value = "PASS" if validation.exit_code == EXIT_PASS and run_state.get("status") in {"COMPLETED", "HALT"} else "REVIEW_REQUIRED"
+    run_dir = runs_root(evidence_root) / args.run_id
+    completed_days = set(str(day) for day in (run_state.get("completed_business_days") or []))
+    pm_fatal = _pm_fatal_evidence_for_run(run_dir, completed_business_days=completed_days)
+    status_value = "PASS" if validation.exit_code == EXIT_PASS and not pm_fatal and run_state.get("status") in {"COMPLETED", "HALT"} else "REVIEW_REQUIRED"
+    final_state_snapshot = write_final_state_snapshot(run_dir=run_dir, runtime_root=runtime_root)
     summary = {
         "schema_version": FINAL_SUMMARY_SCHEMA_VERSION,
         "run_id": args.run_id,
@@ -2002,7 +3799,12 @@ def close_command(
         "status": status_value,
         "test_validity_judgment": "VALID" if status_value == "PASS" else "REVIEW_REQUIRED",
         "acceptance_gate_judgment": status_value,
+        "position_management_halt_evidence": pm_fatal,
         "final_state_hashes": state_hashes(runtime_root),
+        "final_state_snapshot": {
+            "status": final_state_snapshot.get("status"),
+            "manifest_path": str(run_dir / "final_state_snapshot" / "manifest.json"),
+        },
         "closed_at": utc_now(),
         "post_close_lifecycle_recommendation": "validate evidence, then explicitly rollback or transition by separate command",
     }
@@ -2141,7 +3943,14 @@ def fresh_run_command(
         reset_result = execute(
             "reset",
             lambda: reset_command(
-                argparse.Namespace(dry_run=False, confirm=True, explicit_mutation_confirm=True, backup_id=backup_id, initial_cash=args.initial_cash),
+                argparse.Namespace(
+                    dry_run=False,
+                    confirm=True,
+                    explicit_mutation_confirm=True,
+                    backup_id=backup_id,
+                    initial_cash=args.initial_cash,
+                    initial_position_state_date=str(plan_preview.get("requested_start_date") or ""),
+                ),
                 profile=profile,
                 runtime_root=runtime_root,
                 evidence_root=evidence_root,
@@ -2754,8 +4563,26 @@ def resolve_feature_date(*, profile: dict[str, Any], runtime_root: Path, busines
     }
 
 
-def apply_reset(*, runtime_root: Path, initial_state: dict[str, Any], profile: dict[str, Any]) -> None:
+def validate_initial_position_state_date(value: str) -> None:
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise RuntimeTestError(
+            "initial position state date must be YYYY-MM-DD",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        ) from exc
+
+
+def apply_reset(
+    *,
+    runtime_root: Path,
+    initial_state: dict[str, Any],
+    profile: dict[str, Any],
+    initial_position_state_date: str = "",
+) -> None:
     created_at = utc_now()
+    logical_position_date = initial_position_state_date
     for rel in RESETTABLE_RELATIVE_PATHS:
         target = runtime_root / rel
         if not target.exists():
@@ -2772,8 +4599,10 @@ def apply_reset(*, runtime_root: Path, initial_state: dict[str, Any], profile: d
             "asset_state_id": f"runtime-test-initial-{timestamp_id()}",
             "environment": profile["mode"],
             "source": "runtime_test_reset",
-            "as_of": created_at,
-            "business_date": "",
+            "as_of": logical_position_date or created_at,
+            "business_date": logical_position_date,
+            "position_state_as_of": logical_position_date,
+            "position_state_source": "runtime_test_reset",
             "positions": [],
             "cash": float(initial_state["cash"]),
             "buying_power": float(initial_state["buying_power"]),
@@ -2783,6 +4612,9 @@ def apply_reset(*, runtime_root: Path, initial_state: dict[str, Any], profile: d
             "production_equivalent": False,
             "current_state_confirmed_empty": True,
             "current_positions_unknown": False,
+            "current_position_status": "READY" if logical_position_date else "",
+            "no_position": True,
+            "no_position_reason": "runtime_test_initial_empty_portfolio",
             "cash_unknown": False,
             "buying_power_unknown": False,
             "cash_confirmed": True,
@@ -2790,8 +4622,22 @@ def apply_reset(*, runtime_root: Path, initial_state: dict[str, Any], profile: d
             "generated_from": [],
             "created_at": created_at,
             "updated_at": created_at,
+            "reset_executed_at": created_at,
+            "logical_time_fields": {
+                "business_date": logical_position_date,
+                "as_of": logical_position_date or "LEGACY_WALL_CLOCK_FALLBACK",
+                "position_state_as_of": logical_position_date,
+            },
+            "wall_clock_fields": {
+                "created_at": created_at,
+                "updated_at": created_at,
+                "reset_executed_at": created_at,
+            },
             "temporal_schema_version": "runtime_v2_current_temporal_v1",
             "temporal_status": "READY",
+            "current_valuation_status": "NOT_REQUIRED_EMPTY" if logical_position_date else "",
+            "valuation_as_of": "",
+            "source_market_date": "",
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
         },
@@ -3374,6 +5220,69 @@ def state_hashes(runtime_root: Path) -> dict[str, str]:
     return {name: file_ref(path, root=runtime_root).get("sha256", "") for name, path in paths.items()}
 
 
+def write_final_state_snapshot(*, run_dir: Path, runtime_root: Path) -> dict[str, Any]:
+    snapshot_root = run_dir / "final_state_snapshot"
+    files = {
+        "current_state": runtime_root / "persistent_ledger" / "state.json",
+        "pending_order_plan": runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        "runtime_current_state": runtime_root / "runtime_state" / "current_state.json",
+    }
+    entries: dict[str, Any] = {}
+    for name, source in files.items():
+        if not source.exists():
+            entries[name] = {"source_path": str(source), "snapshot_path": "", "exists": False, "sha256": ""}
+            continue
+        target = snapshot_root / source.relative_to(runtime_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        entries[name] = {
+            "source_path": str(source),
+            "snapshot_path": str(target),
+            "exists": True,
+            "sha256": sha256_file(target),
+        }
+    manifest = {
+        "schema_version": "runtime_test_final_state_snapshot_v1",
+        "status": "AVAILABLE" if entries.get("current_state", {}).get("exists") else "CURRENT_STATE_MISSING",
+        "generated_at": utc_now(),
+        "state_hashes": state_hashes(runtime_root),
+        "files": entries,
+    }
+    write_json_atomic(snapshot_root / "manifest.json", manifest)
+    return manifest
+
+
+def _load_verified_final_state_snapshot(*, run_dir: Path, final_summary: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    snapshot = final_summary.get("final_state_snapshot") if isinstance(final_summary.get("final_state_snapshot"), dict) else {}
+    manifest_path = Path(str(snapshot.get("manifest_path") or run_dir / "final_state_snapshot" / "manifest.json"))
+    manifest = read_json_optional(manifest_path)
+    if not manifest:
+        return {}, {"status": "NOT_RETAINED", "manifest_path": str(manifest_path)}
+    current_entry = ((manifest.get("files") or {}).get("current_state") or {}) if isinstance(manifest.get("files"), dict) else {}
+    snapshot_path = Path(str(current_entry.get("snapshot_path") or ""))
+    if not snapshot_path.exists():
+        return {}, {"status": "SNAPSHOT_CURRENT_STATE_MISSING", "manifest_path": str(manifest_path), "snapshot_path": str(snapshot_path)}
+    expected = str(current_entry.get("sha256") or "")
+    actual = sha256_file(snapshot_path)
+    if expected and actual != expected:
+        return {}, {
+            "status": "SNAPSHOT_CURRENT_STATE_HASH_MISMATCH",
+            "manifest_path": str(manifest_path),
+            "snapshot_path": str(snapshot_path),
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+        }
+    payload = read_json_optional(snapshot_path)
+    if not payload:
+        return {}, {"status": "SNAPSHOT_CURRENT_STATE_JSON_INVALID", "manifest_path": str(manifest_path), "snapshot_path": str(snapshot_path)}
+    return payload, {
+        "status": "RUN_SCOPED_FINAL_STATE_SNAPSHOT_VERIFIED",
+        "manifest_path": str(manifest_path),
+        "snapshot_path": str(snapshot_path),
+        "sha256": actual,
+    }
+
+
 def accepted_artifact_hash(runtime_root: Path) -> str:
     candidates = [
         runtime_root / "artifact_registry" / "index" / "registry_index.json",
@@ -3433,6 +5342,474 @@ def read_runtime_business_date(runtime_root: Path) -> str:
             if value:
                 return str(value)
     return ""
+
+
+def write_performance_observability_evidence(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    run_id: str,
+    business_date: str,
+    job: str,
+) -> None:
+    if not run_id or not business_date:
+        return
+    if job in {"morning", "sell_planning", "execution", "current_valuation_refresh"}:
+        bundle = _build_performance_observability_bundle(
+            run_dir=run_dir,
+            runtime_root=runtime_root,
+            run_id=run_id,
+            business_date=business_date,
+        )
+        if job in {"execution", "current_valuation_refresh"}:
+            write_json_atomic(run_dir / "daily" / business_date / "execution" / "fills.json", bundle["fills"])
+            write_json_atomic(run_dir / "daily" / business_date / "execution" / "realized_slices.json", bundle["realized_slices"])
+            write_json_atomic(run_dir / "daily" / business_date / "positions" / "position_campaigns.json", bundle["position_campaigns"])
+        if job == "sell_planning":
+            write_json_atomic(run_dir / "daily" / business_date / "position_management" / "pm_decisions.json", bundle["pm_decisions"])
+        if job == "morning":
+            write_json_atomic(run_dir / "daily" / business_date / "positions" / "position_campaigns.json", bundle["position_campaigns"])
+    if job in {"market_refresh", "current_valuation_refresh", "execution"}:
+        write_json_atomic(
+            run_dir / "daily" / business_date / "benchmark" / "benchmark_snapshot.json",
+            _build_missing_benchmark_snapshot(run_dir=run_dir, runtime_root=runtime_root, run_id=run_id, business_date=business_date),
+        )
+
+
+def _build_performance_observability_bundle(*, run_dir: Path, runtime_root: Path, run_id: str, business_date: str) -> dict[str, Any]:
+    executions = _dedupe_execution_rows([row for row in _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl") if row.get("record_type") == "execution"])
+    plans = _collect_observability_plan_items(runtime_root=runtime_root, business_date=business_date)
+    pm_payload = read_json_optional(runtime_root / "runtime_state" / "position_management" / business_date / "position_management_decisions.json")
+    pm_status = _pm_artifact_status(pm_payload)
+    state = read_json_optional(runtime_root / "persistent_ledger" / "state.json")
+    campaign_state = _derive_position_campaign_state(
+        run_id=run_id,
+        business_date=business_date,
+        executions=executions,
+        plans=plans,
+        current_state=state,
+    )
+    common = _observability_common(run_dir=run_dir, runtime_root=runtime_root, run_id=run_id, business_date=business_date)
+    return {
+        "fills": {
+            **common,
+            "schema_version": "runtime_fill_observability.v1",
+            "fills": _build_fill_rows(
+                run_id=run_id,
+                business_date=business_date,
+                executions=executions,
+                execution_campaign_ids=campaign_state["execution_campaign_ids"],
+                plans=plans,
+            ),
+        },
+        "realized_slices": {
+            **common,
+            "schema_version": "realized_slice_observability.v1",
+            "cost_basis_method": "AVERAGE_COST_RUNTIME_OWNED_FILL_PROJECTION",
+            "lot_level_status": "MISSING_STABLE_LOT_ID_NOT_AVAILABLE",
+            "realized_slices": campaign_state["realized_slices"],
+        },
+        "position_campaigns": {
+            **common,
+            "schema_version": "position_campaign_observability.v1",
+            "identity_policy": "RUN_SCOPED_DETERMINISTIC_EXECUTION_REPLAY_SYMBOL_SEQUENCE",
+            "symbol_only_identity": "PROHIBITED",
+            "position_campaigns": campaign_state["campaigns"],
+        },
+        "pm_decisions": {
+            **common,
+            "schema_version": "pm_decision_snapshot.v1",
+            "snapshot_policy": "DECISION_TIME_ONLY_NO_POST_HOC_OUTCOMES",
+            "source_status": "AVAILABLE" if pm_payload else "NOT_RETAINED",
+            **pm_status,
+            "pm_status": pm_status["position_management_status"],
+            "pm_authority_status": pm_status["position_management_authority_status"],
+            "pm_input_schema_status": pm_status["position_management_input_status"],
+            "pm_reason": pm_status["position_management_reason"],
+            "pm_decision_count": pm_status["position_management_decision_count"],
+            "pm_trace_status": pm_status["position_management_trace_status"],
+            "decisions": _build_pm_decision_snapshots(
+                run_id=run_id,
+                business_date=business_date,
+                pm_payload=pm_payload,
+                campaign_by_symbol=campaign_state["active_campaign_by_symbol"],
+                source_path=runtime_root / "runtime_state" / "position_management" / business_date / "position_management_decisions.json",
+            ),
+        },
+    }
+
+
+def _dedupe_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        key = _execution_key(row)
+        if not key:
+            key = f"row-index:{index}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _observability_common(*, run_dir: Path, runtime_root: Path, run_id: str, business_date: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "business_date": business_date,
+        "authority": "RUNTIME_TEST_RUN_SCOPED_OBSERVABILITY_EVIDENCE",
+        "contract_version": PERFORMANCE_OBSERVABILITY_CONTRACT_VERSION,
+        "generated_at": utc_now(),
+        "source_artifacts": {
+            "run_dir": str(run_dir),
+            "runtime_root": str(runtime_root),
+        },
+        "temporal_safety": {
+            "decision_time_evidence": "SEPARATED",
+            "execution_time_evidence": "SEPARATED",
+            "eod_valuation": "SEPARATED",
+            "post_hoc_attribution": "NOT_WRITTEN_TO_DECISION_SNAPSHOT",
+        },
+    }
+
+
+def _collect_observability_plan_items(*, runtime_root: Path, business_date: str) -> dict[str, list[dict[str, Any]]]:
+    result = {"buy": [], "sell": []}
+    for side, rel in (("buy", "morning_pipeline"), ("sell", "sell_pipeline")):
+        path = runtime_root / "runtime_state" / rel / business_date / "order_plan.json"
+        payload = read_json_optional(path)
+        for item in _items(payload):
+            if isinstance(item, dict):
+                result[side].append({**item, "_artifact_path": str(path), "_plan_date": business_date})
+    return result
+
+
+def _derive_position_campaign_state(
+    *,
+    run_id: str,
+    business_date: str,
+    executions: list[dict[str, Any]],
+    plans: dict[str, list[dict[str, Any]]],
+    current_state: dict[str, Any],
+) -> dict[str, Any]:
+    positions: dict[str, dict[str, Any]] = defaultdict(lambda: {"quantity": 0.0, "cost": 0.0, "campaign_index": 0, "campaign_id": ""})
+    campaigns: dict[str, dict[str, Any]] = {}
+    execution_campaign_ids: dict[str, str] = {}
+    realized_slices: list[dict[str, Any]] = []
+    current_positions = {str(row.get("symbol") or ""): row for row in current_state.get("positions") or [] if isinstance(row, dict)}
+    sequenced = [
+        (index, row)
+        for index, row in enumerate(executions)
+        if str(row.get("business_date") or "") <= business_date
+    ]
+    ordered = [
+        row
+        for _, row in sorted(
+            sequenced,
+            key=lambda item: (
+                str(item[1].get("business_date") or ""),
+                str(item[1].get("executed_at") or ""),
+                item[0],
+            ),
+        )
+    ]
+    for row in ordered:
+        symbol = str(row.get("symbol") or row.get("broker_issue_code") or "")
+        if not symbol:
+            continue
+        side = str(row.get("side") or "").upper()
+        qty = _float(row.get("filled_quantity") or row.get("quantity"))
+        price = _float(row.get("price") or row.get("average_price") or row.get("market_price"), default=-1.0)
+        if qty <= 0 or price < 0:
+            continue
+        state = positions[symbol]
+        if side == "BUY":
+            if state["quantity"] <= POSITION_QUANTITY_EPSILON:
+                state["campaign_index"] += 1
+                state["campaign_id"] = _position_campaign_id(run_id=run_id, symbol=symbol, sequence=int(state["campaign_index"]))
+                campaigns[state["campaign_id"]] = _new_campaign(row=row, run_id=run_id, business_date=business_date, symbol=symbol, campaign_id=state["campaign_id"], plans=plans)
+            campaign = campaigns[state["campaign_id"]]
+            old_quantity = _float(state["quantity"])
+            state["quantity"] = old_quantity + qty
+            state["cost"] = _float(state["cost"]) + qty * price
+            campaign["current_quantity"] = state["quantity"]
+            campaign["average_cost"] = state["cost"] / state["quantity"] if state["quantity"] > 0 else _missing_value()
+            campaign["buy_notional"] = _float(campaign.get("buy_notional")) + qty * price
+            campaign["events"].append(_campaign_event(row=row, stage="BUY" if old_quantity <= 0 else "ADD", campaign_id=state["campaign_id"], realized_slice_id=""))
+            execution_campaign_ids[_execution_key(row)] = state["campaign_id"]
+            continue
+        if side != "SELL":
+            continue
+        campaign_id = str(state.get("campaign_id") or "")
+        execution_campaign_ids[_execution_key(row)] = campaign_id
+        if not campaign_id or campaign_id not in campaigns:
+            continue
+        average_cost = state["cost"] / state["quantity"] if state["quantity"] > 0 else 0.0
+        sell_quantity = min(qty, _float(state["quantity"]))
+        allocated_cost = average_cost * sell_quantity
+        gross_pnl = (price - average_cost) * sell_quantity
+        state["quantity"] = max(_float(state["quantity"]) - sell_quantity, 0.0)
+        if state["quantity"] <= POSITION_QUANTITY_EPSILON:
+            state["quantity"] = 0.0
+        state["cost"] = max(_float(state["cost"]) - allocated_cost, 0.0)
+        if state["quantity"] <= POSITION_QUANTITY_EPSILON:
+            state["cost"] = 0.0
+        campaign = campaigns[campaign_id]
+        slice_id = f"realized-slice-{_short_hash('|'.join((campaign_id, _execution_key(row), str(len(realized_slices) + 1))))}"
+        source = _execution_source_decision(row=row, plans=plans)
+        slice_row = {
+            "realized_slice_id": slice_id,
+            "position_campaign_id": campaign_id,
+            "symbol": symbol,
+            "business_date": str(row.get("business_date") or ""),
+            "sell_execution_id": row.get("execution_id") or row.get("record_id") or row.get("execution_ref") or "",
+            "sell_quantity": sell_quantity,
+            "sell_price": price,
+            "cost_basis_method": "AVERAGE_COST_RUNTIME_OWNED_FILL_PROJECTION",
+            "allocated_cost_basis": allocated_cost,
+            "gross_realized_pnl": gross_pnl,
+            "fees": _missing_value(),
+            "tax": _missing_value(),
+            "net_realized_pnl": _missing_value(),
+            "remaining_quantity": state["quantity"],
+            "remaining_average_cost": (state["cost"] / state["quantity"]) if state["quantity"] > 0 else 0.0,
+            "source_decision_type": source["source_decision_type"],
+            "source_decision_id": source["source_decision_id"],
+        }
+        if str(row.get("business_date") or "") == business_date:
+            realized_slices.append(slice_row)
+        campaign["realized_pnl"] = _float(campaign.get("realized_pnl")) + gross_pnl
+        campaign["sell_notional"] = _float(campaign.get("sell_notional")) + sell_quantity * price
+        campaign["current_quantity"] = state["quantity"]
+        campaign["average_cost"] = (state["cost"] / state["quantity"]) if state["quantity"] > 0 else 0.0
+        campaign["campaign_status"] = "CLOSED" if state["quantity"] <= POSITION_QUANTITY_EPSILON else "OPEN"
+        campaign["events"].append(_campaign_event(row=row, stage=source["source_decision_type"] if source["source_decision_type"] in {"REDUCE", "EXIT"} else "SELL", campaign_id=campaign_id, realized_slice_id=slice_id))
+    for campaign in campaigns.values():
+        symbol = str(campaign.get("symbol") or "")
+        pos = current_positions.get(symbol, {}) if campaign.get("campaign_status") == "OPEN" else {}
+        campaign["unrealized_pnl"] = pos.get("unrealized_pnl", 0.0 if campaign.get("campaign_status") == "CLOSED" else "MISSING")
+        campaign["total_campaign_pnl"] = (
+            _float(campaign.get("realized_pnl")) + _float(campaign.get("unrealized_pnl"))
+            if campaign.get("unrealized_pnl") not in ("MISSING", None, "")
+            else "MISSING"
+        )
+        campaign["limitations"] = ["Stable lot_id is not available; realized_slice is the formal realized PnL unit."]
+    active_by_symbol = {
+        str(campaign.get("symbol") or ""): str(campaign.get("position_campaign_id") or "")
+        for campaign in campaigns.values()
+        if campaign.get("campaign_status") == "OPEN"
+    }
+    return {
+        "campaigns": sorted(campaigns.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("position_campaign_id") or ""))),
+        "realized_slices": realized_slices,
+        "execution_campaign_ids": execution_campaign_ids,
+        "active_campaign_by_symbol": active_by_symbol,
+    }
+
+
+def _position_campaign_id(*, run_id: str, symbol: str, sequence: int) -> str:
+    return f"pc-{_short_hash(run_id)}-{symbol}-{sequence:04d}"
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _new_campaign(*, row: dict[str, Any], run_id: str, business_date: str, symbol: str, campaign_id: str, plans: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    source = _execution_source_decision(row=row, plans=plans)
+    return {
+        "position_campaign_id": campaign_id,
+        "run_id": run_id,
+        "symbol": symbol,
+        "campaign_status": "OPEN",
+        "opened_business_date": str(row.get("business_date") or business_date),
+        "closed_business_date": "",
+        "current_quantity": 0.0,
+        "average_cost": _missing_value(),
+        "buy_notional": 0.0,
+        "sell_notional": 0.0,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": "MISSING",
+        "total_campaign_pnl": "MISSING",
+        "buy_observability": source,
+        "events": [],
+    }
+
+
+def _campaign_event(*, row: dict[str, Any], stage: str, campaign_id: str, realized_slice_id: str) -> dict[str, Any]:
+    return {
+        "business_date": str(row.get("business_date") or ""),
+        "stage": stage,
+        "position_campaign_id": campaign_id,
+        "symbol": str(row.get("symbol") or row.get("broker_issue_code") or ""),
+        "side": str(row.get("side") or "").upper(),
+        "quantity": _float(row.get("filled_quantity") or row.get("quantity")),
+        "price": _float(row.get("price") or row.get("average_price") or row.get("market_price")),
+        "execution_id": row.get("execution_id") or row.get("record_id") or row.get("execution_ref") or "",
+        "realized_slice_id": realized_slice_id,
+        "evidence_type": "execution-time evidence",
+    }
+
+
+def _execution_key(row: dict[str, Any]) -> str:
+    return str(row.get("execution_id") or row.get("record_id") or row.get("execution_ref") or row.get("execution_key") or _short_hash(json.dumps(row, sort_keys=True, default=str)))
+
+
+def _execution_source_decision(*, row: dict[str, Any], plans: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    side = str(row.get("side") or "").upper()
+    symbol = str(row.get("symbol") or row.get("broker_issue_code") or "")
+    business_date = str(row.get("business_date") or "")
+    pending_item_id = str(row.get("pending_item_id") or "")
+    candidates = plans.get("sell" if side == "SELL" else "buy", [])
+    matched = {}
+    symbol_candidates = [item for item in candidates if not symbol or str(item.get("symbol") or "") == symbol]
+    if pending_item_id:
+        matched = next((item for item in symbol_candidates if str(item.get("pending_item_id") or "") == pending_item_id), {})
+    if not matched and business_date:
+        matched = next((item for item in symbol_candidates if str(item.get("_plan_date") or item.get("business_date") or "") == business_date), {})
+    contract = matched.get("quantity_contract") if isinstance(matched.get("quantity_contract"), dict) else {}
+    source_decision = str(contract.get("source_decision") or ("BUY" if side == "BUY" else "MISSING"))
+    return {
+        "source_decision_type": source_decision,
+        "source_decision_id": matched.get("source_decision_id") or contract.get("source_decision_id") or matched.get("decision_id") or "MISSING",
+        "order_plan_item_id": matched.get("order_plan_item_id") or matched.get("plan_item_id") or "MISSING",
+        "pending_item_id": pending_item_id or matched.get("pending_item_id") or "MISSING",
+        "order_id": row.get("order_id") or row.get("order_ref") or "MISSING",
+    }
+
+
+def _build_fill_rows(
+    *,
+    run_id: str,
+    business_date: str,
+    executions: list[dict[str, Any]],
+    execution_campaign_ids: dict[str, str],
+    plans: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in executions:
+        if str(row.get("business_date") or "") != business_date:
+            continue
+        qty = _float(row.get("filled_quantity") or row.get("quantity"))
+        price = _float(row.get("price") or row.get("average_price") or row.get("market_price"), default=-1.0)
+        side = str(row.get("side") or "").upper()
+        notional = qty * price if qty > 0 and price >= 0 else None
+        source = _execution_source_decision(row=row, plans=plans)
+        rows.append(
+            {
+                "run_id": run_id,
+                "business_date": business_date,
+                "position_campaign_id": execution_campaign_ids.get(_execution_key(row)) or "MISSING",
+                "symbol": row.get("symbol") or row.get("broker_issue_code") or "",
+                "side": side,
+                "execution_id": row.get("execution_id") or row.get("record_id") or row.get("execution_ref") or "",
+                "order_id": source["order_id"],
+                "order_plan_item_id": source["order_plan_item_id"],
+                "pending_item_id": source["pending_item_id"],
+                "quantity": qty,
+                "execution_price": price if price >= 0 else _missing_value(),
+                "gross_notional": _status_value(notional, "DERIVABLE_EXACT"),
+                "fees": _missing_value(),
+                "tax": _missing_value(),
+                "slippage": _missing_value(),
+                "cash_effect": _status_value((-notional if side == "BUY" else notional) if notional is not None else None, "DERIVABLE_EXACT"),
+                "source_decision_type": source["source_decision_type"],
+                "source_decision_id": source["source_decision_id"],
+            }
+        )
+    return rows
+
+
+def _build_pm_decision_snapshots(
+    *,
+    run_id: str,
+    business_date: str,
+    pm_payload: dict[str, Any],
+    campaign_by_symbol: dict[str, str],
+    source_path: Path,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for decision in pm_payload.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        symbol = str(decision.get("symbol") or "")
+        decision_type = decision.get("decision") or "MISSING"
+        trace = decision.get("decision_trace") if isinstance(decision.get("decision_trace"), dict) else {}
+        position_state = trace.get("position_state") if isinstance(trace.get("position_state"), dict) else {}
+        rows.append(
+            {
+                "run_id": run_id,
+                "business_date": business_date,
+                "position_campaign_id": campaign_by_symbol.get(symbol) or "MISSING",
+                "symbol": symbol,
+                "pm_decision_id": decision.get("decision_id") or "MISSING",
+                "decision_type": decision_type,
+                "decision_reason": decision.get("reason") or "MISSING",
+                "reason_codes": decision.get("decision_reason_codes")
+                or [part for part in str(decision.get("reason") or "").replace(";", "|").split("|") if part],
+                "dominant_cause": decision.get("dominant_cause", _missing_value()),
+                "secondary_causes": decision.get("secondary_causes", _missing_value()),
+                "decision_status": decision.get("status") or decision.get("runtime_action") or "MISSING",
+                "quantity_before": decision.get("runtime_position_quantity", _missing_value()),
+                "quantity_requested": _pm_quantity_requested_snapshot(decision=decision, decision_type=str(decision_type)),
+                "quantity_after_expected": _missing_value(),
+                "average_cost": position_state.get("average_price", decision.get("average_price", decision.get("entry_price", _missing_value()))),
+                "current_price": position_state.get("current_price", decision.get("current_price", _missing_value())),
+                "market_value": position_state.get("market_value", decision.get("market_value", _missing_value())),
+                "unrealized_pnl": position_state.get("unrealized_pnl", decision.get("unrealized_pnl", _missing_value())),
+                "realized_pnl_to_date": _missing_value(),
+                "confidence": decision.get("confidence", _missing_value()),
+                "confidence_semantics": decision.get("confidence_semantics", _missing_value()),
+                "action_score": decision.get("action_score", _missing_value()),
+                "thresholds": decision.get("thresholds", _missing_value()),
+                "feature_snapshot_ref": decision.get("feature_snapshot_ref", trace.get("input_authority", {}).get("feature_snapshot_ref", _missing_value())),
+                "feature_business_date": decision.get("feature_business_date", trace.get("feature_business_date", decision.get("feature_date", _missing_value()))),
+                "current_position_ref": str(source_path),
+                "generation_id": decision.get("generation_id", _missing_value()),
+                "generated_at": decision.get("generated_at", _missing_value()),
+                "temporal_classification": "DECISION_TIME_EVIDENCE_ONLY",
+            }
+        )
+    return rows
+
+
+def _pm_quantity_requested_snapshot(*, decision: dict[str, Any], decision_type: str) -> Any:
+    if str(decision_type or "").upper() != "REDUCE":
+        return decision.get("runtime_sell_quantity", _missing_value())
+    authority = str(decision.get("runtime_quantity_authority") or "")
+    action = str(decision.get("runtime_action") or "")
+    sell_quantity = decision.get("runtime_sell_quantity", _missing_value())
+    if authority == "SELL_PLANNING_REDUCE_QUANTITY_CONTRACT" or action == "SELL_PARTIAL_POSITION_REDUCE_QUANTITY_BY_SELL_PLANNING":
+        return {
+            "value": "DELEGATED_TO_SELL_PLANNING",
+            "status": "NOT_SPECIFIED_BY_PM",
+            "raw_runtime_sell_quantity": sell_quantity,
+            "quantity_authority": authority or "SELL_PLANNING_REDUCE_QUANTITY_CONTRACT",
+            "reason": "PM_REDUCE_INTENT_SELL_PLANNING_OWNS_EXECUTABLE_QUANTITY",
+        }
+    return sell_quantity
+
+
+def _build_missing_benchmark_snapshot(*, run_dir: Path, runtime_root: Path, run_id: str, business_date: str) -> dict[str, Any]:
+    payload = _observability_common(run_dir=run_dir, runtime_root=runtime_root, run_id=run_id, business_date=business_date)
+    payload.update(
+        {
+            "schema_version": "benchmark_snapshot_observability.v1",
+            "status": "MISSING",
+            "benchmark_id": "TOPIX_TOTAL_OR_PRICE_RETURN_JQUANTS_COMPATIBLE",
+            "benchmark_name": "TOPIX",
+            "benchmark_source": "NOT_CONFIRMED",
+            "benchmark_implementation": "NOT_PERFORMED",
+            "required_decision": "USER_OR_ARCHITECTURE_APPROVAL",
+            "close": _missing_value(),
+            "daily_return": _missing_value(),
+            "normalized_value": _missing_value(),
+            "consumer_cutoff": _missing_value(),
+            "future_rows_consumed": False,
+            "source_hash": _missing_value(),
+        }
+    )
+    return payload
 
 
 def run_runtime_cli(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:

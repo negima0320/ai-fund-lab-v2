@@ -146,6 +146,12 @@ def run_runtime_v2_market_refresh_pipeline(
         latest_available_market_date=contract.latest_available_market_date,
         mode=mode,
         provider_status=_provider_status_from_market_refresh(result),
+        quote_source_path=_market_evidence_quote_source_path(historical_input),
+        source_authority=_market_evidence_source_authority(
+            business_date=business_date,
+            historical_input=historical_input,
+            historical_asof=historical_asof,
+        ),
         now=now,
     )
     generated = contract.generated_feature_artifacts
@@ -268,6 +274,7 @@ def _materialize_historical_input_if_needed(
         business_date=business_date,
         evidence_root=evidence_root,
         runtime_test_context=runtime_test_context,
+        require_feature_lookback=True,
     )
 
 
@@ -284,6 +291,7 @@ def _resolve_historical_asof_if_needed(
     resolution = historical_input.resolution if historical_input is not None else resolve_historical_market_data_asof(
         operations_root=operations_root,
         business_date=business_date,
+        require_feature_lookback=True,
     )
     evidence_root = _market_refresh_evidence_root(runtime_test_context, business_date)
     evidence_path = None
@@ -350,3 +358,41 @@ def _provider_status_from_market_refresh(result: dict[str, Any]) -> str:
             return "API_ERROR"
         return "API_ERROR"
     return data_quality or status or "UNKNOWN"
+
+
+def _market_evidence_quote_source_path(historical_input: HistoricalLogicalInput | None) -> Path | None:
+    if historical_input is None:
+        return None
+    source = str(historical_input.logical_paths.get("normalized_ohlcv") or "")
+    return Path(source) if source else None
+
+
+def _market_evidence_source_authority(
+    *,
+    business_date: str,
+    historical_input: HistoricalLogicalInput | None,
+    historical_asof: HistoricalAsOfResolution | None,
+) -> dict[str, Any] | None:
+    if historical_input is None:
+        return None
+    resolution = historical_asof or historical_input.resolution
+    normalized = next((item for item in resolution.authorities if item.authority == "normalized_ohlcv"), None)
+    coverage = dict(resolution.feature_lookback_coverage or {})
+    return {
+        "runtime_mode": "historical",
+        "business_date": business_date,
+        "source_role": str(coverage.get("selected_source_role") or "historical_asof"),
+        "quote_source_authority": str(normalized.physical_source_path if normalized is not None else ""),
+        "selected_normalized_ohlcv_path": str(normalized.physical_source_path if normalized is not None else ""),
+        "selected_raw_ohlcv_path": str(coverage.get("selected_raw_ohlcv_path") or ""),
+        "selected_trading_calendar_path": str(coverage.get("selected_trading_calendar_path") or ""),
+        "logical_quote_source_path": str(historical_input.logical_paths.get("normalized_ohlcv") or ""),
+        "logical_cutoff": business_date,
+        "source_business_date": business_date,
+        "historical_asof_status": resolution.status,
+        "historical_asof_reason": resolution.reason,
+        "historical_logical_input_manifest_path": historical_input.manifest_path,
+        "historical_logical_input_manifest_hash": historical_input.manifest_hash,
+        "future_rows_excluded": bool(resolution.to_payload().get("future_rows_excluded_from_consumer")),
+        "authority_identity": resolution.logical_identity,
+    }

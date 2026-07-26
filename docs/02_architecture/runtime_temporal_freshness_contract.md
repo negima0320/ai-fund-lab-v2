@@ -16,6 +16,7 @@ Runtime v2 は、単一の `as_of` や `artifact_date == runtime_business_date` 
 - 営業日、取引セッション、JST 日付境界は JST で判定する。
 - `generated_at` などの絶対時刻は UTC または timezone-aware timestamp として保持してよいが、営業日判定を UTC 日付で行ってはならない。
 - `runtime_business_date`、`trading_session_date`、`market_data_as_of`、`feature_date`、`position_state_as_of`、`valuation_as_of` は別概念である。
+- Historical Fresh Run Reset が生成する初期 Current は、wall-clock 実行時刻を `position_state_as_of` として扱ってはならない。初期空ポートフォリオの `position_state_as_of` / `business_date` / Current logical `as_of` は、Run plan の first business date に束縛する。`created_at`、`updated_at`、`reset_executed_at` は実際の生成時刻を保持する。
 - `latest_expected_trading_date` と `latest_available_market_date` を必ず分離する。
 - Current は Position State と Valuation State を分離する。
 - Broker Snapshot は Broker Evidence であり、Runtime-owned Current ではない。
@@ -648,6 +649,31 @@ Result:
 current_position_status=READY
 current_valuation_status=READY
 Morning may proceed if Safety and other evidence are READY
+```
+
+### Example D: Historical Fresh Run Initial Empty State
+
+```text
+fresh_run_start_date=2026-06-15
+reset_executed_at=2026-07-22T07:58:12Z
+positions=[]
+current_state_confirmed_empty=true
+current_positions_unknown=false
+position_state_as_of=2026-06-15
+business_date=2026-06-15
+as_of=2026-06-15
+created_at=2026-07-22T07:58:12Z
+updated_at=2026-07-22T07:58:12Z
+```
+
+Result:
+
+```text
+current_position_status=READY
+current_authority_status=READY_EMPTY
+Position Feature 0 rows valid
+PM inference NOT_REQUIRED
+future-state guard remains active
 ```
 
 ## 23. Implementation Impact Matrix

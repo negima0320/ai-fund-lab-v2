@@ -960,6 +960,18 @@ buying_power_unknown=true
 
 `current_state_confirmed_empty=true` とできるのは、Broker Positions、Broker Cash / Buying Power、または正規 migration により「保有なし・現金確認済み」が明示的に確認された場合のみである。`persistent_ledger/state.json` が存在しない、空、古い、source 不明であることは confirmed empty ではない。
 
+Runtime-owned execution ledger が全売却後に `positions=[]`、`current_positions_unknown=false`、`current_position_status=READY`、`no_position=true`、`no_position_reason=current_has_no_runtime_owned_positions`、`position_state_as_of`、`temporal_status=READY`、`review_required=false` を持つ場合、その Current Position Authority は `READY_EMPTY` である。これは legacy / broker confirmation field である `current_state_confirmed_empty=false` だけを理由に `UNKNOWN` へ降格してはならない。
+
+Position Feature consumer は以下を分離する。
+
+```text
+NON_EMPTY_READY: positions is a non-empty list, authority ready, PM feature rows required
+READY_EMPTY: positions=[], no_position=true, authority ready, 0-row Position Feature is valid, PM inference is NOT_REQUIRED
+UNKNOWN: missing/corrupt/stale/conflicting authority, PM consumer REVIEW_REQUIRED
+```
+
+`READY_EMPTY` は保有数 0 の正常状態であり、架空の Position Feature row、dummy symbol、0株注文、または PM inference 強制実行を生成しない。Ledger 欠損、JSON不正、`positions` 欠損/型不正、`current_positions_unknown=true`、`review_required=true`、Temporal不整合、empty/non-empty metadata conflict は引き続き fail-closed とする。
+
 ### 10.1 Current Writer Contract
 
 Runtime v2 の Current Object は Single Writer Rule に従う。各 Current は必ず 1 つの writer component だけを持ち、Reconcile、Report、Audit は Current Writer にならない。

@@ -124,6 +124,33 @@ def test_phase15an_feature_refresh_manifest_records_consumer_ready(tmp_path, mon
     assert readiness["consumer_ready"] is True
 
 
+def test_phase20_n_market_refresh_accepts_ready_empty_pm_consumer(tmp_path, monkeypatch):
+    operations_root = tmp_path / ".runtime" / "operations"
+    _write_feature_artifacts(operations_root / "feature_artifacts" / "2026-07-10", "2026-07-10")
+    _write_current(
+        tmp_path / ".runtime",
+        positions=[],
+        business_date="2026-06-30",
+        as_of="2026-06-30",
+        current_state_confirmed_empty=False,
+        no_position=True,
+        no_position_reason="current_has_no_runtime_owned_positions",
+        current_position_status="READY",
+        temporal_status="READY",
+        review_required=False,
+    )
+
+    result = _run_market_refresh_with_existing_artifacts(monkeypatch, operations_root)
+    readiness = json.loads((operations_root / "feature_consumer_readiness" / "2026-07-10.json").read_text())
+
+    assert result.status == "PASS"
+    assert result.consumer_ready is True
+    assert result.pm_schema_status == "READY"
+    assert readiness["schemas"]["pm"]["evidence"]["current_authority_status"] == "READY_EMPTY"
+    assert readiness["schemas"]["pm"]["evidence"]["pm_consumer_status"] == "NOT_REQUIRED"
+    assert readiness["schemas"]["pm"]["evidence"]["pm_inference_required"] is False
+
+
 def _run_market_refresh_with_existing_artifacts(monkeypatch, operations_root: Path):
     from ai_fund_lab_v2.runtime_v2.market_refresh import pipeline as market_refresh_pipeline
 
@@ -209,29 +236,46 @@ def _value_for_column(column: str, feature_date: str):
     return 1.0
 
 
-def _write_current(runtime_root: Path, *, positions: list[dict]) -> None:
+def _write_current(
+    runtime_root: Path,
+    *,
+    positions: list[dict],
+    business_date: str = "2026-07-10",
+    as_of: str = "2026-07-10",
+    current_state_confirmed_empty: Optional[bool] = None,
+    no_position: Optional[bool] = None,
+    no_position_reason: str = "",
+    current_position_status: str = "",
+    temporal_status: str = "",
+    review_required: bool = False,
+) -> None:
     path = runtime_root / "persistent_ledger" / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "asset_state_id": "asset-phase15an",
-                "environment": "demo",
-                "business_date": "2026-07-10",
-                "as_of": "2026-07-10",
-                "updated_at": "2026-07-10T00:00:00Z",
-                "positions": positions,
-                "cash": 1_000_000,
-                "buying_power": 1_000_000,
-                "market_value": 0,
-                "total_equity": 1_000_000,
-                "current_state_confirmed_empty": not bool(positions),
-                "current_positions_unknown": False,
-                "cash_unknown": False,
-                "buying_power_unknown": False,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    payload = {
+        "schema_version": "1",
+        "asset_state_id": "asset-phase15an",
+        "environment": "demo",
+        "business_date": business_date,
+        "as_of": as_of,
+        "position_state_as_of": as_of,
+        "updated_at": f"{as_of}T00:00:00Z",
+        "positions": positions,
+        "cash": 1_000_000,
+        "buying_power": 1_000_000,
+        "market_value": 0,
+        "total_equity": 1_000_000,
+        "current_state_confirmed_empty": (not bool(positions)) if current_state_confirmed_empty is None else current_state_confirmed_empty,
+        "current_positions_unknown": False,
+        "cash_unknown": False,
+        "buying_power_unknown": False,
+        "review_required": review_required,
+    }
+    if no_position is not None:
+        payload["no_position"] = no_position
+    if no_position_reason:
+        payload["no_position_reason"] = no_position_reason
+    if current_position_status:
+        payload["current_position_status"] = current_position_status
+    if temporal_status:
+        payload["temporal_status"] = temporal_status
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

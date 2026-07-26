@@ -130,7 +130,7 @@ def test_phase17_ad_confirmed_empty_current_is_ready_zero_rows(tmp_path: Path) -
     quotes_path = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
     listed_path = operations_root / "jquants" / "listed_issues" / "data.parquet"
     _write_quotes(quotes_path, codes=("81050",))
-    _write_listed(listed_path, codes=("81050",))
+    _write_listed(listed_path, codes=("81050",), target_date="2026-07-01")
     _write_current(runtime_root, business_date="2026-07-06", position_state_as_of="2026-07-06", positions=[], confirmed_empty=True)
     _write_runtime_state(runtime_root, business_date="2026-07-07")
 
@@ -153,6 +153,99 @@ def test_phase17_ad_confirmed_empty_current_is_ready_zero_rows(tmp_path: Path) -
     assert pm_status["row_count"] == 0
     assert pm_status["reason"] == "position_feature_ready_confirmed_empty_current"
     assert pm_status["source_data_refs"]["current_position_count"] == "0"
+
+
+def test_phase20_n_ledger_confirmed_empty_without_legacy_confirmed_empty_is_ready_empty(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    operations_root = runtime_root / "operations"
+    quotes_path = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    listed_path = operations_root / "jquants" / "listed_issues" / "data.parquet"
+    _write_quotes(quotes_path, codes=("81050",))
+    _write_listed(listed_path, codes=("81050",), target_date="2026-07-01")
+    _write_current(
+        runtime_root,
+        business_date="2026-06-30",
+        position_state_as_of="2026-06-30",
+        positions=[],
+        confirmed_empty=False,
+        current_position_status="READY",
+        current_positions_unknown=False,
+        no_position=True,
+        no_position_reason="current_has_no_runtime_owned_positions",
+        position_state_source="runtime_owned_execution_ledger",
+        temporal_status="READY",
+        review_required=False,
+    )
+    _write_runtime_state(runtime_root, business_date="2026-07-01")
+
+    result = run_feature_refresh(
+        target_data_until="2026-07-01",
+        dry_run=False,
+        execute=True,
+        daily_quotes_path=quotes_path,
+        listed_info_path=listed_path,
+        feature_output_root=operations_root / "feature_artifacts",
+        manifest_root=operations_root / "feature_refresh_detail",
+        markdown_report_path=operations_root / "feature_refresh.md",
+        json_report_path=operations_root / "feature_refresh.json",
+        runtime_root=runtime_root,
+        created_at="2026-07-01T08:00:00+09:00",
+    )
+    readiness = validate_feature_consumer_readiness(operations_root=operations_root, feature_date="2026-07-01")
+    pm_status = next(item for item in result.to_dict()["artifacts"] if item["ai_name"] == "position")
+    pm = pd.read_parquet(operations_root / "feature_artifacts" / "2026-07-01" / "position_feature_input.parquet")
+
+    assert result.status == "FEATURES_READY"
+    assert len(pm) == 0
+    assert pm_status["status"] == "FEATURES_READY"
+    assert pm_status["reason"] == "position_feature_ready_confirmed_empty_current"
+    assert pm_status["source_data_refs"]["current_authority_status"] == "READY_EMPTY"
+    assert pm_status["source_data_refs"]["current_position_count"] == "0"
+    assert pm_status["source_data_refs"]["no_fill_carry_used"] == "True"
+    assert readiness.status == "READY"
+    assert readiness.consumer_ready is True
+    assert readiness.pm_schema_status == "READY"
+    assert readiness.pm.evidence["current_authority_status"] == "READY_EMPTY"
+    assert readiness.pm.evidence["current_position_status"] == "READY"
+    assert readiness.pm.evidence["current_positions_unknown"] is False
+    assert readiness.pm.evidence["current_state_confirmed_empty"] is False
+    assert readiness.pm.evidence["no_position"] is True
+    assert readiness.pm.evidence["no_position_reason"] == "current_has_no_runtime_owned_positions"
+    assert readiness.pm.evidence["position_state_source"] == "runtime_owned_execution_ledger"
+    assert readiness.pm.evidence["temporal_status"] == "READY"
+    assert readiness.pm.evidence["review_required"] is False
+    assert readiness.pm.evidence["position_feature_status"] == "READY_EMPTY"
+    assert readiness.pm.evidence["position_feature_reason"] == "current_positions_confirmed_empty"
+    assert readiness.pm.evidence["pm_consumer_status"] == "NOT_REQUIRED"
+    assert readiness.pm.evidence["pm_inference_required"] is False
+    assert readiness.pm.evidence["runtime_continuation_status"] == "PASS"
+
+
+def test_phase20_n_empty_position_conflicting_metadata_fails_closed(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    operations_root = runtime_root / "operations"
+    feature_dir = operations_root / "feature_artifacts" / "2026-07-01"
+    _write_consumer_feature_artifacts(feature_dir, feature_date="2026-07-01", position_rows=[])
+    _write_current(
+        runtime_root,
+        business_date="2026-06-30",
+        position_state_as_of="2026-06-30",
+        positions=[],
+        confirmed_empty=False,
+        current_position_status="READY",
+        current_positions_unknown=False,
+        no_position=False,
+        temporal_status="READY",
+        review_required=False,
+    )
+    _write_runtime_state(runtime_root, business_date="2026-07-01")
+
+    readiness = validate_feature_consumer_readiness(operations_root=operations_root, feature_date="2026-07-01")
+
+    assert readiness.status == "REVIEW_REQUIRED"
+    assert readiness.consumer_ready is False
+    assert readiness.pm_schema_status == "REVIEW_REQUIRED"
+    assert readiness.pm.reason == "current_position_metadata_conflict_empty_not_marked_no_position"
 
 
 def test_phase17_ad_unknown_and_missing_current_fail_closed(tmp_path: Path) -> None:
@@ -262,11 +355,11 @@ def _write_quotes(path: Path, *, codes: tuple[str, ...]) -> None:
     pd.DataFrame(rows).to_parquet(path, index=False)
 
 
-def _write_listed(path: Path, *, codes: tuple[str, ...]) -> None:
+def _write_listed(path: Path, *, codes: tuple[str, ...], target_date: str = "2026-07-07") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"target_date": "2026-07-07", "Date": "2026-07-07", "Code": code, "CoName": f"Name {code}", "ProdCat": "011", "MktNm": "プライム"}
+            {"target_date": target_date, "Date": target_date, "Code": code, "CoName": f"Name {code}", "ProdCat": "011", "MktNm": "プライム"}
             for code in codes
         ]
     ).to_parquet(path, index=False)
@@ -279,6 +372,13 @@ def _write_current(
     position_state_as_of: str,
     positions: list[dict[str, Any]],
     confirmed_empty: bool = False,
+    current_position_status: str | None = None,
+    current_positions_unknown: bool | None = None,
+    no_position: bool | None = None,
+    no_position_reason: str = "",
+    position_state_source: str = "",
+    temporal_status: str = "",
+    review_required: bool = False,
 ) -> None:
     path = runtime_root / "persistent_ledger" / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -288,9 +388,10 @@ def _write_current(
                 "schema_version": "runtime_v2_current_temporal_v1",
                 "business_date": business_date,
                 "position_state_as_of": position_state_as_of,
-                "current_position_status": "READY",
                 "positions": positions,
                 "current_state_confirmed_empty": confirmed_empty,
+                "current_positions_unknown": False if current_positions_unknown is None else current_positions_unknown,
+                "review_required": review_required,
                 "cash": 999999,
                 "total_equity": 999999,
                 "unrealized_pnl": 12345,
@@ -299,6 +400,18 @@ def _write_current(
         ),
         encoding="utf-8",
     )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if current_position_status is not None:
+        payload["current_position_status"] = current_position_status
+    if no_position is not None:
+        payload["no_position"] = no_position
+    if no_position_reason:
+        payload["no_position_reason"] = no_position_reason
+    if position_state_source:
+        payload["position_state_source"] = position_state_source
+    if temporal_status:
+        payload["temporal_status"] = temporal_status
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _write_runtime_state(runtime_root: Path, *, business_date: str) -> None:

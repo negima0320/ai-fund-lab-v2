@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from ai_fund_lab_v2.config import load_settings
 from ai_fund_lab_v2.data_quality.normalization import normalize_daily_quotes
 from ai_fund_lab_v2.data_sources.jquants import JQuantsClient
+from ai_fund_lab_v2.data_store.schema import RAW_SCHEMAS
 from ai_fund_lab_v2.paper_trading.market_data_readiness import check_market_data_readiness
 from ai_fund_lab_v2.runtime import RuntimePaths
 
@@ -97,6 +98,8 @@ class MarketDataRefreshResult:
     not_yet_available_dates: tuple[str, ...]
     failed_dates: tuple[str, ...]
     required_dates: tuple[str, ...]
+    first_required_date: str
+    last_required_date: str
     endpoints: tuple[EndpointRefreshSummary, ...]
     manifest_path: str
     markdown_report_path: str
@@ -226,6 +229,7 @@ def run_market_data_refresh(
     latest_calendar = _latest_date(_read_records(_raw_path(raw_root, "trading_calendar")))
     data_until = _min_nonempty(latest_normalized, latest_listed) or readiness.get("data_until", "")
 
+    required = tuple(date_state.get("target_dates") or required_dates)
     result = MarketDataRefreshResult(
         status=status,
         from_date=normalized_from,
@@ -244,7 +248,9 @@ def run_market_data_refresh(
         unavailable_dates=tuple(date_state.get("unavailable_dates", ())),
         not_yet_available_dates=tuple(date_state.get("not_yet_available_dates", ())),
         failed_dates=tuple(date_state.get("failed_dates", ())),
-        required_dates=tuple(date_state.get("target_dates") or required_dates),
+        required_dates=required,
+        first_required_date=required[0] if required else "",
+        last_required_date=required[-1] if required else "",
         endpoints=tuple(summaries),
         manifest_path=str(manifest_path),
         markdown_report_path=str(md_path),
@@ -282,19 +288,20 @@ def _execute_refresh(
         "api_error_diagnostics": [],
     }
     try:
+        trading_calendar_records = fetcher.fetch_trading_calendar(from_date=from_date, to_date=to_date)
         if fetch_mode == "per-date":
             daily_records, date_state = _fetch_daily_quotes_per_date(
                 fetcher=fetcher,
                 from_date=from_date,
                 to_date=to_date,
-                calendar_records=_read_records(_raw_path(raw_root, "trading_calendar")),
+                calendar_records=[*_read_records(_raw_path(raw_root, "trading_calendar")), *trading_calendar_records],
             )
         else:
             daily_records = fetcher.fetch_daily_quotes(from_date=from_date, to_date=to_date)
         fetched = {
             "daily_quotes": daily_records,
             "listed_info": fetcher.fetch_listed_info(date=to_date),
-            "trading_calendar": fetcher.fetch_trading_calendar(from_date=from_date, to_date=to_date),
+            "trading_calendar": trading_calendar_records,
         }
     except Exception as exc:
         fetched = {}
@@ -311,7 +318,7 @@ def _execute_refresh(
         raw_path = _raw_path(raw_root, endpoint)
         existing = _read_records(raw_path)
         existing_latest = _latest_date(existing)
-        incoming = [_with_metadata(record, endpoint=endpoint, default_date=to_date) for record in fetched.get(endpoint, [])]
+        incoming = [_with_metadata(_coerce_raw_schema(record, endpoint=endpoint), endpoint=endpoint, default_date=to_date) for record in fetched.get(endpoint, [])]
         endpoint_status = STATUS_FAILED if any_failed else STATUS_COMPLETED
         backup_path = _backup_path(raw_path) if backup_existing and raw_path.exists() and not any_failed else ""
         if backup_path:
@@ -635,6 +642,22 @@ def _with_metadata(record: dict[str, Any], *, endpoint: str, default_date: str) 
     normalized["source"] = "jquants"
     normalized["endpoint"] = RAW_ENDPOINTS[endpoint]
     normalized["fetched_at"] = normalized.get("fetched_at") or datetime.now(timezone.utc).isoformat()
+    return normalized
+
+
+def _coerce_raw_schema(record: dict[str, Any], *, endpoint: str) -> dict[str, Any]:
+    schema = RAW_SCHEMAS.get(endpoint)
+    if schema is None:
+        return dict(record)
+    normalized = dict(record)
+    for canonical, aliases in schema.field_mapping.items():
+        if normalized.get(canonical) not in (None, ""):
+            continue
+        for alias in aliases:
+            value = normalized.get(alias)
+            if value not in (None, ""):
+                normalized[canonical] = value
+                break
     return normalized
 
 

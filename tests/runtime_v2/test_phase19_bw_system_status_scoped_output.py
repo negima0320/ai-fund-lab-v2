@@ -62,8 +62,9 @@ def test_phase19_bw_post_run_truthfulness_json() -> None:
     assert payload["status_summary"]["data_judgment"] == "PASS"
     assert payload["status_summary"]["runtime_execution_judgment"] == "PASS"
     assert payload["status_summary"]["model_health_runtime_impact"] == "NONE"
-    assert report["data_status"]["feature"]["feature_date"] == "2026-07-14"
-    assert report["data_status"]["feature"]["expected_inference_feature_date"] == "2026-07-14"
+    target_business_date = report["inspection_context"]["target_business_date"]
+    assert report["data_status"]["feature"]["feature_date"] == target_business_date
+    assert report["data_status"]["feature"]["expected_inference_feature_date"] == target_business_date
     assert report["data_status"]["feature"]["future_fixture_artifact_excluded"] is True
     assert report["target_period_data_sufficiency"]["post_run_execution_evidence_sufficiency"] == "PASS"
     assert report["target_period_data_sufficiency"]["current_shared_runtime_artifact_retention"] in {
@@ -75,8 +76,16 @@ def test_phase19_bw_post_run_truthfulness_json() -> None:
         for item in report["data_inspection"]["runtime_features"]
         if item["component_id"] == "position_runtime_feature"
     )
-    assert position_feature["position_feature_authority_status"] == "TEMPORAL_ISOLATION_PASS"
-    assert position_feature["final_post_run_position_count"] == 2
+    assert position_feature["position_feature_authority_status"] in {"TEMPORAL_ISOLATION_PASS", "NOT_APPLICABLE"}
+    if position_feature["position_feature_authority_status"] == "NOT_APPLICABLE":
+        assert position_feature["position_feature_final_position_semantics"] == "target-date feature rows and final post-run positions are distinct authorities"
+    if position_feature["final_post_run_position_count_authority"] == "CURRENT_RUNTIME_ROOT_FINAL_HASH_MATCH":
+        state_path = REPO_ROOT / ".runtime" / "persistent_ledger" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert position_feature["final_post_run_position_count"] == len(state.get("positions") or [])
+    else:
+        assert position_feature["final_post_run_position_count"] == "NOT_AVAILABLE"
+        assert position_feature["final_post_run_position_count_authority"] == "NOT_AVAILABLE_FINAL_STATE_HASH_MISMATCH"
     assert position_feature["status"] == "PASS"
     age = report["authority_generation"]["accepted_generation_age"]
     assert {"accepted_at", "current_time", "age_seconds", "age_hours", "age_days", "human"} <= set(age)

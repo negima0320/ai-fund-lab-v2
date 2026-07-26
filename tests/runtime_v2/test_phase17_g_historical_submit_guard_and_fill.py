@@ -78,6 +78,29 @@ def test_phase17_g_environment_matrix_allows_only_formal_historical_context() ->
     assert broker_write.reason == "environment matrix guard failure: historical broker_write must be false"
 
 
+def test_phase20_bq_historical_simulated_capability_allows_9000_series_submit_preflight() -> None:
+    pending = _pending("historical", symbol="94320")
+    approval = _approval_from_pending(pending)
+
+    accepted = run_submit_preflight(
+        pending_plan=pending,
+        approval_artifact=approval,
+        approved_item_id="item-1",
+        existing_order_dedup_keys=set(),
+        environment="historical",
+        base_url_is_demo=False,
+        base_url_is_production=False,
+        live_order_allowed=True,
+        broker_capability=get_broker_capability("historical"),
+        environment_context=_historical_context(),
+    )
+
+    assert get_broker_capability("historical").supports_9000_series_orders is True
+    assert accepted.allowed is True
+    assert accepted.command is not None
+    assert accepted.command.symbol == "94320"
+
+
 def test_phase17_g_submit_pipeline_uses_normal_guard_before_historical_adapter(tmp_path: Path) -> None:
     runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY")
 
@@ -98,6 +121,36 @@ def test_phase17_g_submit_pipeline_uses_normal_guard_before_historical_adapter(t
     assert result.demo_submit_executed is False
     evidence_dir = runtime_root / "runtime_state" / "historical_broker" / BUSINESS_DATE
     assert len(list(evidence_dir.glob("*.json"))) == 1
+
+
+def test_phase20_bq_historical_submit_pipeline_fills_9000_series_without_broker_write(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY", symbol="94320")
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+
+    assert result.status == "PASS"
+    assert result.submitted_count == 1
+    assert result.accepted_count == 1
+    assert result.blocked_count == 0
+    assert result.demo_submit_executed is False
+    assert result.item_results[0].symbol == "94320"
+    evidence_dir = runtime_root / "runtime_state" / "historical_broker" / BUSINESS_DATE
+    evidence_files = list(evidence_dir.glob("*.json"))
+    assert len(evidence_files) == 1
+    evidence = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+    assert evidence["symbol"] == "94320"
+    assert evidence["broker_write"] is False
+    assert evidence["external_delivery"] is False
+    assert evidence["historical_replay"] is True
 
 
 def test_phase17_g_historical_adapter_prefers_run_scoped_asof_hash_over_stale_manifest(tmp_path: Path) -> None:
@@ -308,15 +361,16 @@ def _runtime_fixture(
     *,
     side: str,
     safety_decision: str = "ALLOW",
+    symbol: str = SYMBOL,
 ) -> tuple[Path, Path, HistoricalSubmitAdapter]:
     runtime_root = tmp_path / ".runtime"
     runtime_root.mkdir()
-    _write_market_data(tmp_path)
+    _write_market_data(tmp_path, symbol=symbol)
     policy_path = runtime_root / "runtime_state" / "policy" / "capital_deployment.json"
     _write_policy(policy_path)
     _write_safety(runtime_root, decision=safety_decision)
-    _write_current(runtime_root, side=side)
-    pending = _pending("historical", side=side, policy_path=policy_path)
+    _write_current(runtime_root, side=side, symbol=symbol)
+    pending = _pending("historical", side=side, policy_path=policy_path, symbol=symbol)
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
     adapter = HistoricalSubmitAdapter(
         runtime_root=runtime_root,
@@ -330,10 +384,10 @@ def _runtime_fixture(
     return runtime_root, policy_path, adapter
 
 
-def _write_market_data(root: Path) -> None:
-    ohlcv = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL, "Open": 3000.0}])
-    raw = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL, "AdjFactor": 1.0}])
-    listed = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL}])
+def _write_market_data(root: Path, *, symbol: str = SYMBOL) -> None:
+    ohlcv = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol, "Open": 3000.0}])
+    raw = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol, "AdjFactor": 1.0}])
+    listed = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol}])
     ohlcv.to_parquet(root / "ohlcv.parquet", index=False)
     raw.to_parquet(root / "raw_ohlcv.parquet", index=False)
     listed.to_parquet(root / "listed.parquet", index=False)
@@ -348,11 +402,11 @@ def _write_market_data(root: Path) -> None:
     (root / "pit_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = None):
+def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = None, symbol: str = SYMBOL):
     policy = load_capital_deployment_policy(policy_path) if policy_path else None
     item = PendingOrderItem(
         pending_item_id="item-1",
-        symbol=SYMBOL,
+        symbol=symbol,
         side=side,
         quantity=100.0,
         order_type="MARKET",
@@ -361,7 +415,7 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         approved=True,
         state="APPROVED",
         listed_info={
-            "code": SYMBOL,
+            "code": symbol,
             "trading_unit": 100,
             "opportunity_buy_eligibility_status": "PASS",
             "opportunity_buy_eligibility": "BUY_ELIGIBLE",
@@ -426,7 +480,7 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
                 "target_session": BUSINESS_DATE,
                 "quantity": 100.0,
                 "side": side,
-                "issue_code": SYMBOL,
+                "issue_code": symbol,
                 "limit_price": None,
                 "time_in_force": "DAY",
                 "price_condition": "MARKET",
@@ -523,11 +577,11 @@ def _write_safety(runtime_root: Path, *, decision: str) -> None:
     )
 
 
-def _write_current(runtime_root: Path, *, side: str) -> None:
+def _write_current(runtime_root: Path, *, side: str, symbol: str = SYMBOL) -> None:
     path = runtime_root / "persistent_ledger" / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     positions = (
-        [{"symbol": SYMBOL, "quantity": 100.0, "average_price": 2500.0, "market_value": 300000.0}]
+        [{"symbol": symbol, "quantity": 100.0, "average_price": 2500.0, "market_value": 300000.0}]
         if side == "SELL"
         else []
     )

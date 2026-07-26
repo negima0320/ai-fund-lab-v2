@@ -40,6 +40,8 @@ Required operational/provenance fields:
 
 Required position state fields remain governed by the PM input contract and Current contract.
 
+Position-state fields that appear inside `position_feature_input.parquet` are non-canonical observability copies for PM decision-time position state. Canonical PM decision-time authority for `average_price`, `current_price`, `current_return`, `peak_return`, `drawdown_from_peak`, `market_value`, and `holding_days` is defined in `docs/02_architecture/position_management_decision_trace_contract.md`.
+
 ## Optional Features
 
 `no_position_reason` is optional. It is used only for explicit no-position evidence and is not a scoring feature.
@@ -89,6 +91,8 @@ Existing equivalent Runtime reasons may be used, including:
 - `defaulted_features`
 - `used_feature_snapshot`
 - `temporal_validation_status`
+
+Phase20-S also requires `position_management_decision_trace.json` and embedded decision trace metadata to expose score components, trigger booleans, dominant cause, selected action score semantics, and canonical/non-canonical position-state copy comparison.
 
 ## Production Commonness
 

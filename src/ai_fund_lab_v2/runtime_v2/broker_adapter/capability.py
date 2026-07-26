@@ -64,7 +64,7 @@ def get_broker_capability(mode: str) -> BrokerCapability:
             positions_as_truth=False,
             executions_as_truth=True,
             order_status_as_truth=True,
-            supports_9000_series_orders=False,
+            supports_9000_series_orders=True,
             default_evaluation_capital=1_000_000.0,
             broker_cash_is_evidence_only=True,
             broker_positions_are_evidence_only_after_reset=True,

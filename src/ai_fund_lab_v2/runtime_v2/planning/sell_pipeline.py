@@ -43,6 +43,7 @@ class SellExitDecision:
 
 REDUCE_QUANTITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_quantity_v1"
 DEFAULT_TRADABLE_UNIT = 100.0
+REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
 REDUCE_INTENSITY_RATIOS: dict[str, float] = {
     "LIGHT": 0.25,
     "MEDIUM": 0.33,
@@ -336,7 +337,14 @@ def run_sell_planning_pending_pipeline(
         )
         for decision in selected_decisions
     )
-    quantity_failures = tuple(decision for decision in quantity_decisions if decision.quantity <= 0)
+    non_executable_decisions = tuple(
+        decision for decision in quantity_decisions if _is_non_executable_reduce_quantity_contract(decision.quantity_contract)
+    )
+    quantity_failures = tuple(
+        decision
+        for decision in quantity_decisions
+        if decision.quantity <= 0 and not _is_non_executable_reduce_quantity_contract(decision.quantity_contract)
+    )
     if quantity_failures:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -350,8 +358,23 @@ def run_sell_planning_pending_pipeline(
             status="REVIEW_REQUIRED",
             safety_decision=runtime_safety_decision,
         )
+    executable_quantity_decisions = tuple(decision for decision in quantity_decisions if decision.quantity > 0)
+    if not executable_quantity_decisions:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
+            reason=REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON,
+            current_position_count=len(current_positions),
+            current_exposure=current_exposure,
+            status="PASS",
+            safety_decision=runtime_safety_decision,
+            non_executable_decisions=non_executable_decisions,
+        )
 
-    ai_signals = tuple(_ai_signal(decision, index) for index, decision in enumerate(quantity_decisions, start=1))
+    ai_signals = tuple(_ai_signal(decision, index) for index, decision in enumerate(executable_quantity_decisions, start=1))
     policy_context = _policy_context(capital_deployment_policy)
     allocations = tuple(
         _allocation(
@@ -360,7 +383,7 @@ def run_sell_planning_pending_pipeline(
             position=current_positions.get(decision.symbol),
             policy_context=policy_context,
         )
-        for decision, signal in zip(quantity_decisions, ai_signals)
+        for decision, signal in zip(executable_quantity_decisions, ai_signals)
     )
     planning_result = build_order_plan(
         PlanningInput(
@@ -379,7 +402,10 @@ def run_sell_planning_pending_pipeline(
     order_plan_path = artifact_dir / "order_plan.json"
     approval_path = artifact_dir / "approval_artifact.json"
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    order_plan_path.write_text(_json_dumps(_jsonable(planning_result.order_plan)), encoding="utf-8")
+    order_plan_payload = _jsonable(planning_result.order_plan)
+    if non_executable_decisions:
+        order_plan_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
+    order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     pending_items = tuple(
         _pending_item(item)
         for item in planning_result.order_plan.items
@@ -459,6 +485,7 @@ def _write_no_signal_pending(
     current_exposure: float,
     status: str = "NO_SIGNAL",
     safety_decision: RuntimeSafetyDecision | None = None,
+    non_executable_decisions: tuple[SellExitDecision, ...] = (),
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -476,6 +503,8 @@ def _write_no_signal_pending(
         "sell_source_contract": "Current Position is the only SELL source",
         "safety_context": _safety_context_payload(safety_decision),
     }
+    if non_executable_decisions:
+        order_plan_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     approval_path.write_text(_json_dumps({"status": "NO_SIGNAL", "reason": reason}), encoding="utf-8")
     pending = promote_order_plan_to_pending(
@@ -510,6 +539,8 @@ def _write_no_signal_pending(
         pending_payload["status"] = "EMPTY"
         pending_payload["active_pending"] = False
         pending_payload["no_action_reason"] = reason
+        if non_executable_decisions:
+            pending_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
         pending_path.write_text(_json_dumps(pending_payload), encoding="utf-8")
     return SellPlanningPipelineResult(
         status=status,
@@ -729,65 +760,54 @@ def calculate_reduce_quantity_contract(
     sellable_quantity: float | None = None,
     sellable_quantity_source: str = "current_position_quantity",
     restricted_quantity: float = 0.0,
-    tradable_unit: float = DEFAULT_TRADABLE_UNIT,
+    tradable_unit: float | None = DEFAULT_TRADABLE_UNIT,
 ) -> dict[str, Any]:
     intensity = str(reduce_intensity or "").upper()
     target_reduce_ratio = REDUCE_INTENSITY_RATIOS.get(intensity)
-    effective_sellable_quantity = min(float(position_quantity), float(sellable_quantity if sellable_quantity is not None else position_quantity))
+    position_quantity_value = float(position_quantity)
+    tradable_unit_value = float(tradable_unit) if tradable_unit is not None else 0.0
+    sellable_quantity_value = float(sellable_quantity if sellable_quantity is not None else position_quantity_value)
+    effective_sellable_quantity = min(position_quantity_value, sellable_quantity_value)
     base = {
         "quantity_contract_version": REDUCE_QUANTITY_CONTRACT_VERSION,
         "source_decision": "REDUCE",
         "reduce_intensity": intensity,
         "target_reduce_ratio": target_reduce_ratio,
-        "position_quantity_before": float(position_quantity),
+        "position_quantity_before": position_quantity_value,
         "sellable_quantity": effective_sellable_quantity,
         "sellable_quantity_source": sellable_quantity_source,
         "restricted_quantity": float(restricted_quantity),
-        "tradable_unit": float(tradable_unit),
-        "minimum_order_quantity": float(tradable_unit),
-        "minimum_remaining_quantity": float(tradable_unit),
+        "tradable_unit": tradable_unit_value,
+        "minimum_order_quantity": tradable_unit_value,
+        "minimum_remaining_quantity": tradable_unit_value,
         "rounding_policy": "floor_to_tradable_unit_to_avoid_oversell",
     }
-    if position_quantity <= 0:
+    if position_quantity_value <= 0:
         return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_CURRENT_POSITION_MISSING", "final_sell_quantity": 0.0}
-    if tradable_unit <= 0:
+    if tradable_unit_value <= 0:
         return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_TRADABLE_UNIT_UNKNOWN", "final_sell_quantity": 0.0}
     if target_reduce_ratio is None:
         return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_INTENSITY_UNKNOWN", "final_sell_quantity": 0.0}
-    if effective_sellable_quantity < tradable_unit:
-        return {
-            **base,
-            "status": "REVIEW_REQUIRED",
-            "reason": "REVIEW_REQUIRED_REDUCE_SELLABLE_QUANTITY_BELOW_TRADABLE_UNIT",
-            "raw_reduce_quantity": effective_sellable_quantity * target_reduce_ratio,
-            "rounded_reduce_quantity": 0.0,
-            "final_sell_quantity": 0.0,
-            "expected_remaining_quantity": position_quantity,
-        }
-    if position_quantity <= tradable_unit:
-        return {
-            **base,
-            "status": "REVIEW_REQUIRED",
-            "reason": "REVIEW_REQUIRED_REDUCE_NOT_EXECUTABLE_AT_TRADABLE_UNIT",
-            "raw_reduce_quantity": position_quantity * target_reduce_ratio,
-            "rounded_reduce_quantity": 0.0,
-            "final_sell_quantity": 0.0,
-            "expected_remaining_quantity": position_quantity,
-        }
+    if sellable_quantity_value < 0:
+        return {**base, "status": "REVIEW_REQUIRED", "reason": "REVIEW_REQUIRED_REDUCE_SELLABLE_QUANTITY_NEGATIVE", "final_sell_quantity": 0.0}
+    if effective_sellable_quantity < tradable_unit_value:
+        return _non_executable_reduce_quantity_contract(
+            base=base,
+            raw_reduce_quantity=effective_sellable_quantity * target_reduce_ratio,
+            rounded_reduce_quantity=0.0,
+            position_quantity=position_quantity_value,
+        )
     raw_reduce_quantity = effective_sellable_quantity * target_reduce_ratio
-    rounded_reduce_quantity = math.floor(raw_reduce_quantity / tradable_unit) * tradable_unit
-    expected_remaining_quantity = position_quantity - rounded_reduce_quantity
+    rounded_reduce_quantity = math.floor(raw_reduce_quantity / tradable_unit_value) * tradable_unit_value
+    expected_remaining_quantity = position_quantity_value - rounded_reduce_quantity
     if rounded_reduce_quantity <= 0:
-        return {
-            **base,
-            "status": "REVIEW_REQUIRED",
-            "reason": "REVIEW_REQUIRED_REDUCE_ROUNDED_QUANTITY_ZERO",
-            "raw_reduce_quantity": raw_reduce_quantity,
-            "rounded_reduce_quantity": rounded_reduce_quantity,
-            "final_sell_quantity": 0.0,
-            "expected_remaining_quantity": position_quantity,
-        }
-    if rounded_reduce_quantity >= position_quantity:
+        return _non_executable_reduce_quantity_contract(
+            base=base,
+            raw_reduce_quantity=raw_reduce_quantity,
+            rounded_reduce_quantity=rounded_reduce_quantity,
+            position_quantity=position_quantity_value,
+        )
+    if rounded_reduce_quantity >= position_quantity_value:
         return {
             **base,
             "status": "REVIEW_REQUIRED",
@@ -816,6 +836,62 @@ def calculate_reduce_quantity_contract(
         "final_sell_quantity": rounded_reduce_quantity,
         "expected_remaining_quantity": expected_remaining_quantity,
     }
+
+
+def _non_executable_reduce_quantity_contract(
+    *,
+    base: dict[str, Any],
+    raw_reduce_quantity: float,
+    rounded_reduce_quantity: float,
+    position_quantity: float,
+) -> dict[str, Any]:
+    return {
+        **base,
+        "status": "NOT_EXECUTABLE",
+        "reason": REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON,
+        "raw_reduce_quantity": raw_reduce_quantity,
+        "rounded_reduce_quantity": rounded_reduce_quantity,
+        "rounded_executable_quantity": 0.0,
+        "final_sell_quantity": 0.0,
+        "expected_remaining_quantity": position_quantity,
+        "execution_feasibility_status": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+        "effective_action": "NO_SELL_ORDER",
+        "pending_order_generated": False,
+        "position_quantity_after": position_quantity,
+        "runtime_continuation_status": "PASS",
+        "position_lifecycle_event": "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY",
+    }
+
+
+def _is_non_executable_reduce_quantity_contract(contract: Mapping[str, Any] | None) -> bool:
+    if not isinstance(contract, Mapping):
+        return False
+    return (
+        str(contract.get("source_decision") or "").upper() == "REDUCE"
+        and str(contract.get("status") or "").upper() == "NOT_EXECUTABLE"
+        and str(contract.get("reason") or "") == REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON
+    )
+
+
+def _non_executable_decision_payload(decisions: tuple[SellExitDecision, ...]) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for decision in decisions:
+        contract = dict(decision.quantity_contract or {})
+        payload.append(
+            {
+                "symbol": decision.symbol,
+                "original_decision": str(decision.source_decision or "").upper(),
+                "source_decision_id": decision.source_decision_id,
+                "reason": decision.reason,
+                "quantity_contract": contract,
+                "execution_feasibility_status": contract.get("execution_feasibility_status") or "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                "effective_action": contract.get("effective_action") or "NO_SELL_ORDER",
+                "pending_order_generated": bool(contract.get("pending_order_generated")),
+                "position_quantity_after": contract.get("position_quantity_after", contract.get("position_quantity_before")),
+                "runtime_continuation_status": contract.get("runtime_continuation_status") or "PASS",
+            }
+        )
+    return payload
 
 
 def _apply_exit_priority(decisions: tuple[SellExitDecision, ...]) -> tuple[SellExitDecision, ...]:

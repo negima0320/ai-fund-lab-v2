@@ -16,6 +16,11 @@ from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import
     SELECTION_POLICY,
     resolve_listed_issues_snapshot,
 )
+from ai_fund_lab_v2.runtime_v2.market_data_bootstrap import (
+    REQUIRED_LOOKBACK_BUSINESS_DAYS,
+    build_market_data_warmup_sufficiency,
+    parquet_inventory,
+)
 
 
 ASOF_SCHEMA_VERSION = "runtime_historical_asof_view_v1"
@@ -60,6 +65,7 @@ class HistoricalAsOfResolution:
     business_date: str
     logical_identity: str
     authorities: tuple[HistoricalAsOfAuthority, ...]
+    feature_lookback_coverage: dict[str, Any] | None = None
 
     @property
     def latest_available_market_date(self) -> str:
@@ -75,6 +81,7 @@ class HistoricalAsOfResolution:
             "logical_identity": self.logical_identity,
             "latest_available_market_date": self.latest_available_market_date,
             "authorities": [authority.to_payload() for authority in self.authorities],
+            "feature_lookback_coverage": dict(self.feature_lookback_coverage or {}),
             "future_rows_excluded_from_consumer": all(
                 authority.status == "PASS" and authority.logical_max_date <= authority.logical_cutoff
                 for authority in self.authorities
@@ -122,6 +129,7 @@ def resolve_historical_market_data_asof(
     manifest_refs: dict[str, str] | None = None,
     expected_manifest_hashes: dict[str, str] | None = None,
     historical_listed_issues_snapshot_root: Path | str | None = None,
+    require_feature_lookback: bool = False,
 ) -> HistoricalAsOfResolution:
     root = Path(operations_root)
     expected = expected_hashes or {}
@@ -130,11 +138,17 @@ def resolve_historical_market_data_asof(
     listed_snapshot_root = Path(historical_listed_issues_snapshot_root) if historical_listed_issues_snapshot_root else (
         root / "jquants" / "historical_snapshots" / "listed_issues"
     )
+    source_resolution = _resolve_historical_ohlcv_source_paths(
+        operations_root=root,
+        business_date=business_date,
+        require_feature_lookback=require_feature_lookback,
+    )
     authority_paths = {
         "normalized_ohlcv": root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
         "raw_ohlcv": root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet",
         "trading_calendar": root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet",
     }
+    authority_paths.update(source_resolution["authority_paths"])
     authorities_list = [
         _resolve_authority(
             authority=name,
@@ -161,14 +175,21 @@ def resolve_historical_market_data_asof(
         )
     authorities = tuple(authorities_list)
     failed = [item for item in authorities if item.status != "PASS"]
-    status = "PASS" if not failed else "HALT"
-    reason = "historical_asof_view_ready" if status == "PASS" else "historical_asof_authority_invalid"
+    lookback_status = str(source_resolution["coverage"].get("status") or "PASS")
+    status = "PASS" if not failed and lookback_status == "PASS" else "HALT"
+    if failed:
+        reason = "historical_asof_authority_invalid"
+    elif lookback_status != "PASS":
+        reason = "historical_feature_lookback_insufficient"
+    else:
+        reason = "historical_asof_view_ready"
     return HistoricalAsOfResolution(
         status=status,
         reason=reason,
         business_date=business_date,
         logical_identity=f"historical-asof:{business_date}",
         authorities=authorities,
+        feature_lookback_coverage=source_resolution["coverage"],
     )
 
 
@@ -193,11 +214,13 @@ def materialize_historical_logical_inputs(
     evidence_root: Path | str,
     runtime_test_context: dict[str, Any] | None = None,
     historical_listed_issues_snapshot_root: Path | str | None = None,
+    require_feature_lookback: bool = False,
 ) -> HistoricalLogicalInput:
     resolution = resolve_historical_market_data_asof(
         operations_root=operations_root,
         business_date=business_date,
         historical_listed_issues_snapshot_root=historical_listed_issues_snapshot_root,
+        require_feature_lookback=require_feature_lookback,
     )
     input_root = Path(evidence_root) / "inputs" / "historical_asof" / business_date
     raw_root = input_root / "raw"
@@ -230,6 +253,7 @@ def materialize_historical_logical_inputs(
         "logical_paths": logical_paths,
         "runtime_test_identity": dict(runtime_test_context or {}),
         "resolution": resolution.to_payload(),
+        "feature_lookback_coverage": dict(resolution.feature_lookback_coverage or {}),
         "verified_derived_test_input": True,
         "canonical_physical_data_unchanged": True,
     }
@@ -247,6 +271,216 @@ def materialize_historical_logical_inputs(
         resolution=resolution,
         logical_paths=logical_paths,
     )
+
+
+def _resolve_historical_ohlcv_source_paths(
+    *,
+    operations_root: Path,
+    business_date: str,
+    require_feature_lookback: bool,
+) -> dict[str, Any]:
+    default_normalized = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    default_raw = operations_root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"
+    default_calendar = operations_root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet"
+    if not require_feature_lookback:
+        return {
+            "authority_paths": {},
+            "coverage": {
+                "schema_version": "runtime_historical_feature_lookback_coverage_v1",
+                "status": "PASS",
+                "reason": "feature_lookback_check_not_required",
+                "business_date": business_date,
+                "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+                "selected_source_role": "operations_canonical",
+                "selected_normalized_ohlcv_path": str(default_normalized),
+            },
+        }
+
+    candidates = [
+        _lookback_candidate(
+            role="operations_canonical",
+            normalized_path=default_normalized,
+            raw_path=default_raw,
+            trading_calendar_path=default_calendar,
+            business_date=business_date,
+            runtime_root=_runtime_root_for_operations(operations_root),
+        )
+    ]
+    for normalized_path in _discover_acquisition_normalized_sources(_runtime_root_for_operations(operations_root)):
+        run_root = normalized_path.parents[3]
+        candidates.append(
+            _lookback_candidate(
+                role="acquisition_staging",
+                normalized_path=normalized_path,
+                raw_path=run_root / "raw" / "jquants" / "equities_bars_daily" / "data.parquet",
+                trading_calendar_path=run_root / "raw" / "jquants" / "trading_calendar" / "data.parquet",
+                business_date=business_date,
+                runtime_root=_runtime_root_for_operations(operations_root),
+            )
+        )
+
+    selected = next((candidate for candidate in candidates if candidate["status"] == "PASS"), candidates[0])
+    coverage = {
+        "schema_version": "runtime_historical_feature_lookback_coverage_v1",
+        "status": selected["status"],
+        "reason": selected["reason"],
+        "business_date": business_date,
+        "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        "selected_source_role": selected["role"],
+        "selected_normalized_ohlcv_path": selected["normalized_path"],
+        "selected_raw_ohlcv_path": selected["raw_path"] if Path(str(selected["raw_path"])).is_file() else str(default_raw),
+        "selected_trading_calendar_path": selected["trading_calendar_path"] if Path(str(selected["trading_calendar_path"])).is_file() else str(default_calendar),
+        "candidate_sources": candidates,
+        "future_leakage_policy": "logical consumer input is materialized with rows Date <= business_date only",
+        "runtime_market_data_mutated": False,
+    }
+    authority_paths: dict[str, Path] = {}
+    if selected["role"] != "operations_canonical" or selected["normalized_path"] != str(default_normalized):
+        authority_paths["normalized_ohlcv"] = Path(str(selected["normalized_path"]))
+        raw_path = Path(str(selected["raw_path"]))
+        if raw_path.is_file():
+            authority_paths["raw_ohlcv"] = raw_path
+        trading_calendar_path = Path(str(selected["trading_calendar_path"]))
+        if trading_calendar_path.is_file():
+            authority_paths["trading_calendar"] = trading_calendar_path
+    return {"authority_paths": authority_paths, "coverage": coverage}
+
+
+def _lookback_candidate(
+    *,
+    role: str,
+    normalized_path: Path,
+    raw_path: Path,
+    trading_calendar_path: Path,
+    business_date: str,
+    runtime_root: Path,
+) -> dict[str, Any]:
+    warmup = build_market_data_warmup_sufficiency(
+        runtime_root=runtime_root,
+        target_start_date=business_date,
+        target_end_date=business_date,
+        maximum_required_warmup_business_days=REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        source_path=normalized_path,
+    )
+    inventory = parquet_inventory(normalized_path)
+    calendar_coverage = _calendar_lookback_coverage(
+        trading_calendar_path=trading_calendar_path,
+        normalized_path=normalized_path,
+        business_date=business_date,
+    )
+    blocked: list[str] = []
+    if inventory.get("status") != "PASS":
+        blocked.append("normalized_ohlcv_source_not_ready")
+    if inventory.get("duplicate_key_count"):
+        blocked.append("normalized_ohlcv_duplicate_keys")
+    if inventory.get("jquants_lineage_status") != "PASS":
+        blocked.append("normalized_ohlcv_lineage_not_pass")
+    if inventory.get("future_or_training_columns_detected"):
+        blocked.append("training_or_future_columns_detected")
+    if warmup.get("warmup_sufficiency_judgment") != "PASS":
+        blocked.append("feature_lookback_insufficient")
+    if calendar_coverage.get("status") != "PASS":
+        blocked.append(str(calendar_coverage.get("reason") or "trading_calendar_lookback_not_ready"))
+    status = "PASS" if not blocked else "BLOCK"
+    return {
+        "role": role,
+        "status": status,
+        "reason": "FEATURE_LOOKBACK_SOURCE_READY" if status == "PASS" else "FEATURE_LOOKBACK_SOURCE_BLOCKED",
+        "normalized_path": str(normalized_path),
+        "raw_path": str(raw_path),
+        "trading_calendar_path": str(trading_calendar_path),
+        "warmup_sufficiency": warmup,
+        "trading_calendar_lookback": calendar_coverage,
+        "inventory": {
+            key: inventory.get(key)
+            for key in (
+                "exists",
+                "row_count",
+                "earliest_date",
+                "latest_date",
+                "unique_business_days",
+                "symbol_count",
+                "duplicate_key_count",
+                "jquants_lineage_status",
+                "future_or_training_columns_detected",
+                "status",
+            )
+        },
+        "blocked_reasons": blocked,
+    }
+
+
+def _calendar_lookback_coverage(
+    *,
+    trading_calendar_path: Path,
+    normalized_path: Path,
+    business_date: str,
+) -> dict[str, Any]:
+    if not trading_calendar_path.is_file():
+        return {
+            "status": "BLOCK",
+            "reason": "trading_calendar_authority_missing",
+            "trading_calendar_path": str(trading_calendar_path),
+            "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        }
+    try:
+        import pandas as pd
+
+        calendar = pd.read_parquet(trading_calendar_path)
+        quotes = pd.read_parquet(normalized_path, columns=["Date"])
+    except Exception as exc:  # noqa: BLE001 - fail closed evidence.
+        return {
+            "status": "BLOCK",
+            "reason": f"lookback_authority_unreadable:{type(exc).__name__}",
+            "trading_calendar_path": str(trading_calendar_path),
+            "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        }
+    date_column = _date_column(tuple(str(column) for column in calendar.columns))
+    if not date_column:
+        return {
+            "status": "BLOCK",
+            "reason": "trading_calendar_date_column_missing",
+            "trading_calendar_path": str(trading_calendar_path),
+            "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        }
+    frame = calendar.copy()
+    if "HolDiv" in frame.columns:
+        frame = frame[frame["HolDiv"].astype(str) == "1"].copy()
+    elif "holiday_division" in frame.columns:
+        frame = frame[frame["holiday_division"].astype(str) == "1"].copy()
+    calendar_dates = sorted({str(value) for value in frame[date_column].dropna().astype(str) if str(value) <= business_date})
+    required_start = calendar_dates[-REQUIRED_LOOKBACK_BUSINESS_DAYS] if len(calendar_dates) >= REQUIRED_LOOKBACK_BUSINESS_DAYS else ""
+    quote_dates = sorted({str(value) for value in quotes["Date"].dropna().astype(str) if str(value) <= business_date})
+    available_count = len([day for day in quote_dates if required_start and required_start <= day <= business_date])
+    status = "PASS" if required_start and available_count >= REQUIRED_LOOKBACK_BUSINESS_DAYS else "BLOCK"
+    return {
+        "status": status,
+        "reason": "TRADING_CALENDAR_LOOKBACK_READY" if status == "PASS" else "TRADING_CALENDAR_LOOKBACK_INSUFFICIENT",
+        "trading_calendar_path": str(trading_calendar_path),
+        "lookback_authority": "jquants_trading_calendar",
+        "target_date": business_date,
+        "required_lookback_business_days": REQUIRED_LOOKBACK_BUSINESS_DAYS,
+        "required_history_start_date": required_start,
+        "actual_history_start_date": quote_dates[0] if quote_dates else "",
+        "actual_history_end_date": quote_dates[-1] if quote_dates else "",
+        "available_business_day_count": available_count,
+    }
+
+
+def _discover_acquisition_normalized_sources(runtime_root: Path) -> list[Path]:
+    runs_root = runtime_root / "market_data_acquisition" / "runs"
+    if not runs_root.is_dir():
+        return []
+    candidates = [
+        path
+        for path in runs_root.glob("*/raw_normalized/jquants/equities_bars_daily/data.parquet")
+        if path.is_file()
+    ]
+    return sorted(candidates, key=lambda path: (path.stat().st_mtime, str(path)), reverse=True)
+
+
+def _runtime_root_for_operations(operations_root: Path) -> Path:
+    return operations_root.parent if operations_root.name == "operations" else operations_root.parent / ".runtime"
 
 
 def _resolve_authority(

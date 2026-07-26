@@ -81,6 +81,48 @@ def test_phase15ap_valid_pm_input_contract_allows_pm_and_sell_planning(tmp_path)
     assert artifact["decision_count"] == 1
 
 
+def test_phase20_s_pm_decision_trace_preserves_runtime_behavior_and_authority(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("6522", quantity=100, average_price=1000, current_price=850)])
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",), expected_edge=-0.05, downside=0.8)
+    feature = pd.read_csv(feature_path)
+    feature["current_price"] = 900
+    feature["current_return"] = -0.10
+    feature["average_price"] = 1000
+    feature["quantity"] = 100
+    feature.to_csv(feature_path, index=False)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+    )
+    artifact = _read_json(result.artifact_path)
+    decision = artifact["decisions"][0]
+    trace_path = Path(artifact["decision_trace_path"])
+    trace_artifact = _read_json(trace_path)
+    trace = trace_artifact["traces"][0]
+    sell_decisions = pm_producer.load_sell_exit_decisions_from_pm_artifact(result.artifact_path)
+
+    assert result.status == "PASS"
+    assert decision["decision"] == "EXIT"
+    assert decision["runtime_action"] == "SELL_FULL_POSITION"
+    assert decision["runtime_sell_quantity"] == 100
+    assert sell_decisions[0].source_decision == "EXIT"
+    assert sell_decisions[0].quantity == 100
+    assert artifact["confidence_semantics"] == "selected_action_score_not_calibrated_probability"
+    assert decision["confidence"] == decision["action_score"] == decision["selected_action_score"]
+    assert decision["decision_trace_contract_version"] == "runtime_v2_pm_decision_trace_contract_v1"
+    assert decision["dominant_cause"] == "EXIT_BY_HARD_STOP"
+    assert decision["decision_trace"]["position_state"]["current_price"] == 850
+    assert decision["decision_trace"]["position_state"]["current_return"] == pytest.approx(-0.15)
+    assert decision["decision_trace"]["non_canonical_feature_position_state_copy"]["current_price"] == 900
+    assert decision["decision_trace"]["position_state_copy_mismatch"]["status"] == "MISMATCH"
+    assert "current_price" in decision["decision_trace"]["position_state_copy_mismatch"]["mismatched_fields"]
+    assert trace["decision_result"]["confidence_semantics"] == "selected_action_score_not_calibrated_probability"
+
+
 def test_phase15ap_stale_current_is_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path, positions=[_position("6522")], current_as_of="2026-07-08")
     opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("6522",))

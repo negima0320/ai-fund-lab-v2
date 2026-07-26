@@ -230,6 +230,8 @@ class JQuantsClient:
             except urllib.error.HTTPError as exc:
                 self._record_request()
                 self._log_request_failure(endpoint, exc.code, "http_error")
+                response_body = _safe_http_error_body(exc)
+                response_content_type = str(getattr(exc, "headers", {}).get("Content-Type", "") if getattr(exc, "headers", None) is not None else "")
                 decision = self._retry_policy.should_retry(exc.code, attempt)
                 if decision.retryable:
                     self.sleep(decision.wait_seconds)
@@ -237,7 +239,13 @@ class JQuantsClient:
                     continue
                 raise JQuantsClientError(
                     self._safe_error_message(endpoint, exc.code),
-                    diagnostic=self._http_error_diagnostic(endpoint, safe_params, exc.code),
+                    diagnostic=self._http_error_diagnostic(
+                        endpoint,
+                        safe_params,
+                        exc.code,
+                        response_body=response_body,
+                        response_content_type=response_content_type,
+                    ),
                 ) from exc
             except urllib.error.URLError as exc:
                 self._record_request()
@@ -345,9 +353,20 @@ class JQuantsClient:
             "url_host": urllib.parse.urlparse(self.settings.base_url).hostname or "",
         }
 
-    def _http_error_diagnostic(self, endpoint: str, params: dict[str, str], status: int) -> dict[str, Any]:
+    def _http_error_diagnostic(
+        self,
+        endpoint: str,
+        params: dict[str, str],
+        status: int,
+        *,
+        response_body: str = "",
+        response_content_type: str = "",
+    ) -> dict[str, Any]:
         diagnostic = self._base_diagnostic(endpoint, params)
         diagnostic["http_status"] = status
+        diagnostic["response_content_type"] = response_content_type
+        diagnostic["response_body"] = response_body
+        diagnostic["request_parameter_names"] = sorted(params)
         if status in (401, 403):
             diagnostic["error_class"] = "API_AUTH_ERROR"
         elif status == 400:
@@ -401,3 +420,11 @@ def _classify_url_error_reason(reason: Any) -> str:
             return "network_unreachable"
         return reason.__class__.__name__
     return type(reason).__name__ if reason is not None else "url_error"
+
+
+def _safe_http_error_body(exc: urllib.error.HTTPError, max_chars: int = 2000) -> str:
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    return body[:max_chars]

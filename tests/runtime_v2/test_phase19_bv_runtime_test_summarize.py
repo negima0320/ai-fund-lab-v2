@@ -161,6 +161,8 @@ def test_phase19_bv_summarize_known_pass_run_json_schema_and_distribution(tmp_pa
     payload = call_main(runner, ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root)], capsys)
     assert payload["_exit_code"] == runner.EXIT_PASS
     assert payload["schema_version"] == "runtime_test_summary_v1"
+    assert payload["summary_scope_schema_version"] == "runtime_test_summary_v2"
+    assert payload["scope"] == "full"
     assert payload["runtime_judgment"] == "PASS"
     assert payload["performance_judgment"] == "NEGATIVE_RETURN_OBSERVED"
     assert payload["strategy_judgment"] == "NOT_EVALUATED"
@@ -173,6 +175,81 @@ def test_phase19_bv_summarize_known_pass_run_json_schema_and_distribution(tmp_pa
     assert len(payload["trade_attribution"]) == 2
     assert payload["lifecycle_consistency"]["status"] == "PASS"
     assert payload["external_effects"]["historical_external_effects_disabled"] is True
+
+
+def test_phase20_h_summarize_scope_parser_and_json_sections(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root, evidence_root = _make_summary_fixture(runner, tmp_path)
+
+    expectations = {
+        "overview": ("overview", "performance_scope", "positions_scope", "lifecycle_scope"),
+        "performance": ("performance_scope", "overview", "positions_scope", "lifecycle_scope"),
+        "positions": ("positions_scope", "overview", "performance_scope", "lifecycle_scope"),
+        "lifecycle": ("lifecycle_scope", "overview", "performance_scope", "positions_scope"),
+        "full": ("overview", "performance_scope", "positions_scope", "lifecycle_scope"),
+    }
+    for scope, keys in expectations.items():
+        payload = call_main(runner, ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root), "--scope", scope], capsys)
+        assert payload["_exit_code"] == runner.EXIT_PASS
+        assert payload["scope"] == scope
+        selected = keys[0]
+        assert payload[selected] is not None
+        if scope != "full":
+            for omitted in keys[1:]:
+                assert payload[omitted] is None
+        assert payload["run"]["event_collection_authority"] == "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER"
+        assert payload["authority"]["shared_runtime_event_authority"] == "PROHIBITED"
+
+
+def test_phase20_h_summarize_scope_human_outputs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root, evidence_root = _make_summary_fixture(runner, tmp_path)
+    expected_titles = {
+        "overview": "Run Overview",
+        "performance": "Performance Summary",
+        "positions": "Position Campaign Summary",
+        "lifecycle": "Position Lifecycle Summary",
+        "full": "Run Summary",
+    }
+    for scope, title in expected_titles.items():
+        exit_code = runner.main(["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root), "--scope", scope])
+        captured = capsys.readouterr()
+        assert exit_code == runner.EXIT_PASS
+        assert title in captured.out
+    assert "POST_HOC_ATTRIBUTION_ONLY" in call_main(
+        runner,
+        ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root), "--scope", "lifecycle"],
+        capsys,
+    )["lifecycle_scope"]["post_hoc_policy"]
+
+
+def test_phase20_h_summarize_write_evidence_records_scope(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root, evidence_root = _make_summary_fixture(runner, tmp_path)
+
+    payload = call_main(
+        runner,
+        ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root), "--scope", "performance", "--write-evidence"],
+        capsys,
+    )
+
+    evidence = json.loads((Path(payload["evidence_path"]) / "summary.json").read_text(encoding="utf-8"))
+    assert evidence["scope"] == "performance"
+    assert evidence["performance_scope"] is not None
+    assert evidence["overview"] is None
+    assert evidence["contract_versions"]["performance_metric_contract"] == "phase20_b_performance_metric_contract.v1"
+
+
+def test_phase20_h_missing_performance_metrics_are_explicit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root, evidence_root = _make_summary_fixture(runner, tmp_path)
+
+    payload = call_main(runner, ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root), "--scope", "performance"], capsys)
+
+    metrics = payload["performance_scope"]["metrics"]
+    assert metrics["Benchmark"]["status"] == "MISSING"
+    assert metrics["Sector"]["status"] == "MISSING"
+    assert metrics["Daily Equity Curve"]["status"] == "NOT_AVAILABLE"
 
 
 def test_phase19_bv_summarize_unknown_run_fails_precondition(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -203,6 +280,10 @@ def test_phase19_bv_summarize_human_output_contains_required_sections(tmp_path: 
         "Operator Judgment",
     ]:
         assert section in captured.out
+    assert "PM REDUCE Lifecycle" in captured.out
+    assert "executable=" in captured.out
+    assert "non_executable=" in captured.out
+    assert "unresolved=" in captured.out
 
 
 def test_phase19_bv_trade_attribution_unavailable_is_review_required(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -220,6 +301,141 @@ def test_phase19_bv_lifecycle_mismatch_is_review_required(tmp_path: Path, capsys
     assert payload["_exit_code"] == runner.EXIT_REVIEW_REQUIRED
     assert payload["lifecycle_consistency"]["status"] == "REVIEW_REQUIRED"
     assert any(finding["reason"] == "LIFECYCLE_CONSISTENCY_REVIEW_REQUIRED" for finding in payload["findings"])
+
+
+def _phase20_p_lifecycle_payload(runner, *, pm_reduce_records: list[dict], reduce_plans: list[dict], non_executable: list[dict], exit_count: int = 0, exit_plan_count: int = 0) -> dict:
+    pm_records = [
+        {
+            "business_date": row.get("business_date", "2026-07-01"),
+            "symbol": row.get("symbol", "22220"),
+            "decision": "REDUCE",
+            "decision_id": row.get("decision_id", f"pm-reduce-{idx}"),
+            "position_campaign_id": row.get("position_campaign_id", f"pc-{idx}"),
+        }
+        for idx, row in enumerate(pm_reduce_records, start=1)
+    ]
+    return runner._summarize_lifecycle(
+        pm={"reduce_count": len(pm_records), "exit_count": exit_count, "decision_records": pm_records},
+        trading={
+            "sell_plan_count": len(reduce_plans) + exit_plan_count,
+            "submitted_order_distribution": {"SELL": len(reduce_plans) + exit_plan_count},
+            "execution_distribution": {"SELL": len(reduce_plans) + exit_plan_count},
+        },
+        reduce_exit={
+            "reduce_sell_plan_count": len(reduce_plans),
+            "exit_sell_plan_count": exit_plan_count,
+            "items": reduce_plans,
+            "non_executable_items": non_executable,
+        },
+        current_state={"positions": []},
+        pending_state={"state": "EMPTY", "items": []},
+    )
+
+
+def _phase20_p_reduce_plan(*, symbol: str, business_date: str = "2026-07-01", decision_id: str = "") -> dict:
+    return {
+        "business_date": business_date,
+        "symbol": symbol,
+        "source_decision": "REDUCE",
+        "source_decision_id": decision_id,
+        "quantity": 100.0,
+    }
+
+
+def _phase20_p_non_executable_reduce(*, symbol: str, business_date: str = "2026-07-01", decision_id: str = "", reason: str = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY", after: float = 300.0) -> dict:
+    return {
+        "business_date": business_date,
+        "symbol": symbol,
+        "source_decision": "REDUCE",
+        "source_decision_id": decision_id,
+        "execution_feasibility_status": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+        "reason": reason,
+        "status": "NOT_EXECUTABLE",
+        "effective_action": "NO_SELL_ORDER",
+        "pending_order_generated": False,
+        "runtime_continuation_status": "PASS",
+        "position_lifecycle_event": "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY",
+        "position_quantity_before": 300.0,
+        "position_quantity_after": after,
+        "expected_remaining_quantity": 300.0,
+        "final_sell_quantity": 0.0,
+        "rounded_executable_quantity": 0.0,
+    }
+
+
+def test_phase20_p_reduce_lifecycle_all_executable_passes() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(
+        runner,
+        pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}, {"symbol": "22220", "decision_id": "pm-r2"}],
+        reduce_plans=[_phase20_p_reduce_plan(symbol="11110", decision_id="pm-r1"), _phase20_p_reduce_plan(symbol="22220", decision_id="pm-r2")],
+        non_executable=[],
+        exit_count=1,
+        exit_plan_count=1,
+    )
+    assert lifecycle["status"] == "PASS"
+    assert lifecycle["executable_reduce_sell_plan_count"] == 2
+    assert lifecycle["non_executable_reduce_terminal_count"] == 0
+    assert lifecycle["checks"]["PM_EXIT_TO_SELL_PLAN"] is True
+    assert lifecycle["checks"]["SELL_PLAN_TO_SUBMIT"] is True
+    assert lifecycle["checks"]["SELL_SUBMIT_TO_EXECUTION"] is True
+
+
+def test_phase20_p_reduce_lifecycle_mixed_executable_and_terminal_passes() -> None:
+    runner = load_runner()
+    pm_records = [{"symbol": f"{idx}1110", "decision_id": f"pm-r{idx}"} for idx in range(1, 11)]
+    plans = [_phase20_p_reduce_plan(symbol=f"{idx}1110", decision_id=f"pm-r{idx}") for idx in range(1, 7)]
+    terminals = [_phase20_p_non_executable_reduce(symbol=f"{idx}1110", decision_id=f"pm-r{idx}") for idx in range(7, 11)]
+    lifecycle = _phase20_p_lifecycle_payload(runner, pm_reduce_records=pm_records, reduce_plans=plans, non_executable=terminals)
+    assert lifecycle["status"] == "PASS"
+    assert lifecycle["pm_reduce_count"] == 10
+    assert lifecycle["executable_reduce_sell_plan_count"] == 6
+    assert lifecycle["non_executable_reduce_terminal_count"] == 4
+    assert lifecycle["unresolved_reduce_count"] == 0
+    assert lifecycle["conflicting_reduce_count"] == 0
+
+
+def test_phase20_p_reduce_lifecycle_missing_outcome_is_review_required() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(runner, pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}], reduce_plans=[], non_executable=[])
+    assert lifecycle["status"] == "REVIEW_REQUIRED"
+    assert lifecycle["unresolved_reduce_count"] == 1
+
+
+def test_phase20_p_reduce_lifecycle_conflicting_plan_and_terminal_is_review_required() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(
+        runner,
+        pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}],
+        reduce_plans=[_phase20_p_reduce_plan(symbol="11110", decision_id="pm-r1")],
+        non_executable=[_phase20_p_non_executable_reduce(symbol="11110", decision_id="pm-r1")],
+    )
+    assert lifecycle["status"] == "REVIEW_REQUIRED"
+    assert lifecycle["conflicting_reduce_count"] == 1
+
+
+def test_phase20_p_reduce_lifecycle_invalid_terminal_reason_is_review_required() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(
+        runner,
+        pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}],
+        reduce_plans=[],
+        non_executable=[_phase20_p_non_executable_reduce(symbol="11110", decision_id="pm-r1", reason="UNKNOWN_REASON")],
+    )
+    assert lifecycle["status"] == "REVIEW_REQUIRED"
+    assert lifecycle["unresolved_reduce_count"] == 1
+
+
+def test_phase20_p_reduce_lifecycle_non_executable_position_mutation_is_review_required() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(
+        runner,
+        pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}],
+        reduce_plans=[],
+        non_executable=[_phase20_p_non_executable_reduce(symbol="11110", decision_id="pm-r1", after=200.0)],
+    )
+    assert lifecycle["status"] == "REVIEW_REQUIRED"
+    assert lifecycle["unresolved_reduce_count"] == 1
 
 
 def test_phase19_bv_write_evidence_is_summary_only_and_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

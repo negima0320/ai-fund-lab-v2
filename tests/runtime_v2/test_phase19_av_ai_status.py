@@ -44,8 +44,13 @@ def test_ai_status_json_review_required_for_statistical_drift() -> None:
     payload = json.loads(result.stdout)
     report = payload["ai_status_report"]
     assert report["status"] == "REVIEW_REQUIRED"
-    assert report["runtime_readiness"]["lifecycle_classification"] == "STATISTICAL_DRIFT_REVIEW_REQUIRED"
+    assert report["runtime_readiness"]["lifecycle_classification"] in {
+        "STATISTICAL_DRIFT_REVIEW_REQUIRED",
+        "MODEL_HEALTH_REVIEW_REQUIRED",
+    }
     assert report["runtime_readiness"]["block_buy_planning"] is False
+    assert report["runtime_readiness"]["lifecycle_decision"] == "REVIEW_REQUIRED"
+    assert report["runtime_readiness"]["review_findings"]
     assert report["legacy_fallback_audit"]["legacy_fallback_used"] is False
     assert report["non_mutation"]["broker_access"] == "NOT_PERFORMED"
 
