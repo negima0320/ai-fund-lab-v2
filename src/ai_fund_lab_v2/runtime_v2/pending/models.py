@@ -101,6 +101,16 @@ class PendingOrderItem:
     safety_decision: str = ""
     safety_reason: str = ""
     quantity_contract: dict[str, Any] | None = None
+    source_decision_type: str = ""
+    source_pm_decision_id: str = ""
+    source_pm_business_date: str = ""
+    source_position_symbol: str = ""
+    add_candidate_signal: bool = False
+    capital_allocation_status: str = ""
+    capital_allocation_reason: str = ""
+    requested_add_notional: float | None = None
+    approved_add_notional: float | None = None
+    rejected_reason: str = ""
 
 
 @dataclass(frozen=True)

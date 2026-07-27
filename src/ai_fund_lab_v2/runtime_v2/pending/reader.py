@@ -290,6 +290,16 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                     if isinstance(item.get("quantity_contract"), Mapping)
                     else None
                 ),
+                source_decision_type=str(item.get("source_decision_type") or ""),
+                source_pm_decision_id=str(item.get("source_pm_decision_id") or ""),
+                source_pm_business_date=str(item.get("source_pm_business_date") or ""),
+                source_position_symbol=str(item.get("source_position_symbol") or ""),
+                add_candidate_signal=bool(item.get("add_candidate_signal")),
+                capital_allocation_status=str(item.get("capital_allocation_status") or ""),
+                capital_allocation_reason=str(item.get("capital_allocation_reason") or ""),
+                requested_add_notional=_optional_float(item.get("requested_add_notional")),
+                approved_add_notional=_optional_float(item.get("approved_add_notional")),
+                rejected_reason=str(item.get("rejected_reason") or ""),
             )
             for item in payload["items"]
         ),

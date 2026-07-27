@@ -491,7 +491,7 @@ def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExi
     decisions: list[SellExitDecision] = []
     for item in payload.get("decisions") or ():
         decision = str(item.get("decision") or "").upper()
-        if decision not in {"EXIT", "REDUCE"}:
+        if decision not in {"EXIT", "REDUCE", "ADD"}:
             continue
         quantity = float(item.get("runtime_sell_quantity") or 0)
         if decision == "EXIT" and quantity <= 0:

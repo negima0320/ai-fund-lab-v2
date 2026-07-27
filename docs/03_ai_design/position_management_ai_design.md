@@ -1,5 +1,15 @@
 # AI Fund Lab vNext Position Management AI 設計書
 
+関連するStrategy Layer最上位SoT:
+
+```text
+docs/02_architecture/strategy_architecture_v1.md
+```
+
+Phase21-D以降、Position Management AIは単体の保有判断だけでなく、Portfolio Policy、Market Context、Portfolio Constructionと明示Contractで接続される。ただし、PMはBroker quantity、lot rounding、final submit permission、Safety overrideを判断しない。
+
+Phase21-FA以降、Corporate Event Authorityをreason inputとして利用できる。ただし、Corporate Event Authorityは事実を提供するだけであり、Position Management AIの判断を代行しない。
+
 ---
 
 # 1. このドキュメントの目的
@@ -101,7 +111,7 @@ Opportunity AI
 
 ↓
 
-Capital Allocation Engine
+Capital Deployment
 
 ↓
 
@@ -263,6 +273,23 @@ TOPIX
 セクター強弱
 ```
 
+## Corporate Event
+
+```text
+listed_status
+delisting_status
+supervision_status
+liquidation_status
+final_trading_date
+scheduled_earnings_date
+scheduled_earnings_time
+earnings_disclosed
+forecast_revision_status
+dividend_revision_status
+corporate_action_type
+effective_date
+```
+
 ---
 
 # 8. 利用禁止データ
@@ -362,10 +389,17 @@ ADD は買い増し命令ではない。
 
 ADD は買い増し候補シグナルである。
 
-最終的な購入可否、購入金額、保有上限判定は Capital Allocation Engine が行う。
+最終的なTarget Portfolio採否はPortfolio Constructionが行う。購入金額候補、保有上限・cash・exposureの実行可能性評価はCapital Deploymentが行う。
 
 含み損ポジションへのナンピン目的ADDは禁止。
 ```
+
+Runtime IO contract:
+
+- ADD は PM output から Planning へ渡る candidate signal であり、直接 Broker order にはならない。
+- ADD-derived BUY は Capital Deployment policy、Current Position、cash / exposure、lot size、Safety、Submit Guard を通過した場合のみ Pending item になる。
+- ADD-derived Pending item は `source_decision_type=ADD`、`source_pm_decision_id`、`source_pm_business_date`、`source_position_symbol`、`add_candidate_signal=true`、capital allocation status / reason、requested / approved notional、quantity を保持する。
+- ADD reject は Evidence として残す。代表 reason は `MAX_POSITION_WEIGHT`、`MAX_EXPOSURE`、`INSUFFICIENT_CASH`、`LOT_SIZE_NOT_VIABLE`、`DUPLICATE_PENDING_ORDER`、`NO_LOSS_AVERAGING_GUARD`、`OPPORTUNITY_NO_LONGER_ELIGIBLE`、`INVALID_CURRENT_POSITION`、`AUTHORITY_NOT_ACCEPTED` である。
 
 ---
 
@@ -393,7 +427,18 @@ ADD は買い増し候補シグナルである。
 失速検知
 
 ストップ条件発動
+EARNINGS_APPROACHING
+HOLD_THROUGH_EARNINGS_ALLOWED
+REDUCE_BEFORE_EARNINGS
+EXIT_BEFORE_EARNINGS
+POST_EARNINGS_MOMENTUM_CONFIRMED
+POST_EARNINGS_GAP_REVERSAL
+FORECAST_REVISION
+DIVIDEND_REVISION
+DELISTING_PENDING
 ```
+
+Corporate Eventはreasonとして利用する。Position Management AIの正式Outputは `HOLD`、`ADD`、`REDUCE`、`EXIT` の4つを維持し、新しいActionを暗黙追加しない。
 
 ---
 
@@ -421,12 +466,22 @@ Opportunity AI
 
 ---
 
-## 購入金額
+## Target Portfolio
 
 担当
 
 ```text
-Capital Allocation Engine
+Portfolio Construction
+```
+
+---
+
+## 購入金額候補
+
+担当
+
+```text
+Capital Deployment
 ```
 
 ---
@@ -438,6 +493,18 @@ Capital Allocation Engine
 ```text
 Order Manager
 ```
+
+---
+
+## Corporate Event事実生成
+
+担当
+
+```text
+Corporate Event Authority
+```
+
+Position Management AIは、決算予定、上場状態、業績修正、配当修正、TOB、最終売買日などをPIT factとして受け取る。PMはその事実をreasonとして使えるが、Corporate Event Authorityの代替や補完をしない。
 
 ---
 
@@ -697,7 +764,7 @@ Portfolio Rotation AIとして分離
 
 Position Management AI v2として拡張
 
-Capital Allocation側の入力として扱う
+Portfolio Construction側の入力として扱う
 ```
 
 新しいSELL理由候補として、以下を検討する。
@@ -706,6 +773,8 @@ Capital Allocation側の入力として扱う
 ROTATE
 ```
 
-`ROTATE`は、保有銘柄が完全に悪いわけではないが、新規候補の期待値が十分に高いため、資金入替を検討する状態である。
+`ROTATE`は現在の正式Outputではない。Phase21-F時点のPosition Management AI正式Outputは `HOLD`、`ADD`、`REDUCE`、`EXIT` の4つである。
+
+`ROTATE`相当の考え方は、Target Portfolio / Portfolio Constructionで既存position intentと新規候補を比較する将来検討に吸収する。Position Management AIの新actionとして暗黙追加しない。
 
 この検討は資料上のロードマップ追加であり、AI再学習、Backtest再実行、Runtime変更、Broker接続、注文送信は行わない。

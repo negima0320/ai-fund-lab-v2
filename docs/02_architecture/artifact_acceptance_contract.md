@@ -210,6 +210,7 @@ Required to accept:
 - PM code-policy source hash verified.
 - Runtime adapter source hash verified.
 - If `RUNTIME_ADAPTER` uses `ACCEPTED_CURRENT_PATH`, the accepted source path must be the actual Runtime PM producer source, and Runtime must hash-check it before PM inference.
+- If an accepted current-path Runtime adapter source changes in Production common code, the change is not Runtime-accepted until the formal Artifact Generation, Validation, Acceptance, Registry index, and checkpoint refresh are completed. Unit tests that bypass Registry authority are not sufficient acceptance evidence.
 - Code-policy manifest hash is stable.
 - Producer is PM code acceptance and Runtime adapter acceptance.
 - Consumers are PM Producer and Sell Planning.

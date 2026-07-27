@@ -2,6 +2,81 @@
 
 ---
 
+# Phase21-23 Strategy Architecture Roadmap
+
+Phase21以降のStrategy関連フェーズを次の通り正式化する。
+
+```text
+Phase21
+Strategy Architecture Design
+
+Phase22
+Strategy Architecture Implementation
+
+Phase23
+Controlled Validation and Performance Evaluation
+```
+
+Phase21の目的は、Production Strategy実装ではなく、Strategy Layer全体の責務、Authority、Input / Output Contract、Failure Mode、Acceptance Contract、Phase22実装順を設計することである。
+
+Phase21サブタスク:
+
+| Phase | 名称 | 位置付け |
+|---|---|---|
+| Phase21-A | ADD Execution Gap Investigation | PM ADDとCapital Deployment実行経路の欠落調査 |
+| Phase21-B | Pending Composition / ADD Consumer Fix | Strategy設計前提を回復する例外的Runtime共通修正 |
+| Phase21-C | Artifact Authority Refresh | Phase21-B共通source変更の正式Artifact再Acceptance |
+| Phase21-D | Strategy Architecture v1 Design | Strategy Layer最上位SoTとPhase22/23 Contract作成 |
+| Phase21-E | Phase22 Implementation Plan and Acceptance | Phase22-A〜Lの実装順序、Evidence Matrix、Acceptance Checklistを固定 |
+| Phase21-F | Independent Cross-document Architecture Consistency Review | Phase21-D/E成果物の横断整合性確認 |
+| Phase21-FA | Corporate Event Authority Design | 上場廃止、決算、業績修正等の企業イベントPIT事実Authority追加 |
+| Phase21-GB | Strategy Migration Architecture Design | Phase22実装前のProducer/Consumer依存、Bootstrap、Empty Artifact、Migration順序定義 |
+| Phase21-GC | Implementation Governance and Phase22 Entry Gate | Design Freeze、Change Request、Rollback、Runtime Switch、Phase22 Entry Governance定義 |
+| Phase21-H | Phase22 Implementation Readiness Independent Review | Phase22実装計画の独立監査 |
+| Phase21-I | Cutover Completeness / Regression Preservation Audit | 実コード上のCutover Surface、Runtime Wiring、Legacy Path、Regression Contract監査 |
+| Phase21-J | Legacy Retirement / Authority Revocation / Data Decommission Architecture | 旧Authority剥奪、隔離、Rollback保持、Zombie Detection設計 |
+| Phase21-K | Final Design Freeze / Phase21 Closure / Phase22 Entry Approval | Phase21 ClosureとPhase22-A開始承認 |
+
+Phase21-B/Cは、本来のStrategy Architecture Designへ戻るために必要だった限定的なRuntime Acceptance回復作業である。Phase21-D以降は、Production Strategyコード、Config値、Accepted Generation、Training、Calibration、長時間Historical Runを変更せず、設計とContract更新を中心に進める。
+
+Phase22実装順序:
+
+| Phase | 名称 | 位置付け |
+|---|---|---|
+| Phase22-A | Market Context Artifact Foundation | Market Context schema / producer / PIT lineage基盤 |
+| Phase22-AA | Corporate Event Artifact Foundation | 上場状態、決算予定、業績修正等のPIT Fact Authority基盤 |
+| Phase22-B | Candidate / Opportunity Compatibility | 新Fact Authority導入後の上流AI Artifact依存整合 |
+| Phase22-C | Portfolio Policy Artifact Foundation | target cash、exposure、position countのPolicy Authority基盤 |
+| Phase22-D | Position Management Refs and Compatibility | PM decisionsへMarket Context / Corporate Event / Portfolio Policy refsを接続 |
+| Phase22-E | Target Portfolio and Portfolio Construction | target portfolio、strategy intent、duplicate prevention |
+| Phase22-F | Capital Deployment Responsibility Refactor | Strategy target、Safety hard limit、Execution feasibility分離 |
+| Phase22-G | Runtime Planning Execution Intent Bridge | Allocation ArtifactからRuntime Execution Intent / Pending Candidateへ接続 |
+| Phase22-H | Dynamic Position Count | opportunity breadth / qualityに応じたposition count target |
+| Phase22-I | Dynamic Target Cash Ratio / Exposure Target | 20% cash baselineをPolicy target化しSafety floorと分離 |
+| Phase22-J | Position Sizing Foundation | target weight / notional evidence基盤 |
+| Phase22-K | Regime/Event-aware HOLD / ADD / REDUCE / EXIT | regime/event-awareなPM intent reasonと制御 |
+| Phase22-L | Benchmark / Sector Authority Integration | benchmark / sector source authorityとcoverage |
+| Phase22-M | Performance Observability Completion | post-hoc Performance Evaluation Artifactとmetric status |
+| Phase22-N | Strategy Architecture Implementation Closure | Phase22全体のRegression / Artifact / User-run Evidence closure |
+
+Phase22の詳細実装計画は以下をSoTとする。
+
+```text
+docs/phase_reports/phase22_strategy_architecture_implementation_plan.md
+docs/01_requirements/phase22_strategy_implementation_acceptance_checklist.md
+docs/phase_reports/phase21_gb_strategy_migration_architecture_design.md
+docs/phase_reports/phase21_gc_implementation_governance_and_phase22_entry_gate.md
+docs/phase_reports/phase21_i_cutover_completeness_runtime_wiring_and_regression_preservation_audit.md
+docs/phase_reports/phase21_j_legacy_retirement_authority_revocation_and_data_decommission_architecture.md
+docs/phase_reports/phase21_k_final_design_freeze_phase21_closure_and_phase22_entry_approval.md
+```
+
+Phase21-K完了後、Phase21はDesign FreezeおよびClosure状態とする。Phase22の最初の実装Taskは`Phase22-A Market Context Artifact Foundation`である。Phase22各Taskは、Phase21-Iの6 Step Gate、Phase21-JのRetirement Plan、Regression Preservation Matrix、State Transition Matrix、Rollback Retention Matrix、Zombie Detection Matrixを拘束条件として参照する。
+
+Phase23はControlled Validation and Performance Evaluationであり、Single-change experiment、multi-regime validation、long-run validation、out-of-period evaluation、Runtime / Safety / Authority regressionを必須にする。Performance evidenceはPost-hoc diagnosticであり、Runtime / Training / Calibration入力にしない。
+
+---
+
 # 1. このドキュメントの目的
 
 本ドキュメントは、
@@ -143,6 +218,12 @@ PM / Holding / Capital Deployment改善必要
 
 次はPhase21へ進める状態。
 
+## Phase20/21 Transition History
+
+以下のPhase21定義はPhase20終了時点の移行メモであり、現在の正式Phase21 task authorityではない。
+
+現在の正式Phase21定義は、本ドキュメント上部の `Phase21-23 Strategy Architecture Roadmap` と `Phase21サブタスク` 表をSource of Truthとする。
+
 Phase21:
 
 ```text
@@ -163,6 +244,13 @@ Phase21-A:
 ```
 
 現在実行中の245BD / 1年Historical Runは、完走後にPhase21の主要調査データとして認証する。ただし、この単一期間のみを改善採用判定に使わず、Validation / Holdoutを分離する。
+
+Transition note:
+
+```text
+旧Phase21-A案は、Phase21-A〜G正式設計タスクへ置き換え済み。
+245BD RunはPhase21 diagnostic evidenceとして扱うが、Codexは実行・停止・変更しない。
+```
 
 ---
 

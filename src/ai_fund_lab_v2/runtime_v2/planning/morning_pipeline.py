@@ -49,6 +49,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     safety_allows_action,
     safety_manifest_fields,
 )
+from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity
 
 
 @dataclass(frozen=True)
@@ -577,7 +578,7 @@ def run_morning_ai_planning_pending_pipeline(
     for signal in candidate_rows:
         symbol = signal.symbol
         broker_symbol = _broker_symbol(symbol, {})
-        if broker_symbol in current_position_symbols:
+        if contains_symbol_identity(set(current_position_symbols), broker_symbol):
             existing_position_excluded_count += 1
             continue
         price = price_source.get(symbol)

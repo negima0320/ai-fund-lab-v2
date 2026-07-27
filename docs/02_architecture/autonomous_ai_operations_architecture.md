@@ -10,6 +10,16 @@ market data -> label-safe dataset -> generation -> validation -> accepted author
 
 The Runtime production authority for BUY AI must be a single accepted generation. In this design, **Accepted AI Generation** is a semantic name for the existing **Accepted Atomic BUY AI Bundle** concept, not a new independent artifact family.
 
+Strategy Layerの最上位SoTは次である。
+
+```text
+docs/02_architecture/strategy_architecture_v1.md
+```
+
+Autonomous operations must treat Strategy artifacts as accepted operational authorities when they become Production inputs. Market Context、Corporate Event Authority、Portfolio Policy、Portfolio Construction、Capital Deployment、Position ManagementのProduction共通source pathを変更する場合は、該当Artifactの正式なGeneration、Validation、Acceptance、Registry refreshを必要とする。Performance evidence may trigger review, but must not become Training, Calibration, or Runtime decision authority.
+
+Phase21-K is the final Phase21 Design Freeze and Phase22 Entry Approval SoT. Phase22 implementation must preserve the Phase21-I Step Gates and Phase21-J Legacy Retirement rules.
+
 Permanent training, generation, model-quality, bootstrap/retraining, and latest-data semantics are defined in:
 
 ```text

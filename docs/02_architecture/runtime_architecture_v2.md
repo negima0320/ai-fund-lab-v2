@@ -10,6 +10,14 @@ Runtime は AI の投資判断ロジックではない。Runtime は、AI と周
 
 Runtime は年 50% 運用目標を直接達成する AI ではない。年 50% 目標に向けた銘柄選定、優先順位付け、資金配分、リスクテイク方針は Candidate AI、Opportunity AI、Position Management AI、Capital Allocation、Risk Policy / Safety の責務である。
 
+Strategy Layerの最上位SoTは次である。
+
+```text
+docs/02_architecture/strategy_architecture_v1.md
+```
+
+RuntimeはStrategy Architecture v1が出すMarket Context、Portfolio Policy、Portfolio Construction、Capital Allocation、Execution Intentを、Authority、Lifecycle、Safety、Pending、Submit、Ledger、CurrentのContractに従って処理する。RuntimeはMarket Context、target cash ratio、dynamic position count、position sizing、ranking、HOLD / ADD / REDUCE / EXIT判断を再計算しない。
+
 ただし Runtime は、Capital Allocation / Risk Policy が設計上許容した攻めた資金配分を、Runtime 内の隠れ固定値で阻害してはならない。Runtime の責務は、明示された資金投入方針、Safety 条件、Broker 制約、承認状態に従って、資金を安全かつ設計どおり市場へ投入し、約定後の Current を正しく更新することである。
 
 中心原則は次の通り。
@@ -1071,6 +1079,14 @@ Submit は `state == APPROVED` かつ対象日、承認 hash、source order plan
 - Reset 直後の canonical `EMPTY` Slot と、当日 Planning 結果 0 件の `EMPTY` Slot は、Submit で `NO_ACTION` として正常完了できる。
 - `EMPTY` Slot に item または approved item id が存在する場合、または `active_pending == true` の場合は矛盾した Pending として fail-closed する。
 - Active / carry-forward Pending を Submit で消費する場合は、従来どおり environment、business date、session date、Safety、Approval、Runtime Test identity の整合性を検証する。
+
+Pending Composition Contract:
+
+- Submit authority は引き続き `pending_order_plan/pending_order_plan.json` の単一 Current Slot である。
+- BUY Planning が当日有効な BUY Pending を生成した後、SELL Planning が `NO_SIGNAL` になった場合、SELL Planning は有効な既存 BUY Pending を `EMPTY` で上書きしてはならない。
+- SELL Planning が SELL item を生成し、同じ target session の有効な BUY Pending が存在する場合、Runtime は BUY item と SELL item を 1 つの Composite Pending Plan に合成して canonical slot へ書く。
+- Composite Pending Plan は item 単位の `pending_item_id` で重複を排除し、最終 item set 全体に対する approval linkage を持つ。
+- Separate BUY/SELL Pending slot、History artifact 直接 Submit、Submit による複数 Pending 探索は禁止する。
 
 `CONSUMED` の扱い:
 
