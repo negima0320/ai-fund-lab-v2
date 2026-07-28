@@ -555,6 +555,18 @@ def evaluate_runtime_data_readiness(
         explicit_feature_date=feature_date,
     )
     selected_feature_date = str(feature_contract.get("selected_feature_date") or feature_date or business_date)
+    if (
+        readiness_scope == "sell_planning"
+        and not feature_date
+        and (pm_feature_path or pm_opportunity_path)
+    ):
+        selected_feature_date = business_date
+        feature_contract = {
+            **feature_contract,
+            "selected_feature_date": selected_feature_date,
+            "sell_planning_feature_date_authority_source": "explicit_pm_input_paths",
+            "stale_feature_contract_ignored_for_explicit_pm_inputs": feature_contract.get("status") != "PASS",
+        }
     base_dir = root.parent if root.name == ".runtime" else Path(".")
     source_paths: dict[str, str] = {}
     missing_evidence: list[str] = []
@@ -691,7 +703,8 @@ def evaluate_runtime_data_readiness(
     feature_payload["feature_date_contract"] = feature_contract
     feature_payload["selected_feature_date"] = selected_feature_date
     source_paths["feature_consumer_readiness"] = str(feature_payload.get("readiness_artifact_path") or "")
-    feature_status = "READY" if feature_payload.get("consumer_ready") else "REVIEW_REQUIRED"
+    feature_scope_status = _feature_scope_status(readiness_scope, feature_payload)
+    feature_status = feature_scope_status["status"]
     if (
         _scope_requires_feature(readiness_scope)
         and mode == "historical"
@@ -706,10 +719,10 @@ def evaluate_runtime_data_readiness(
         review_reasons.append(reason)
         component_reasons["feature"].append(reason)
     if _scope_requires_feature(readiness_scope) and feature_status != "READY":
-        reason = str(feature_payload.get("reason") or "feature_consumer_readiness_review_required")
+        reason = str(feature_scope_status.get("reason") or feature_payload.get("reason") or "feature_consumer_readiness_review_required")
         review_reasons.append(reason)
         component_reasons["feature"].append(reason)
-        missing_columns.extend(feature_payload.get("candidate_missing_columns") or [])
+        missing_columns.extend(feature_scope_status.get("missing_columns") or feature_payload.get("candidate_missing_columns") or [])
 
     candidate_model_path_resolved, opportunity_model_path_resolved = resolve_buy_ai_model_paths(
         candidate_model_path=candidate_model_path,
@@ -1073,6 +1086,30 @@ def _feature_readiness_payload(*, operations_root: Path, feature_date: str) -> d
             "consumer_ready": False,
             "readiness_artifact_path": str(artifact),
         }
+
+
+def _feature_scope_status(scope: str, feature_payload: dict[str, Any]) -> dict[str, Any]:
+    if scope in FULL_MORNING_SCOPES:
+        missing: list[str] = []
+        if feature_payload.get("candidate_schema_status") != "READY":
+            missing.extend(feature_payload.get("candidate_missing_columns") or ["candidate_feature_schema"])
+        if feature_payload.get("opportunity_schema_status") != "READY":
+            opportunity = (feature_payload.get("schemas") or {}).get("opportunity") or {}
+            missing.extend(opportunity.get("missing_columns") or ["opportunity_feature_schema"])
+        return {
+            "status": "REVIEW_REQUIRED" if missing else "READY",
+            "reason": "consumer_schema_review_required:buy" if missing else "consumer_feature_schema_ready_for_buy",
+            "missing_columns": _unique(missing),
+        }
+    if scope == REVIEW_ONLY_MORNING_SCOPE:
+        pm = (feature_payload.get("schemas") or {}).get("pm") or {}
+        missing = list(pm.get("missing_columns") or [])
+        return {
+            "status": "READY" if feature_payload.get("pm_schema_status") == "READY" else "REVIEW_REQUIRED",
+            "reason": "consumer_schema_review_required:pm" if missing else "consumer_feature_schema_ready_for_pm",
+            "missing_columns": missing,
+        }
+    return {"status": "READY", "reason": "feature_schema_not_required_for_scope", "missing_columns": []}
 
 
 def _runtime_state_readiness_payload(*, root: Path, business_date: str, mode: str) -> dict[str, Any]:

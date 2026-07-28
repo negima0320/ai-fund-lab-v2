@@ -1103,21 +1103,37 @@ def _resolve_morning_feature_date_contract(
 ) -> FeatureDateContract:
     operations_root = feature_root.parent
     if explicit_feature_date:
-        return resolve_feature_date_contract(
+        return _buy_scope_feature_date_contract(resolve_feature_date_contract(
             operations_root=operations_root,
             requested_feature_date=requested_feature_date,
             latest_available_market_date=requested_feature_date,
-        )
+        ))
     existing = load_feature_date_contract(
         operations_root=operations_root,
         requested_feature_date=requested_feature_date,
     )
     if existing is not None:
-        return existing
-    return resolve_feature_date_contract(
+        return _buy_scope_feature_date_contract(existing)
+    return _buy_scope_feature_date_contract(resolve_feature_date_contract(
         operations_root=operations_root,
         requested_feature_date=requested_feature_date,
-    )
+    ))
+
+
+def _buy_scope_feature_date_contract(contract: FeatureDateContract) -> FeatureDateContract:
+    if (
+        contract.status == "REVIEW_REQUIRED"
+        and contract.reason == "consumer_schema_review_required:pm"
+        and contract.candidate_schema_status == "READY"
+        and contract.opportunity_schema_status == "READY"
+    ):
+        return replace(
+            contract,
+            status="PASS",
+            reason="consumer_feature_schema_ready_for_buy",
+            consumer_ready=True,
+        )
+    return contract
 
 
 def _feature_contract_payload(contract: FeatureDateContract) -> dict[str, Any]:

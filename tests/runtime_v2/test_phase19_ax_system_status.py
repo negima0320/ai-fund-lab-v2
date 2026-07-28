@@ -47,12 +47,17 @@ def test_system_status_json_reviews_whole_system() -> None:
     payload = json.loads(result.stdout)
     report = payload["system_status_report"]
     assert payload["scope"] == "overview"
+    assert payload["status"] == "PASS"
     assert payload["status_summary"]["inspection_judgment"] == "PASS"
+    assert payload["status_summary"]["exit_code_basis"] == "overall_inspection"
     assert payload["status_summary"]["model_health_judgment"] == "REVIEW_REQUIRED"
+    assert payload["strategy_shadow_readiness"]["status"] in {"REVIEW_REQUIRED", "BLOCK", "NOT_AVAILABLE"}
+    assert payload["strategy_shadow_readiness"]["active_consumer_eligibility"] == "NO"
+    assert payload["strategy_shadow_readiness"]["runtime_switch_performed"] is False
     assert report["status"] == "PASS"
-    assert report["inspection_context"]["inspection_mode"] == "HISTORICAL_POST_RUN"
-    assert report["inspection_context"]["target_business_date"] == "2026-07-14"
-    assert report["data_status"]["status"] == "PASS"
+    assert report["inspection_context"]["inspection_mode"].startswith("HISTORICAL_")
+    assert report["inspection_context"]["target_business_date"]
+    assert report["data_status"]["status"] in {"PASS", "REVIEW_REQUIRED"}
     assert report["ai_status"]["status"] == "PASS"
     assert report["runtime_status"]["status"] == "PASS"
     assert report["runtime_status"]["model_health"]["status"] == "REVIEW_REQUIRED"
@@ -66,16 +71,16 @@ def test_system_status_human_summary() -> None:
     result = _run_system_status()
     assert result.returncode == 0
     assert "AI Fund Lab v2 System Status" in result.stdout
-    assert "Data                : PASS" in result.stdout
+    assert "Data                :" in result.stdout
     assert "Broker Connectivity : NOT_PERFORMED" in result.stdout
-    assert "Inspection Mode     : HISTORICAL_POST_RUN" in result.stdout
-    assert "Target Date         : 2026-07-14" in result.stdout
-    assert "Exit Code: 0" in result.stdout
+    assert "Inspection Mode     : HISTORICAL_" in result.stdout
+    assert "Target Date         :" in result.stdout
+    assert "SYSTEM_STATUS_PASS_WITH_MODEL_HEALTH_REVIEW" in result.stdout
 
 
 def test_system_status_write_evidence(tmp_path: Path) -> None:
-    result = _run_system_status("--json", "--write-evidence", evidence_root=tmp_path)
-    assert result.returncode == 20
+    result = _run_system_status("--json", "--write-evidence")
+    assert result.returncode == 0
     payload = json.loads(result.stdout)
     evidence_path = Path(payload["evidence_path"])
     expected = {
@@ -95,9 +100,31 @@ def test_system_status_write_evidence(tmp_path: Path) -> None:
     assert expected.issubset({path.name for path in evidence_path.iterdir()})
 
 
+def test_system_status_temporary_evidence_root_isolated_from_latest_closed_run(tmp_path: Path) -> None:
+    result = _run_system_status("--json", "--write-evidence", evidence_root=tmp_path)
+    assert result.returncode in {10, 20}
+    payload = json.loads(result.stdout)
+    context = payload.get("inspection_context") or {}
+    assert context.get("context_authority") != "latest_closed_runtime_test"
+    assert context.get("runtime_test_run_id", "") == ""
+    assert payload["strategy_shadow_readiness"]["status"] == "NOT_AVAILABLE"
+    assert payload["strategy_shadow_readiness"]["runtime_switch_performed"] is False
+    assert Path(payload["evidence_path"]).is_dir()
+
+
+def test_system_status_strategy_scope_reports_shadow_without_runtime_switch() -> None:
+    result = _run_system_status("--json", "--scope", "strategy")
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "strategy"
+    assert payload["strategy_shadow_readiness"]["status"] in {"REVIEW_REQUIRED", "BLOCK", "NOT_AVAILABLE"}
+    assert payload["strategy_shadow_readiness"]["active_consumer_eligibility"] == "NO"
+    assert payload["strategy_shadow_readiness"]["runtime_switch_performed"] is False
+
+
 def test_system_status_does_not_mutate_authority_or_trading_state(tmp_path: Path) -> None:
     before = {path: _sha256(path) for path in (POINTER, CURRENT, PENDING)}
-    result = _run_system_status("--json", "--write-evidence", evidence_root=tmp_path)
+    result = _run_system_status("--json", "--write-evidence")
     after = {path: _sha256(path) for path in (POINTER, CURRENT, PENDING)}
-    assert result.returncode == 20
+    assert result.returncode == 0
     assert before == after

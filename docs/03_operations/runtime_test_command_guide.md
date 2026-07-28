@@ -11,6 +11,8 @@ PYTHONPATH=src python3 scripts/runtime_test.py <subcommand> [options]
 
 The runner is a thin lifecycle orchestrator. It calls the normal Runtime v2 CLI and does not implement AI decisions, Feature production, Pending generation, Fill generation, Ledger updates, or Current updates.
 
+Phase22 Strategy shadow generation is orchestration only. The runner calls the production-common Phase22 Strategy producers after each completed daily Runtime job sequence and stores their draft, non-production-consumable artifacts as run evidence; it does not reimplement Strategy judgment logic.
+
 ## Prerequisites
 
 - Use only accepted profiles under `config/runtime_tests/`.
@@ -36,6 +38,52 @@ The runner is a thin lifecycle orchestrator. It calls the normal Runtime v2 CLI 
 | Symbol-level Position Campaign results | `summarize --run-id <RUN_ID> --scope positions` |
 | BUY -> HOLD -> ADD -> REDUCE -> EXIT lifecycle | `summarize --run-id <RUN_ID> --scope lifecycle` |
 | Complete run analysis | `summarize --run-id <RUN_ID> --scope full` |
+| Phase22 Strategy shadow evidence | `summarize --run-id <RUN_ID> --scope strategy` |
+| Phase22 Strategy shadow readiness | `system-status --scope strategy` |
+| Phase22 Strategy artifact inspection | `show --run-id <RUN_ID> --artifact strategy [--business-date <DATE>]` |
+
+## Phase22 Strategy Shadow
+
+Runtime Test commands include a shadow-only Phase22 Strategy job. It is visible in `plan`, runs after each normal daily Runtime job sequence in `run`, `fresh-run`, and `resume`, and writes to:
+
+```text
+reports/runtime_tests/runs/<RUN_ID>/daily/<DATE>/strategy/
+reports/runtime_tests/runs/<RUN_ID>/strategy_shadow_manifest.json
+reports/runtime_tests/runs/<RUN_ID>/strategy_shadow_summary.json
+```
+
+Daily evidence includes `input_manifest.json`, `source_manifest.json`, Strategy producer artifacts, `strategy_decision_trace.json`, `legacy_shadow_comparison.json`, and `strategy_shadow_summary.json`.
+
+The Strategy shadow job is read-only for active Runtime authority. It must not write Pending, Submit, Approval, Execution, Ledger, Current, Registry, Accepted Generation, Broker, credentials, or notifications. Evidence records Runtime mutation and Broker/external delivery flags separately from the active Runtime result.
+
+The input manifest binds Strategy shadow evidence to the COMMITTED Accepted Generation resolver, Candidate and Opportunity output artifacts, feature schema hashes, model/scaler/calibration hashes where available from the Accepted Generation manifest, Runtime snapshots, Strategy configs, Safety config, source hashes, and config hashes. Latest fallback, previous-day Strategy copy, and future-row consumption are forbidden. The input manifest also references `source_manifest.json` and its SHA-256 hash.
+
+`source_manifest.json` is the PIT source-resolution artifact for Strategy shadow. It records portfolio state, pending state, market quotes, benchmark, sector, corporate-event, Candidate, Opportunity, bootstrap, PIT validation, source hashes, direct blockers, propagated blockers, root blocker components, and root reason codes. It is read-only evidence and is not a production consumer input.
+
+PIT source resolution is fail-closed. Rows later than the business date may exist in a source file, but they must not be selected. If D-or-earlier rows are available, Strategy shadow records the future-row rejection count and selects the latest PIT row/window. If only future rows are available, the source resolves to `BLOCK` / `SOURCE_UNAVAILABLE` / `BOOTSTRAP_REQUIRED` as applicable. Corporate-event empty output means `NO_EVENT_CONFIRMED` only when source coverage is available and the producer passes; missing or partial coverage remains `SOURCE_UNAVAILABLE`, `SOURCE_PARTIAL`, or `REVIEW_REQUIRED`.
+
+Historical Strategy source coverage is checked before long Runtime Test execution through the Strategy shadow source preflight embedded in `plan`:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py plan \
+  --profile historical-smoke \
+  --start-date 2026-07-06 \
+  --business-days 5 \
+  --json
+```
+
+Read `strategy_shadow.source_preflight` before running 1BD or 5BD validation. Important fields are:
+
+- `requested_start_date`: the operator-requested start date; the runner must not silently shift it.
+- `required_warmup_start`: earliest quote date required for the Market Context lookback window.
+- `market_coverage`, `listed_coverage`, `sector_coverage`, `corporate_event_coverage`: PIT source readiness and coverage dates.
+- `candidate_generation_readiness`, `opportunity_generation_readiness`: date-by-date daily output readiness with latest fallback forbidden.
+- `portfolio_state_readiness`, `pending_state_readiness`: mutable state readiness; actual Historical fresh-run state must come from isolated/reset run state, not active production Current.
+- `eligible_dates`, `blocked_dates`, `first_eligible_start_date`, `root_blockers`, `operator_ready`.
+
+Do not run 5BD when `operator_ready=false`. Use `first_eligible_start_date` only as an operator-visible recommendation; the requested start date remains unchanged in the failed preflight. Corporate Event `overall_event_coverage=PARTIAL` and Sector PIT review fields are review conditions, not permission to backfill current data.
+
+Status semantics are separated: `runtime_judgment` is the active Runtime result, `strategy_shadow_judgment` is the Phase22 Strategy result, and `overall_test_judgment` exposes both without promoting shadow artifacts to active consumers. `REVIEW_REQUIRED` in Strategy shadow does not automatically fail active legacy Runtime execution. Strategy shadow Runtime mutation detection is a HALT condition.
 
 ## Run Status
 
@@ -85,6 +133,7 @@ Scope options:
 | `positions` | What happened to each symbol-level Position Campaign? | Symbol-level BUY, scores, confidence, open/closed status, final quantity/price, available PnL, MFE/MAE, evidence status, limitations |
 | `lifecycle` | How did BUY -> HOLD -> ADD -> REDUCE -> EXIT evolve? | Position-level event timeline with decision-time evidence, execution evidence, end-of-day valuation, missing evidence, and post-hoc attribution labels |
 | `full` | Show all analysis scopes | `overview`, `performance`, `positions`, and `lifecycle` sections |
+| `strategy` / `strategy-trace` / `strategy-attribution` / `strategy-readiness` / `strategy-shadow` | What did Phase22 Strategy shadow produce? | Run-scoped Strategy artifacts, trace, readiness, reasons, and legacy comparison |
 
 When `--scope` is omitted, `summarize` uses a legacy-compatible full default. Existing top-level JSON fields are retained. New scope sections are additive, and non-selected explicit scopes are `null` in JSON.
 
@@ -95,6 +144,32 @@ Performance scope follows the Phase20 performance metric contract. Benchmark, Se
 Positions and lifecycle scopes are symbol-level / Position Campaign observability. They must not be interpreted as stable lot-level analysis unless stable lot evidence exists. MFE, MAE, post-decision returns, loss avoided, profit missed, and counterfactual returns are marked `POST_HOC_ATTRIBUTION_ONLY` and must not be used as Runtime, Training, Calibration, Validation, or Accepted Generation authority.
 
 Lifecycle consistency follows the REDUCE execution feasibility contract. A PM `REDUCE` is consistent when it resolves to exactly one executable partial SELL plan or exactly one approved non-executable terminal outcome with `execution_feasibility_status=NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY`, `reason=REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY`, no pending order, unchanged position quantity, and Runtime continuation `PASS`. Missing outcomes, conflicting plan plus terminal evidence, invalid terminal reasons, and position mutation remain `REVIEW_REQUIRED`.
+
+Strategy scopes read run-scoped daily Strategy evidence. They do not generate Strategy artifacts, call Broker APIs, mutate Runtime state, or promote consumer eligibility.
+
+For Strategy scope, `summarize --scope strategy --json` includes source-resolution rollups from `strategy_shadow_summary.json`: `pit_valid_dates`, `pit_blocked_dates`, `source_unavailable_dates`, `bootstrap_required_dates`, `root_blocker_counts`, `future_row_rejection_count`, `latest_fallback_used`, `current_state_leakage_detected`, `sector_pit_status`, and `corporate_event_coverage_status`.
+
+`show --artifact strategy --business-date <DATE> --json` returns the daily Strategy shadow summary and embeds the same day's `source_manifest` when present. Without `--business-date`, it returns the run-level Strategy shadow summary.
+
+For the current canonical source inventory, the first 5BD operator-ready Strategy source window is `2026-07-06` through `2026-07-10`. The user-operated command is:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-smoke \
+  --start-date 2026-07-06 \
+  --business-days 5 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Codex must not run this long validation. After the user runs it, inspect:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py run-status --profile historical-smoke --json
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --profile historical-smoke --scope strategy --json
+PYTHONPATH=src python3 scripts/runtime_test.py validate --profile historical-smoke --json
+```
 
 ## Plan
 
@@ -117,6 +192,8 @@ PYTHONPATH=src python3 scripts/runtime_test.py plan \
 ```
 
 Plan is read-only. It lists business dates, feature dates, carryover dates, job sequence, evaluation times, Runtime CLI commands, reset/exclusion scope, expected evidence paths, external effects, fill model, and rollback policy.
+
+Plan also lists `strategy_shadow_job` for each business date, including execution order, input authority, expected output path, mutation policy, failure policy, and active consumer eligibility. Strategy shadow must be visible in plan before it is run.
 
 ## Backup
 
@@ -460,6 +537,64 @@ Rollback restores the full resettable Trading State bundle. Partial restore and 
 
 ```bash
 PYTHONPATH=src python3 scripts/runtime_test.py close --run-id <RUN_ID>
+```
+
+## Phase22-PR Strategy Shadow Checks
+
+Phase22 Strategy shadow remains read-only. It must not write Pending, Submit, Execution, Fill, Ledger, Current, Broker state, or production Runtime switch state.
+
+`summarize --scope strategy --json` exposes asset-proportional Strategy fields:
+
+```text
+portfolio_total_equity
+current_cash
+current_market_value
+pending_reserved_cash
+net_available_cash
+target_cash_ratio
+target_cash_amount
+target_invested_ratio
+target_invested_notional
+current_invested_ratio
+incremental_deployment_capacity
+eligible_opportunity_count
+meaningful_allocation_position_count
+actual_target_position_count
+legacy_max_positions
+legacy_max_exposure
+legacy_authority_active
+strategy_fixed_position_cap_used
+strategy_fixed_jpy_exposure_cap_used
+safety_constraints_applied
+```
+
+Expected fixed-cap flags:
+
+```text
+strategy_fixed_position_cap_used = false
+strategy_fixed_jpy_exposure_cap_used = false
+```
+
+`validate --run-id <RUN_ID> --json` checks strategy shadow structure plus ratio-to-notional consistency, fixed cap non-use, legacy isolation, Pending single deduction, and target weight sum. Historical probes that mix old business dates with current `.runtime` authority and therefore produce PIT `BLOCK` must not be treated as successful validation.
+
+Operator 5BD validation command, not run by Codex:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-smoke \
+  --start-date 2026-07-06 \
+  --business-days 5 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Post-run checks:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py run-status --profile historical-smoke --json
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --profile historical-smoke --scope strategy --json
+PYTHONPATH=src python3 scripts/runtime_test.py validate --profile historical-smoke --json
 ```
 
 ## Phase20-G Command Responsibility Audit

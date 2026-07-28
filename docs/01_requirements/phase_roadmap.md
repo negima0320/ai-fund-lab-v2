@@ -75,6 +75,23 @@ Phase21-K完了後、Phase21はDesign FreezeおよびClosure状態とする。Ph
 
 Phase23はControlled Validation and Performance Evaluationであり、Single-change experiment、multi-regime validation、long-run validation、out-of-period evaluation、Runtime / Safety / Authority regressionを必須にする。Performance evidenceはPost-hoc diagnosticであり、Runtime / Training / Calibration入力にしない。
 
+Phase22-PZ最終独立レビュー結果:
+
+```text
+Primary Judgment = PHASE22_PZ_PHASE22_CLOSURE_BLOCKED_BY_SYSTEM_GOAL_MISALIGNMENT
+Phase22 Objective Achievement = PARTIAL
+Design Compliance = PARTIAL
+Production Commonality = PARTIAL
+System Goal Alignment = FAIL
+Regression = PASS
+Phase22 Closure = NO
+Phase23 Entry = NO
+Runtime Switch Ready = NO
+Strategy Production Ready = NO
+```
+
+Phase23 EntryはPhase22 Closureが後続レビューでYESになるまで承認しない。直近の次Taskは`Phase22-QA Position Sizing Safety Authority and Strategy BLOCK Closure Repair`とし、`safety_maximum_position_weight = 0.0`により5営業日すべてのStrategy ShadowがPosition Sizing起点でBLOCKし、`positions_count = 0`および`total_target_weight = 0`になる問題をClosure blockerとして扱う。Runtime Switch、Broker write、Production/Demo order、長期Historical validationはこのblocker解消と再レビューまで実行しない。
+
 ---
 
 # 1. このドキュメントの目的
@@ -5564,3 +5581,22 @@ docs/phase_reports/phase19_final_summary_and_phase20_handoff.md
 docs/phase_reports/phase19_to_phase20_chatgpt_handoff.md
 reports/phase_reports/phase19_final_summary_and_phase20_handoff.json
 ```
+## 2026-07-28 Phase22-QF Final Closure and Phase23 Handoff
+
+Phase22 final judgment:
+
+`PHASE22_QF_PHASE22_FOUNDATION_COMPLETE_WITH_PHASE23_RUNTIME_ACCEPTANCE_REQUIRED`
+
+Phase22 is closed as a Strategy Shadow foundation and Runtime evidence handoff phase. This closure is based on the 5BD operator validation run `runtime-test-historical-smoke-20260728T042516796181Z` for 2026-07-06 through 2026-07-10, with Historical Runtime PASS, `acceptance_gate_judgment=PASS`, `test_validity_judgment=VALID`, Strategy artifact completeness PASS, `halt_summary=NOT_HALTED`, no broker write, no Runtime Switch, and `active_runtime_consumer_eligibility=NO`.
+
+This is not Runtime Switch readiness and not Production Strategy readiness. Strategy Shadow remains `REVIEW_REQUIRED`; active consumer promotion remains prohibited until Phase23 gates pass.
+
+10BD HALT carryover remains open in `runtime-test-historical-smoke-20260728T044704027154Z`: aggregate HALT on 2026-06-19 submit, aggregate `exit_code=30`, daily submit `exit_code=20`, reason `historical_safety_temporal_authority_missing`, blank aggregate root reason fields, and inconsistent embedded `run_state.json` halt summary. This is Phase23 carryover, not a Phase22 foundation closure blocker.
+
+Phase23 Entry = YES_WITH_ENTRY_GATES.
+
+Recommended first Phase23 task:
+
+`Phase23-A: Submit HALT, Corporate Event Propagation, Position Management Wiring, Candidate Zero-Row and Accepted Generation Root Cause Audit`
+
+Phase23 must begin with authority/observability repair and controlled validation. Runtime Switch, broker write, production/demo submit, active Strategy consumer promotion, and long historical validation remain prohibited until Phase23 gates explicitly approve them.

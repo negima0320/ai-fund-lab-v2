@@ -1,0 +1,83 @@
+{
+  "schema_version": "dynamic_position_count_config.v1",
+  "config_version": "phase22_h_dynamic_position_count_policy.v1",
+  "legacy_active_max_positions_reference": "runtime_v2.capital_deployment.max_positions",
+  "strategy_minimum_position_count": 0,
+  "safety_hard_maximum_reference": "configs/safety/portfolio_limits.json#position_count.fixed_position_count_cap_removed",
+  "safety_hard_maximum_status": "REMOVED",
+  "regime_rules": {
+    "BULL": 10,
+    "RECOVERY": 6,
+    "RANGE": 3,
+    "CORRECTION": 2,
+    "BEAR": 1
+  },
+  "breadth_rules": {
+    "STRONG": {
+      "target_delta": 0,
+      "maximum_cap": 8
+    },
+    "NEUTRAL": {
+      "target_delta": -1,
+      "maximum_cap": 6
+    },
+    "WEAK": {
+      "target_delta": -2,
+      "maximum_cap": 3
+    }
+  },
+  "volatility_rules": {
+    "LOW": {
+      "target_delta": 0,
+      "maximum_cap": 8
+    },
+    "NORMAL": {
+      "target_delta": 0,
+      "maximum_cap": 8
+    },
+    "HIGH": {
+      "target_delta": -1,
+      "maximum_cap": 5
+    }
+  },
+  "portfolio_policy_rules": {
+    "risk_posture_caps": {
+      "RISK_ON": 8,
+      "BALANCED": 6,
+      "DEFENSIVE": 3,
+      "RISK_OFF": 1,
+      "UNRESOLVED": 0
+    },
+    "entry_posture_caps": {
+      "EXPAND": 8,
+      "MAINTAIN": 6,
+      "RESTRICT": 2,
+      "PAUSE": 0,
+      "UNRESOLVED": 0
+    }
+  },
+  "opportunity_capacity_rules": {
+    "candidate_count_field": "available_candidate_count",
+    "opportunity_count_field": "available_opportunity_count",
+    "target_must_not_exceed_available_candidates": true,
+    "target_must_not_exceed_available_opportunities": true
+  },
+  "uncertainty_rules": {
+    "HIGH": {
+      "target_delta": -2,
+      "maximum_cap": 3
+    },
+    "MEDIUM": {
+      "target_delta": -1,
+      "maximum_cap": 6
+    },
+    "LOW": {
+      "target_delta": 0,
+      "maximum_cap": 8
+    },
+    "UPSTREAM_REVIEW_REQUIRED": {
+      "target_delta": -5,
+      "maximum_cap": 0
+    }
+  }
+}

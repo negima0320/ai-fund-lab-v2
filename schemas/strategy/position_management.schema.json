@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/strategy/position_management.schema.json",
+  "title": "Position Management Artifact",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "producer_version",
+    "business_date",
+    "as_of",
+    "feature_date",
+    "artifact_lifecycle_status",
+    "source_authority_status",
+    "producer_result_status",
+    "runtime_consumer_eligibility",
+    "positions",
+    "position_count",
+    "action_taxonomy",
+    "intensity_taxonomy",
+    "quantity_decided",
+    "minimum_holding_decided",
+    "cooldown_decided",
+    "reason_codes",
+    "upstream_artifacts",
+    "accepted_generation_reference",
+    "model_reference",
+    "scaler_reference",
+    "source_artifacts",
+    "source_hashes",
+    "temporal_safety",
+    "production_consumer_connected",
+    "existing_pm_authority_active",
+    "runtime_switch_performed",
+    "legacy_authority_active",
+    "artifact_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "position_management.v1" },
+    "producer_version": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "as_of": { "type": "string", "minLength": 1 },
+    "feature_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "artifact_lifecycle_status": { "const": "DRAFT" },
+    "source_authority_status": {
+      "enum": ["VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTHORITY_CONFLICT"]
+    },
+    "producer_result_status": { "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "runtime_consumer_eligibility": { "const": "NOT_ELIGIBLE" },
+    "positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "position_id",
+          "security_code",
+          "action",
+          "intensity",
+          "confidence",
+          "uncertainty",
+          "reason_codes",
+          "lifecycle_reference",
+          "opportunity_reference",
+          "market_context_reference",
+          "corporate_event_reference",
+          "portfolio_policy_reference"
+        ],
+        "properties": {
+          "position_id": { "type": "string", "minLength": 1 },
+          "security_code": { "type": "string", "minLength": 1 },
+          "action": { "enum": ["HOLD", "ADD", "REDUCE", "EXIT", "UNRESOLVED"] },
+          "intensity": { "enum": ["NONE", "LIGHT", "MEDIUM", "STRONG", "UNRESOLVED"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "uncertainty": { "type": "string", "minLength": 1 },
+          "reason_codes": { "type": "array", "items": { "type": "string" } }
+        },
+        "not": {
+          "anyOf": [
+            { "required": ["quantity"] },
+            { "required": ["broker_quantity"] },
+            { "required": ["runtime_sell_quantity"] },
+            { "required": ["exit_quantity"] },
+            { "required": ["reduce_quantity"] },
+            { "required": ["add_quantity"] },
+            { "required": ["buy_quantity"] },
+            { "required": ["order_quantity"] },
+            { "required": ["sell_percentage"] },
+            { "required": ["sell_weight_delta"] },
+            { "required": ["sell_allocation_jpy"] },
+            { "required": ["lot_rounding_result"] }
+          ]
+        }
+      }
+    },
+    "position_count": { "type": "integer", "minimum": 0 },
+    "action_taxonomy": { "type": "array", "items": { "type": "string" } },
+    "intensity_taxonomy": { "type": "array", "items": { "type": "string" } },
+    "quantity_decided": { "const": false },
+    "minimum_holding_decided": { "const": false },
+    "cooldown_decided": { "const": false },
+    "reason_codes": { "type": "array", "items": { "type": "string" } },
+    "upstream_artifacts": { "type": "object" },
+    "accepted_generation_reference": { "type": "object" },
+    "model_reference": { "type": "object" },
+    "scaler_reference": { "type": "object" },
+    "source_artifacts": { "type": "array", "minItems": 1 },
+    "source_hashes": { "type": "array", "minItems": 1 },
+    "temporal_safety": {
+      "type": "object",
+      "required": [
+        "point_in_time",
+        "future_leakage_used",
+        "feature_date_lte_business_date",
+        "implicit_latest_fallback_used",
+        "previous_day_pm_artifact_copied"
+      ],
+      "properties": {
+        "point_in_time": { "type": "boolean" },
+        "future_leakage_used": { "type": "boolean" },
+        "feature_date_lte_business_date": { "type": "boolean" },
+        "implicit_latest_fallback_used": { "const": false },
+        "previous_day_pm_artifact_copied": { "const": false }
+      }
+    },
+    "production_consumer_connected": { "const": false },
+    "existing_pm_authority_active": { "const": true },
+    "runtime_switch_performed": { "const": false },
+    "legacy_authority_active": { "const": true },
+    "artifact_hash": { "type": "string", "minLength": 32 }
+  }
+}

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "artifact_lifecycle_status": {
+      "const": "DRAFT"
+    },
+    "as_of": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "business_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "coverage_status": {
+      "enum": [
+        "AVAILABLE",
+        "PARTIAL",
+        "MISSING",
+        "NOT_IMPLEMENTED"
+      ],
+      "type": "string"
+    },
+    "events": {
+      "items": {
+        "additionalProperties": true,
+        "properties": {
+          "announcement_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "availability_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "event_status": {
+            "enum": [
+              "ANNOUNCED",
+              "SCHEDULED",
+              "EFFECTIVE",
+              "DISCLOSED",
+              "UNKNOWN"
+            ],
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "LISTING_STATUS",
+              "DELISTING_PENDING",
+              "SUPERVISION_STATUS",
+              "LIQUIDATION_STATUS",
+              "EARNINGS_ANNOUNCEMENT",
+              "FORECAST_REVISION",
+              "DIVIDEND_REVISION",
+              "TOB",
+              "MERGER_ACQUISITION",
+              "STOCK_SPLIT",
+              "REVERSE_SPLIT",
+              "CORPORATE_ACTION"
+            ],
+            "type": "string"
+          },
+          "security_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "security_code",
+          "event_id",
+          "event_type",
+          "event_status",
+          "source_reference",
+          "source_hash",
+          "confidence",
+          "reason_codes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "feature_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "producer_result_status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED",
+        "BLOCK"
+      ],
+      "type": "string"
+    },
+    "runtime_consumer_eligibility": {
+      "const": "NOT_ELIGIBLE"
+    },
+    "schema_version": {
+      "const": "corporate_event_authority.v1"
+    },
+    "source_authority_status": {
+      "enum": [
+        "VALID",
+        "MISSING",
+        "STALE",
+        "HASH_MISMATCH",
+        "AUTHORITY_CONFLICT"
+      ],
+      "type": "string"
+    },
+    "temporal_safety": {
+      "additionalProperties": true,
+      "properties": {
+        "future_leakage_used": {
+          "type": "boolean"
+        },
+        "point_in_time": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "point_in_time",
+        "future_leakage_used"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "business_date",
+    "as_of",
+    "feature_date",
+    "artifact_lifecycle_status",
+    "source_authority_status",
+    "producer_result_status",
+    "runtime_consumer_eligibility",
+    "coverage_status",
+    "events",
+    "source_artifacts",
+    "source_hashes",
+    "temporal_safety"
+  ],
+  "title": "Corporate Event Authority v1",
+  "type": "object"
+}
+

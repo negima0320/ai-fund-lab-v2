@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from ai_fund_lab_v2.runtime_v2.historical_support.source_identity import build_source_identity
+
 from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
     SELECTION_POLICY,
     resolve_listed_issues_snapshot,
@@ -241,16 +243,34 @@ def materialize_historical_logical_inputs(
                 output_path=Path(target),
                 cutoff=business_date,
             )
+    materialization_id = f"historical_asof:{business_date}"
+    source_identities = {
+        key: build_source_identity(
+            path,
+            logical_source_id=key,
+            business_date=business_date,
+            feature_date=business_date,
+            as_of_date=business_date,
+            materialization_id=materialization_id,
+        )
+        for key, path in logical_paths.items()
+        if Path(path).is_file()
+    }
     manifest_path = input_root / "logical_input_manifest.json"
     payload = {
         "schema_version": HISTORICAL_LOGICAL_INPUT_MANIFEST_SCHEMA_VERSION,
         "status": resolution.status,
         "reason": resolution.reason,
         "business_date": business_date,
+        "feature_date": business_date,
+        "as_of_date": business_date,
+        "materialization_id": materialization_id,
         "input_root": str(input_root),
         "raw_root": str(raw_root),
         "normalized_root": str(normalized_root),
         "logical_paths": logical_paths,
+        "source_identity_version": "historical_source_identity_v1",
+        "source_identities": source_identities,
         "runtime_test_identity": dict(runtime_test_context or {}),
         "resolution": resolution.to_payload(),
         "feature_lookback_coverage": dict(resolution.feature_lookback_coverage or {}),

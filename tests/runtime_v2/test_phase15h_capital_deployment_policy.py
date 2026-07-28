@@ -273,27 +273,52 @@ def _write_pm_inputs(tmp_path: Path, *, symbols: tuple[str, ...]) -> tuple[Path,
             {
                 "target_date": "2026-07-09",
                 "code": symbol,
-                "expected_edge": 0.10,
                 "expected_edge_score": 0.10,
-                "confidence": 0.90,
-                "liquidity_score": 0.80,
                 "buy_rank": 999,
                 "downside_risk_score": 0.20,
+                "risk_guard_status": "ok",
+                "candidate_score": 0.5,
+                "candidate_rank": 999,
+                "buy_reason": "",
+                "no_buy_reason": "",
+                "calibration_policy_name": "phase15h_fixture",
             }
             for symbol in symbols
         ]
     ).to_csv(opportunity_path, index=False)
+    required_features = json.dumps(
+        [
+            "price_momentum_return_5d",
+            "price_momentum_return_20d",
+            "trend_close_over_ma_20d",
+            "trend_ma_5_20_ratio",
+            "volume_momentum_ratio_5d",
+            "volatility_return_std_20d",
+        ]
+    )
     pd.DataFrame(
         [
             {
                 "target_date": "2026-07-09",
+                "as_of_date": "2026-07-09",
+                "feature_as_of_date": "2026-07-09",
+                "data_until": "2026-07-09",
                 "code": symbol,
-                "atr_20": 10.0,
-                "volatility_20d": 0.20,
-                "drawdown_20d": -0.02,
-                "rsi_14": 55.0,
-                "trend_score": 0.70,
-                "downside_risk": 0.30,
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+                "price_momentum_return_5d": 0.10,
+                "price_momentum_return_20d": 0.10,
+                "trend_close_over_ma_20d": 1.10,
+                "trend_ma_5_20_ratio": 1.10,
+                "volume_momentum_ratio_5d": 1.0,
+                "volatility_return_std_20d": 0.02,
+                "feature_source_artifact": "phase15h_fixture_candidate_features.parquet",
+                "feature_source_hash": "phase15h-fixture-feature-source-hash",
+                "required_features": required_features,
+                "optional_features": json.dumps(["no_position_reason"]),
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "created_at": "2026-07-09T00:00:00Z",
             }
             for symbol in symbols
         ]

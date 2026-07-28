@@ -1,0 +1,54 @@
+{
+  "schema_version": "portfolio_safety_limits.v1",
+  "config_version": "phase22_hs_portfolio_safety_limits.v1",
+  "authority_owner": "Safety Layer",
+  "position_count": {
+    "safety_hard_maximum": null,
+    "authority": "No routine fixed position-count safety cap",
+    "rationale": "Fixed position-count safety caps are not used as routine Strategy or Portfolio Construction authority. Position capacity is controlled by opportunity eligibility, asset-proportional sizing, concentration, liquidity, lot feasibility, cash reserve, Pending reservation, and explicit emergency review gates.",
+    "effective_scope": [
+      "production",
+      "demo",
+      "historical"
+    ],
+    "override_allowed": false,
+    "source_references": [
+      "docs/02_architecture/strategy_architecture_v1.md",
+      "docs/03_ai_design/capital_deployment_design.md",
+      "docs/phase_reports/phase22_hr_dynamic_position_count_maximum_authority_review.md"
+    ]
+  },
+  "cash_exposure": {
+    "minimum_cash_ratio": 0.1,
+    "maximum_gross_exposure_ratio": 0.9,
+    "authority": "Safety hard limit",
+    "rationale": "Independent cash/exposure hard limits. Minimum 10% cash reserve and maximum 90% gross exposure leave operational room above the Strategy 20/80 baseline without reusing legacy target_investment_ratio=0.85 or max_exposure=850000 as Safety authority.",
+    "effective_scope": [
+      "production",
+      "demo",
+      "historical"
+    ],
+    "override_allowed": false,
+    "source_references": [
+      "docs/02_architecture/strategy_architecture_v1.md",
+      "docs/03_ai_design/capital_deployment_design.md",
+      "docs/phase_reports/phase22_hs_independent_safety_hard_maximum_definition.md"
+    ]
+  },
+  "concentration": {
+    "maximum_position_weight": 0.25,
+    "authority": "Safety hard limit",
+    "rationale": "Independent single-name concentration hard limit for Position Sizing. The 25% ceiling is above the Strategy sizing cap and is not copied from the legacy active max_position_weight=0.20; it bounds concentration while leaving Strategy room to express capped hybrid sizing intent.",
+    "effective_scope": [
+      "production",
+      "demo",
+      "historical"
+    ],
+    "override_allowed": false,
+    "source_references": [
+      "docs/02_architecture/strategy_architecture_v1.md",
+      "docs/03_ai_design/capital_deployment_design.md",
+      "docs/phase_reports/phase22_i_dynamic_cash_exposure.md"
+    ]
+  }
+}

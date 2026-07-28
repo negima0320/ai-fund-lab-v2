@@ -16,6 +16,11 @@ from typing import Any, Callable
 from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
     resolve_listed_issues_snapshot,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.source_identity import (
+    build_identity_from_logical_manifest,
+    logical_input_manifest_path_from_asof_view,
+    validate_bound_source_identity,
+)
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, RuntimeV2SubmitResult
 
 
@@ -133,6 +138,8 @@ class HistoricalSubmitAdapter:
             "cash_effect": cash_effect,
             "source_price_ref": validation["source_price_ref"],
             "source_hash": validation["source_hash"],
+            "source_identity": validation.get("source_identity", {}),
+            "source_identity_validation": validation.get("source_identity_validation", {}),
             "pit_manifest_path": str(self.pit_manifest_path),
             "pit_manifest_hash": _sha256_file(Path(self.pit_manifest_path)),
             "smoke_limited_execution_model": True,
@@ -231,18 +238,14 @@ class HistoricalSubmitAdapter:
         listed_info: dict[str, Any] | None,
     ) -> dict[str, Any]:
         ohlcv_path = Path(self.ohlcv_path)
-        expected_hash = _expected_source_hash(Path(self.pit_manifest_path), target_session_date, "ohlcv_normalized")
-        asof_expected = _expected_source_hash_from_asof_view(
-            Path(self.historical_asof_view_path),
-            target_session_date,
-            authority="normalized_ohlcv",
-            source_path=ohlcv_path,
-        )
-        if asof_expected:
-            expected_hash = asof_expected
-        actual_hash = _sha256_file(ohlcv_path)
-        if expected_hash and actual_hash != expected_hash:
-            return _classification("HALT", "source hash mismatch", source_hash=actual_hash, expected_hash=expected_hash)
+        source_validation = self._validate_normalized_ohlcv_source_identity(ohlcv_path, target_session_date)
+        if source_validation["status"] != "PASS":
+            source_extra = {key: value for key, value in source_validation.items() if key not in {"status", "reason"}}
+            return _classification(
+                "HALT",
+                str(source_validation.get("reason") or "historical source identity mismatch"),
+                **source_extra,
+            )
         universe = _resolve_symbol_in_pit_universe(
             runtime_root=Path(self.runtime_root),
             historical_asof_view_path=Path(self.historical_asof_view_path),
@@ -291,13 +294,76 @@ class HistoricalSubmitAdapter:
             "reason": "target session Open resolved",
             "fill_price": float(value),
             "source_price_ref": f"{ohlcv_path}:{target_session_date}:{symbol}:Open",
-            "source_hash": actual_hash,
+            "source_hash": str(source_validation.get("source_hash") or _sha256_file(ohlcv_path)),
+            "source_identity": source_validation.get("actual_source_identity", {}),
+            "source_identity_validation": source_validation,
             "pit_universe_authority": universe,
         }
 
     def _submission_evidence_path(self, execution_identity: str) -> Path:
         root = Path(self.runtime_root)
         return root / "runtime_state" / "historical_broker" / self.business_date / f"{execution_identity}.json"
+
+    def _validate_normalized_ohlcv_source_identity(self, ohlcv_path: Path, business_date: str) -> dict[str, Any]:
+        asof_path = Path(self.historical_asof_view_path)
+        if not str(self.historical_asof_view_path):
+            return {
+                "status": "PASS",
+                "reason": "legacy explicit historical ohlcv path accepted without run-scoped asof view",
+                "source_hash": _sha256_file(ohlcv_path),
+                "source_identity_contract_version": "legacy_physical_file_hash",
+            }
+        manifest_path = logical_input_manifest_path_from_asof_view(asof_path, business_date)
+        if not manifest_path.exists():
+            return {
+                "status": "HALT",
+                "reason": "historical logical source manifest missing",
+                "mismatch_class": "BOUND_SOURCE_MANIFEST_MISSING",
+                "root_reason_code": "BOUND_SOURCE_MANIFEST_MISSING",
+                "logical_source_id": "normalized_ohlcv",
+                "expected_source_path": str(manifest_path),
+                "actual_source_path": str(ohlcv_path),
+                "expected_hash": "",
+                "source_hash": _sha256_file(ohlcv_path),
+                "recommended_action": "Run market_refresh/morning for this runtime-test day and use its run-scoped logical_input_manifest.json.",
+            }
+        manifest = _read_json(manifest_path)
+        if str(manifest.get("business_date") or "") != business_date:
+            return {
+                "status": "HALT",
+                "reason": "historical logical source manifest business_date mismatch",
+                "mismatch_class": "BUSINESS_DATE_MISMATCH",
+                "root_reason_code": "BUSINESS_DATE_MISMATCH",
+                "logical_source_id": "normalized_ohlcv",
+                "expected_business_date": business_date,
+                "actual_business_date": str(manifest.get("business_date") or ""),
+                "expected_source_path": str(manifest_path),
+                "actual_source_path": str(ohlcv_path),
+                "recommended_action": "Regenerate the historical logical input manifest for the submit business_date.",
+            }
+        if str(manifest.get("status") or "") != "PASS":
+            return {
+                "status": "HALT",
+                "reason": "historical logical source manifest not PASS",
+                "mismatch_class": "BOUND_SOURCE_MANIFEST_NOT_PASS",
+                "root_reason_code": "BOUND_SOURCE_MANIFEST_NOT_PASS",
+                "logical_source_id": "normalized_ohlcv",
+                "expected_source_path": str(manifest_path),
+                "actual_source_path": str(ohlcv_path),
+                "recommended_action": "Repair the historical logical source materialization before submit.",
+            }
+        expected_identity = build_identity_from_logical_manifest(
+            manifest_path,
+            logical_source_id="normalized_ohlcv",
+            business_date=business_date,
+        )
+        return validate_bound_source_identity(
+            expected_identity=expected_identity,
+            actual_path=ohlcv_path,
+            logical_source_id="normalized_ohlcv",
+            business_date=business_date,
+            source_manifest_path=manifest_path,
+        )
 
 
 @dataclass(frozen=True)

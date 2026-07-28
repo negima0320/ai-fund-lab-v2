@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/safety/portfolio_limits.schema.json",
+  "title": "Portfolio Safety Limits",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "config_version",
+    "authority_owner",
+    "position_count",
+    "cash_exposure",
+    "concentration"
+  ],
+  "properties": {
+    "schema_version": { "const": "portfolio_safety_limits.v1" },
+    "config_version": { "type": "string", "minLength": 1 },
+    "authority_owner": { "const": "Safety Layer" },
+    "position_count": {
+      "type": "object",
+      "required": [
+        "safety_hard_maximum",
+        "authority",
+        "rationale",
+        "effective_scope",
+        "override_allowed",
+        "source_references"
+      ],
+      "properties": {
+        "safety_hard_maximum": { "type": "integer", "minimum": 1 },
+        "authority": { "const": "Safety hard limit" },
+        "rationale": { "type": "string", "minLength": 1 },
+        "effective_scope": {
+          "type": "array",
+          "items": { "enum": ["production", "demo", "historical"] },
+          "contains": { "const": "production" }
+        },
+        "override_allowed": { "const": false },
+        "source_references": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    },
+    "cash_exposure": {
+      "type": "object",
+      "required": [
+        "minimum_cash_ratio",
+        "maximum_gross_exposure_ratio",
+        "authority",
+        "rationale",
+        "effective_scope",
+        "override_allowed",
+        "source_references"
+      ],
+      "properties": {
+        "minimum_cash_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "maximum_gross_exposure_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "authority": { "const": "Safety hard limit" },
+        "rationale": { "type": "string", "minLength": 1 },
+        "effective_scope": {
+          "type": "array",
+          "items": { "enum": ["production", "demo", "historical"] },
+          "contains": { "const": "production" }
+        },
+        "override_allowed": { "const": false },
+        "source_references": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    },
+    "concentration": {
+      "type": "object",
+      "required": [
+        "maximum_position_weight",
+        "authority",
+        "rationale",
+        "effective_scope",
+        "override_allowed",
+        "source_references"
+      ],
+      "properties": {
+        "maximum_position_weight": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "authority": { "const": "Safety hard limit" },
+        "rationale": { "type": "string", "minLength": 1 },
+        "effective_scope": {
+          "type": "array",
+          "items": { "enum": ["production", "demo", "historical"] },
+          "contains": { "const": "production" }
+        },
+        "override_allowed": { "const": false },
+        "source_references": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    }
+  }
+}

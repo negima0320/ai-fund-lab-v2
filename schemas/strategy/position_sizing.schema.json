@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/strategy/position_sizing.schema.json",
+  "title": "Position Sizing Artifact",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "business_date",
+    "as_of",
+    "feature_date",
+    "artifact_lifecycle_status",
+    "source_authority_status",
+    "producer_result_status",
+    "runtime_consumer_eligibility",
+    "target_gross_exposure_ratio",
+    "target_position_count",
+    "portfolio_total_equity",
+    "positions",
+    "total_target_weight",
+    "residual_cash_ratio",
+    "concrete_target_weight_decided",
+    "target_notional_decided",
+    "share_quantity_decided",
+    "lot_rounding_decided",
+    "source_artifacts",
+    "source_hashes",
+    "temporal_safety"
+  ],
+  "properties": {
+    "schema_version": { "const": "position_sizing.v1" },
+    "artifact_lifecycle_status": { "const": "DRAFT" },
+    "runtime_consumer_eligibility": { "const": "NOT_ELIGIBLE" },
+    "share_quantity_decided": { "const": false },
+    "lot_rounding_decided": { "const": false },
+    "positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "security_code",
+          "membership_intent",
+          "pm_action",
+          "current_weight",
+          "base_weight",
+          "quality_adjustment",
+          "volatility_adjustment",
+          "adjusted_weight",
+          "capped_weight",
+          "target_weight",
+          "weight_delta",
+          "target_notional",
+          "current_notional",
+          "incremental_target_notional",
+          "incremental_buy_notional",
+          "minimum_meaningful_notional",
+          "maximum_position_weight",
+          "sizing_status",
+          "confidence",
+          "uncertainty",
+          "reason_codes"
+        ]
+      }
+    }
+  }
+}

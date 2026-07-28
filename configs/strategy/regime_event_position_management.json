@@ -1,0 +1,74 @@
+{
+  "schema_version": "regime_event_position_management_config.v1",
+  "config_version": "phase22_k_regime_event_pm_policy.v1",
+  "regime_rules": {
+    "BULL": { "add_bias": 1, "reduce_bias": -1, "exit_bias": -1 },
+    "RANGE": { "add_bias": 0, "reduce_bias": 0, "exit_bias": 0 },
+    "BEAR": { "add_bias": -2, "reduce_bias": 1, "exit_bias": 1 },
+    "CORRECTION": { "add_bias": -2, "reduce_bias": 1, "exit_bias": 1 },
+    "RECOVERY": { "add_bias": 1, "reduce_bias": 0, "exit_bias": 0 }
+  },
+  "volatility_regime_rules": {
+    "LOW": { "add_bias": 1, "reduce_bias": 0 },
+    "NORMAL": { "add_bias": 0, "reduce_bias": 0 },
+    "HIGH": { "add_bias": -2, "reduce_bias": 1 }
+  },
+  "corporate_event_rules": {
+    "earnings_near_business_days": 3,
+    "earnings_near_add_allowed": false,
+    "earnings_near_default_action": "HOLD",
+    "tob_action": "EXIT",
+    "delisting_action": "EXIT",
+    "merger_action": "REDUCE",
+    "split_action": "HOLD"
+  },
+  "technical_health_rules": {
+    "healthy_min_momentum_20d": 0.03,
+    "weak_momentum_20d": -0.02,
+    "breakdown_close_over_ma_20d": 0.97,
+    "volatility_expansion_threshold": 0.06
+  },
+  "opportunity_persistence_rules": {
+    "strong_score_min": 0.7,
+    "weak_score_max": 0.35,
+    "invalidated_score_max": 0.15
+  },
+  "holding_period_rules": {
+    "new_max_days": 2,
+    "early_max_days": 7,
+    "mature_max_days": 30,
+    "extended_max_days": 60
+  },
+  "cooldown_rules": {
+    "add_cooldown_business_days": 3,
+    "post_reduce_add_cooldown_business_days": 5,
+    "post_exit_reentry_cooldown_business_days": 10,
+    "event_cooldown_business_days": 3
+  },
+  "reentry_rules": {
+    "requires_new_opportunity": true,
+    "requires_event_restriction_cleared": true,
+    "requires_technical_recovery": true
+  },
+  "conflict_resolution": [
+    "HARD_EXIT",
+    "EVENT_RESTRICTION",
+    "SAFETY_RESTRICTION",
+    "REDUCE",
+    "ADD",
+    "HOLD",
+    "UNRESOLVED"
+  ],
+  "action_intensity": {
+    "ADD": { "default": "LIGHT", "strong": "MEDIUM" },
+    "REDUCE": { "default": "MEDIUM", "strong": "STRONG" },
+    "EXIT": { "default": "NONE" },
+    "HOLD": { "default": "NONE" },
+    "UNRESOLVED": { "default": "UNRESOLVED" }
+  },
+  "uncertainty_rules": {
+    "source_missing_action": "UNRESOLVED",
+    "source_missing_status": "REVIEW_REQUIRED",
+    "hold_fallback_forbidden": true
+  }
+}

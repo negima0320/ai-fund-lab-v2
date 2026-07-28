@@ -1,0 +1,98 @@
+{
+  "schema_version": "market_context_config.v1",
+  "config_version": "phase22_l_market_context_authority_policy.v1",
+  "benchmark": {
+    "id": "JQUANTS_LISTED_COMMON_EQUAL_WEIGHT_MARKET_PROXY",
+    "source_type": "JQUANTS_DERIVED_MARKET_PROXY",
+    "universe": "listed_common_equities_with_pit_daily_quotes",
+    "price_source": "jquants_daily_quotes_adjusted_close_preferred",
+    "weighting": "EQUAL_WEIGHT",
+    "minimum_coverage": 0.7,
+    "external_index_fallback_allowed": false
+  },
+  "sector": {
+    "classification_source": "jquants_listed_info",
+    "classification_level": "33_sector_preferred_17_sector_allowed",
+    "sector_code_fields": ["Sector33Code", "S33Code", "S33Cd", "Sector17Code", "S17Code", "S17Cd"],
+    "sector_name_fields": ["S33Nm", "Sector33Name", "S17Nm", "Sector17Name"],
+    "benchmark_construction": "equal_weight_sector_proxy_from_jquants_constituent_returns",
+    "minimum_constituents": 2,
+    "minimum_coverage": 0.7,
+    "relative_strength_reference": "market_benchmark",
+    "market_wide_substitution_allowed": false,
+    "dispersion_thresholds": {
+      "high_min": 0.03,
+      "low_max": 0.005
+    }
+  },
+  "trend": {
+    "metric": "return_20d_equal_weight",
+    "short_window": 5,
+    "medium_window": 20,
+    "long_window": 60,
+    "thresholds": {
+      "bull_return_20d_min": 0.02,
+      "bear_return_20d_max": -0.02
+    }
+  },
+  "breadth": {
+    "metric": "breadth_20d_positive_ratio",
+    "window": 20,
+    "thresholds": {
+      "strong_min": 0.6,
+      "weak_max": 0.4
+    },
+    "minimum_coverage": 0.7
+  },
+  "volatility": {
+    "metric": "volatility_20d_equal_weight",
+    "window": 20,
+    "return_definition": "close_to_close_daily_return",
+    "annualization": "none_in_artifact_phase22_l_daily_realized_proxy",
+    "minimum_observations": 20,
+    "thresholds": {
+      "high_min": 0.04,
+      "low_max": 0.005
+    }
+  },
+  "regime_mapping": {
+    "taxonomy": ["BULL", "RANGE", "BEAR", "CORRECTION", "RECOVERY", "HIGH_VOLATILITY", "UNCERTAIN"],
+    "correction": "negative medium return without bear threshold breach",
+    "recovery": "positive medium return without bull threshold breach",
+    "high_volatility_overlay": "volatility_state HIGH overrides regime_state while preserving trend_regime"
+  },
+  "confidence": {
+    "inputs": ["benchmark_coverage", "breadth_coverage", "sector_coverage", "observation_count", "metric_agreement", "source_freshness"],
+    "formula": "0.7 * benchmark_coverage + 0.3 * volatility_observation_coverage - conflict_penalty"
+  },
+  "uncertainty": {
+    "source_missing": "REVIEW_REQUIRED",
+    "metric_conflict": "UNCERTAIN",
+    "coverage_missing": "REVIEW_REQUIRED",
+    "no_forced_regime_rounding": true
+  },
+  "pit_contract": {
+    "price_date_lte_business_date": true,
+    "listed_status_effective_date_lte_business_date": true,
+    "sector_classification_effective_date_lte_business_date": true,
+    "corporate_action_known_at_lte_business_date": true,
+    "latest_fallback_allowed": false,
+    "previous_day_context_copy_allowed": false
+  },
+  "failure_contract": {
+    "benchmark_source_unavailable": "REVIEW_REQUIRED",
+    "sector_source_unavailable": "sector_REVIEW_REQUIRED",
+    "benchmark_coverage_insufficient": "REVIEW_REQUIRED",
+    "breadth_coverage_insufficient": "REVIEW_REQUIRED",
+    "volatility_observation_insufficient": "REVIEW_REQUIRED",
+    "future_source": "BLOCK",
+    "hash_mismatch": "BLOCK"
+  },
+  "bootstrap_contract": {
+    "allowed_statuses": ["DRAFT", "REVIEW_REQUIRED", "NOT_ELIGIBLE"],
+    "fixed_fallback_allowed": false,
+    "normal_volatility_fallback_allowed": false,
+    "neutral_breadth_fallback_allowed": false,
+    "previous_day_context_copy_allowed": false
+  }
+}

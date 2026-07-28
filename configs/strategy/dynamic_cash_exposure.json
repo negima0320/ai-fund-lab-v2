@@ -1,0 +1,54 @@
+{
+  "schema_version": "dynamic_cash_exposure_config.v1",
+  "config_version": "phase22_i_dynamic_cash_exposure_policy.v1",
+  "cash_policy": {
+    "minimum_cash_ratio": 0.12,
+    "baseline_target_cash_ratio": 0.2,
+    "maximum_cash_ratio": 0.5
+  },
+  "exposure_policy": {
+    "minimum_gross_exposure_ratio": 0.4,
+    "baseline_target_gross_exposure_ratio": 0.8,
+    "maximum_gross_exposure_ratio": 0.88
+  },
+  "regime_rules": {
+    "BULL": { "cash_delta": -0.05, "exposure_delta": 0.05 },
+    "RECOVERY": { "cash_delta": -0.03, "exposure_delta": 0.03 },
+    "RANGE": { "cash_delta": 0.0, "exposure_delta": 0.0 },
+    "CORRECTION": { "cash_delta": 0.1, "exposure_delta": -0.1 },
+    "BEAR": { "cash_delta": 0.18, "exposure_delta": -0.18 }
+  },
+  "breadth_rules": {
+    "STRONG": { "cash_delta": -0.02, "exposure_delta": 0.02 },
+    "NEUTRAL": { "cash_delta": 0.0, "exposure_delta": 0.0 },
+    "WEAK": { "cash_delta": 0.08, "exposure_delta": -0.08 }
+  },
+  "volatility_rules": {
+    "LOW": { "cash_delta": -0.02, "exposure_delta": 0.02 },
+    "NORMAL": { "cash_delta": 0.0, "exposure_delta": 0.0 },
+    "HIGH": { "cash_delta": 0.1, "exposure_delta": -0.1 }
+  },
+  "portfolio_policy_rules": {
+    "risk_posture": {
+      "RISK_ON": { "cash_delta": -0.03, "exposure_delta": 0.03 },
+      "BALANCED": { "cash_delta": 0.0, "exposure_delta": 0.0 },
+      "DEFENSIVE": { "cash_delta": 0.1, "exposure_delta": -0.1 },
+      "RISK_OFF": { "cash_delta": 0.2, "exposure_delta": -0.2 },
+      "UNRESOLVED": { "cash_delta": 0.0, "exposure_delta": 0.0 }
+    }
+  },
+  "opportunity_capacity_rules": {
+    "low_opportunity_count_threshold": 3,
+    "low_opportunity_cash_delta": 0.08,
+    "low_opportunity_exposure_delta": -0.08
+  },
+  "uncertainty_rules": {
+    "LOW": { "cash_delta": 0.0, "exposure_delta": 0.0 },
+    "MEDIUM": { "cash_delta": 0.06, "exposure_delta": -0.06 },
+    "HIGH": { "cash_delta": 0.18, "exposure_delta": -0.18 },
+    "UPSTREAM_REVIEW_REQUIRED": { "cash_delta": 0.0, "exposure_delta": 0.0 }
+  },
+  "safety_references": {
+    "cash_exposure_limits": "configs/safety/portfolio_limits.json#cash_exposure"
+  }
+}

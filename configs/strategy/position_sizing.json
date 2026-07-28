@@ -1,0 +1,51 @@
+{
+  "schema_version": "position_sizing_config.v1",
+  "config_version": "phase22_j_position_sizing_policy.v1",
+  "sizing_method": "capped_quality_volatility_hybrid",
+  "base_allocation": {
+    "source": "target_gross_exposure_ratio_divided_by_target_position_count"
+  },
+  "opportunity_adjustment": {
+    "score_min": 0.0,
+    "score_max": 1.0,
+    "quality_multiplier_strength": 0.4,
+    "minimum_multiplier": 0.8,
+    "maximum_multiplier": 1.2
+  },
+  "volatility_adjustment": {
+    "window": "20d",
+    "metric": "daily_return_volatility",
+    "reference_volatility": 0.03,
+    "minimum_volatility": 0.005,
+    "maximum_volatility": 0.08,
+    "minimum_multiplier": 0.75,
+    "maximum_multiplier": 1.25
+  },
+  "pm_intent_adjustment": {
+    "NEW": 1.0,
+    "HOLD": 1.0,
+    "ADD": 1.15,
+    "REDUCE": 0.5,
+    "EXIT": 0.0
+  },
+  "minimum_meaningful_notional": {
+    "base_jpy": 50000,
+    "tradable_unit": 100,
+    "price_buffer_ratio": 0.02,
+    "policy": "max_base_jpy_or_buffered_round_lot_notional"
+  },
+  "strategy_maximum_position_weight": 0.18,
+  "safety_concentration_reference": "configs/safety/portfolio_limits.json#concentration.maximum_position_weight",
+  "normalization": {
+    "cap_before_normalization": true,
+    "do_not_force_residual_cash": true
+  },
+  "residual_cash_policy": {
+    "preserve_unallocated_cash": true
+  },
+  "uncertainty_policy": {
+    "missing_quality": "REVIEW_REQUIRED",
+    "missing_volatility": "REVIEW_REQUIRED",
+    "minimum_notional_unmet": "WITHHELD"
+  }
+}

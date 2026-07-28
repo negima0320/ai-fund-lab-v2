@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/strategy/dynamic_position_count.schema.json",
+  "title": "Dynamic Position Count Artifact",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "producer_version",
+    "business_date",
+    "as_of",
+    "feature_date",
+    "artifact_lifecycle_status",
+    "source_authority_status",
+    "producer_result_status",
+    "runtime_consumer_eligibility",
+    "minimum_position_count",
+    "target_position_count",
+    "legacy_active_max_positions",
+    "strategy_minimum_position_count",
+    "strategy_target_position_count",
+    "strategy_fixed_position_cap_used",
+    "actual_target_position_count",
+    "meaningful_allocation_position_count",
+    "safety_hard_maximum_status",
+    "ceiling_authority_status",
+    "current_position_count",
+    "available_candidate_count",
+    "available_opportunity_count",
+    "eligible_opportunity_count",
+    "capital_affordable_position_count",
+    "liquidity_feasible_position_count",
+    "position_count_posture",
+    "capacity_constraint_status",
+    "confidence",
+    "uncertainty",
+    "reason_codes",
+    "market_context_reference",
+    "portfolio_policy_reference",
+    "candidate_reference",
+    "opportunity_reference",
+    "config_reference",
+    "source_artifacts",
+    "source_hashes",
+    "temporal_safety",
+    "shadow_comparison",
+    "production_consumer_connected",
+    "runtime_switch_performed",
+    "legacy_authority_active",
+    "artifact_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "dynamic_position_count.v1" },
+    "producer_version": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "as_of": { "type": "string", "minLength": 1 },
+    "feature_date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "artifact_lifecycle_status": { "const": "DRAFT" },
+    "source_authority_status": {
+      "enum": ["VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTHORITY_CONFLICT"]
+    },
+    "producer_result_status": { "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "runtime_consumer_eligibility": { "const": "NOT_ELIGIBLE" },
+    "minimum_position_count": { "type": "integer", "minimum": 0 },
+    "target_position_count": { "type": "integer", "minimum": 0 },
+    "maximum_position_count": { "type": ["integer", "null"], "minimum": 0 },
+    "legacy_active_max_positions": { "type": "integer", "minimum": 0 },
+    "strategy_minimum_position_count": { "type": "integer", "minimum": 0 },
+    "strategy_target_position_count": { "type": "integer", "minimum": 0 },
+    "strategy_maximum_position_count": { "type": ["integer", "null"], "minimum": 0 },
+    "strategy_fixed_position_cap_used": { "const": false },
+    "actual_target_position_count": { "type": "integer", "minimum": 0 },
+    "meaningful_allocation_position_count": { "type": "integer", "minimum": 0 },
+    "safety_hard_maximum": {
+      "anyOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "safety_hard_maximum_status": { "enum": ["PASS", "RESOLVED", "REVIEW_REQUIRED", "BLOCK", "NOT_APPLICABLE", "REMOVED"] },
+    "ceiling_authority_status": {
+      "enum": ["SEPARATED", "REVIEW_REQUIRED", "BLOCK"]
+    },
+    "difference_from_legacy_ceiling": { "type": ["integer", "null"] },
+    "current_position_count": { "type": "integer", "minimum": 0 },
+    "available_candidate_count": { "type": "integer", "minimum": 0 },
+    "available_opportunity_count": { "type": "integer", "minimum": 0 },
+    "eligible_opportunity_count": { "type": "integer", "minimum": 0 },
+    "capital_affordable_position_count": { "type": "integer", "minimum": 0 },
+    "liquidity_feasible_position_count": { "type": "integer", "minimum": 0 },
+    "position_count_posture": {
+      "enum": ["INCREASE", "MAINTAIN", "DECREASE", "PAUSE_NEW_ENTRY", "UNRESOLVED"]
+    },
+    "capacity_constraint_status": {
+      "enum": [
+        "SUFFICIENT",
+        "CANDIDATE_CONSTRAINED",
+        "OPPORTUNITY_CONSTRAINED",
+        "MARKET_RISK_CONSTRAINED",
+        "UNCERTAINTY_CONSTRAINED",
+        "SAFETY_CAP_CONSTRAINED",
+        "SOURCE_UNAVAILABLE"
+      ]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "uncertainty": { "type": "string", "minLength": 1 },
+    "reason_codes": { "type": "array", "items": { "type": "string" } },
+    "source_artifacts": { "type": "array", "minItems": 1 },
+    "source_hashes": { "type": "array", "minItems": 1 },
+    "temporal_safety": {
+      "type": "object",
+      "required": [
+        "point_in_time",
+        "future_leakage_used",
+        "feature_date_lte_business_date",
+        "implicit_latest_fallback_used",
+        "previous_day_target_copied"
+      ],
+      "properties": {
+        "point_in_time": { "type": "boolean" },
+        "future_leakage_used": { "type": "boolean" },
+        "feature_date_lte_business_date": { "type": "boolean" },
+        "implicit_latest_fallback_used": { "const": false },
+        "previous_day_target_copied": { "const": false }
+      }
+    },
+    "production_consumer_connected": { "const": false },
+    "runtime_switch_performed": { "const": false },
+    "legacy_authority_active": { "const": true },
+    "artifact_hash": { "type": "string", "minLength": 32 }
+  }
+}

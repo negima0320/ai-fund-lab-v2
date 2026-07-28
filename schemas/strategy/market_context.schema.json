@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "artifact_lifecycle_status": {
+      "const": "DRAFT"
+    },
+    "as_of": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "business_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "feature_date": {
+      "format": "date",
+      "type": "string"
+    },
+    "market_breadth": {
+      "enum": [
+        "STRONG",
+        "NEUTRAL",
+        "WEAK"
+      ],
+      "type": "string"
+    },
+    "benchmark_coverage": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "benchmark_id": {
+      "type": "string"
+    },
+    "benchmark_source_type": {
+      "type": "string"
+    },
+    "benchmark_universe": {
+      "type": "string"
+    },
+    "benchmark_weighting": {
+      "type": "string"
+    },
+    "breadth_eligible_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "breadth_metric": {
+      "type": "string"
+    },
+    "breadth_state": {
+      "enum": [
+        "STRONG",
+        "NEUTRAL",
+        "WEAK"
+      ],
+      "type": "string"
+    },
+    "breadth_valid_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "breadth_value": {
+      "type": "number"
+    },
+    "producer_result_status": {
+      "enum": [
+        "PASS",
+        "REVIEW_REQUIRED",
+        "BLOCK"
+      ],
+      "type": "string"
+    },
+    "runtime_consumer_eligibility": {
+      "const": "NOT_ELIGIBLE"
+    },
+    "schema_version": {
+      "const": "strategy_market_context.v1"
+    },
+    "sector_dispersion": {
+      "enum": [
+        "HIGH",
+        "MODERATE",
+        "LOW"
+      ],
+      "type": "string"
+    },
+    "source_authority_status": {
+      "enum": [
+        "VALID",
+        "MISSING",
+        "STALE",
+        "HASH_MISMATCH",
+        "AUTHORITY_CONFLICT"
+      ],
+      "type": "string"
+    },
+    "temporal_safety": {
+      "additionalProperties": true,
+      "properties": {
+        "future_leakage_used": {
+          "type": "boolean"
+        },
+        "point_in_time": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "point_in_time",
+        "future_leakage_used"
+      ],
+      "type": "object"
+    },
+    "trend_regime": {
+      "enum": [
+        "BULL",
+        "BEAR",
+        "RANGE",
+        "RECOVERY",
+        "CORRECTION",
+        "UNCERTAIN"
+      ],
+      "type": "string"
+    },
+    "regime_reason_codes": {
+      "type": "array"
+    },
+    "regime_state": {
+      "enum": [
+        "BULL",
+        "BEAR",
+        "RANGE",
+        "RECOVERY",
+        "CORRECTION",
+        "HIGH_VOLATILITY",
+        "UNCERTAIN"
+      ],
+      "type": "string"
+    },
+    "sector_contexts": {
+      "type": "array"
+    },
+    "trend_metric": {
+      "type": "string"
+    },
+    "trend_state": {
+      "enum": [
+        "BULL",
+        "BEAR",
+        "RANGE",
+        "RECOVERY",
+        "CORRECTION",
+        "UNCERTAIN"
+      ],
+      "type": "string"
+    },
+    "trend_strength": {
+      "type": "number"
+    },
+    "trend_value": {
+      "type": "number"
+    },
+    "uncertainty": {
+      "type": "string"
+    },
+    "volatility_metric": {
+      "type": "string"
+    },
+    "volatility_observation_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "volatility_regime": {
+      "enum": [
+        "HIGH",
+        "NORMAL",
+        "LOW"
+      ],
+      "type": "string"
+    },
+    "volatility_state": {
+      "enum": [
+        "HIGH",
+        "NORMAL",
+        "LOW"
+      ],
+      "type": "string"
+    },
+    "volatility_value": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "schema_version",
+    "business_date",
+    "as_of",
+    "feature_date",
+    "trend_regime",
+    "trend_strength",
+    "market_breadth",
+    "volatility_regime",
+    "benchmark_id",
+    "benchmark_source_type",
+    "benchmark_universe",
+    "benchmark_weighting",
+    "benchmark_coverage",
+    "trend_metric",
+    "trend_value",
+    "trend_state",
+    "breadth_metric",
+    "breadth_value",
+    "breadth_state",
+    "breadth_eligible_count",
+    "breadth_valid_count",
+    "volatility_metric",
+    "volatility_value",
+    "volatility_state",
+    "volatility_observation_count",
+    "regime_state",
+    "regime_reason_codes",
+    "sector_contexts",
+    "sector_dispersion",
+    "confidence",
+    "uncertainty",
+    "artifact_lifecycle_status",
+    "source_authority_status",
+    "producer_result_status",
+    "runtime_consumer_eligibility",
+    "reason_codes",
+    "source_artifacts",
+    "source_hashes",
+    "temporal_safety"
+  ],
+  "title": "Strategy Market Context v1",
+  "type": "object"
+}

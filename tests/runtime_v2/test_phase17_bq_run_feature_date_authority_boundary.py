@@ -76,6 +76,49 @@ def test_phase17_bq_run_re_resolves_feature_date_from_materialized_contract(tmp_
     assert resolution["feature_date_authority_source"] == "normal_feature_date_contract"
     assert resolution["planned_matches_materialized"] is False
     assert resolution["selected_feature_date"] == "2026-07-09"
+    strategy_dir = evidence_root / "runs" / run_id / "daily" / "2026-07-09" / "strategy"
+    input_manifest = json.loads((strategy_dir / "input_manifest.json").read_text(encoding="utf-8"))
+    shadow_summary = json.loads((strategy_dir / "strategy_shadow_summary.json").read_text(encoding="utf-8"))
+    assert input_manifest["feature_date"] == "2026-07-09"
+    assert input_manifest["planned_feature_date"] == "2026-07-08"
+    assert input_manifest["materialized_feature_date"] == "2026-07-09"
+    assert input_manifest["selected_feature_date"] == "2026-07-09"
+    assert input_manifest["planned_matches_materialized"] is False
+    assert input_manifest["feature_date_authority_source"] == "completed_runtime_job_feature_date_command_resolution"
+    assert shadow_summary["feature_date_authority"]["selected_feature_date"] == "2026-07-09"
+    assert (strategy_dir / "strategy_evidence_index.json").is_file()
+
+
+def test_phase22_pw_shadow_feature_date_authority_prefers_completed_runtime_resolution(tmp_path: Path) -> None:
+    runner = _load_runner()
+    runtime_root = _make_clean_runtime_root(tmp_path)
+    run_state = {
+        "completed_jobs": [
+            {
+                "business_date": "2026-07-09",
+                "job": "data_readiness",
+                "feature_date_command_resolution": {
+                    "planned_feature_date": "2026-07-08",
+                    "selected_feature_date": "2026-07-09",
+                    "contract_artifact_path": str(runtime_root / "operations" / "feature_date_contract" / "2026-07-09.json"),
+                    "planned_matches_materialized": False,
+                },
+            }
+        ]
+    }
+
+    authority = runner.resolve_strategy_shadow_feature_date_authority(
+        runtime_root=runtime_root,
+        run_state=run_state,
+        day={"business_date": "2026-07-09", "feature_date": "2026-07-08"},
+    )
+
+    assert authority["authority_status"] == "PASS"
+    assert authority["feature_date_authority_source"] == "completed_runtime_job_feature_date_command_resolution"
+    assert authority["planned_feature_date"] == "2026-07-08"
+    assert authority["materialized_feature_date"] == "2026-07-09"
+    assert authority["selected_feature_date"] == "2026-07-09"
+    assert authority["planned_matches_materialized"] is False
 
 
 def test_phase17_bq_cli_mismatch_still_fails_closed(tmp_path: Path) -> None:

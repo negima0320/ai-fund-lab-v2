@@ -229,19 +229,39 @@ def _write_pm_inputs(tmp_path: Path, *, symbols: tuple[str, ...]) -> tuple[Path,
         ]
     ).to_csv(opportunity_path, index=False)
     feature_path = tmp_path / "pm_feature.csv"
+    required_features = json.dumps(
+        [
+            "price_momentum_return_5d",
+            "price_momentum_return_20d",
+            "trend_close_over_ma_20d",
+            "trend_ma_5_20_ratio",
+            "volume_momentum_ratio_5d",
+            "volatility_return_std_20d",
+        ]
+    )
     pd.DataFrame(
         [
             {
                 "target_date": "2026-07-09",
                 "as_of_date": "2026-07-09",
+                "feature_as_of_date": "2026-07-09",
+                "data_until": "2026-07-09",
                 "code": symbol,
-                "feature_version": "position_management_feature_v1",
-                "return_5d": -0.05,
-                "return_20d": -0.05,
-                "close_over_ma_20d": -0.05,
-                "ma_5_20_ratio": 0.95,
-                "volume_ratio_5d": 1.0,
-                "volatility_20d": 0.03,
+                "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
+                "price_momentum_return_5d": -0.05,
+                "price_momentum_return_20d": -0.05,
+                "trend_close_over_ma_20d": 0.95,
+                "trend_ma_5_20_ratio": 0.95,
+                "volume_momentum_ratio_5d": 1.0,
+                "volatility_return_std_20d": 0.03,
+                "feature_source_artifact": "phase14e50_fixture_candidate_features.parquet",
+                "feature_source_hash": "phase14e50-fixture-feature-source-hash",
+                "required_features": required_features,
+                "optional_features": json.dumps(["no_position_reason"]),
+                "missing_features": "[]",
+                "defaulted_features": "[]",
+                "temporal_validation_status": "PASS",
+                "created_at": "2026-07-09T00:00:00Z",
             }
             for symbol in symbols
         ]
