@@ -5600,3 +5600,128 @@ Recommended first Phase23 task:
 `Phase23-A: Submit HALT, Corporate Event Propagation, Position Management Wiring, Candidate Zero-Row and Accepted Generation Root Cause Audit`
 
 Phase23 must begin with authority/observability repair and controlled validation. Runtime Switch, broker write, production/demo submit, active Strategy consumer promotion, and long historical validation remain prohibited until Phase23 gates explicitly approve them.
+
+## 2026-07-31 Phase23-BW Formal Closure and Phase24 Handoff
+
+Phase23 formal judgment:
+
+`PHASE23_FORMALLY_CLOSED_WITH_NON_BLOCKING_GAPS`
+
+Phase24 entry judgment:
+
+`PHASE24_PERFORMANCE_VALIDATION_READY_WITH_ENTRY_GATE`
+
+Closure basis:
+
+```text
+Phase23-BV Primary Judgment
+= PHASE23_BV_PHASE21_DESIGN_CONFORMANCE_FULL_ARCHITECTURE_RUNTIME_EVIDENCE_CLOSURE_REVIEW_COMPLETE
+```
+
+Phase21 Design Conformance:
+
+```text
+Market Context = PASS
+Portfolio Policy = PASS
+Capital Deployment = PASS_WITH_APPROVED_AMENDMENT
+Portfolio Construction = PASS
+Position Sizing = PASS
+Position Management = PASS_WITH_NON_BLOCKING_GAP
+Runtime Planning = PASS
+Strategy Planning Authority = PASS
+Submit Policy Authority = PASS
+Strategy Shadow = PASS
+Close Authority = PASS_WITH_NON_BLOCKING_GAP
+```
+
+Runtime Verification Summary:
+
+```text
+Final 10BD evidence run = runtime-test-historical-smoke-20260730T211110605880Z
+Completed business days = 10 / 10
+BUY_NEW = verified
+BUY_ADD / PM ADD = verified
+SELL_EXIT = verified
+Position carry-forward = verified
+Cash / Ledger / Position / Valuation reconciliation = PASS
+Runtime correctness = PASS
+Accounting correctness = PASS
+Strategy performance = NEGATIVE
+Statistical performance judgment = NOT_YET_SUFFICIENT
+```
+
+Closure Blocker Count:
+
+```text
+0
+```
+
+Non-blocking gaps:
+
+```text
+BU post-repair Close classification requires Operator 1BD or same 10BD revalidation
+SELL_REDUCE partial sell Runtime evidence not yet observed
+Multiple ADD / REDUCE, re-entry, partial fill, rejected order, cash scarcity, simultaneous BUY / SELL, long-held position, month/year boundary, alternate periods, and Production Broker execution remain future coverage
+Early zero deployment / NO_ORDER requires Phase24 performance attribution
+sell_pipeline handles PM ADD as legacy naming / responsibility overlap
+5 obsolete runner fixtures lack Historical Evaluation Authority precondition
+Historical earnings calendar PIT has documented current-snapshot-only exception
+```
+
+Phase24 formal name:
+
+```text
+Phase24 Performance Validation and Strategy Improvement
+```
+
+Phase24 Primary Objective:
+
+```text
+Use the Production-common Strategy Runtime completed through Phase21-23
+to establish a performance baseline, analyze PnL / drawdown / entry /
+sizing / PM / Market Context with evidence, and improve Strategy toward
+the annual return +50% target.
+```
+
+Annual return +50% is a target, not a guarantee.
+
+Phase24 performance improvement principles:
+
+```text
+Do not optimize to one specific period.
+Do not use Runtime PnL, Paper Ledger, selected / bought results, Cash, Portfolio Value, Broker Snapshot, Test Result, Audit Result, Future Return, or Future Price as learning input.
+Learning input remains limited to approved J-Quants-derived data.
+One experiment should change one hypothesis.
+Runtime repair and Strategy improvement must not be mixed.
+Before / After comparison must use the same evaluation contract.
+Alternate periods and years must be used to check reproducibility.
+Long Runtime execution is Operator-owned.
+```
+
+Recommended Phase24 sequence:
+
+```text
+Phase24-A0 BU Post-repair Close Runtime Revalidation
+Phase24-A Performance Evidence and Evaluation Contract Review
+Phase24-B Entry Gate Close Revalidation
+Phase24-C Alternate-period 10BD Matrix
+Phase24-D 20BD / 60BD Runtime Stability
+Phase24-E 200BD Baseline
+Phase24-F Benchmark and Regime Attribution
+Phase24-G Zero Deployment / NO_ORDER Analysis
+Phase24-H Entry Quality Analysis
+Phase24-I Position Sizing Analysis
+Phase24-J PM Analysis
+Phase24-K Loss and Drawdown Attribution
+Phase24-L Improvement Hypothesis Design
+Phase24-M Controlled Strategy Change
+Phase24-N Regression and Runtime Revalidation
+```
+
+Formal handoff artifacts:
+
+```text
+docs/phase_reports/phase23_final_summary_and_phase24_handoff.md
+docs/phase_reports/phase23_to_phase24_chatgpt_handoff.md
+reports/phase_reports/phase23_final_summary_and_phase24_handoff.json
+```

@@ -22,6 +22,75 @@ Historical Runtime Test execution
 
 This contract is retained as the Phase17 Performance Test Contract.
 
+## Phase23-P Amendment: Historical Evaluation Authority
+
+Historical Runtime performance evaluation is formally the evaluation of the current
+Human Accepted, Runtime-consumable AI artifact set through the Production-common
+Runtime chain on historical point-in-time inputs.
+
+At Historical run start, the Runtime Test runner must fix exactly one Human
+Accepted Generation as run authority and persist:
+
+```text
+reports/runtime_tests/runs/<run_id>/historical_evaluation_authority.json
+```
+
+The fixed run authority records at minimum:
+
+- `generation_id`
+- candidate model reference and hash
+- opportunity model reference and hash
+- scaler references and hashes
+- feature schema hashes
+- accepted decision / authority reference
+- `accepted_at`
+- `effective_from`
+- training cutoff
+- dataset revision / freshness metadata
+- component hashes
+- run authority hash
+- evaluation mode
+- evaluation period
+- training overlap
+
+During the Historical run, daily Runtime jobs must consume the run-start fixed
+Accepted Generation authority. Current Accepted Generation pointer changes after
+run start must not change the run authority. Daily evidence may record
+`run_generation_id` / fixed authority reference, but must not reselect a newer
+Accepted Generation during the run.
+
+Production and Demo authority are unchanged:
+
+```text
+accepted_at <= business_date
+effective_from <= business_date
+```
+
+Historical evaluation does not compare Accepted Generation `accepted_at` or
+`effective_from` against each historical business date. Historical daily PIT
+checks apply to market data, financial data, corporate events, features, and
+calendar authority.
+
+Historical Runtime performance is a Runtime Performance Evaluation. It is not:
+
+- past Production replay
+- walk-forward retraining
+- historical Human Acceptance reconstruction
+- strict out-of-sample AI performance unless training cutoff proves that label
+  explicitly
+
+Run summaries must expose:
+
+```text
+training_cutoff
+evaluation_period
+training_overlap
+evaluation_mode
+```
+
+If training overlap exists, the summary must not label the result as
+`STRICT_OOS`.
+
 Phase16 prepares the common Operational Data Foundation used by Production, Demo, Paper, and Historical modes. This contract must not require a Historical-only, Backtest-only, Replay-only, or Phase16-only Canonical Data Source, Feature Store, Runtime root, Current, Ledger, Pending, or mainline.
 
 Historical Runtime execution must consume the same accepted Canonical Data Contract, Feature Producer, Feature Schema, AI Artifact, AI Decision Contract, and Runtime v2 Mainline that Production, Demo, and Paper are expected to use.

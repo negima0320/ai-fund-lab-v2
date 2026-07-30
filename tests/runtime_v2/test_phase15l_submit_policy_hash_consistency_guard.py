@@ -51,7 +51,7 @@ def test_phase15l_policy_match_allows_submit_guard_continuation(tmp_path):
     assert result.status == "PASS"
     assert result.submitted_count == 1
     assert result.submit_policy_consistency["policy_consistency_status"] == "PASS"
-    assert result.submit_policy_consistency["pending_policy_hash"] == result.submit_policy_consistency["active_policy_hash"]
+    assert result.submit_policy_consistency["pending_submit_policy_hash"] == result.submit_policy_consistency["active_policy_hash"]
 
 
 def test_phase15l_policy_mismatch_blocks_submit_before_broker(tmp_path):
@@ -125,7 +125,7 @@ def test_phase15l_missing_pending_policy_evidence_blocks_submit(tmp_path):
     assert result.status == "REVIEW_REQUIRED"
     assert result.submitted_count == 0
     assert result.pending_consumed is False
-    assert result.submit_policy_consistency["policy_mismatch_reason"] == "missing_policy_evidence"
+    assert result.submit_policy_consistency["policy_mismatch_reason"] == "missing_submit_policy_evidence"
 
 
 def test_phase15l_missing_approval_policy_evidence_blocks_submit(tmp_path):
@@ -150,9 +150,9 @@ def test_phase15l_missing_approval_policy_evidence_blocks_submit(tmp_path):
         pending,
         approval=replace(
             pending.approval,
-            policy_version="",
-            policy_source="",
-            pending_policy_hash="",
+            submit_policy_version="",
+            submit_policy_source="",
+            submit_policy_hash="",
         ),
     )
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
@@ -171,7 +171,7 @@ def test_phase15l_missing_approval_policy_evidence_blocks_submit(tmp_path):
     assert result.status == "REVIEW_REQUIRED"
     assert result.submitted_count == 0
     assert result.pending_consumed is False
-    assert result.submit_policy_consistency["policy_mismatch_reason"] == "missing_approval_policy_evidence"
+    assert result.submit_policy_consistency["policy_mismatch_reason"] == "missing_approval_submit_policy_evidence"
     assert result.submit_policy_consistency["active_policy_hash"].startswith("sha256:")
 
 
@@ -208,8 +208,8 @@ def test_phase15l_policy_consistency_manifest_fields_present(tmp_path):
 
     evidence = result.to_stage_details()["submit_policy_consistency"]
     assert evidence["policy_consistency_status"] == "REVIEW_REQUIRED"
-    assert evidence["pending_policy_hash"].startswith("sha256:")
-    assert evidence["approval_pending_policy_hash"] == evidence["pending_policy_hash"]
+    assert evidence["pending_submit_policy_hash"].startswith("sha256:")
+    assert evidence["approval_submit_policy_hash"] == evidence["pending_submit_policy_hash"]
     assert evidence["active_policy_hash"].startswith("sha256:")
     assert evidence["policy_mismatch_reason"]
 

@@ -173,6 +173,100 @@ def test_phase22_d_existing_pm_behavior_preservation_from_shadow_rows(tmp_path: 
     assert payload["scaler_reference"]["path"].endswith("pm_scaler.pkl")
 
 
+def test_phase23_e_runtime_current_positions_feed_strategy_pm_without_fixed_empty_or_hold(tmp_path: Path) -> None:
+    payload, _ = build_position_management_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        existing_pm_decisions=[],
+        runtime_current_positions=[
+            {
+                "position_id": "runtime-pos-7203",
+                "symbol": "7203",
+                "quantity": 100,
+                "average_price": 1000,
+                "acquired_at": "2026-07-10T00:00:00+00:00",
+                "position_state_as_of": "2026-07-15",
+                "valuation_as_of": "2026-07-15",
+                "position_lifecycle_id": "lifecycle-7203",
+            }
+        ],
+        position_lifecycle_summary=_summary(tmp_path, "lifecycle"),
+        technical_feature_summary=_summary(tmp_path, "features"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        accepted_generation_reference=_generation(tmp_path),
+    )
+
+    assert payload["positions"]
+    assert "position_management_shadow_positions_required" not in payload["reason_codes"]
+    assert payload["runtime_current_position_adapter"]["status"] == "PASS"
+    assert payload["runtime_current_position_adapter"]["direct_position_copy_used"] is False
+    assert payload["runtime_current_position_adapter"]["fixed_empty_positions_used"] is False
+    position = payload["positions"][0]
+    assert position["position_id"] == "runtime-pos-7203"
+    assert position["security_code"] == "7203"
+    assert position["action"] == "UNRESOLVED"
+    assert "runtime_current_position_requires_strategy_pm_evaluation" in position["reason_codes"]
+    assert not ({"quantity", "runtime_sell_quantity", "broker_quantity", "reduce_quantity", "exit_quantity"} & set(position))
+    contract = position["adapter_source_contract"]
+    assert contract["quantity"] == 100
+    assert contract["average_price"] == 1000
+    assert contract["valuation_date"] == "2026-07-15"
+    assert contract["position_lifecycle_id"] == "lifecycle-7203"
+    assert contract["accepted_generation_id"] == "pm-generation-fixture"
+    assert contract["technical_features_join_key"] == {"code": "7203", "target_date": "2026-07-15"}
+    assert payload["accepted_generation_reference"]["generation_binding_validation"]["status"] == "PASS"
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase23_k_authoritative_empty_runtime_current_is_safe_zero_action(tmp_path: Path) -> None:
+    payload, _ = build_position_management_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        existing_pm_decisions=[],
+        runtime_current_positions=[],
+        position_lifecycle_summary=PMSourceSummary(
+            status="REVIEW_REQUIRED",
+            business_date="2026-07-15",
+            feature_date="2026-07-15",
+            source_ref="",
+            source_hash="",
+            summary={},
+        ),
+        technical_feature_summary=PMSourceSummary(
+            status="REVIEW_REQUIRED",
+            business_date="2026-07-15",
+            feature_date="2026-07-15",
+            source_ref="",
+            source_hash="",
+            summary={},
+        ),
+        opportunity_summary=PMSourceSummary(
+            status="REVIEW_REQUIRED",
+            business_date="2026-07-15",
+            feature_date="2026-07-15",
+            source_ref="",
+            source_hash="",
+            summary={},
+        ),
+        accepted_generation_reference=_generation(tmp_path),
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["positions"] == []
+    assert payload["runtime_current_position_adapter"]["status"] == "EMPTY_PORTFOLIO"
+    assert payload["runtime_current_position_adapter"]["runtime_current_connected"] is True
+    assert payload["runtime_current_position_adapter"]["authoritative_empty_portfolio"] is True
+    assert "position_management_shadow_positions_required" not in payload["reason_codes"]
+    assert "technical_features_review_required" not in payload["reason_codes"]
+    assert "source_lineage_hash_required" not in payload["reason_codes"]
+    assert payload["accepted_generation_reference"]["generation_binding_validation"]["status"] == "PASS"
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
 def test_phase22_d_hash_lineage_and_artifact_hash_validation(tmp_path: Path) -> None:
     result = _produce(tmp_path)
     assert verify_source_hashes(result.payload)["status"] == "PASS"
@@ -280,7 +374,8 @@ def _write_portfolio_policy(tmp_path: Path) -> Path:
             "cash_posture": "MAINTAIN",
             "exposure_posture": "MAINTAIN",
             "position_management_bias": "NEUTRAL",
-        }
+        },
+        "single_name_weight_cap": 0.18,
     }
     _write_json(config_path, config_payload)
     result = portfolio_policy.produce_portfolio_policy_artifact(
@@ -296,6 +391,8 @@ def _write_portfolio_policy(tmp_path: Path) -> Path:
             config_version="phase22_d_fixture_policy_config.v1",
             config_source=str(config_path),
             intent_policy=config_payload["intent_policy"],
+            single_name_weight_cap=0.18,
+            single_name_weight_cap_source=f"{config_path}#single_name_weight_cap",
         ),
         output_path=tmp_path / "portfolio_policy.json",
     )

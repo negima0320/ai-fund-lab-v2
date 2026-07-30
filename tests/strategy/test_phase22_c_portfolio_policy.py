@@ -230,12 +230,15 @@ def _config(tmp_path: Path) -> PortfolioPolicyConfig:
             "exposure_posture": "MAINTAIN",
             "position_management_bias": "NEUTRAL",
         },
+        "single_name_weight_cap": 0.18,
     }
     _write_json(path, payload)
     return PortfolioPolicyConfig(
         config_version="phase22_c_fixture_intent_config.v1",
         config_source=str(path),
         intent_policy=payload["intent_policy"],
+        single_name_weight_cap=0.18,
+        single_name_weight_cap_source=f"{path}#single_name_weight_cap",
     )
 
 

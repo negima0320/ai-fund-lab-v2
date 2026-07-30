@@ -133,6 +133,40 @@ class DynamicPositionCountProducerResult:
     evidence: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CapacityResolution:
+    artifact_class: str
+    resolved_count: int
+    canonical_field: str
+    source_field: str
+    resolution_status: str
+    resolution_reason: str
+    legacy_alias_used: bool
+    conflict_detected: bool
+    source_schema_version: str
+    source_path: str
+    source_hash: str
+    fields_observed: Mapping[str, int]
+    conflicts: tuple[dict[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifact_class": self.artifact_class,
+            "resolved_count": self.resolved_count,
+            "canonical_field": self.canonical_field,
+            "source_field": self.source_field,
+            "resolution_status": self.resolution_status,
+            "resolution_reason": self.resolution_reason,
+            "legacy_alias_used": self.legacy_alias_used,
+            "conflict_detected": self.conflict_detected,
+            "source_schema_version": self.source_schema_version,
+            "source_path": self.source_path,
+            "source_hash": self.source_hash,
+            "fields_observed": dict(self.fields_observed),
+            "conflicts": [dict(item) for item in self.conflicts],
+        }
+
+
 def default_runtime_artifact_path(runtime_root: Path | str, business_date: str) -> Path:
     return Path(runtime_root) / "strategy_artifacts" / "dynamic_position_count" / business_date / "dynamic_position_count.json"
 
@@ -302,8 +336,18 @@ def build_dynamic_position_count_payload(
         producer_status = "BLOCK"
         reason_codes.append("future_source_date_detected")
 
-    available_candidate_count = _summary_count(candidate_summary, "available_candidate_count", fallback_field="eligible_candidate_count")
-    available_opportunity_count = _summary_count(opportunity_summary, "available_opportunity_count", fallback_field="valid_opportunity_count")
+    candidate_capacity_resolution = resolve_capacity_count(candidate_summary, artifact_class="candidate")
+    opportunity_capacity_resolution = resolve_capacity_count(opportunity_summary, artifact_class="opportunity")
+    capacity_review_reasons: list[str] = []
+    capacity_conflicts = [*candidate_capacity_resolution.conflicts, *opportunity_capacity_resolution.conflicts]
+    for resolution in (candidate_capacity_resolution, opportunity_capacity_resolution):
+        if resolution.resolution_status != "PASS":
+            if producer_status != "BLOCK":
+                producer_status = "REVIEW_REQUIRED"
+            reason_codes.append(resolution.resolution_reason)
+            capacity_review_reasons.append(resolution.resolution_reason)
+    available_candidate_count = candidate_capacity_resolution.resolved_count
+    available_opportunity_count = opportunity_capacity_resolution.resolved_count
     current_position_count = _summary_count(current_portfolio_summary, "current_position_count", fallback_field="position_count")
     eligible_opportunity_count = min(available_candidate_count, available_opportunity_count)
     capital_affordable_position_count = _summary_count_optional(current_portfolio_summary, "capital_affordable_position_count", eligible_opportunity_count)
@@ -416,6 +460,19 @@ def build_dynamic_position_count_payload(
         "current_position_count": current_position_count,
         "available_candidate_count": available_candidate_count,
         "available_opportunity_count": available_opportunity_count,
+        "candidate_capacity_resolution": candidate_capacity_resolution.to_dict(),
+        "opportunity_capacity_resolution": opportunity_capacity_resolution.to_dict(),
+        "resolved_candidate_capacity": available_candidate_count,
+        "resolved_opportunity_capacity": available_opportunity_count,
+        "capacity_resolution_status": "PASS" if not capacity_review_reasons else "REVIEW_REQUIRED",
+        "capacity_constraint_reasons": sorted(set(decision["reason_codes"] if not unresolved_target else [])),
+        "capacity_conflicts": capacity_conflicts,
+        "capacity_review_reasons": sorted(set(capacity_review_reasons)),
+        "source_paths": [item["path"] for item in source_artifacts],
+        "source_schema_versions": {
+            "candidate": candidate_capacity_resolution.source_schema_version,
+            "opportunity": opportunity_capacity_resolution.source_schema_version,
+        },
         "position_count_posture": posture,
         "capacity_constraint_status": capacity_status,
         "confidence": confidence,
@@ -465,6 +522,9 @@ def build_dynamic_position_count_payload(
         "strategy_fixed_position_cap_used": False,
         "actual_target_position_count": actual_target_position_count,
         "meaningful_allocation_position_count": meaningful_allocation_position_count,
+        "candidate_capacity_resolution": candidate_capacity_resolution.to_dict(),
+        "opportunity_capacity_resolution": opportunity_capacity_resolution.to_dict(),
+        "capacity_resolution_status": "PASS" if not capacity_review_reasons else "REVIEW_REQUIRED",
         "reason_codes": payload["reason_codes"],
         "runtime_behavior_changed": False,
     }
@@ -593,6 +653,25 @@ def validate_dynamic_position_count_artifact(payload: dict[str, Any]) -> dict[st
         errors.append("invalid_confidence_range")
     if not isinstance(payload.get("reason_codes"), list):
         errors.append("reason_codes_not_list")
+    if "capacity_resolution_status" in payload and payload.get("capacity_resolution_status") not in {"PASS", "REVIEW_REQUIRED"}:
+        errors.append("invalid_enum:capacity_resolution_status")
+    for field in ("candidate_capacity_resolution", "opportunity_capacity_resolution"):
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if not isinstance(value, dict):
+            errors.append(f"{field}_not_object")
+            continue
+        if value.get("resolution_status") not in {"PASS", "REVIEW_REQUIRED"}:
+            errors.append(f"invalid_capacity_resolution_status:{field}")
+        resolved = value.get("resolved_count")
+        if isinstance(resolved, bool) or not isinstance(resolved, int) or resolved < 0:
+            errors.append(f"invalid_capacity_resolved_count:{field}")
+    for field in ("capacity_constraint_reasons", "capacity_conflicts", "capacity_review_reasons", "source_paths"):
+        if field in payload and not isinstance(payload.get(field), list):
+            errors.append(f"{field}_not_list")
+    if "source_schema_versions" in payload and not isinstance(payload.get("source_schema_versions"), dict):
+        errors.append("source_schema_versions_not_object")
     if not isinstance(payload.get("source_artifacts"), list) or not payload.get("source_artifacts"):
         errors.append("source_artifacts_missing")
     if not isinstance(payload.get("source_hashes"), list) or not payload.get("source_hashes"):
@@ -691,6 +770,124 @@ def _ceiling_authority_status(producer_status: str, config: DynamicPositionCount
 def dynamic_position_count_hash(payload: dict[str, Any]) -> str:
     clean = {key: value for key, value in payload.items() if key != "artifact_hash"}
     return stable_payload_hash(clean)
+
+
+def resolve_capacity_count(summary: DynamicPositionCountSourceSummary, *, artifact_class: str) -> CapacityResolution:
+    if artifact_class == "candidate":
+        canonical_field = "candidate_capacity_count"
+        legacy_aliases = ("consumer_eligible_rows", "available_candidate_count", "eligible_candidate_count", "row_count")
+        conflict_reason = "CANDIDATE_CAPACITY_FIELD_CONFLICT"
+        missing_reason = "CANDIDATE_CAPACITY_FIELD_MISSING"
+        invalid_reason = "CANDIDATE_CAPACITY_FIELD_INVALID"
+    elif artifact_class == "opportunity":
+        canonical_field = "opportunity_capacity_count"
+        legacy_aliases = ("consumer_eligible_rows", "available_opportunity_count", "valid_opportunity_count", "ranking_count", "row_count")
+        conflict_reason = "OPPORTUNITY_CAPACITY_FIELD_CONFLICT"
+        missing_reason = "OPPORTUNITY_CAPACITY_FIELD_MISSING"
+        invalid_reason = "OPPORTUNITY_CAPACITY_FIELD_INVALID"
+    else:
+        raise DynamicPositionCountSchemaError(f"unsupported capacity artifact_class: {artifact_class}")
+
+    payload = summary.summary
+    fields = (canonical_field, *legacy_aliases)
+    observed_raw = {field: payload[field] for field in fields if field in payload}
+    source_schema_version = str(payload.get("schema_version") or payload.get("artifact_schema_version") or "")
+    parsed: dict[str, int] = {}
+    invalid_fields: list[str] = []
+    for field, value in observed_raw.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            invalid_fields.append(field)
+        else:
+            parsed[field] = value
+
+    if invalid_fields:
+        return CapacityResolution(
+            artifact_class=artifact_class,
+            resolved_count=0,
+            canonical_field=canonical_field,
+            source_field="",
+            resolution_status="REVIEW_REQUIRED",
+            resolution_reason=invalid_reason,
+            legacy_alias_used=False,
+            conflict_detected=False,
+            source_schema_version=source_schema_version,
+            source_path=summary.source_ref,
+            source_hash=_strip_sha256(summary.source_hash),
+            fields_observed=parsed,
+            conflicts=tuple({"field": field, "value": observed_raw[field], "reason": "non_negative_integer_required"} for field in invalid_fields),
+        )
+    if not parsed:
+        return CapacityResolution(
+            artifact_class=artifact_class,
+            resolved_count=0,
+            canonical_field=canonical_field,
+            source_field="",
+            resolution_status="REVIEW_REQUIRED",
+            resolution_reason=missing_reason,
+            legacy_alias_used=False,
+            conflict_detected=False,
+            source_schema_version=source_schema_version,
+            source_path=summary.source_ref,
+            source_hash=_strip_sha256(summary.source_hash),
+            fields_observed={},
+            conflicts=(),
+        )
+
+    row_count = parsed.get("row_count")
+    rejected_rows = payload.get("rejected_rows")
+    specific_zero_fields = {
+        field: value
+        for field, value in parsed.items()
+        if field not in {"row_count", "ranking_count"} and value == 0
+    }
+    legitimate_zero = bool(specific_zero_fields) and isinstance(row_count, int) and isinstance(rejected_rows, int) and row_count > 0 and rejected_rows == row_count
+    if legitimate_zero:
+        parsed = {field: value for field, value in parsed.items() if field not in {"row_count", "ranking_count"}}
+
+    unique_counts = set(parsed.values())
+    if len(unique_counts) > 1:
+        source_field = canonical_field if canonical_field in parsed else next(iter(parsed))
+        return CapacityResolution(
+            artifact_class=artifact_class,
+            resolved_count=int(parsed[source_field]),
+            canonical_field=canonical_field,
+            source_field=source_field,
+            resolution_status="REVIEW_REQUIRED",
+            resolution_reason=conflict_reason,
+            legacy_alias_used=source_field != canonical_field,
+            conflict_detected=True,
+            source_schema_version=source_schema_version,
+            source_path=summary.source_ref,
+            source_hash=_strip_sha256(summary.source_hash),
+            fields_observed=parsed,
+            conflicts=(
+                {
+                    "reason": conflict_reason,
+                    "fields": dict(parsed),
+                },
+            ),
+        )
+
+    if canonical_field in parsed:
+        source_field = canonical_field
+    else:
+        source_field = next(field for field in legacy_aliases if field in parsed)
+    resolved = int(parsed[source_field])
+    return CapacityResolution(
+        artifact_class=artifact_class,
+        resolved_count=resolved,
+        canonical_field=canonical_field,
+        source_field=source_field,
+        resolution_status="PASS",
+        resolution_reason="LEGITIMATE_ZERO_CAPACITY" if legitimate_zero else "CAPACITY_RESOLVED",
+        legacy_alias_used=source_field != canonical_field,
+        conflict_detected=False,
+        source_schema_version=source_schema_version,
+        source_path=summary.source_ref,
+        source_hash=_strip_sha256(summary.source_hash),
+        fields_observed=parsed,
+        conflicts=(),
+    )
 
 
 def stable_payload_hash(payload: Any) -> str:

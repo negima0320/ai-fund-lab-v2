@@ -60,8 +60,9 @@ J-Quants PIT Data
   -> Portfolio Policy Engine
   -> Position Management AI
   -> Portfolio Construction
-  -> Capital Deployment
   -> Runtime Planning
+  -> Strategy Planning Authority
+  -> Pending Order Plan
   -> Safety / Submit / Execution
 ```
 
@@ -80,8 +81,8 @@ Current implementationは、Candidate / Opportunity / PM / Capital Deployment / 
 | Portfolio Policy Engine | Portfolio全体の投資姿勢、target cash/exposure/count、permission/biasを出す | Market Context、Corporate Event aggregate risk、Current summary、Opportunity breadth、risk evidence | Portfolio Policy Artifact | Portfolio-level Target / Permission / Posture Authority | 個別銘柄の最終組入、Broker quantity、Safety override | Portfolio Construction、Capital Deployment、PM |
 | Position Management AI | 既存positionごとのHOLD/ADD/REDUCE/EXIT intentを出す | Current position、PM features、Opportunity reference、Market Context、Corporate Event facts、Portfolio Policy refs | PM Decisions Artifact | Existing Position Intent Authority | 新規銘柄選定、target portfolio全体最適化、新Action追加、株数、Submit許可 | Portfolio Construction、Sell Planning互換経路 |
 | Portfolio Construction | Candidate、Opportunity、PM intent、Portfolio Policy、Corporate Event facts、Current、Pendingを統合しTarget Portfolioを決める | Rankings、PM decisions、Portfolio Policy、Corporate Event facts、Current、cash、sector、Pending | Target Portfolio、Strategy Intent | Target Portfolio Decision Authority | Broker quantity、lot rounding、buying power確定、Submit許可 | Capital Deployment |
-| Capital Deployment | Target Portfolio差分をnotional / quantity候補へ変換し実行可能性を評価する | Strategy Intent、Current、cash、Pending、policy、price/lot evidence | Allocation Candidate / Capital Allocation Decision | Allocation Candidate Authority | Target Portfolio決定、Safety override、Runtime approval、Broker submit | Runtime Planning、Safety |
-| Runtime Planning | Allocation CandidateをRuntime Execution Intent / Pending Candidateへ変換する | Allocation Candidate、Current、Pending、approval requirements、order condition authority | Runtime Execution Intent、Pending Candidate | Runtime Planning / Pending Authority | Ranking、PM判断、target weight、Safety判断 | Safety、Approval、Pending Composition、Submit |
+| Runtime Planning | Position Sizingの数量候補とPM/Portfolio Construction intentをRuntime実行intentへ写像するpure mapper | Target Portfolio、Position Sizing quantity candidate、Current、Pending、planning config | planning_intent、order_side_intent、planned_quantity、no_order_reason、planning_reason | Runtime Planning Intent Mapping Authority | Ranking、PM判断、target weight、target notional、quantity sizing、Safety判断 | Strategy Planning Authority、Safety、Approval、Pending Composition、Submit |
+| Strategy Planning Authority | 必須artifact / schema / temporal / lineage / symbol-level planを検証しPendingをmaterializeする | Runtime Planning、Position Sizing、price feasibility、environment capability | order_plan、pending_order_plan、approval evidence、run-level classification | Strategy Planning Authority / Pending Materialization Authority | Strategy allocation、target weight、target notional、quantity sizing、Portfolio membership、BUY/SELL優先順位再判断 | Runtime Pending、Approval、Submit Guard |
 | Safety | 危険なintentをBlock / Reviewする | Runtime Execution Intent、Current、Policy、Broker evidence、Safety policy | Safety decision | Safety Block / Review Authority | Strategy target最適化、lot rounding、ranking | Runtime、Submit |
 | Runtime | 運用順序、Authority検証、Pending、Submit、Ledger、Current、Lifecycle、Auditを制御する | accepted authorities、Runtime state、Pending、Safety、Broker state | ordered operation、ledger/current/report | Operation / Lifecycle / Current / Ledger Authority | Strategy判断、Market Context算出、position sizing式決定 | Operator、Broker adapter、Reports |
 | Broker / Execution | 承認済み注文をBroker制約と実注文Contractへ変換し結果を返す | approved Runtime order、Broker session、availability | broker order、execution/fill result | Broker Execution Authority | 投資判断、target weight、Safety policy | Runtime Ledger、Current |
@@ -97,8 +98,9 @@ Market Context Evidence
   -> Candidate / Opportunity Evidence
   -> Position Management Intent
   -> Portfolio Construction Target Portfolio Decision
-  -> Capital Deployment Allocation Candidate
-  -> Runtime Planning Execution Intent
+  -> Position Sizing Notional / Quantity Candidate
+  -> Runtime Planning Execution Intent Mapper
+  -> Strategy Planning Authority Pending Materialization
   -> Safety / Approval / Pending
   -> Submit / Execution
 ```
@@ -110,14 +112,16 @@ Ranking上位 = BUYではない
 PM ADD = BUYではない
 Portfolio Policy ALLOWED = BUYではない
 Corporate Event fact = 自動BUY/SELLではない
-Capital Deployment feasible = Submit許可ではない
+Runtime Planning feasible = Submit許可ではない
 ```
 
 最終的に「どの銘柄を、どのTarget WeightでPortfolioへ組み入れるか」を決めるAuthorityは `Portfolio Construction` である。これは `Target Portfolio Decision Authority` と呼ぶ。
 
-`Capital Deployment` はTarget Portfolioを変更しない。Capital DeploymentはTarget Portfolio差分を、notional、quantity candidate、cash feasibility、exposure feasibility、lot viability、rejection reasonへ変換する `Allocation Candidate Authority` である。
+`Position Sizing` はTarget Portfolio差分を、target_notional、target_quantity_candidate、quantity_delta_candidate、quantity_statusへ変換するQuantity Candidate Authorityである。Capital Deploymentの旧責務のうち、target exposure再計算、target weight再調整、銘柄優先順位再計算、membership再判断は重複Strategy判断として退役する。broker-independent execution feasibilityはRuntime PlanningまたはStrategy Planning Authorityの検証責務へ統合する。
 
-`Runtime Planning` はRuntime Execution Intent / Pending Candidateを生成する。これは運用・Pending化のAuthorityであり、StrategyのTarget Weightを再判断しない。
+`Runtime Planning` はRuntime Execution Intent / Pending Candidateを生成するpure mapperである。これは運用intentのAuthorityであり、StrategyのTarget Weight、Target Notional、Quantity Candidateを再判断しない。
+
+`Strategy Planning Authority` はrequired artifact presence、schema、temporal authority、lineage/hash、symbol-level planning result、execution feasibilityを検証し、pending_order_planをmaterializeする。Strategy Planning Authorityはtarget_weight、target_notional、target_quantity_candidate、quantity_delta_candidateを再計算しない。
 
 `Safety` はBlock / Review Authorityであり、危険なintentを止めることはできるが、より良いportfolioへ最適化しない。
 
@@ -144,32 +148,31 @@ Owner:
 Portfolio Construction
 ```
 
-Allocation Candidate:
+Position Sizing Quantity Candidate:
 
 ```text
 target_notional
-delta_notional
-quantity_candidate
-lot_rounding_result
-cash_feasibility
-exposure_feasibility
-rejection_reason
+target_quantity_candidate
+quantity_delta_candidate
+quantity_status
+rounding_result
+minimum_executable_notional_result
 ```
 
 Owner:
 
 ```text
-Capital Deployment
+Position Sizing
 ```
 
 Runtime Execution Intent:
 
 ```text
 side
-quantity
+planned_quantity
 order_condition_authority_ref
 target_session
-source_allocation_ref
+source_quantity_ref
 approval_requirements
 ```
 
@@ -179,7 +182,185 @@ Owner:
 Runtime Planning
 ```
 
-Portfolio ConstructionはBroker quantityやlot roundingを決めない。Capital DeploymentはTarget Portfolioを決めない。Runtime PlanningはRanking、PM intent、Target Weightを再計算しない。
+Portfolio ConstructionはBroker quantityやlot roundingを決めない。Position SizingはTarget Portfolioを決めない。Runtime PlanningはRanking、PM intent、Target Weight、Target Notional、Quantity Candidateを再計算しない。Strategy Planning AuthorityはRuntime Planningのplanned_quantityを検証してPending化するだけで、quantity丸めやnotionalからの数量再算出を行わない。
+
+### 3.3.1 Portfolio Policy -> Portfolio Construction Binding
+
+Phase23-AS後、Portfolio ConstructionはAQ Portfolio Policy artifactをTarget Weight Authorityのcanonical sourceとして直接消費する。
+
+Required Portfolio Policy fields:
+
+```text
+target_position_count
+target_gross_exposure_ratio
+target_gross_exposure
+cash_reserve_ratio
+cash_reserve
+single_name_weight_cap
+deployment_posture
+```
+
+Portfolio Constructionの`target_weight_authority`は、Portfolio Policy artifact path/hash、Policy decision id、target count、gross exposure、cash reserve、single-name cap、business dateを保持する。旧Dynamic Position Count / Dynamic Cash Exposure artifactはdecision pathへ戻さず、存在してもnoncanonical observabilityまたはlegacy read-only evidenceに限定する。
+
+Valid zeroはREVIEW_REQUIREDではない。`target_position_count=0`または`target_gross_exposure=0`で、required authorityが有効な場合は、明示zero reasonを持つ通常のzero allocation outcomeとする。
+
+## 3.3.2 Planning Chain Contract
+
+Phase23-AR後のPlanning chainは次をcanonical pathとする。
+
+```text
+Portfolio Construction target_weight
+  -> Position Sizing target_notional / target_quantity_candidate / quantity_delta_candidate
+  -> Runtime Planning planning_intent / order_side_intent / planned_quantity
+  -> Strategy Planning Authority validation / pending_order_plan materialization
+```
+
+Runtime Planningのzero-state contract:
+
+```text
+quantity_delta_candidate > 0 -> BUY_NEW or BUY_ADD intent
+quantity_delta_candidate < 0 -> SELL_REDUCE or SELL_EXIT intent
+quantity_delta_candidate == 0 -> NO_ACTION / NO_ORDER
+target_weight > 0 and target_notional > 0 and target_quantity_candidate == 0 -> NO_ORDER_MINIMUM_NOTIONAL_UNMET
+missing target_weight or quantity authority -> REVIEW_REQUIRED
+invalid schema / hash / date / future authority -> fail-closed
+```
+
+Optional legacy evidence、legacy quality、noncanonical Capital Deployment artifact、retired Dynamic Position Count / Dynamic Cash Exposure artifactの欠損は、canonical authorityが有効である限りMorning HALTへ昇格しない。
+
+## 3.3.1 Opportunity Score -> Target Weight -> Position Sizing Boundary
+
+この節はPhase23-ANで閉じた、Opportunity Ranking、Portfolio Construction、Position Sizing間の正式境界である。詳細Contractは `docs/02_architecture/portfolio_construction_and_position_sizing_contract.md` を参照する。
+
+### Opportunity Score Contract
+
+`runtime_opportunity_score` は Opportunity Ranking Authority が生成する銘柄間の相対的投資機会signalである。
+
+Contract:
+
+```text
+producer = Opportunity Ranking Authority
+canonical field = runtime_opportunity_score
+semantics = relative opportunity / expected edge evidence
+range = finite numeric
+sign = signful; negative value allowed
+higher_is_better = true
+PIT = business_date時点までのCandidate / Opportunity入力に限定
+```
+
+`runtime_opportunity_score` は資金配分額、target weight、allocation quality、BUY確定、Submit許可ではない。Position Sizingは `runtime_opportunity_score` をquality multiplierやweight計算の直接入力として再解釈してはならない。
+
+### Portfolio Construction Target Allocation Contract
+
+Opportunity RankingをPortfolio制約へ統合し、どの銘柄をTarget Portfolioに含め、どの比率で持つかを決めるAuthorityは `Portfolio Construction` である。
+
+Canonical fields:
+
+```text
+target_weight
+target_weight_authority
+target_weight_resolution
+```
+
+`target_weight` はPortfolio全体に対する対象銘柄の目標保有比率である。単位はratioであり、原則として以下を満たす。
+
+```text
+0.0 <= target_weight <= single_name_weight_cap
+sum(target_weight) <= target_gross_exposure
+```
+
+余剰はcashとして保持できる。保有数やBUY件数を満たすためにweightを強制配分してはならない。eligible candidateであっても `target_weight=0`、Portfolio全体でBUY 0件、既存保有の維持または縮小は正常なStrategy outcomeであり得る。
+
+`target_weight_authority` には最低限以下を保持する。
+
+```text
+source_opportunity_reference
+portfolio_policy_reference
+market_context_reference
+position_count_reference
+existing_position_reference
+weight_method
+weight_method_version
+business_date
+pit_status
+reason_codes
+```
+
+### Portfolio Construction -> Position Sizing Boundary
+
+Position Sizingの正式入力はPortfolio Constructionが決定した `target_weight` または同等のTarget Allocation Authorityである。Position Sizingは、Opportunity score、rank、candidate scoreを再解釈して投資対象や相対weightを決め直さない。
+
+Position Sizing input contract:
+
+```text
+target_weight
+portfolio_total_equity / investable_capital
+reference_price
+trading_unit
+current_quantity
+current_notional
+current_weight
+single_name_weight_cap / safety cap reference
+minimum_executable_notional policy
+```
+
+`reference_price` は計画数量変換用の Market Evidence Authority / Current Valuation Authority 由来フィールドである。Position Sizingは価格を取得・推定・latest fallbackせず、PIT検証済みの `reference_price_authority` と `reference_price_resolution` を消費する。`target_weight > 0` かつ `target_notional > 0` の場合のみ価格が必須で、明示的なzero allocationでは価格欠損をReview理由にしない。
+
+Position Sizing output contract:
+
+```text
+target_notional
+target_quantity_candidate
+quantity_delta_candidate
+rounding_result
+cash_residual_evidence
+minimum_executable_notional_result
+reason_codes
+```
+
+Quantity、lot rounding、cash feasibility、minimum executable notional、residual cashの処理はPosition Sizing / Capital Deployment / Runtime Planningの下流責務であり、Portfolio ConstructionはBroker quantityを決めない。
+
+### Raw Score and Allocation Decision Separation
+
+`runtime_opportunity_score`、`allocation_quality_score`、`target_weight`、`target_notional`、`quantity` は別Authorityである。
+
+```text
+runtime_opportunity_score = 相対Opportunity signal
+allocation_quality_score = 明示Authorityがある場合のみ使える品質補助signal
+target_weight = Portfolio ConstructionのTarget Portfolio決定
+target_notional = Position Sizing / Capital Deploymentの金額候補
+quantity = Runtime / Broker制約を含む下流候補または実行値
+```
+
+以下は禁止する。
+
+```text
+raw score clamp
+absolute value
+score shift
+sigmoid
+current-day min-max normalization
+current-day percentile rank
+negative-to-zero
+raw score -> allocation_quality_score silent promotion
+raw score -> target_weight direct substitution
+forced BUY
+fixed BUY count
+```
+
+### Failure and Review-required Behavior
+
+Target Weight Authorityが生成できない場合、下流はfail-closedする。
+
+```text
+Portfolio Construction target_weight unresolved
+  -> REVIEW_REQUIRED
+  -> Position Sizing target_notional = 0
+  -> no silent zero-as-success
+  -> no forced BUY
+```
+
+負の `runtime_opportunity_score` はschema errorではない。ただし、負値を無条件にpositive qualityやpositive target weightへ変換してはならない。採用、非採用、zero weight、REVIEW_REQUIREDのいずれになるかはPortfolio ConstructionのTarget Weight Authorityとreason codeで説明する。
 
 ## 3.4 Status Taxonomy
 
@@ -479,7 +660,9 @@ runtime_consumer_eligibility: NOT_ELIGIBLE
 
 ## 10. Capital Deployment Architecture
 
-現行Policy:
+Phase23-AR後、Capital DeploymentはStrategy decision path上のstandalone public stageではない。過去の検討値・旧artifactは、互換性確認またはnoncanonical observabilityとしてのみ扱う。Canonicalな数量候補はPosition Sizingが生成し、Runtime Planningはその数量候補をexecution intentへ写像し、Strategy Planning Authorityがpending_order_planをmaterializeする。
+
+Legacy reference policy:
 
 ```text
 evaluation_capital=1,000,000
@@ -531,11 +714,11 @@ Liquidityは用途を分ける。
 
 | Use | Owner |
 |---|---|
-| Strategy sizing input | Portfolio Policy / Capital Deployment |
+| Strategy sizing input | Portfolio Policy / Position Sizing |
 | Risk hard limit | Safety |
-| Broker execution feasibility | Runtime Planning / Broker adapter |
+| Broker execution feasibility | Runtime Planning / Strategy Planning Authority / Broker adapter |
 
-Safetyはlot roundingを行わない。lot rounding evidenceはCapital Deploymentが候補として記録し、Runtime Planning / Broker adapterが実際のBroker制約と照合する。
+Safetyはlot roundingを行わない。lot rounding evidenceはPosition Sizingがquantity candidateとして記録し、Runtime Planning / Strategy Planning Authority / Broker adapterが実際のBroker制約と照合する。
 
 20% cashの判断:
 
@@ -547,7 +730,7 @@ Safetyはlot roundingを行わない。lot rounding evidenceはCapital Deploymen
 
 ## 11. Dynamic Position Count
 
-Dynamic Position CountのownerはPortfolio Policy Engineである。Capital DeploymentはPolicy targetを実行可能数量候補へ変換し、Safetyはhard capを適用する。
+Dynamic Position CountのownerはPortfolio Policy Engineである。Phase23-AQ後、Dynamic Position Countは独立Strategy moduleではなくPortfolio Policy内部resolverである。Policy targetから実行可能数量候補への変換はPosition Sizingが担当し、Safetyはhard capを適用する。
 
 入力候補:
 
@@ -588,9 +771,9 @@ base equal weight
 
 - Portfolio Policy Engineはtarget posture / constraints / confidenceを出す
 - Portfolio ConstructionがTarget Portfolio上のtarget weightを決める
-- Capital Deploymentがnotionalとquantity candidateへ変換する
+- Position Sizingがnotionalとquantity candidateへ変換する
 - Safetyがhard capを適用する
-- Runtime Planning / Broker adapterがBroker制約を最後に照合する
+- Runtime Planning / Strategy Planning Authority / Broker adapterがBroker制約を最後に照合する
 
 禁止:
 
@@ -609,7 +792,7 @@ ADD:
 
 - 強い上昇継続とPortfolio余力があるときの買い増し候補intent
 - 直接注文ではない
-- Portfolio Construction / Capital Deployment / Safety / Runtime Planningを通過して初めてPending Candidateになる
+- Portfolio Construction / Position Sizing / Safety / Runtime Planning / Strategy Planning Authorityを通過して初めてPending Candidateになる
 
 REDUCE:
 
@@ -914,8 +1097,9 @@ Market Context + Corporate Event
   -> Portfolio Policy
   -> Position Management refs
   -> Portfolio Construction
-  -> Capital Deployment
+  -> Position Sizing
   -> Runtime Planning
+  -> Strategy Planning Authority
   -> Safety / Runtime switch
 ```
 
@@ -927,7 +1111,7 @@ Phase21-D/E時点のPhase22実装順:
 4. Portfolio Policy Artifact
 5. Position Management refs
 6. Portfolio Construction
-7. Capital Deployment Contract refactor
+7. Position Sizing quantity candidate contract
 8. Runtime Planning bridge
 9. Dynamic Position Count
 10. Target Cash Ratio

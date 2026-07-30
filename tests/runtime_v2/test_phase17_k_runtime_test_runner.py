@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "runtime_test.py"
@@ -146,6 +147,102 @@ def test_phase17_k_plan_is_read_only_and_uses_runtime_cli_sequence(tmp_path: Pat
     assert runner.RUNTIME_CLI_MODULE in first_command
 
 
+def _write_historical_calendar(root: Path, days: list[str]) -> None:
+    target = root / "operations" / "jquants" / "historical_snapshots" / "trading_calendar"
+    target.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in days]).to_parquet(target / "data.parquet", index=False)
+    (target / "validation.json").write_text(json.dumps({"status": "PASS", "reason": "calendar_authority_ready", "max_date": days[-1] if days else ""}), encoding="utf-8")
+
+
+def _write_validated_calendar_overlay(root: Path, days: list[str]) -> None:
+    run_root = root / "market_data_acquisition" / "runs" / "jquants-acquisition-test"
+    calendar = run_root / "raw" / "jquants" / "trading_calendar"
+    calendar.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in days]).to_parquet(calendar / "data.parquet", index=False)
+    final_validation = {
+        "status": "PASS",
+        "future_date_count": 0,
+        "normalized_inventory": {"duplicate_key_count": 0},
+        "schema_comparison": {"status": "PASS", "runtime_merge_compatible": True},
+        "jquants_lineage": {"status": "PASS"},
+    }
+    (run_root / "state.json").write_text(json.dumps({"status": "PASS", "acquisition_run_id": run_root.name, "final_validation": final_validation}), encoding="utf-8")
+    (run_root / "plan.json").write_text(json.dumps({"status": "PASS", "acquisition_run_id": run_root.name}), encoding="utf-8")
+
+
+def test_phase23_ag_plan_preserves_requested_window_when_calendar_is_partial(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-13", "2026-07-14", "2026-07-15"])
+
+    plan = runner.build_plan(
+        profile=runner.load_profile("historical-extended-smoke"),
+        runtime_root=root,
+        evidence_root=tmp_path / "reports",
+        business_days=10,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="runtime-test-window-partial",
+    )
+
+    assert plan["requested_business_days"] == 10
+    assert plan["resolved_business_day_count"] == 8
+    assert plan["window_resolution_status"] == "REVIEW_REQUIRED"
+    assert plan["request_conformance_status"] == "NOT_PASS"
+    assert plan["unresolved_requested_dates"] == ["2026-07-16", "2026-07-17"]
+
+
+def test_phase23_ag_plan_composes_validated_calendar_overlay_for_full_resolution(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-13", "2026-07-14", "2026-07-15"])
+    _write_validated_calendar_overlay(root, ["2026-07-16", "2026-07-17", "2026-07-20"])
+
+    plan = runner.build_plan(
+        profile=runner.load_profile("historical-extended-smoke"),
+        runtime_root=root,
+        evidence_root=tmp_path / "reports",
+        business_days=10,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="runtime-test-window-overlay",
+    )
+
+    assert plan["requested_business_days"] == 10
+    assert plan["resolved_business_day_count"] == 10
+    assert plan["resolved_business_dates"][-2:] == ["2026-07-16", "2026-07-17"]
+    assert plan["window_resolution_status"] == "PASS"
+    assert plan["calendar_authority"]["overlay_count"] == 1
+
+
+def test_phase23_ag_plan_ignores_unvalidated_calendar_overlay(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-13", "2026-07-14", "2026-07-15"])
+    run_root = root / "market_data_acquisition" / "runs" / "unvalidated"
+    calendar = run_root / "raw" / "jquants" / "trading_calendar"
+    calendar.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": "2026-07-16", "HolDiv": "1"}, {"Date": "2026-07-17", "HolDiv": "1"}]).to_parquet(calendar / "data.parquet", index=False)
+
+    plan = runner.build_plan(
+        profile=runner.load_profile("historical-extended-smoke"),
+        runtime_root=root,
+        evidence_root=tmp_path / "reports",
+        business_days=10,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="runtime-test-window-unvalidated",
+    )
+
+    assert plan["requested_business_days"] == 10
+    assert plan["resolved_business_day_count"] == 8
+    assert plan["window_resolution_status"] == "REVIEW_REQUIRED"
+    assert plan["calendar_authority"]["overlay_count"] == 0
+
+
 def test_phase17_k_backup_excludes_foundation_and_dry_run_no_mutation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     runner = load_runner()
     root = make_runtime_root(tmp_path)
@@ -166,6 +263,57 @@ def test_phase17_k_reset_requires_valid_backup(tmp_path: Path, capsys: pytest.Ca
     payload = call_main(runner, ["reset", "--runtime-root", str(root), "--evidence-root", str(tmp_path / "reports"), "--dry-run"], capsys)
     assert payload["status"] == "PRECONDITION_FAILURE"
     assert payload["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
+
+
+def test_fresh_run_accepts_auto_abandon_on_error_option(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    payload = call_main(
+        runner,
+        ["fresh-run", "--runtime-root", str(root), "--evidence-root", str(tmp_path / "reports"), "--business-days", "1", "--dry-run", "--auto-abandon-on-error"],
+        capsys,
+    )
+    assert payload["status"] == "DRY_RUN"
+
+
+def test_fresh_run_auto_abandon_writes_standard_abandonment_artifacts(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence_root = tmp_path / "reports"
+    run_id = "runtime-test-auto-abandon"
+    run_dir = evidence_root / "runs" / run_id
+    runner.write_json_atomic(
+        run_dir / "run_state.json",
+        {
+            "schema_version": runner.RUN_STATE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "profile_id": "historical-smoke",
+            "status": "HALT",
+            "halted_at": {"business_date": "2026-07-06", "job": "submit", "exit_code": 20},
+            "completed_business_days": [],
+            "next_job": "submit",
+        },
+    )
+
+    result = runner._maybe_auto_abandon_fresh_run(
+        args=runner.argparse.Namespace(auto_abandon_on_error=True, auto_abandon_reason="test_auto_abandon"),
+        profile={"profile_id": "historical-smoke"},
+        runtime_root=root,
+        evidence_root=evidence_root,
+        run_id=run_id,
+        final_status="HALT",
+        exit_code=runner.EXIT_HALT,
+    )
+
+    abandonment = json.loads((run_dir / "abandonment.json").read_text(encoding="utf-8"))
+    final_summary = json.loads((run_dir / "final_summary.json").read_text(encoding="utf-8"))
+    assert result["performed"] is True
+    assert result["reason"] == "halt_run_abandoned_after_fresh_run_error"
+    assert abandonment["abandon_reason"] == "test_auto_abandon"
+    assert abandonment["abandoned_by"] == "fresh-run"
+    assert abandonment["resume_disabled"] is True
+    assert final_summary["status"] == "ABANDONED"
+    assert final_summary["broker_write"] is False
 
 
 def test_phase17_k_reset_initial_state_after_confirmed_backup(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -306,6 +454,66 @@ def test_phase17_k_run_invokes_normal_runtime_cli_and_stops_on_nonzero(
     assert payload["_exit_code"] == runner.EXIT_HALT
     assert commands
     assert commands[0][commands[0].index("-m") + 1] == runner.RUNTIME_CLI_MODULE
+
+
+def test_phase23_d_halt_summary_propagates_manifest_reason_after_state_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence = tmp_path / "reports"
+    call_main(runner, ["backup", "--runtime-root", str(root), "--evidence-root", str(evidence), "--confirm", CONFIRM_FLAG], capsys)
+    manifest_path = tmp_path / "runtime_manifest.json"
+
+    def fake_run(command: list[str], *, cwd: Path):
+        job = command[command.index("--job") + 1]
+        business_date = command[command.index("--business-date") + 1]
+        if job == "submit":
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1",
+                        "run_id": "daily-runtime-fixture",
+                        "business_date": business_date,
+                        "job": job,
+                        "exit_code": 20,
+                        "final_state": "REVIEW_REQUIRED",
+                        "reason": "historical_safety_temporal_authority_missing",
+                        "data_readiness_review_reasons": ["historical_safety_temporal_authority_missing"],
+                        "data_readiness_next_operator_action": "Refresh or inspect evidence: historical_safety_temporal_authority_missing",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 20, json.dumps({"exit_code": 20, "manifest": str(manifest_path)}), "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(runner, "run_runtime_cli", fake_run)
+    payload = call_main(
+        runner,
+        ["run", "--runtime-root", str(root), "--evidence-root", str(evidence), "--business-days", "1", "--start-date", "2026-07-06", "--confirm", CONFIRM_FLAG],
+        capsys,
+    )
+    run_id = next((evidence / "runs").iterdir()).name
+    run_dir = evidence / "runs" / run_id
+    run_state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    status_payload = call_main(runner, ["status", "--runtime-root", str(root), "--evidence-root", str(evidence)], capsys)
+    close_payload = call_main(runner, ["close", "--runtime-root", str(root), "--evidence-root", str(evidence), "--run-id", run_id], capsys)
+    final_summary = json.loads((run_dir / "final_summary.json").read_text(encoding="utf-8"))
+
+    assert payload["status"] == "HALT"
+    assert payload["_exit_code"] == runner.EXIT_HALT
+    assert run_state["status"] == "HALT"
+    assert run_state["halted_at"]["exit_code"] == 20
+    assert run_state["halt_summary"]["status"] == "HALT"
+    assert run_state["halt_summary"]["root_reason"] == "historical_safety_temporal_authority_missing"
+    assert run_state["halt_summary"]["root_reason_code"] == "historical_safety_temporal_authority_missing"
+    assert run_state["halt_summary"]["recommended_action"] == "Refresh or inspect evidence: historical_safety_temporal_authority_missing"
+    assert status_payload["halt_summary"] == run_state["halt_summary"]
+    assert close_payload["halt_summary"] == run_state["halt_summary"]
+    assert final_summary["halt_summary"] == run_state["halt_summary"]
 
 
 def test_phase17_k_run_marks_execution_success_when_runtime_cli_jobs_pass(

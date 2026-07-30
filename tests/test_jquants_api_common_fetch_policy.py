@@ -11,6 +11,7 @@ from ai_fund_lab_v2.config import JQuantsSettings
 from ai_fund_lab_v2.data.jquants_fetch_policy import (
     AUTH_ERROR,
     JQUANTS_DAILY_QUOTES_ENDPOINT,
+    JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
     JQUANTS_FINS_SUMMARY_ENDPOINT,
     JQUANTS_TRADING_CALENDAR_ENDPOINT,
     JQuantsRateLimitPolicy,
@@ -78,6 +79,7 @@ def test_retry_policy_classifies_statuses() -> None:
 def test_endpoint_capability_and_range_strategy() -> None:
     daily = endpoint_capability(JQUANTS_DAILY_QUOTES_ENDPOINT)
     calendar = endpoint_capability(JQUANTS_TRADING_CALENDAR_ENDPOINT)
+    earnings = endpoint_capability(JQUANTS_EARNINGS_CALENDAR_ENDPOINT)
     fins = endpoint_capability(JQUANTS_FINS_SUMMARY_ENDPOINT)
 
     assert daily.supports_date is True
@@ -86,6 +88,8 @@ def test_endpoint_capability_and_range_strategy() -> None:
     assert choose_fetch_strategy(JQUANTS_DAILY_QUOTES_ENDPOINT, from_date="2026-01-01", to_date="2026-01-31") == "range_fetch"
     assert calendar.prefer_range_fetch is True
     assert choose_fetch_strategy(JQUANTS_TRADING_CALENDAR_ENDPOINT, from_date="2026-01-01", to_date="2026-01-31") == "range_fetch"
+    assert earnings.supports_date is False
+    assert earnings.supports_code is False
     assert fins.supports_code is True
     assert choose_fetch_strategy(JQUANTS_FINS_SUMMARY_ENDPOINT, from_date="2026-01-01", to_date="2026-01-31") == "date_by_date"
 
@@ -105,6 +109,12 @@ def test_build_endpoint_params_respects_capabilities() -> None:
         to_date="2026-06-30",
         code="72030",
     )
+    earnings_params = build_endpoint_params(
+        JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+        date="2026-06-01",
+        code="72030",
+        pagination_key="next",
+    )
 
     assert daily_params == {
         "date": "2026-06-01",
@@ -114,6 +124,7 @@ def test_build_endpoint_params_respects_capabilities() -> None:
         "pagination_key": "next",
     }
     assert fins_params == {"code": "72030"}
+    assert earnings_params == {"pagination_key": "next"}
 
 
 def test_manifest_contains_rate_limit_retry_and_endpoint_capability_without_secret() -> None:

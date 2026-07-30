@@ -213,6 +213,7 @@ def produce_position_management_artifact(
     accepted_generation_reference: PMAcceptedGenerationReference,
     output_path: Path | str,
     as_of: str | None = None,
+    runtime_current_positions: Iterable[Mapping[str, Any]] | None = None,
 ) -> PositionManagementProducerResult:
     payload, evidence = build_position_management_payload(
         business_date=business_date,
@@ -220,6 +221,7 @@ def produce_position_management_artifact(
         corporate_event_artifact_path=corporate_event_artifact_path,
         portfolio_policy_artifact_path=portfolio_policy_artifact_path,
         existing_pm_decisions=existing_pm_decisions,
+        runtime_current_positions=runtime_current_positions,
         position_lifecycle_summary=position_lifecycle_summary,
         technical_feature_summary=technical_feature_summary,
         opportunity_summary=opportunity_summary,
@@ -253,6 +255,7 @@ def build_position_management_payload(
     opportunity_summary: PMSourceSummary,
     accepted_generation_reference: PMAcceptedGenerationReference,
     as_of: str | None = None,
+    runtime_current_positions: Iterable[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_iso_date(business_date, field="business_date")
     as_of = as_of or f"{business_date}T00:00:00+00:00"
@@ -272,7 +275,18 @@ def build_position_management_payload(
         requested_business_date=business_date,
         production_use_requested=True,
     )
-    positions, position_reasons = _positions_from_existing_decisions(existing_pm_decisions, business_date=business_date)
+    existing_decision_rows = [dict(row) for row in existing_pm_decisions if isinstance(row, Mapping)]
+    runtime_current_connected = runtime_current_positions is not None
+    runtime_current_rows = [dict(row) for row in (runtime_current_positions or ()) if isinstance(row, Mapping)]
+    positions, position_reasons = _positions_from_runtime_current(
+        runtime_current_rows,
+        existing_pm_decisions=existing_decision_rows,
+        business_date=business_date,
+        accepted_generation_reference=accepted_generation_reference,
+    )
+    if not positions and not runtime_current_connected:
+        positions, position_reasons = _positions_from_existing_decisions(existing_decision_rows, business_date=business_date)
+    authoritative_empty_portfolio = runtime_current_connected and not positions and not position_reasons
     generation_validation = validate_generation_binding(accepted_generation_reference)
     source_status = "VALID"
     reason_codes: list[str] = list(position_reasons)
@@ -292,6 +306,7 @@ def build_position_management_payload(
         "technical_features": technical_feature_summary.to_dict(requested_business_date=business_date),
         "opportunity": opportunity_summary.to_dict(requested_business_date=business_date),
     }
+    pm_source_required = not authoritative_empty_portfolio
     for name, summary in (
         ("position_lifecycle", position_lifecycle_summary),
         ("technical_features", technical_feature_summary),
@@ -300,6 +315,8 @@ def build_position_management_payload(
         if not _summary_aligned(summary, business_date=business_date):
             producer_status = "BLOCK"
             reason_codes.append(f"{name}_date_mismatch")
+        if not pm_source_required:
+            continue
         if summary.status == "BLOCK":
             producer_status = "BLOCK"
             reason_codes.append(f"{name}_block")
@@ -310,10 +327,13 @@ def build_position_management_payload(
         producer_status = "BLOCK"
         reason_codes.extend(generation_validation["reason_codes"])
         source_status = "AUTHORITY_CONFLICT"
-    if not positions:
+    if not positions and not runtime_current_connected:
         if producer_status != "BLOCK":
             producer_status = "REVIEW_REQUIRED"
         reason_codes.append("position_management_shadow_positions_required")
+    elif not positions and position_reasons:
+        if producer_status != "BLOCK":
+            producer_status = "REVIEW_REQUIRED"
 
     feature_date = min(
         [
@@ -347,9 +367,9 @@ def build_position_management_payload(
         {"role": "market_context", "path": str(market_context_artifact_path or ""), "required": True, "status": market_result["status"]},
         {"role": "corporate_event", "path": str(corporate_event_artifact_path or ""), "required": True, "status": corporate_result["status"]},
         {"role": "portfolio_policy", "path": str(portfolio_policy_artifact_path or ""), "required": True, "status": portfolio_result["status"]},
-        {"role": "position_lifecycle", "path": position_lifecycle_summary.source_ref, "required": True, "status": position_lifecycle_summary.status},
-        {"role": "technical_features", "path": technical_feature_summary.source_ref, "required": True, "status": technical_feature_summary.status},
-        {"role": "opportunity_summary", "path": opportunity_summary.source_ref, "required": True, "status": opportunity_summary.status},
+        {"role": "position_lifecycle", "path": position_lifecycle_summary.source_ref, "required": pm_source_required, "status": position_lifecycle_summary.status},
+        {"role": "technical_features", "path": technical_feature_summary.source_ref, "required": pm_source_required, "status": technical_feature_summary.status},
+        {"role": "opportunity_summary", "path": opportunity_summary.source_ref, "required": pm_source_required, "status": opportunity_summary.status},
         {"role": "accepted_generation", "path": accepted_generation_reference.generation_id, "required": True, "status": generation_validation["status"]},
         {"role": "model", "path": accepted_generation_reference.model_reference, "required": True, "status": generation_validation["model_hash_status"]},
         {"role": "scaler", "path": accepted_generation_reference.scaler_reference, "required": True, "status": generation_validation["scaler_hash_status"]},
@@ -362,7 +382,8 @@ def build_position_management_payload(
         {"role": "model", "path": accepted_generation_reference.model_reference, "sha256": _strip_sha256(accepted_generation_reference.model_hash)},
         {"role": "scaler", "path": accepted_generation_reference.scaler_reference, "sha256": _strip_sha256(accepted_generation_reference.scaler_hash)},
     ]
-    if not all(item["sha256"] for item in source_hashes):
+    required_hash_roles = {item["role"] for item in source_artifacts if item["required"]}
+    if not all(item["sha256"] for item in source_hashes if item["role"] in required_hash_roles):
         if producer_status != "BLOCK":
             producer_status = "REVIEW_REQUIRED"
         reason_codes.append("source_lineage_hash_required")
@@ -386,6 +407,18 @@ def build_position_management_payload(
         ),
         "positions": positions,
         "position_count": len(positions),
+        "runtime_current_position_adapter": {
+            "status": "PASS" if positions else "EMPTY_PORTFOLIO" if authoritative_empty_portfolio else "MISSING",
+            "source": position_lifecycle_summary.source_ref,
+            "source_hash": position_lifecycle_summary.source_hash,
+            "runtime_current_connected": runtime_current_connected,
+            "authoritative_empty_portfolio": authoritative_empty_portfolio,
+            "input_row_count": len(runtime_current_rows),
+            "output_position_count": len(positions),
+            "direct_position_copy_used": False,
+            "fixed_empty_positions_used": False,
+            "hold_fallback_used": False,
+        },
         "action_taxonomy": sorted(PM_ACTIONS),
         "intensity_taxonomy": sorted(PM_INTENSITIES),
         "quantity_decided": False,
@@ -1225,6 +1258,89 @@ def _positions_from_existing_decisions(
             "source_pm_decision_ref": str(decision.get("decision_id") or ""),
         }
         positions.append(position)
+    return positions, reasons
+
+
+def _positions_from_runtime_current(
+    current_rows: Iterable[Mapping[str, Any]],
+    *,
+    existing_pm_decisions: Iterable[Mapping[str, Any]],
+    business_date: str,
+    accepted_generation_reference: PMAcceptedGenerationReference,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    decisions_by_symbol = {
+        str(row.get("security_code") or row.get("symbol") or row.get("code") or "").strip(): row
+        for row in existing_pm_decisions
+        if str(row.get("security_code") or row.get("symbol") or row.get("code") or "").strip()
+    }
+    positions: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for index, row in enumerate(current_rows, start=1):
+        symbol = str(row.get("security_code") or row.get("symbol") or row.get("code") or row.get("issue_code") or "").strip()
+        quantity = _float_value(row.get("quantity"), 0.0)
+        if not symbol:
+            reasons.append(f"runtime_current_symbol_missing:{index}")
+            continue
+        if quantity <= 0:
+            reasons.append(f"runtime_current_non_positive_quantity:{symbol}")
+            continue
+        decision = decisions_by_symbol.get(symbol, {})
+        action = str(decision.get("action") or decision.get("decision") or "UNRESOLVED").upper()
+        intensity = str(decision.get("intensity") or decision.get("reduce_intensity") or ("NONE" if action in {"HOLD", "EXIT"} else "UNRESOLVED")).upper()
+        if action not in PM_ACTIONS:
+            reasons.append(f"invalid_action:{symbol}")
+            action = "UNRESOLVED"
+        if intensity not in PM_INTENSITIES:
+            reasons.append(f"invalid_intensity:{symbol}")
+            intensity = "UNRESOLVED"
+        position_id = str(row.get("position_id") or row.get("current_position_reference") or f"runtime-current-{business_date}-{symbol}")
+        lifecycle_id = str(
+            row.get("position_lifecycle_id")
+            or row.get("lifecycle_reference")
+            or row.get("source_execution_id")
+            or row.get("acquired_at")
+            or position_id
+        )
+        reason_codes = _reason_codes(decision) if decision else ["runtime_current_position_requires_strategy_pm_evaluation"]
+        positions.append(
+            {
+                "position_id": position_id,
+                "security_code": symbol,
+                "current_position_reference": str(row.get("current_position_reference") or position_id),
+                "action": action,
+                "intensity": intensity,
+                "confidence": _confidence(decision) if decision else 0.0,
+                "uncertainty": str(decision.get("uncertainty") or "UPSTREAM_REVIEW_REQUIRED"),
+                "reason_codes": reason_codes,
+                "lifecycle_reference": lifecycle_id,
+                "opportunity_reference": str(decision.get("opportunity_reference") or row.get("opportunity_reference") or symbol),
+                "market_context_reference": str(decision.get("market_context_reference") or ""),
+                "corporate_event_reference": str(decision.get("corporate_event_reference") or ""),
+                "portfolio_policy_reference": str(decision.get("portfolio_policy_reference") or ""),
+                "feature_vector_hash": str(decision.get("feature_vector_hash") or row.get("technical_feature_hash") or ""),
+                "source_pm_decision_ref": str(decision.get("decision_id") or ""),
+                "adapter_source": "runtime_current_position_adapter",
+                "adapter_contract_version": "runtime_current_holdings_to_strategy_pm.v1",
+                "adapter_source_contract": {
+                    "position_id": position_id,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "average_price": _float_value(row.get("average_price"), 0.0),
+                    "acquired_at": str(row.get("acquired_at") or row.get("opened_at") or ""),
+                    "business_date": business_date,
+                    "position_state_as_of": str(row.get("position_state_as_of") or row.get("as_of") or business_date),
+                    "valuation_date": str(row.get("valuation_date") or row.get("valuation_as_of") or row.get("as_of") or business_date),
+                    "position_lifecycle_id": lifecycle_id,
+                    "accepted_generation_id": accepted_generation_reference.generation_id,
+                    "accepted_generation_hash": accepted_generation_reference.accepted_generation_hash,
+                    "technical_features_join_key": {
+                        "code": symbol,
+                        "target_date": business_date,
+                    },
+                    "direct_position_copy_used": False,
+                },
+            }
+        )
     return positions, reasons
 
 

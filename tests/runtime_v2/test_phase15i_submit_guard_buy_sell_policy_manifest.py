@@ -10,7 +10,10 @@ from ai_fund_lab_v2.runtime_v2.cli import run_daily_operation
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
-from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import load_capital_deployment_policy
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
+    capital_deployment_policy_hash,
+    load_capital_deployment_policy,
+)
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import (
     SubmitItemResult,
     SubmitPipelineResult,
@@ -308,6 +311,12 @@ def _item_with_policy(item: PendingOrderItem, policy) -> PendingOrderItem:
         capital_allocation_amount=item.estimated_amount,
         policy_version=policy.policy_version,
         policy_source=policy.policy_source,
+        planning_authority_version="phase15i_fixture_planning_authority",
+        planning_authority_source=item.pending_item_id,
+        planning_authority_hash="sha256:phase15i-fixture-planning",
+        submit_policy_version=policy.policy_version,
+        submit_policy_source=policy.policy_source,
+        submit_policy_hash=capital_deployment_policy_hash(policy),
         evaluation_capital=policy.evaluation_capital,
         target_investment_ratio=policy.target_investment_ratio,
         cash_buffer=policy.cash_buffer,

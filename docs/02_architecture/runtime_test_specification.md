@@ -125,11 +125,14 @@ Historical may replace or fix only:
 - Historical Clock
 - Canonical Data as-of
 - PIT Manifest
+- Run-start fixed Historical Evaluation Accepted Generation Authority, sourced from the same Human Accepted Registry / artifacts
 - `HistoricalSubmitAdapter`
 - `HistoricalExecutionSnapshotProvider`
 - External effect blocking
 - Smoke-limited execution assumption
 - Initial Trading State Reset
+
+Historical must not replace Strategy, AI consumer, Planning, PM, Sizing, Safety, Submit Decision, or Accepted Generation artifact family. It fixes a current Human Accepted Generation at run start and records `historical_evaluation_authority.json`; daily Runtime jobs consume that fixed run authority while applying PIT checks to market data, financial data, corporate events, features, and calendar. Production and Demo keep date-local Accepted Generation authority with `accepted_at <= business_date` and `effective_from <= business_date`.
 
 Demo may replace only:
 

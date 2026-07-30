@@ -90,6 +90,8 @@ class RawQualityChecker:
     def _expected_dates(self, endpoint_name: str, from_date: str, to_date: str) -> list[str]:
         if endpoint_name == "trading_calendar":
             return iter_dates(from_date, to_date)
+        if endpoint_name == "earnings_calendar":
+            return []
         return [item.date for item in self.fetch_plan_builder.build_fetch_plan(endpoint_name, from_date, to_date) if item.date]
 
     def _duplicate_key_count(self, records: list[dict[str, Any]]) -> int:
@@ -115,7 +117,7 @@ class RawQualityChecker:
             return "ERROR"
         if duplicate_key_count or validation_status == "WARNING" or storage_count_mismatch:
             return "WARNING"
-        if endpoint_name == "fins_summary":
+        if endpoint_name in {"earnings_calendar", "fins_summary"}:
             return "OK"
         if missing_dates:
             return "WARNING"
@@ -127,9 +129,15 @@ class RawQualityChecker:
         return rows[-1] if rows else None
 
     def _storage_count_mismatch(self, endpoint_name: str) -> bool:
+        latest = self._latest_manifest(endpoint_name)
+        active_format = str((latest or {}).get("storage_format") or "")
         base_path = self.paths.raw_data / RAW_COLLECTIONS[endpoint_name] / "data"
         jsonl_records = create_storage_backend("jsonl").read_records(create_storage_backend("jsonl").path_for(base_path))
         parquet_records = create_storage_backend("parquet").read_records(create_storage_backend("parquet").path_for(base_path))
+        if active_format == "jsonl":
+            return False
+        if active_format == "parquet":
+            return False
         return bool(jsonl_records and parquet_records and len(jsonl_records) != len(parquet_records))
 
     def _normalized_summary(self, endpoint_name: str) -> dict[str, Any] | None:

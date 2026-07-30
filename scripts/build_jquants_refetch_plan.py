@@ -18,7 +18,7 @@ from ai_fund_lab_v2.data_quality import FetchPlanBuilder, RawQualityChecker, Tra
 from ai_fund_lab_v2.data_quality.refetch_plan import build_refetch_plan
 from ai_fund_lab_v2.data_store import MarketDataStore
 
-ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "trading_calendar", "fins_summary", "all")
+ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "earnings_calendar", "trading_calendar", "fins_summary", "all")
 REASON_CHOICES = ("validation_error", "missing", "empty", "all")
 
 

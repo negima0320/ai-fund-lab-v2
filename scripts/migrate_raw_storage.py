@@ -23,7 +23,7 @@ from ai_fund_lab_v2.data_store import (
     validate_records,
 )
 
-ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "trading_calendar", "fins_summary", "all")
+ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "earnings_calendar", "trading_calendar", "fins_summary", "all")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -171,7 +171,7 @@ def run_runtime_v2_market_refresh_pipeline(
         contract_status=contract.status,
     ):
         status = "BLOCKED"
-        reason = "market_refresh_blocked"
+        reason = _market_refresh_direct_blocker(result)
     elif (
         contract.status == "PASS"
         and result.get("feature_refresh_executed") is not True
@@ -315,7 +315,10 @@ def _apply_historical_asof_result(
     updated["historical_asof_view"] = resolution.to_payload()
     if resolution.status != "PASS":
         updated["status"] = "BLOCK"
-        updated["blocked_reasons"] = list(dict.fromkeys(list(updated.get("blocked_reasons") or []) + [resolution.reason]))
+        direct_reason = _historical_asof_direct_blocker(resolution)
+        updated["blocked_reasons"] = list(
+            dict.fromkeys(list(updated.get("blocked_reasons") or []) + [resolution.reason, direct_reason])
+        )
         return updated
     blocked = [reason for reason in updated.get("blocked_reasons") or [] if reason != "future_row_detected"]
     updated["blocked_reasons"] = blocked
@@ -356,8 +359,54 @@ def _provider_status_from_market_refresh(result: dict[str, Any]) -> str:
             return "RATE_LIMIT"
         if "NETWORK" in blocked:
             return "API_ERROR"
+        if not bool(result.get("jquants_api_fetch_executed")):
+            if "SOURCE_ROWS_EMPTY" in blocked or "quote_source_empty" in blocked:
+                return "LOCAL_SOURCE_EMPTY"
+            if (
+                "QUOTE_TARGET_DATE_MISSING" in blocked
+                or "historical_feature_lookback_insufficient" in blocked
+                or "missing_daily_quotes" in blocked
+                or "path_not_found" in blocked
+            ):
+                return "LOCAL_SOURCE_UNAVAILABLE"
+            return "API_NOT_REQUESTED"
         return "API_ERROR"
     return data_quality or status or "UNKNOWN"
+
+
+def _market_refresh_direct_blocker(result: dict[str, Any]) -> str:
+    blocked = [str(item) for item in result.get("blocked_reasons") or []]
+    priority = (
+        "QUOTE_TARGET_DATE_MISSING",
+        "SOURCE_ROWS_EMPTY",
+        "TRADING_CALENDAR_TARGET_DATE_MISSING",
+        "TRADING_CALENDAR_LOOKBACK_INSUFFICIENT",
+        "HISTORICAL_SOURCE_WARMUP_INSUFFICIENT",
+        "historical_feature_lookback_insufficient",
+        "missing_daily_quotes",
+        "missing_listed_info",
+        "API_NETWORK_ERROR",
+        "DATA_FRESHNESS_BLOCKED",
+    )
+    for reason in priority:
+        if reason in blocked:
+            return reason
+    return blocked[0] if blocked else "market_refresh_blocked"
+
+
+def _historical_asof_direct_blocker(resolution: HistoricalAsOfResolution) -> str:
+    coverage = dict(resolution.feature_lookback_coverage or {})
+    selected_reason = str(coverage.get("reason") or "")
+    if selected_reason and selected_reason != "FEATURE_LOOKBACK_SOURCE_BLOCKED":
+        return selected_reason
+    candidate_sources = coverage.get("candidate_sources") or []
+    for candidate in candidate_sources:
+        if not isinstance(candidate, dict):
+            continue
+        reason = str(candidate.get("reason") or "")
+        if reason and reason != "FEATURE_LOOKBACK_SOURCE_BLOCKED":
+            return reason
+    return resolution.reason
 
 
 def _market_evidence_quote_source_path(historical_input: HistoricalLogicalInput | None) -> Path | None:

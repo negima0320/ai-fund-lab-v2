@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,66 @@ def write_phase20_bi_market_authorities(root: Path, *, current_days: list[str], 
     pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in acquisition_days]).to_parquet(calendar_target / "data.parquet", index=False)
 
 
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_validated_acquisition_state(root: Path, *, run_id: str = "jquants-acquisition-test") -> None:
+    run_root = root / "market_data_acquisition" / "runs" / run_id
+    normalized_path = run_root / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    normalized = pd.read_parquet(normalized_path)
+    dates = sorted(normalized["Date"].astype(str).unique().tolist())
+    inventory = {
+        "status": "PASS",
+        "path": str(normalized_path),
+        "row_count": int(len(normalized)),
+        "duplicate_key_count": int(normalized.duplicated(subset=["Date", "Code"]).sum()),
+        "latest_date": dates[-1],
+        "earliest_date": dates[0],
+        "unique_business_days": len(dates),
+    }
+    schema_comparison = {
+        "status": "PASS",
+        "schema_match": True,
+        "runtime_merge_compatible": True,
+        "current_columns": list(normalized.columns),
+        "source_columns": list(normalized.columns),
+    }
+    final_validation = {
+        "schema_version": "phase20_bc_jquants_market_data_acquisition.v1",
+        "status": "PASS",
+        "final_judgment": "ACQUISITION_SOURCE_READY",
+        "content_hash": _file_hash(normalized_path),
+        "coverage_start_date": dates[0],
+        "coverage_end_date": dates[-1],
+        "future_date_count": 0,
+        "normalized_inventory": inventory,
+        "jquants_lineage": {"status": "PASS", "source_values": ["jquants"]},
+        "schema_comparison": schema_comparison,
+        "ohlc_integrity": {"status": "PASS"},
+    }
+    plan = {
+        "schema_version": "phase20_bc_jquants_market_data_acquisition.v1",
+        "status": "PASS",
+        "acquisition_run_id": run_id,
+        "final_judgment": "ACQUISITION_SOURCE_READY",
+        "runtime_market_data_mutated": False,
+    }
+    state = {
+        "schema_version": "phase20_bc_jquants_market_data_acquisition_state.v1",
+        "status": "PASS",
+        "acquisition_run_id": run_id,
+        "final_validation": final_validation,
+        "chunks": [],
+    }
+    (run_root / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    (run_root / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
 def test_phase17_l_asof_resolver_excludes_physical_future_rows(tmp_path: Path) -> None:
     write_market_authorities(tmp_path / ".runtime")
     result = resolve_historical_market_data_asof(
@@ -151,7 +212,94 @@ def test_phase20_bi_historical_asof_fails_closed_when_no_source_has_feature_look
     coverage = result.feature_lookback_coverage or {}
     assert coverage["status"] == "BLOCK"
     assert coverage["selected_source_role"] == "operations_canonical"
-    assert "feature_lookback_insufficient" in coverage["candidate_sources"][0]["blocked_reasons"]
+    assert "HISTORICAL_SOURCE_WARMUP_INSUFFICIENT" in coverage["candidate_sources"][0]["blocked_reasons"]
+
+
+def test_phase23_ac_historical_asof_reports_boundary_date_quote_missing(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-06-01", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    acquisition_days = pd.bdate_range("2026-04-21", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    assert len(acquisition_days) == 61
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days, acquisition_days=acquisition_days)
+
+    logical = materialize_historical_logical_inputs(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-07-15",
+        evidence_root=tmp_path / "evidence",
+        require_feature_lookback=True,
+    )
+
+    assert logical.status == "HALT"
+    assert logical.reason == "historical_feature_lookback_insufficient"
+    coverage = logical.resolution.feature_lookback_coverage or {}
+    assert coverage["status"] == "BLOCK"
+    assert coverage["reason"] == "QUOTE_TARGET_DATE_MISSING"
+    assert coverage["selected_source_role"] == "acquisition_staging"
+    selected_candidates = [
+        candidate
+        for candidate in coverage["candidate_sources"]
+        if candidate["normalized_path"] == coverage["selected_normalized_ohlcv_path"]
+    ]
+    assert selected_candidates
+    assert selected_candidates[0]["reason"] == "QUOTE_TARGET_DATE_MISSING"
+    assert selected_candidates[0]["warmup_sufficiency"]["missing_warmup_business_days"] == 0
+    quote_frame = pd.read_parquet(Path(logical.logical_paths["normalized_ohlcv"]))
+    listed_frame = pd.read_parquet(Path(logical.logical_paths["listed_issues"]))
+    assert quote_frame["Date"].astype(str).max() == "2026-07-14"
+    assert len(listed_frame) == 1
+
+
+def test_phase23_ae_historical_asof_composes_canonical_base_with_validated_incremental_staging(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-02-16", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    acquisition_days = pd.bdate_range("2026-07-15", "2026-07-17").strftime("%Y-%m-%d").tolist()
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days, acquisition_days=acquisition_days)
+    write_validated_acquisition_state(tmp_path / ".runtime")
+
+    logical = materialize_historical_logical_inputs(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-07-15",
+        evidence_root=tmp_path / "evidence",
+        require_feature_lookback=True,
+    )
+
+    assert logical.status == "PASS"
+    assert logical.reason == "historical_asof_composed_authority_ready"
+    coverage = logical.resolution.feature_lookback_coverage or {}
+    assert coverage["status"] == "PASS"
+    assert coverage["composition_used"] is True
+    assert coverage["selected_source_role"] == "composed_canonical_plus_acquisition_staging"
+    composition = coverage["source_composition"]
+    assert composition["staging_eligibility"]["status"] == "PASS"
+    assert composition["normalized_composition"]["future_rows_excluded_count"] == 2
+    assert composition["normalized_composition"]["duplicate_key_count"] == 0
+    assert composition["raw_composition"]["duplicate_key_count"] == 0
+    assert composition["trading_calendar_lookback"]["status"] == "PASS"
+    assert composition["raw_normalized_consistency"]["status"] == "PASS"
+    frame = pd.read_parquet(Path(logical.logical_paths["normalized_ohlcv"]))
+    raw_frame = pd.read_parquet(Path(logical.logical_paths["raw_ohlcv"]))
+    calendar_frame = pd.read_parquet(Path(logical.logical_paths["trading_calendar"]))
+    assert frame["Date"].astype(str).max() == "2026-07-15"
+    assert raw_frame["Date"].astype(str).max() == "2026-07-15"
+    assert calendar_frame["Date"].astype(str).max() == "2026-07-15"
+    assert "2026-07-16" not in set(frame["Date"].astype(str))
+
+
+def test_phase23_ae_historical_asof_fails_closed_when_incremental_staging_is_unvalidated(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-02-16", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    acquisition_days = pd.bdate_range("2026-07-15", "2026-07-17").strftime("%Y-%m-%d").tolist()
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days, acquisition_days=acquisition_days)
+
+    result = resolve_historical_market_data_asof(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-07-15",
+        require_feature_lookback=True,
+    )
+
+    coverage = result.feature_lookback_coverage or {}
+    assert result.status == "HALT"
+    assert coverage["status"] == "BLOCK"
+    assert coverage["selected_source_role"] == "composed_canonical_plus_acquisition_staging"
+    assert coverage["reason"] == "STAGING_VALIDATION_ARTIFACT_MISSING"
+    assert coverage["composition_attempt"]["composition_attempts"][0]["overlay_target_date_available"] is True
 
 
 def test_phase17_l_asof_resolver_fails_closed_on_hash_mismatch(tmp_path: Path) -> None:
@@ -330,6 +478,18 @@ def test_phase17_l_demo_market_refresh_keeps_future_row_block(monkeypatch, tmp_p
     assert result.status == "BLOCKED"
     assert result.historical_asof_status == ""
     assert result.blocked_reasons == ("future_row_detected",)
+
+
+def test_phase23_ac_market_refresh_local_source_block_is_not_api_error() -> None:
+    result = {
+        "status": "BLOCK",
+        "blocked_reasons": ["historical_feature_lookback_insufficient", "QUOTE_TARGET_DATE_MISSING"],
+        "jquants_api_fetch_executed": False,
+        "data_quality_status": "BLOCK",
+    }
+
+    assert pipeline._provider_status_from_market_refresh(result) == "LOCAL_SOURCE_UNAVAILABLE"
+    assert pipeline._market_refresh_direct_blocker(result) == "QUOTE_TARGET_DATE_MISSING"
 
 
 def test_phase17_l_runner_passes_identity_and_uses_profile_only_as_expected_value(tmp_path: Path) -> None:

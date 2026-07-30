@@ -231,9 +231,9 @@ def _write_portfolio_construction(tmp_path: Path) -> Path:
         "producer_result_status": "REVIEW_REQUIRED",
         "runtime_consumer_eligibility": "NOT_ELIGIBLE",
         "portfolio_members": [
-            {"member_id": "pc-7203", "security_code": "7203", "current_position": True, "membership_intent": "RETAIN", "construction_priority": 1, "weight_intent": "MAINTAIN", "candidate_reference": "", "opportunity_reference": "", "position_management_reference": "pm-7203", "portfolio_policy_reference": "", "confidence": 0.8, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["fixture"]},
-            {"member_id": "pc-6098", "security_code": "6098", "current_position": False, "membership_intent": "ADD_CANDIDATE", "construction_priority": 2, "weight_intent": "INCREASE", "candidate_reference": "candidate-6098", "opportunity_reference": "opportunity-6098", "position_management_reference": "", "portfolio_policy_reference": "", "confidence": 0.9, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["fixture"]},
-            {"member_id": "pc-8306", "security_code": "8306", "current_position": True, "membership_intent": "REMOVE_CANDIDATE", "construction_priority": 3, "weight_intent": "REMOVE", "candidate_reference": "", "opportunity_reference": "", "position_management_reference": "pm-8306", "portfolio_policy_reference": "", "confidence": 0.7, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["fixture"]},
+            _pc_member("7203", "RETAIN", True, 1, "MAINTAIN", "pm-7203", target_weight=0.2),
+            _pc_member("6098", "ADD_CANDIDATE", False, 2, "INCREASE", "", target_weight=0.2, candidate_ref="candidate-6098", opportunity_ref="opportunity-6098"),
+            _pc_member("8306", "REMOVE_CANDIDATE", True, 3, "REMOVE", "pm-8306", target_weight=0.0),
         ],
         "member_count": 3,
         "membership_intent_taxonomy": sorted(portfolio_construction.MEMBERSHIP_INTENTS),
@@ -282,6 +282,18 @@ def _write_portfolio_policy(tmp_path: Path) -> Path:
         "cash_posture": "MAINTAIN",
         "exposure_posture": "MAINTAIN",
         "position_management_bias": "NEUTRAL",
+        "target_position_count_resolution": {"status": "PASS", "source": "fixture", "resolved_value": 3},
+        "target_position_count": 3,
+        "target_gross_exposure_ratio_resolution": {"status": "PASS", "source": "fixture", "resolved_value": 0.6},
+        "target_gross_exposure_ratio": 0.6,
+        "target_gross_exposure": 0.6,
+        "cash_reserve_ratio_resolution": {"status": "PASS", "source": "fixture", "resolved_value": 0.4},
+        "cash_reserve_ratio": 0.4,
+        "cash_reserve": 0.4,
+        "single_name_weight_cap": 0.2,
+        "single_name_weight_cap_source": "fixture#single_name_weight_cap",
+        "single_name_weight_cap_authority": {"status": "PASS", "source": "fixture#single_name_weight_cap", "single_name_weight_cap": 0.2},
+        "deployment_posture": "MAINTAIN",
         "confidence": 0.0,
         "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
         "reason_codes": ["upstream_review_required:SOURCE_NOT_ELIGIBLE"],
@@ -335,6 +347,54 @@ def _write_position_management(tmp_path: Path) -> Path:
     path = tmp_path / "position_management.json"
     _write_json(path, payload)
     return path
+
+
+def _pc_member(
+    security_code: str,
+    membership_intent: str,
+    current_position: bool,
+    priority: int,
+    weight_intent: str,
+    pm_ref: str,
+    *,
+    target_weight: float,
+    candidate_ref: str = "",
+    opportunity_ref: str = "",
+) -> dict[str, object]:
+    target_membership = membership_intent in {"RETAIN", "ADD_CANDIDATE"}
+    resolution = {
+        "status": "PASS",
+        "resolved_weight": target_weight,
+        "reason": "fixture_target_weight",
+    }
+    if target_weight == 0.0:
+        resolution["zero_weight_reason"] = "fixture_zero_weight"
+    return {
+        "member_id": f"pc-{security_code}",
+        "security_code": security_code,
+        "symbol": security_code,
+        "current_position": current_position,
+        "membership_intent": membership_intent,
+        "target_membership": target_membership,
+        "target_weight": target_weight,
+        "target_weight_authority": {
+            "authority": "portfolio_construction_fixture",
+            "canonical_field": "target_weight",
+            "schema_version": portfolio_construction.SCHEMA_VERSION,
+        },
+        "target_weight_resolution": resolution,
+        "construction_priority": priority,
+        "weight_intent": weight_intent,
+        "candidate_reference": candidate_ref,
+        "opportunity_reference": opportunity_ref,
+        "position_management_reference": pm_ref,
+        "portfolio_policy_reference": "policy",
+        "membership_reason": "fixture_membership",
+        "weight_reason": "fixture_weight",
+        "confidence": 0.8,
+        "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
+        "reason_codes": ["fixture"],
+    }
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

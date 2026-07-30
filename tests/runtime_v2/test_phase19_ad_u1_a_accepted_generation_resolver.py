@@ -154,7 +154,7 @@ def test_phase19_ad_r1_lifecycle_gate_receives_same_resolution_instance(
     resolution = resolve_accepted_generation(runtime_root)
     calls = {"resolver": 0, "lifecycle_resolution_id": None}
 
-    def fake_resolve(root):
+    def fake_resolve(root, **kwargs):
         calls["resolver"] += 1
         return resolution
 
@@ -214,6 +214,155 @@ def test_phase19_ad_u1_a_resolved_committed_generation_returns_atomic_members(tm
     assert resolution.artifact_paths()["opportunity_model"].is_file()
 
 
+def test_phase23_b_future_effective_generation_is_not_business_date_authority(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    manifest = _accepted_manifest(tmp_path)
+    _write_json(
+        runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json",
+        {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest), "aggregate_hash": _read_json(manifest)["aggregate_hash"]},
+    )
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-06-30")
+
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "accepted_generation_accepted_at_after_business_date" in resolution.reason_codes
+    assert "accepted_generation_effective_from_after_business_date" in resolution.reason_codes
+
+
+def test_phase23_p_fixed_historical_authority_resolves_without_business_date_acceptance_check(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    manifest = _accepted_manifest_with_scalers(
+        tmp_path,
+        generation_id="future-generation",
+        accepted_at="2026-07-20T00:00:00+00:00",
+        effective_from="2026-07-20",
+    )
+    _install_generation(runtime_root, manifest)
+    payload = _read_json(manifest)
+    authority_path = tmp_path / "run" / "historical_evaluation_authority.json"
+    _write_json(
+        authority_path,
+        {
+            "schema_version": "historical_evaluation_authority.v1",
+            "generation_id": payload["generation_id"],
+            "bundle_manifest_path": str(manifest),
+            "accepted_at": payload["accepted_at"],
+            "effective_from": payload["effective_from"],
+            "aggregate_hash": payload["aggregate_hash"],
+            "latest_fallback_used": False,
+            "historical_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
+        },
+    )
+
+    production_resolution = resolve_accepted_generation(runtime_root, business_date="2022-09-01")
+    historical_resolution = resolve_accepted_generation(runtime_root, business_date="2022-09-01", fixed_authority_path=authority_path)
+
+    assert production_resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "accepted_generation_accepted_at_after_business_date" in production_resolution.reason_codes
+    assert historical_resolution.resolution_status == "RESOLVED_COMMITTED"
+    assert historical_resolution.generation_id == "future-generation"
+    assert historical_resolution.source_evidence["business_date_temporal_comparison_applied"] is False
+    assert historical_resolution.source_evidence["temporal_authority_status"] == "RUN_START_FIXED"
+
+
+def test_phase23_b_business_date_bound_generation_resolves_without_latest_fallback(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    manifest = _accepted_manifest(tmp_path)
+    _write_json(
+        runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json",
+        {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest), "aggregate_hash": _read_json(manifest)["aggregate_hash"]},
+    )
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "RESOLVED_COMMITTED"
+    assert resolution.source_evidence["legacy_component_fallback_used"] is False
+    assert resolution.source_evidence["promotion_candidate_fallback_used"] is False
+    assert resolution.source_evidence["business_date"] == "2026-07-01"
+    assert resolution.source_evidence["temporal_authority_status"] == "PASS"
+
+
+def test_phase23_l_business_date_resolves_historical_generation_before_future_current_pointer(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    old_manifest = _accepted_manifest_with_scalers(tmp_path, generation_id="old-generation", accepted_at="2026-06-15T00:00:00+00:00", effective_from="2026-06-15")
+    future_manifest = _accepted_manifest_with_scalers(tmp_path, generation_id="future-generation", accepted_at="2026-07-20T00:00:00+00:00", effective_from="2026-07-20")
+    _install_generation(runtime_root, old_manifest)
+    _install_generation(runtime_root, future_manifest)
+    _append_history(runtime_root, old_manifest)
+    _append_history(runtime_root, future_manifest)
+    _write_json(
+        runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json",
+        {"transaction_state": "COMMITTED", "bundle_manifest_path": str(future_manifest), "aggregate_hash": _read_json(future_manifest)["aggregate_hash"]},
+    )
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "RESOLVED_COMMITTED"
+    assert resolution.generation_id == "old-generation"
+    assert resolution.source_evidence["eligible_candidate_count"] == 1
+    assert resolution.source_evidence["future_generation_used"] is False
+    assert resolution.source_evidence["latest_fallback_used"] is False
+
+
+def test_phase23_l_multiple_eligible_generations_use_deterministic_latest_effective_selection(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    first = _accepted_manifest_with_scalers(tmp_path, generation_id="generation-a", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01")
+    second = _accepted_manifest_with_scalers(tmp_path, generation_id="generation-b", accepted_at="2026-06-20T00:00:00+00:00", effective_from="2026-06-20")
+    _install_generation(runtime_root, first)
+    _install_generation(runtime_root, second)
+    _append_history(runtime_root, first)
+    _append_history(runtime_root, second)
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "RESOLVED_COMMITTED"
+    assert resolution.generation_id == "generation-b"
+    assert "max(effective_from_date" in resolution.source_evidence["selection_rule"]
+
+
+def test_phase23_l_revoked_superseded_and_expired_generations_are_excluded(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    revoked = _accepted_manifest_with_scalers(tmp_path, generation_id="revoked", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01", extra={"revoked_at": "2026-06-15"})
+    superseded = _accepted_manifest_with_scalers(tmp_path, generation_id="superseded", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01", extra={"superseded_at": "2026-06-15"})
+    expired = _accepted_manifest_with_scalers(tmp_path, generation_id="expired", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01", extra={"effective_until": "2026-06-15"})
+    for manifest in (revoked, superseded, expired):
+        _install_generation(runtime_root, manifest)
+        _append_history(runtime_root, manifest)
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "accepted_generation_revoked_at_lte_business_date" in resolution.reason_codes
+    assert "accepted_generation_superseded_at_lte_business_date" in resolution.reason_codes
+    assert "accepted_generation_effective_until_before_business_date" in resolution.reason_codes
+
+
+def test_phase23_l_generation_absence_fails_closed_for_business_date(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "NO_ACCEPTED_GENERATION"
+    assert "NO_ACCEPTED_GENERATION_BOOTSTRAP" in resolution.reason_codes
+    assert resolution.source_evidence["candidate_count"] == 0
+
+
+def test_phase23_l_scaler_hash_mismatch_rejects_historical_generation(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    manifest = _accepted_manifest_with_scalers(tmp_path, generation_id="bad-scaler", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01")
+    payload = _read_json(manifest)
+    payload["candidate_member"]["scaler_hash"] = "0" * 64
+    payload["aggregate_hash"] = _stable_hash({key: value for key, value in payload.items() if key != "aggregate_hash"})
+    _write_json(manifest, payload)
+    _install_generation(runtime_root, manifest)
+    _append_history(runtime_root, manifest)
+
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
+
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "candidate_scaler_hash_mismatch" in resolution.reason_codes
+
+
 def _runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / ".runtime"
     (root / "runtime_state").mkdir(parents=True, exist_ok=True)
@@ -264,6 +413,78 @@ def _accepted_manifest(tmp_path: Path) -> Path:
     manifest = generation_dir / "accepted_generation_manifest.json"
     _write_json(manifest, payload)
     return manifest
+
+
+def _accepted_manifest_with_scalers(
+    tmp_path: Path,
+    *,
+    generation_id: str,
+    accepted_at: str,
+    effective_from: str,
+    extra: dict | None = None,
+) -> Path:
+    generation_dir = tmp_path / "accepted_generation_sources" / generation_id
+    candidate = generation_dir / "candidate_model.pkl"
+    opportunity = generation_dir / "opportunity_model.pkl"
+    candidate_scaler = generation_dir / "candidate_scaler.pkl"
+    opportunity_scaler = generation_dir / "opportunity_scaler.pkl"
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    candidate.write_bytes(f"{generation_id}-candidate-model".encode("ascii"))
+    opportunity.write_bytes(f"{generation_id}-opportunity-model".encode("ascii"))
+    candidate_scaler.write_bytes(f"{generation_id}-candidate-scaler".encode("ascii"))
+    opportunity_scaler.write_bytes(f"{generation_id}-opportunity-scaler".encode("ascii"))
+    payload = {
+        "schema_version": "accepted_buy_ai_bundle.v1",
+        "generation_id": generation_id,
+        "accepted_at": accepted_at,
+        "effective_from": effective_from,
+        "runtime_eligibility_status": "RUNTIME_ELIGIBLE_ACCEPTED_ONLY",
+        "authority_decision": "fixture-authority-decision",
+        "candidate_member": {
+            "model_file": str(candidate),
+            "model_hash": _sha(candidate),
+            "scaler_file": str(candidate_scaler),
+            "scaler_hash": _sha(candidate_scaler),
+            "feature_schema_hash": _stable_hash({"feature_order": ["candidate_score"]}),
+        },
+        "opportunity_member": {
+            "model_file": str(opportunity),
+            "model_hash": _sha(opportunity),
+            "scaler_file": str(opportunity_scaler),
+            "scaler_hash": _sha(opportunity_scaler),
+            "feature_schema_hash": _stable_hash({"feature_order": ["candidate_score", "opportunity_score"]}),
+        },
+        "runtime_baseline": {"candidate_population": 30, "positive_coverage": 0.5},
+        "freshness_metadata": {"label_safe_cutoff": "2026-05-01"},
+        "rollback_reference": {"previous_generation_ref": None},
+    }
+    payload.update(extra or {})
+    payload["aggregate_hash"] = _stable_hash(payload)
+    manifest = generation_dir / "accepted_generation_manifest.json"
+    _write_json(manifest, payload)
+    return manifest
+
+
+def _install_generation(runtime_root: Path, manifest: Path) -> Path:
+    payload = _read_json(manifest)
+    target = runtime_root / "ai_lifecycle" / "generations" / payload["generation_id"] / "accepted_generation_manifest.json"
+    _write_json(target, payload)
+    return target
+
+
+def _append_history(runtime_root: Path, manifest: Path) -> None:
+    payload = _read_json(manifest)
+    path = runtime_root / "ai_lifecycle" / "authority_history" / "accepted_generation_history.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "event_type": "ACCEPTED_GENERATION_CREATED",
+        "generation_id": payload["generation_id"],
+        "accepted_at": payload["accepted_at"],
+        "effective_from": payload["effective_from"],
+        "aggregate_hash": payload["aggregate_hash"],
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
 
 
 def _write_json(path: Path, payload: dict) -> None:

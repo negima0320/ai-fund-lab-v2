@@ -37,6 +37,8 @@ class OpportunityBuyEligibilityResult:
     opportunity_row_present: bool = False
     opportunity_schema_status: str = ""
     opportunity_artifact_status: str = ""
+    opportunity_row_id: str = ""
+    opportunity_authority: str = ""
     excluded_at_stage: str = ""
 
     def to_payload(self) -> dict[str, Any]:
@@ -52,6 +54,7 @@ def evaluate_opportunity_buy_eligibility(
     opportunity_payload: Mapping[str, Any] | None = None,
     opportunity_row: Mapping[str, Any] | None = None,
     expected_artifact_hash: str = "",
+    require_row_identity: bool = False,
     excluded_at_stage: str = "",
 ) -> OpportunityBuyEligibilityResult:
     normalized_symbol = _symbol(symbol)
@@ -145,11 +148,58 @@ def evaluate_opportunity_buy_eligibility(
                 excluded_at_stage,
             )
     row = dict(opportunity_row or {})
+    expected_row_id = str(
+        row.get("opportunity_row_id")
+        or row.get("row_id")
+        or row.get("opportunity_id")
+        or ""
+    )
+    if require_row_identity and not expected_row_id:
+        return _result(
+            status="BLOCKED",
+            eligibility="BUY_INELIGIBLE",
+            reason_code="opportunity_row_identity_missing",
+            reason="Opportunity row identity is required for Submit Guard",
+            symbol=normalized_symbol,
+            business_date=business_date,
+            feature_date=feature_date,
+            artifact_path=str(artifact_path or ""),
+            artifact_hash=artifact_hash,
+            opportunity_business_date=str(payload.get("business_date") or ""),
+            opportunity_feature_date=str(payload.get("feature_date") or ""),
+            schema_status=schema_status,
+            artifact_status=artifact_status,
+            excluded_at_stage=excluded_at_stage,
+        )
     if not row and payload:
         for item in payload.get("rankings") or ():
             if _symbol(item.get("symbol") or item.get("code")) == normalized_symbol:
                 row = dict(item)
                 break
+    elif row and payload and expected_row_id:
+        matching_row = _find_payload_row_by_identity(
+            payload=payload,
+            symbol=normalized_symbol,
+            expected_row_id=expected_row_id,
+            business_date=business_date,
+        )
+        if matching_row is None:
+            return _result_from_row(
+                row,
+                status="BLOCKED",
+                eligibility="BUY_INELIGIBLE",
+                reason_code="opportunity_row_identity_mismatch",
+                reason="Opportunity row identity does not match ranking artifact",
+                symbol=normalized_symbol,
+                business_date=business_date,
+                feature_date=feature_date,
+                payload=payload,
+                artifact_path=artifact_path,
+                artifact_hash=artifact_hash,
+                schema_status=schema_status,
+                artifact_status=artifact_status,
+                excluded_at_stage=excluded_at_stage,
+            )
     if not row:
         return _result(
             status="BLOCKED",
@@ -257,7 +307,7 @@ def evaluate_opportunity_buy_eligibility(
             artifact_status=artifact_status,
             excluded_at_stage=excluded_at_stage,
         )
-    if no_buy_reason.lower() not in NO_BUY_REASON_EMPTY_VALUES:
+    if opportunity_no_buy_reason_blocks_buy(no_buy_reason):
         return _result_from_row(
             row,
             status="BLOCKED",
@@ -290,6 +340,49 @@ def evaluate_opportunity_buy_eligibility(
         artifact_status=artifact_status,
         excluded_at_stage=excluded_at_stage,
     )
+
+
+def opportunity_no_buy_reason_blocks_buy(no_buy_reason: Any) -> bool:
+    return str(no_buy_reason or "").strip().lower() not in NO_BUY_REASON_EMPTY_VALUES
+
+
+def _find_payload_row_by_identity(
+    *,
+    payload: Mapping[str, Any],
+    symbol: str,
+    expected_row_id: str,
+    business_date: str,
+) -> Mapping[str, Any] | None:
+    for index, item in enumerate(payload.get("rankings") or (), start=1):
+        if not isinstance(item, Mapping):
+            continue
+        if _symbol(item.get("symbol") or item.get("code")) != symbol:
+            continue
+        if _opportunity_row_id(row=item, business_date=business_date, symbol=symbol, index=index) == expected_row_id:
+            return item
+    return None
+
+
+def _opportunity_row_id(*, row: Mapping[str, Any], business_date: str, symbol: str, index: int) -> str:
+    explicit = str(row.get("opportunity_id") or row.get("row_id") or "")
+    if explicit:
+        return explicit
+    rank = str(row.get("buy_rank") or row.get("rank") or index)
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "business_date": str(row.get("business_date") or business_date),
+                "feature_date": str(row.get("feature_date") or row.get("target_date") or business_date),
+                "symbol": symbol,
+                "rank": rank,
+                "expected_edge_score": row.get("expected_edge_score"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"opportunity-{business_date}-{symbol}-{rank}-{digest}"
 
 
 def _date_mismatch(
@@ -357,6 +450,8 @@ def _result_from_row(
         row_present=True,
         schema_status=schema_status,
         artifact_status=artifact_status,
+        row_id=str(row.get("opportunity_row_id") or row.get("row_id") or row.get("opportunity_id") or ""),
+        opportunity_authority=str(row.get("opportunity_authority") or ""),
         excluded_at_stage=excluded_at_stage,
     )
 
@@ -382,6 +477,8 @@ def _result(
     row_present: bool = False,
     schema_status: str = "",
     artifact_status: str = "",
+    row_id: str = "",
+    opportunity_authority: str = "",
     excluded_at_stage: str = "",
 ) -> OpportunityBuyEligibilityResult:
     return OpportunityBuyEligibilityResult(
@@ -405,6 +502,8 @@ def _result(
         opportunity_row_present=row_present,
         opportunity_schema_status=schema_status,
         opportunity_artifact_status=artifact_status,
+        opportunity_row_id=row_id,
+        opportunity_authority=opportunity_authority,
         excluded_at_stage=excluded_at_stage,
     )
 

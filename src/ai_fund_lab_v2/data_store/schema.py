@@ -75,6 +75,32 @@ RAW_SCHEMAS: dict[str, RawSchema] = {
             "Mkt": ("Mkt", "MarketCode"),
         },
     ),
+    "earnings_calendar": RawSchema(
+        endpoint_name="earnings_calendar",
+        schema_version=1,
+        required_fields=("Date", "Code"),
+        optional_fields=(
+            "CoName",
+            "FY",
+            "FQ",
+            "Section",
+            "SectorNm",
+            "PublicationDate",
+            "ScheduledDate",
+            "TimePredicted",
+            "SessionPredicted",
+            "PublicationType",
+        ),
+        key_fields=("Date", "Code"),
+        date_field="Date",
+        code_field="Code",
+        allowed_empty_policy="snapshot_warning",
+        field_mapping={
+            "Date": ("Date", "ScheduledDate", "scheduled_date"),
+            "Code": ("Code", "LocalCode", "code"),
+            "CoName": ("CoName", "CompanyName", "company_name"),
+        },
+    ),
     "trading_calendar": RawSchema(
         endpoint_name="trading_calendar",
         schema_version=1,
@@ -90,12 +116,12 @@ RAW_SCHEMAS: dict[str, RawSchema] = {
         endpoint_name="fins_summary",
         schema_version=1,
         required_fields=("DiscDate", "Code"),
-        optional_fields=("TypeOfDocument", "CurrentPeriodEndDate", "ForecastProfit"),
-        key_fields=("DiscDate", "Code"),
+        optional_fields=("DiscNo", "DiscTime", "DocType", "TypeOfDocument", "CurPerType", "CurPerEn", "CurrentPeriodEndDate", "ForecastProfit"),
+        key_fields=("DiscDate", "Code", "DiscNo"),
         date_field="DiscDate",
         code_field="Code",
         allowed_empty_policy="empty_ok",
-        field_mapping={"DiscDate": ("DiscDate", "DisclosedDate"), "Code": ("Code", "LocalCode")},
+        field_mapping={"DiscDate": ("DiscDate", "DisclosedDate"), "Code": ("Code", "LocalCode"), "DiscNo": ("DiscNo",)},
     ),
 }
 
@@ -135,7 +161,7 @@ def validate_records(endpoint_name: str, records: list[dict[str, Any]]) -> Valid
         for field in schema.required_fields:
             if record.get(field) in (None, ""):
                 missing_required[field] += 1
-        key_values = tuple(str(record.get(field) or "") for field in schema.key_fields)
+        key_values = _schema_key_values(endpoint_name, schema, record)
         if any(not value for value in key_values):
             missing_key_count += 1
         else:
@@ -172,6 +198,41 @@ def validate_records(endpoint_name: str, records: list[dict[str, Any]]) -> Valid
         type_warning_count=type_warning_count,
         messages=messages,
     )
+
+
+def fins_summary_business_key(record: dict[str, Any]) -> str:
+    key_values = _fins_summary_key_values(record)
+    if any(key_values):
+        return "fins_summary:" + ":".join(key_values)
+    return ""
+
+
+def _schema_key_values(endpoint_name: str, schema: RawSchema, record: dict[str, Any]) -> tuple[str, ...]:
+    if endpoint_name == "fins_summary":
+        return _fins_summary_key_values(record)
+    return tuple(str(record.get(field) or "") for field in schema.key_fields)
+
+
+def _fins_summary_key_values(record: dict[str, Any]) -> tuple[str, ...]:
+    disc_date = str(record.get("DiscDate") or record.get("DisclosedDate") or record.get("target_date") or "")
+    code = str(record.get("Code") or record.get("LocalCode") or record.get("code") or "")
+    disc_no = str(record.get("DiscNo") or "")
+    if disc_date and code and disc_no:
+        return (disc_date, code, disc_no)
+
+    fallback = [
+        ("DiscTime", str(record.get("DiscTime") or record.get("DisclosedTime") or "")),
+        ("DocType", str(record.get("DocType") or record.get("TypeOfDocument") or "")),
+        ("CurPerType", str(record.get("CurPerType") or "")),
+        ("CurPerSt", str(record.get("CurPerSt") or "")),
+        ("CurPerEn", str(record.get("CurPerEn") or record.get("CurrentPeriodEndDate") or "")),
+        ("CurFYSt", str(record.get("CurFYSt") or "")),
+        ("CurFYEn", str(record.get("CurFYEn") or "")),
+    ]
+    fallback_values = tuple(f"{name}={value}" for name, value in fallback if value)
+    if disc_date and code and fallback_values:
+        return (disc_date, code, *fallback_values)
+    return (disc_date, code)
 
 
 def _type_warnings(schema: RawSchema, record: dict[str, Any]) -> int:

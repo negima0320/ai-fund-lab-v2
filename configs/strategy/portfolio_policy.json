@@ -8,23 +8,25 @@
     "demo",
     "historical"
   ],
-  "intent_policy": {
-    "cash_posture": "MAINTAIN",
-    "entry_posture": "MAINTAIN",
-    "exposure_posture": "MAINTAIN",
-    "position_count_posture": "MAINTAIN",
-    "position_management_bias": "NEUTRAL",
-    "risk_posture": "BALANCED"
-  },
-  "policy_contract": {
-    "cash_exposure_policy": "defer concrete target ratios to Dynamic Cash Exposure",
-    "corporate_event_handling": "preserve Corporate Event artifact coverage status and reason codes",
-    "deployment_posture": "defer deployment sizing to Capital Deployment",
-    "market_regime_mapping": "intent-only; concrete regime thresholds remain in Market Context and Dynamic Cash Exposure configs",
-    "position_count_policy": "defer concrete target count to Dynamic Position Count",
-    "rebalance_posture": "intent-only; no direct order or pending decision",
-    "risk_posture": "BALANCED",
-    "sector_constraints": "defer sector authority to Market Context / Sector source lineage"
-  },
+    "intent_policy": {
+        "cash_posture": "MAINTAIN",
+        "entry_posture": "MAINTAIN",
+        "exposure_posture": "MAINTAIN",
+        "position_count_posture": "MAINTAIN",
+        "position_management_bias": "NEUTRAL",
+        "risk_posture": "BALANCED"
+    },
+    "single_name_weight_cap": 0.18,
+    "single_name_weight_cap_source": "configs/strategy/portfolio_policy.json#single_name_weight_cap",
+    "policy_contract": {
+        "cash_exposure_policy": "defer concrete target ratios to Dynamic Cash Exposure",
+        "corporate_event_handling": "preserve Corporate Event artifact coverage status and reason codes",
+        "deployment_posture": "materialize portfolio-level deployment posture inside Portfolio Policy",
+        "market_regime_mapping": "intent-only; concrete regime thresholds remain in Market Context and Dynamic Cash Exposure configs",
+        "position_count_policy": "materialize target count inside Portfolio Policy using internal resolver",
+        "rebalance_posture": "intent-only; no direct order or pending decision",
+        "risk_posture": "BALANCED",
+        "sector_constraints": "defer sector authority to Market Context / Sector source lineage"
+    },
   "require_explicit_intent_policy": true
 }

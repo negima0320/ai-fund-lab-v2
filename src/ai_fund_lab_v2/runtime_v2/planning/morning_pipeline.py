@@ -29,6 +29,11 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
+    HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+    HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+    materialize_historical_pending_safety_context,
+)
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicy,
@@ -1053,27 +1058,29 @@ def _attach_historical_safety_authority(
     safety_decision: RuntimeSafetyDecision | None,
     environment_capability_context: dict[str, Any] | None,
 ):
-    if safety_decision is None or str(safety_decision.decision or "").upper() != "ALLOW":
+    if safety_decision is None:
         return pending
     context = environment_capability_context or {}
     if str(context.get("runtime_mode") or "") != "historical":
         return pending
-    safety_context = {
-        **_safety_context_payload(safety_decision),
-        "safety_authority": "historical_initial_no_external_effect",
-        "safety_business_date": business_date,
-    }
-    if context.get("runtime_test_run_id"):
-        safety_context["runtime_test_run_id"] = str(context.get("runtime_test_run_id") or "")
-    if context.get("runtime_test_profile_id"):
-        safety_context["runtime_test_profile_id"] = str(context.get("runtime_test_profile_id") or "")
-    if context.get("runtime_test_evidence_root"):
-        safety_context["runtime_test_evidence_root"] = str(context.get("runtime_test_evidence_root") or "")
+    safety_context = materialize_historical_pending_safety_context(
+        safety_decision_id=safety_decision.safety_decision_id,
+        safety_policy_version=safety_decision.safety_policy_version or HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+        safety_source=safety_decision.safety_source or HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+        safety_decision=safety_decision.decision,
+        safety_reason=safety_decision.reason,
+        safety_business_date=business_date,
+        runtime_test_run_id=str(context.get("runtime_test_run_id") or ""),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root=str(context.get("runtime_test_evidence_root") or ""),
+    )
+    if not safety_context:
+        return pending
     return replace(
         pending,
         safety_context=safety_context,
-        safety_decision_id=safety_decision.safety_decision_id,
-        safety_policy_version=safety_decision.safety_policy_version,
+        safety_decision_id=safety_context["safety_decision_id"],
+        safety_policy_version=safety_context["safety_policy_version"],
     )
 
 

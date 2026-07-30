@@ -7,6 +7,7 @@ PAGINATION_KEY = "pagination_key"
 
 JQUANTS_DAILY_QUOTES_ENDPOINT = "/v2/equities/bars/daily"
 JQUANTS_LISTED_ISSUES_ENDPOINT = "/v2/equities/master"
+JQUANTS_EARNINGS_CALENDAR_ENDPOINT = "/v2/equities/earnings-calendar"
 JQUANTS_TRADING_CALENDAR_ENDPOINT = "/v2/markets/calendar"
 JQUANTS_FINS_SUMMARY_ENDPOINT = "/v2/fins/summary"
 
@@ -136,6 +137,14 @@ ENDPOINT_CAPABILITIES: dict[str, EndpointCapability] = {
         supports_date=True,
         supports_from_to=False,
         supports_code=True,
+        supports_pagination=True,
+        prefer_range_fetch=False,
+    ),
+    JQUANTS_EARNINGS_CALENDAR_ENDPOINT: EndpointCapability(
+        endpoint=JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+        supports_date=False,
+        supports_from_to=False,
+        supports_code=False,
         supports_pagination=True,
         prefer_range_fetch=False,
     ),

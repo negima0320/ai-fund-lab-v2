@@ -30,6 +30,12 @@ from ai_fund_lab_v2.runtime_v2.buy_ai.producer import _isolated_test_artifact_pa
 from ai_fund_lab_v2.runtime_v2.position_management.producer import (
     validate_position_management_input_contract,
 )
+from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
+    HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
+    HISTORICAL_NEUTRAL_SAFETY_DECISIONS,
+    HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+    HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+)
 from ai_fund_lab_v2.runtime_v2.safety_decision import load_runtime_safety_decision
 from ai_fund_lab_v2.runtime_v2.human_review import (
     EXPECTED_ACTION_SCOPE,
@@ -56,9 +62,6 @@ MORNING_VALUATION_SCOPES = {*FULL_MORNING_SCOPES, REVIEW_ONLY_MORNING_SCOPE, "se
 SAME_DAY_CLOSE_REQUIRED_SCOPES = {"current_valuation", "execution"}
 JST = timezone(timedelta(hours=9))
 CURRENT_VALUATION_CLOSE_CONFIRMED_TIME = time(15, 40)
-HISTORICAL_NEUTRAL_SAFETY_AUTHORITY = "historical_initial_no_external_effect"
-HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION = "historical_replay_neutral_safety_v1"
-HISTORICAL_NEUTRAL_SAFETY_SOURCE = "data_readiness_historical_temporal_authority"
 HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE = "HISTORICAL_DAILY_NEUTRAL"
 HISTORICAL_PENDING_SAFETY_AUTHORITY_TYPE = "HISTORICAL_PENDING_SAFETY_CONTEXT"
 
@@ -1037,6 +1040,28 @@ def evaluate_runtime_data_readiness(
         "effective_component_statuses": effective_component_statuses,
         "components": {
             "market": market_payload,
+            "trading_calendar": {
+                "status": "READY" if calendar.get("calendar_authority_status") == "PASS" else "REVIEW_REQUIRED",
+                "calendar_authority_status": calendar.get("calendar_authority_status") or "",
+                "calendar_authority_type": calendar.get("calendar_authority_type") or "",
+                "calendar_authority_path": calendar.get("calendar_authority_path") or "",
+                "calendar_authority_reason": calendar.get("calendar_authority_reason") or "",
+                "business_day": business_day,
+                "market_closed": bool(calendar.get("market_closed")),
+                "market_closed_reason": calendar.get("market_closed_reason") or "",
+                "previous_trading_date": previous_trading_date,
+                "latest_available_market_date": latest_market_date,
+            },
+            "no_action": {
+                "status": "MARKET_CLOSED_RESOLVED"
+                if calendar.get("calendar_authority_status") == "PASS" and not business_day
+                else "BUSINESS_DAY_RESOLVED"
+                if calendar.get("calendar_authority_status") == "PASS" and business_day
+                else "CALENDAR_UNRESOLVED",
+                "calendar_authority_status": calendar.get("calendar_authority_status") or "",
+                "market_closed": bool(calendar.get("market_closed")),
+                "reason": calendar.get("market_closed_reason") or calendar.get("calendar_authority_reason") or "",
+            },
             "feature": feature_payload,
             "candidate": candidate_status,
             "opportunity": opportunity_status,
@@ -1046,6 +1071,21 @@ def evaluate_runtime_data_readiness(
             "safety": safety_payload,
             "human_review": review_only_scope_payload,
             "runtime_state": runtime_state_payload,
+            "current_position": {
+                "status": current_temporal_payload["current_position_status"],
+                "position_state_as_of": current_temporal_payload["position_state_as_of"],
+                "current_actual_as_of": actual_current_as_of,
+                "freshness": current_freshness,
+            },
+            "current_valuation": {
+                "status": current_temporal_payload["current_valuation_status"],
+                "valuation_as_of": current_temporal_payload["valuation_as_of"],
+                "source_market_date": current_temporal_payload["source_market_date"],
+                "expected_date": valuation_temporal_authority["expected_date"],
+                "expected_date_policy": valuation_temporal_authority["expected_date_policy"],
+                "temporal_authority": valuation_temporal_authority["authority"],
+                "temporal_reason": valuation_temporal_authority["reason"],
+            },
             "pending": pending_payload,
             "runtime_environment": environment_payload,
         },
@@ -1910,7 +1950,7 @@ def _historical_daily_neutral_safety_authority(
         "safety_authority_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
         "safety_authority_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
         "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
-        "safety_decision": "ALLOW",
+        "safety_decision": "NEUTRAL",
         "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
         "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
         "historical_neutral_authority_generated_or_resolved": status == "READY",
@@ -2059,6 +2099,8 @@ def _pending_readiness_payload(
         return {"status": "REVIEW_REQUIRED", "reason": "stale_approved_pending_exists", "missing_evidence": [], "stale_artifacts": ["pending"], "mismatched_dates": ["pending.target_session_date"], "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending}
     if state == "APPROVED" and not consumed and (not payload.get("pending_policy_hash") and not approval.get("pending_policy_hash")):
         return {"status": "REVIEW_REQUIRED", "reason": "pending_policy_hash_missing", "missing_evidence": ["pending_policy_hash"], "stale_artifacts": [], "mismatched_dates": [], "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending}
+    if mode == "historical" and state == "APPROVED" and not consumed and safety_authority["status"] != "READY":
+        return {"status": "REVIEW_REQUIRED", "reason": "pending_safety_evidence_missing", "missing_evidence": ["pending_safety_evidence"], "stale_artifacts": [], "mismatched_dates": [], "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending, "payload": payload, "historical_pending_safety_authority": safety_authority}
     if state == "APPROVED" and not consumed and (not payload.get("safety_decision_id") and not approval.get("safety_decision_id")):
         if mode == "historical" and safety_authority["status"] == "READY":
             return {
@@ -2100,11 +2142,12 @@ def _historical_pending_safety_authority(
         mismatched.append("pending_lifecycle_state")
     expected = {
         "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
-        "safety_decision": "ALLOW",
         "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
         "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
         "safety_business_date": expected_safety_business_date,
     }
+    if state == "APPROVED" and active_pending and not consumed:
+        expected["safety_decision_id"] = f"historical-neutral-safety:{expected_safety_business_date}"
     if runtime_test_run_id or safety_context.get("runtime_test_run_id"):
         expected["runtime_test_run_id"] = runtime_test_run_id
     if runtime_test_profile_id or safety_context.get("runtime_test_profile_id"):
@@ -2115,6 +2158,9 @@ def _historical_pending_safety_authority(
         actual = str(safety_context.get(field) or "")
         if actual != str(expected_value):
             mismatched.append(f"safety_context.{field}")
+    actual_decision = str(safety_context.get("safety_decision") or "").upper()
+    if actual_decision not in HISTORICAL_NEUTRAL_SAFETY_DECISIONS:
+        mismatched.append("safety_context.safety_decision")
     if not consumed_prior_session and target_session_date != business_date:
         mismatched.append("target_session_date")
     if consumed_prior_session and target_session_date > business_date:

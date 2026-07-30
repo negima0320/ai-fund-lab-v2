@@ -7,7 +7,7 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision, run_sell_planning_pending_pipeline
-from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import load_capital_deployment_policy
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import capital_deployment_policy_hash, load_capital_deployment_policy
 from ai_fund_lab_v2.runtime_v2.position_management.producer import _sell_exit_decisions_from_artifact
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 
@@ -82,12 +82,19 @@ def test_phase21_b_pm_add_generates_buy_pending_with_lineage(tmp_path):
         mode="demo",
         exit_decisions=(SellExitDecision(symbol="9432", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-1"),),
         capital_deployment_policy=policy,
+        submit_policy_context=_submit_policy_context(policy),
     )
     pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "pm_add_order_plan.json")
     item = pending["items"][0]
 
     assert result.status == "PASS"
     assert result.add_consumer_status == "PASS"
+    assert order_plan["submit_policy_context"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert order_plan["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["submit_policy_context"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["approval"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
     assert item["side"] == "BUY"
     assert item["source_decision_type"] == "ADD"
     assert item["source_pm_decision_id"] == "pm-add-1"
@@ -95,6 +102,68 @@ def test_phase21_b_pm_add_generates_buy_pending_with_lineage(tmp_path):
     assert item["add_candidate_signal"] is True
     assert item["capital_allocation_status"] == "APPROVED"
     assert item["quantity"] > 0
+    assert item["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+
+
+def test_phase23_bs_pm_add_pending_submit_policy_authority_reaches_submit_guard(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path)
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current_state(
+        runtime_root,
+        positions=[_current_position("94320", quantity=1100, price=156.6, as_of="2022-07-12")],
+        as_of="2022-07-12",
+    )
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date="2022-07-12",
+        mode="demo",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="94320",
+                quantity=0,
+                reason="add",
+                source_decision="ADD",
+                source_decision_id="pm-2022-07-12-94320-add",
+            ),
+        ),
+        capital_deployment_policy=policy,
+        submit_policy_context=_submit_policy_context(policy),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2022-07-12" / "pm_add_order_plan.json")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2022-07-12",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert result.status == "PASS"
+    assert pending["pending_plan_id"] == "pending-order-plan-pm-add-2022-07-12"
+    assert len(pending["items"]) == 1
+    assert pending["items"][0]["symbol"] == "94320"
+    assert pending["items"][0]["side"] == "BUY"
+    assert pending["items"][0]["quantity"] == 100
+    assert pending["items"][0]["source_decision_type"] == "ADD"
+    assert order_plan["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["approval"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert pending["items"][0]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert submit.submit_policy_consistency["policy_consistency_status"] == "PASS"
+    assert submit.submit_policy_consistency["policy_mismatch_reason"] == ""
+    assert submit.item_results[0].pending_item_id == pending["items"][0]["pending_item_id"]
+    assert submit.item_results[0].guard_evidence["safety_guard_status"] == "PASS"
+    assert submit.item_results[0].guard_evidence["buy_eligibility_status"] == "PASS"
+    assert submit.item_results[0].guard_evidence["opportunity_buy_eligibility_status"] == "PASS"
+    assert submit.item_results[0].guard_evidence["violated_policy"] == "submit_preflight"
+    assert submit.item_results[0].reason == "symbol not supported by broker capability"
+    assert submit.item_results[0].reason != "missing_submit_policy_evidence"
 
 
 def test_phase21_b_pm_add_rejects_duplicate_pending_order(tmp_path):
@@ -151,6 +220,7 @@ def test_phase21_b_add_submit_ledger_keeps_lineage(tmp_path):
         mode="demo",
         exit_decisions=(SellExitDecision(symbol="7203", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-ledger"),),
         capital_deployment_policy=policy,
+        submit_policy_context=_submit_policy_context(policy),
     )
     submit = run_submit_pipeline(
         runtime_root=runtime_root,
@@ -165,6 +235,7 @@ def test_phase21_b_add_submit_ledger_keeps_lineage(tmp_path):
     orders = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
 
     assert submit.status == "PASS"
+    assert submit.submit_policy_consistency["policy_consistency_status"] == "PASS"
     assert orders[0]["side"] == "BUY"
     assert orders[0]["source_decision_type"] == "ADD"
     assert orders[0]["source_pm_decision_id"] == "pm-add-ledger"
@@ -183,13 +254,13 @@ def _runtime_root(tmp_path: Path) -> Path:
     return root
 
 
-def _write_current_state(root: Path, *, positions):
+def _write_current_state(root: Path, *, positions, as_of: str = "2026-07-08"):
     payload = {
         "schema_version": "1",
         "asset_state_id": "asset-phase21b",
         "environment": "demo",
         "source": "fixture",
-        "as_of": "2026-07-08",
+        "as_of": as_of,
         "positions": positions,
         "cash": 1_000_000,
         "buying_power": 1_000_000,
@@ -202,20 +273,20 @@ def _write_current_state(root: Path, *, positions):
         "cash_unknown": False,
         "buying_power_unknown": False,
         "generated_from": ["fixture"],
-        "created_at": "2026-07-08",
-        "updated_at": "2026-07-08",
+        "created_at": as_of,
+        "updated_at": as_of,
     }
     _write_json(root / "persistent_ledger" / "state.json", payload)
 
 
-def _current_position(symbol: str, *, quantity: float, price: float) -> dict:
+def _current_position(symbol: str, *, quantity: float, price: float, as_of: str = "2026-07-08") -> dict:
     return {
         "symbol": symbol,
         "quantity": quantity,
         "average_price": price,
         "market_value": quantity * price,
         "source": "fixture",
-        "as_of": "2026-07-08",
+        "as_of": as_of,
     }
 
 
@@ -298,6 +369,16 @@ def _policy_path(tmp_path: Path) -> Path:
         },
     )
     return path
+
+
+def _submit_policy_context(policy) -> dict:
+    return {
+        "submit_policy_authority": "capital_deployment_policy",
+        "submit_policy_schema_version": "phase23_bb_submit_policy_authority.v1",
+        "submit_policy_version": policy.policy_version,
+        "submit_policy_source": policy.policy_source,
+        "submit_policy_hash": capital_deployment_policy_hash(policy),
+    }
 
 
 def _demo_settings() -> BrokerSettings:

@@ -15,6 +15,9 @@ import pandas as pd
 PRICE_VOLATILITY_SCHEMA_VERSION = "strategy_price_volatility_materialization.v1"
 TECHNICAL_FEATURE_SCHEMA_VERSION = "strategy_pm_technical_feature_materialization.v1"
 PRODUCER_VERSION = "phase22_qe_strategy_input_materializer.v1"
+REFERENCE_PRICE_AUTHORITY = "REFERENCE_PRICE_AUTHORITY"
+REFERENCE_PRICE_FIELD = "reference_price"
+REFERENCE_PRICE_TYPE = "planning_reference_close"
 PRICE_LOOKBACK_BUSINESS_DAYS = 20
 MINIMUM_PRICE_OBSERVATIONS = 21
 PM_TECHNICAL_REQUIRED_COLUMNS = (
@@ -261,12 +264,24 @@ def _calculation_rows(
         volume = pd.to_numeric(symbol_frame["volume"], errors="coerce")
         returns = close.pct_change()
         vol20 = _finite_or_none(returns.tail(PRICE_LOOKBACK_BUSINESS_DAYS).std())
+        latest = symbol_frame.iloc[-1]
+        reference_price = _finite_or_none(latest.get("close"))
+        reference_price_date = str(latest.get("target_date") or feature_date)
+        reference_price_payload = _reference_price_payload(
+            symbol=symbol,
+            reference_price=reference_price,
+            reference_price_date=reference_price_date,
+            feature_date=feature_date,
+            source_path=source_path,
+            source_hash=source_hash,
+        )
         if vol20 is None or vol20 <= 0:
             rows.append(
                 {
                     **base,
                     "coverage_status": "INSUFFICIENT_OBSERVATIONS",
                     "volatility_value": None,
+                    **reference_price_payload,
                     "decision_resolution": "UNRESOLVED",
                     "missing_features": ["volatility_return_std_20d"],
                 }
@@ -277,6 +292,7 @@ def _calculation_rows(
             "coverage_status": "AVAILABLE",
             "volatility_value": round(vol20, 10),
             "volatility_return_std_20d": round(vol20, 10),
+            **reference_price_payload,
             "decision_resolution": "RESOLVED",
         }
         if include_pm_features:
@@ -304,6 +320,74 @@ def _calculation_rows(
                 row["decision_resolution"] = "UNRESOLVED"
         rows.append(row)
     return rows
+
+
+def _reference_price_payload(
+    *,
+    symbol: str,
+    reference_price: float | None,
+    reference_price_date: str,
+    feature_date: str,
+    source_path: Path,
+    source_hash: str,
+) -> dict[str, Any]:
+    if reference_price is None or reference_price <= 0:
+        return {
+            REFERENCE_PRICE_FIELD: None,
+            "reference_price_type": REFERENCE_PRICE_TYPE,
+            "reference_price_date": reference_price_date,
+            "reference_price_authority": {
+                "authority_type": REFERENCE_PRICE_AUTHORITY,
+                "canonical_field": REFERENCE_PRICE_FIELD,
+                "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+                "source_dataset": "J-Quants equities_bars_daily",
+                "source_field": "close",
+                "source_path": str(source_path),
+                "source_hash": source_hash,
+                "symbol": symbol,
+                "business_date": feature_date,
+                "price_date": reference_price_date,
+                "price_type": REFERENCE_PRICE_TYPE,
+                "PIT_status": "PASS" if reference_price_date <= feature_date else "BLOCK",
+                "latest_fallback_used": False,
+            },
+            "reference_price_resolution": {
+                "status": "REVIEW_REQUIRED",
+                "reason": "reference_price_missing_or_invalid",
+                "resolved_price": None,
+                "source_field": "close",
+                "price_required_for": "position_sizing_quantity_conversion",
+                "review_reason": "reference_price_missing_or_invalid",
+            },
+        }
+    return {
+        REFERENCE_PRICE_FIELD: round(reference_price, 10),
+        "reference_price_type": REFERENCE_PRICE_TYPE,
+        "reference_price_date": reference_price_date,
+        "reference_price_authority": {
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "canonical_field": REFERENCE_PRICE_FIELD,
+            "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+            "source_dataset": "J-Quants equities_bars_daily",
+            "source_field": "close",
+            "source_path": str(source_path),
+            "source_hash": source_hash,
+            "symbol": symbol,
+            "business_date": feature_date,
+            "price_date": reference_price_date,
+            "price_type": REFERENCE_PRICE_TYPE,
+            "PIT_status": "PASS" if reference_price_date <= feature_date else "BLOCK",
+            "latest_fallback_used": False,
+        },
+        "reference_price_resolution": {
+            "status": "PASS" if reference_price_date <= feature_date else "REVIEW_REQUIRED",
+            "reason": "reference_price_resolved" if reference_price_date <= feature_date else "reference_price_future_date",
+            "resolved_price": round(reference_price, 10) if reference_price_date <= feature_date else None,
+            "source_field": "close",
+            "price_required_for": "position_sizing_quantity_conversion",
+            "review_reason": "" if reference_price_date <= feature_date else "reference_price_future_date",
+        },
+    }
 
 
 def _normalize_price_frame(frame: pd.DataFrame) -> pd.DataFrame:

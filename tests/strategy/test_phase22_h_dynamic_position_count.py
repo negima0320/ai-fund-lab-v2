@@ -113,6 +113,140 @@ def test_phase22_h_capacity_limits_do_not_create_missing_opportunities(tmp_path:
     assert current_above["strategy_fixed_position_cap_used"] is False
 
 
+def test_phase23_ai_canonical_candidate_and_opportunity_capacity_fields_resolve(tmp_path: Path) -> None:
+    candidate = dpc.resolve_capacity_count(_summary(tmp_path, "candidate_canonical", summary={"candidate_capacity_count": 50}), artifact_class="candidate")
+    opportunity = dpc.resolve_capacity_count(_summary(tmp_path, "opportunity_canonical", summary={"opportunity_capacity_count": 50}), artifact_class="opportunity")
+
+    assert candidate.resolution_status == "PASS"
+    assert candidate.resolved_count == 50
+    assert candidate.source_field == "candidate_capacity_count"
+    assert candidate.legacy_alias_used is False
+    assert opportunity.resolution_status == "PASS"
+    assert opportunity.resolved_count == 50
+    assert opportunity.source_field == "opportunity_capacity_count"
+    assert opportunity.legacy_alias_used is False
+
+
+def test_phase23_ai_supported_consumer_eligible_legacy_alias_resolves(tmp_path: Path) -> None:
+    candidate = dpc.resolve_capacity_count(_summary(tmp_path, "candidate_legacy", summary={"consumer_eligible_rows": 50, "row_count": 50}), artifact_class="candidate")
+    opportunity = dpc.resolve_capacity_count(_summary(tmp_path, "opportunity_legacy", summary={"consumer_eligible_rows": 50, "row_count": 50}), artifact_class="opportunity")
+
+    assert candidate.resolution_status == "PASS"
+    assert candidate.resolved_count == 50
+    assert candidate.source_field == "consumer_eligible_rows"
+    assert candidate.legacy_alias_used is True
+    assert opportunity.resolution_status == "PASS"
+    assert opportunity.resolved_count == 50
+    assert opportunity.source_field == "consumer_eligible_rows"
+    assert opportunity.legacy_alias_used is True
+
+
+def test_phase23_ai_missing_capacity_fields_review_required_without_silent_zero(tmp_path: Path) -> None:
+    payload, _ = build_dynamic_position_count_payload(
+        business_date="2026-07-15",
+        market_context_summary=_summary(tmp_path, "market_missing", summary=_market()),
+        portfolio_policy_summary=_summary(tmp_path, "policy_missing", summary=_policy()),
+        candidate_summary=_summary(tmp_path, "candidate_missing", summary={"raw_row_count": 50}),
+        opportunity_summary=_summary(tmp_path, "opportunity_missing", summary={"raw_row_count": 50}),
+        current_portfolio_summary=_summary(tmp_path, "current_missing", summary={"current_position_count": 0}),
+        safety_hard_maximum=10,
+        existing_active_max_positions=5,
+        config=_resolved_config(),
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["target_position_count"] is None
+    assert payload["capacity_resolution_status"] == "REVIEW_REQUIRED"
+    assert "CANDIDATE_CAPACITY_FIELD_MISSING" in payload["reason_codes"]
+    assert "OPPORTUNITY_CAPACITY_FIELD_MISSING" in payload["reason_codes"]
+
+
+def test_phase23_ai_conflicting_capacity_fields_review_required(tmp_path: Path) -> None:
+    payload, _ = build_dynamic_position_count_payload(
+        business_date="2026-07-15",
+        market_context_summary=_summary(tmp_path, "market_conflict", summary=_market()),
+        portfolio_policy_summary=_summary(tmp_path, "policy_conflict", summary=_policy()),
+        candidate_summary=_summary(tmp_path, "candidate_conflict", summary={"consumer_eligible_rows": 50, "available_candidate_count": 0, "row_count": 50}),
+        opportunity_summary=_summary(tmp_path, "opportunity_conflict", summary={"consumer_eligible_rows": 50, "available_opportunity_count": 0, "row_count": 50}),
+        current_portfolio_summary=_summary(tmp_path, "current_conflict", summary={"current_position_count": 0}),
+        safety_hard_maximum=10,
+        existing_active_max_positions=5,
+        config=_resolved_config(),
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["target_position_count"] is None
+    assert payload["candidate_capacity_resolution"]["resolution_status"] == "REVIEW_REQUIRED"
+    assert payload["opportunity_capacity_resolution"]["resolution_status"] == "REVIEW_REQUIRED"
+    assert payload["candidate_capacity_resolution"]["conflict_detected"] is True
+    assert payload["opportunity_capacity_resolution"]["conflict_detected"] is True
+    assert "CANDIDATE_CAPACITY_FIELD_CONFLICT" in payload["reason_codes"]
+    assert "OPPORTUNITY_CAPACITY_FIELD_CONFLICT" in payload["reason_codes"]
+
+
+def test_phase23_ai_legitimate_zero_capacity_passes_when_rejections_are_complete(tmp_path: Path) -> None:
+    candidate = dpc.resolve_capacity_count(_summary(tmp_path, "candidate_zero", summary={"consumer_eligible_rows": 0, "row_count": 50, "rejected_rows": 50}), artifact_class="candidate")
+    opportunity = dpc.resolve_capacity_count(_summary(tmp_path, "opportunity_zero", summary={"consumer_eligible_rows": 0, "row_count": 50, "rejected_rows": 50}), artifact_class="opportunity")
+
+    assert candidate.resolution_status == "PASS"
+    assert candidate.resolved_count == 0
+    assert candidate.resolution_reason == "LEGITIMATE_ZERO_CAPACITY"
+    assert opportunity.resolution_status == "PASS"
+    assert opportunity.resolved_count == 0
+    assert opportunity.resolution_reason == "LEGITIMATE_ZERO_CAPACITY"
+
+
+def test_phase23_ai_target_run_capacity_reproduction_uses_policy_not_silent_zero(tmp_path: Path) -> None:
+    payload, _ = build_dynamic_position_count_payload(
+        business_date="2026-07-15",
+        market_context_summary=_summary(tmp_path, "market_ah", summary={"trend_regime": "BULL", "market_breadth": "STRONG", "volatility_regime": "NORMAL", "confidence": 0.95, "uncertainty": "LOW"}),
+        portfolio_policy_summary=_summary(tmp_path, "policy_ah", summary={"risk_posture": "RISK_ON", "entry_posture": "EXPAND", "confidence": 0.95, "uncertainty": "LOW"}),
+        candidate_summary=_summary(tmp_path, "candidate_ah", summary={"consumer_eligible_rows": 50, "row_count": 50}),
+        opportunity_summary=_summary(tmp_path, "opportunity_ah", summary={"consumer_eligible_rows": 50, "row_count": 50}),
+        current_portfolio_summary=_summary(tmp_path, "current_ah", summary={"current_position_count": 0}),
+        safety_hard_maximum=10,
+        existing_active_max_positions=5,
+        config=_resolved_config(),
+    )
+
+    assert payload["producer_result_status"] == "PASS"
+    assert payload["resolved_candidate_capacity"] == 50
+    assert payload["resolved_opportunity_capacity"] == 50
+    assert payload["target_position_count"] > 0
+    assert "candidate_capacity_constrained" not in payload["reason_codes"]
+    assert "opportunity_capacity_constrained" not in payload["reason_codes"]
+
+
+def test_phase23_ai_no_forced_buy_when_policy_capacity_is_legitimate_zero(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "zero_policy", candidates=0, opportunities=0, current=0).payload
+
+    assert payload["producer_result_status"] == "PASS"
+    assert payload["resolved_candidate_capacity"] == 0
+    assert payload["resolved_opportunity_capacity"] == 0
+    assert payload["target_position_count"] == 0
+    assert payload["target_position_count_resolution"] == "EXPLICIT_ZERO"
+
+
+def test_phase23_ai_contradiction_guard_prevents_upstream_positive_from_resolving_zero(tmp_path: Path) -> None:
+    payload, _ = build_dynamic_position_count_payload(
+        business_date="2026-07-15",
+        market_context_summary=_summary(tmp_path, "market_guard", summary=_market()),
+        portfolio_policy_summary=_summary(tmp_path, "policy_guard", summary=_policy()),
+        candidate_summary=_summary(tmp_path, "candidate_guard", summary={"candidate_capacity_count": 0, "consumer_eligible_rows": 50, "row_count": 50}),
+        opportunity_summary=_summary(tmp_path, "opportunity_guard", summary={"opportunity_capacity_count": 0, "consumer_eligible_rows": 50, "row_count": 50}),
+        current_portfolio_summary=_summary(tmp_path, "current_guard", summary={"current_position_count": 0}),
+        safety_hard_maximum=10,
+        existing_active_max_positions=5,
+        config=_resolved_config(),
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["candidate_capacity_resolution"]["resolved_count"] == 0
+    assert payload["opportunity_capacity_resolution"]["resolved_count"] == 0
+    assert payload["capacity_resolution_status"] == "REVIEW_REQUIRED"
+    assert payload["target_position_count"] is None
+
+
 def test_phase22_h_status_propagates_review_and_blocks_without_fixed_fallback(tmp_path: Path) -> None:
     review_payload, _ = build_dynamic_position_count_payload(
         business_date="2026-07-15",

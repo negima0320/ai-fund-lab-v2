@@ -2316,6 +2316,71 @@ Historical は Runtime v2 の正式 environment である。ただし Current / 
 
 Phase17-G の Historical Fill Model は 5BD Historical Runtime Smoke Test 用の最小実行仮定である。Market order は対象営業日の Canonical OHLCV `Open` を fill price とし、PIT manifest hash、Listed Issues PIT universe、Corporate Action no-impact guard、duplicate submit evidence、cash / quantity guard を必須 evidence とする。Fees、tax、slippage、partial fill、long-term performance 用の厳密 execution model は 20BD 以降の別 acceptance とする。
 
+## Phase23-P 追補: Historical Evaluation Accepted Generation Authority
+
+Historical Runtime Test は、Production-common Runtime chain を変更せず、run開始時に現在Human Accepted済みのRuntime-consumable Accepted Generationを1件固定して評価する。
+
+Production / Demo Runtime のAccepted Generation Authorityは従来どおり `business_date` 時点のPIT Authorityであり、次を維持する。
+
+```text
+accepted_at <= business_date
+effective_from <= business_date
+```
+
+Historical Runtime Evaluationでは、Accepted Generationの `accepted_at` / `effective_from` をhistorical business dateへ比較しない。代わりに `reports/runtime_tests/runs/<run_id>/historical_evaluation_authority.json` に保存されたrun-start fixed authorityをRun全体で使用する。
+
+Historicalの日次PIT判定対象は以下に限定する。
+
+```text
+Market Data
+Financial Data
+Corporate Event
+Feature
+Calendar
+```
+
+禁止事項:
+
+- Historical専用Strategy
+- Historical専用AI判断
+- Historical専用Accepted Generation差し替え
+- latest fallback
+- future market / financial / corporate event / feature data
+- run中のAccepted Generation切替
+- Accepted日時改ざん
+- Broker Write
+- Runtime Switch
+
+Historical final summaryは `evaluation_mode`、`training_cutoff`、`evaluation_period`、`training_overlap` を保持する。training overlapがある場合は `STRICT_OOS` と表示してはならない。
+
+## Phase23-Q 追補: Production-common Daily Scheduler Environment Alignment
+
+Runtime v2 daily operation scheduler / CLI は Historical 専用schedulerを新設せず、同一entrypointで `production`、`demo`、`historical` を扱う。
+
+正式entrypoint:
+
+```text
+python -m ai_fund_lab_v2.runtime_v2.cli.run_daily_operation
+```
+
+Historical Runtime Test runner はこのentrypointへ次を渡す。
+
+```text
+--mode historical
+--broker-environment historical_simulated
+--business-date <historical business date>
+--evaluation-time <explicit evaluation time>
+--notification-mode payload-only
+--market-refresh-allow-api-fetch false
+--runtime-test-run-id <run_id>
+--runtime-test-evidence-root reports/runtime_tests/runs/<run_id>
+--historical-evaluation-authority reports/runtime_tests/runs/<run_id>/historical_evaluation_authority.json
+```
+
+Historical `market_refresh` は外部fetchを行わず、historical business dateに束縛された既存canonical / PIT inputを解決する。必要なhistorical inputが欠損する場合は、`historical_asof_authority_invalid`、`physical_source_missing`、`historical_market_input_missing` 等の具体的reasonでfail closedし、Demo-only scheduler guardで停止してはならない。
+
+Production / Demo のscheduler安全条件は維持する。Production submitはscheduler rehearsalからBroker Writeを許可せず、別途Production acceptance boundaryを必要とする。
+
 ## Phase19-AV 追補: AI Status Inspection
 
 Runtime Test `ai-status` は Runtime Authority を変更するコマンドではなく、COMMITTED Accepted Generation と Runtime Readiness を確認する read-only operational observability command である。

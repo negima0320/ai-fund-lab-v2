@@ -4,6 +4,8 @@ import json
 from argparse import Namespace
 from pathlib import Path
 
+from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
+from ai_fund_lab_v2.runtime_v2.planning.morning_pipeline import _attach_historical_safety_authority
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
     _data_readiness_required_for_job,
     _effective_runtime_safety_decision,
@@ -12,7 +14,7 @@ from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import evaluate_sell_planning_capability
 from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
-from ai_fund_lab_v2.runtime_v2.safety_decision import load_runtime_safety_decision, safety_allows_action
+from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision, load_runtime_safety_decision, safety_allows_action
 
 
 BUSINESS_DATE = "2026-07-06"
@@ -64,6 +66,52 @@ def test_phase17_x_data_readiness_accepts_pending_safety_authority_and_empty_cur
     assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
     assert "pending_safety_evidence_missing" not in result.payload["review_reasons"]
     assert "pm_input_stale_artifacts" not in result.payload["review_reasons"]
+
+
+def test_phase23_ax_historical_neutral_safety_authority_materializes_to_pending(tmp_path):
+    pending = promote_order_plan_to_pending(
+        order_plan_id="order-plan-neutral",
+        source_order_plan_path="order_plan/2026-07-06/order_plan.json",
+        source_order_plan_hash="hash-neutral",
+        environment="historical",
+        plan_created_date=BUSINESS_DATE,
+        intended_submit_date=BUSINESS_DATE,
+        target_session_date=BUSINESS_DATE,
+        items=(),
+    )
+    decision = RuntimeSafetyDecision(
+        safety_decision_id="",
+        safety_policy_version="historical_replay_neutral_safety_v1",
+        safety_source="data_readiness_historical_temporal_authority",
+        business_date=BUSINESS_DATE,
+        runtime_mode="historical",
+        decision="NEUTRAL",
+        reason="historical_neutral_no_event_safety_ready",
+        review_required=False,
+        block_buy=False,
+        block_sell=False,
+        block_submit=False,
+        halt_runtime=False,
+        emergency_stop=False,
+        generated_at="",
+        expires_at="",
+        safety_status="PASS",
+        action_permissions={"sell_planning": "ALLOWED_FOR_REPLAY"},
+    )
+
+    materialized = _attach_historical_safety_authority(
+        pending=pending,
+        business_date=BUSINESS_DATE,
+        safety_decision=decision,
+        environment_capability_context=_historical_context(tmp_path),
+    )
+
+    assert materialized.safety_context is not None
+    assert materialized.safety_decision_id == "historical-neutral-safety:2026-07-06"
+    assert materialized.safety_policy_version == "historical_replay_neutral_safety_v1"
+    assert materialized.safety_context["safety_decision"] == "NEUTRAL"
+    assert materialized.safety_context["safety_authority"] == "historical_initial_no_external_effect"
+    assert materialized.safety_context["runtime_test_run_id"] == RUN_ID
 
 
 def test_phase17_x_historical_safety_authority_allows_submit_replay_after_data_readiness(tmp_path):
@@ -141,6 +189,53 @@ def test_phase17_x_pending_safety_authority_mismatch_remains_review_required(tmp
     assert result.payload["components"]["pending"]["historical_pending_safety_authority"]["mismatched_fields"] == [
         "safety_context.runtime_test_run_id"
     ]
+
+
+def test_phase23_ax_missing_pending_safety_metadata_remains_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_authorized_pending(runtime_root, tmp_path, include_safety_context=False)
+    _write_stale_latest_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_safety_evidence_missing" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase23_c_empty_current_calendar_missing_remains_review_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, write_calendar=False)
+    _write_authorized_pending(runtime_root, tmp_path)
+    _write_stale_latest_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.payload["components"]["safety"]["status"] == "READY"
+    assert "historical_trading_calendar_authority_missing" in result.payload["review_reasons"]
+    assert result.payload["market_calendar_authority_status"] == "REVIEW_REQUIRED"
 
 
 def test_phase17_x_pm_producer_uses_runtime_state_authority_for_historical_empty_current(tmp_path, monkeypatch):
@@ -230,7 +325,7 @@ def _historical_context(tmp_path: Path) -> dict:
     }
 
 
-def _runtime_root(tmp_path: Path) -> Path:
+def _runtime_root(tmp_path: Path, *, write_calendar: bool = True) -> Path:
     root = tmp_path / ".runtime"
     _write_json(
         root / "persistent_ledger" / "state.json",
@@ -303,10 +398,40 @@ def _runtime_root(tmp_path: Path) -> Path:
     )
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
+    if write_calendar:
+        _write_calendar(root)
     return root
 
 
-def _write_authorized_pending(runtime_root: Path, tmp_path: Path, *, run_id: str = RUN_ID) -> None:
+def _write_calendar(root: Path) -> None:
+    rows = [
+        {"Date": "2026-07-03", "HolidayDivision": "1"},
+        {"Date": BUSINESS_DATE, "HolidayDivision": "1"},
+        {"Date": "2026-07-07", "HolidayDivision": "1"},
+    ]
+    _write_jsonl(root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.jsonl", rows)
+
+
+def _write_authorized_pending(
+    runtime_root: Path,
+    tmp_path: Path,
+    *,
+    run_id: str = RUN_ID,
+    include_safety_context: bool = True,
+) -> None:
+    safety_context = {
+        "safety_authority": "historical_initial_no_external_effect",
+        "safety_decision_id": "historical-neutral-safety:2026-07-06",
+        "safety_policy_version": "historical_replay_neutral_safety_v1",
+        "safety_source": "data_readiness_historical_temporal_authority",
+        "safety_decision": "NEUTRAL",
+        "safety_reason": "historical_neutral_no_event_safety_ready",
+        "safety_business_date": BUSINESS_DATE,
+        "temporal_authority_business_date": BUSINESS_DATE,
+        "runtime_test_run_id": run_id,
+        "runtime_test_profile_id": PROFILE_ID,
+        "runtime_test_evidence_root": str(_evidence_root(tmp_path)),
+    }
     _write_json(
         runtime_root / "pending_order_plan" / "pending_order_plan.json",
         {
@@ -321,24 +446,13 @@ def _write_authorized_pending(runtime_root: Path, tmp_path: Path, *, run_id: str
             "approval": {
                 "approval_status": "APPROVED",
                 "pending_policy_hash": "policy-hash",
-                "safety_decision_id": "",
+                "safety_decision_id": "historical-neutral-safety:2026-07-06",
                 "safety_policy_version": "historical_replay_neutral_safety_v1",
             },
             "consume": {"consumed": False},
-            "safety_decision_id": "",
-            "safety_policy_version": "historical_replay_neutral_safety_v1",
-            "safety_context": {
-                "safety_authority": "historical_initial_no_external_effect",
-                "safety_decision_id": "",
-                "safety_policy_version": "historical_replay_neutral_safety_v1",
-                "safety_source": "data_readiness_historical_temporal_authority",
-                "safety_decision": "ALLOW",
-                "safety_reason": "historical_neutral_no_event_safety_ready",
-                "safety_business_date": BUSINESS_DATE,
-                "runtime_test_run_id": run_id,
-                "runtime_test_profile_id": PROFILE_ID,
-                "runtime_test_evidence_root": str(_evidence_root(tmp_path)),
-            },
+            "safety_decision_id": "historical-neutral-safety:2026-07-06" if include_safety_context else "",
+            "safety_policy_version": "historical_replay_neutral_safety_v1" if include_safety_context else "",
+            "safety_context": safety_context if include_safety_context else None,
             "items": [
                 {
                     "pending_item_id": "buy-1",

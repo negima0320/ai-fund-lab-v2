@@ -13,12 +13,9 @@ COMPONENT_NAMES = (
     "market_context",
     "corporate_event",
     "portfolio_policy",
-    "dynamic_position_count",
-    "dynamic_cash_exposure",
     "portfolio_construction",
     "position_sizing",
     "position_management",
-    "capital_deployment",
     "runtime_planning",
     "strategy_decision_trace",
     "strategy_shadow_summary",
@@ -57,6 +54,7 @@ def build_strategy_source_manifest(
 ) -> dict[str, Any]:
     input_manifest = input_manifest or {}
     operations_root = runtime_root / "operations"
+    strategy_source_authority = _strategy_source_authority(input_manifest)
     artifacts = _component_artifacts(strategy_dir)
     blockers = classify_component_blockers(artifacts=artifacts, business_date=business_date)
     manifest: dict[str, Any] = {
@@ -78,7 +76,11 @@ def build_strategy_source_manifest(
         "portfolio_state": _json_state_ref(runtime_root / "persistent_ledger" / "state.json", business_date=business_date, role="portfolio_state"),
         "pending_state": _json_state_ref(runtime_root / "pending_order_plan" / "pending_order_plan.json", business_date=business_date, role="pending_state"),
         "market_quotes": _parquet_date_ref(
-            operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
+            _authority_path(
+                strategy_source_authority,
+                "normalized_ohlcv",
+                default=operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
+            ),
             business_date=business_date,
             date_candidates=("target_date", "Date", "date"),
             role="market_quotes",
@@ -86,12 +88,21 @@ def build_strategy_source_manifest(
         ),
         "benchmark": _benchmark_ref(artifacts.get("market_context", {}), business_date=business_date),
         "sector": _sector_ref(
-            operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+            _authority_path(
+                strategy_source_authority,
+                "listed_issues",
+                default=operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+            ),
             market_context=artifacts.get("market_context", {}),
             business_date=business_date,
         ),
         "corporate_event": _corporate_event_ref(
             operations_root=operations_root,
+            listed_issues_path=_authority_path(
+                strategy_source_authority,
+                "listed_issues",
+                default=operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+            ),
             artifact=artifacts.get("corporate_event", {}),
             business_date=business_date,
         ),
@@ -201,12 +212,9 @@ def _component_paths(strategy_dir: Path) -> dict[str, Path]:
         "market_context": strategy_dir / "market_context.json",
         "corporate_event": strategy_dir / "corporate_event.json",
         "portfolio_policy": strategy_dir / "portfolio_policy.json",
-        "dynamic_position_count": strategy_dir / "dynamic_position_count.json",
-        "dynamic_cash_exposure": strategy_dir / "dynamic_cash_exposure.json",
         "portfolio_construction": strategy_dir / "portfolio_construction.json",
         "position_sizing": strategy_dir / "position_sizing.json",
         "position_management": strategy_dir / "position_management.json",
-        "capital_deployment": strategy_dir / "capital_deployment.json",
         "runtime_planning": strategy_dir / "runtime_planning.json",
         "strategy_decision_trace": strategy_dir / "strategy_decision_trace.json",
         "strategy_shadow_summary": strategy_dir / "strategy_shadow_summary.json",
@@ -267,6 +275,26 @@ def _pit_validation(*, manifest: Mapping[str, Any], input_manifest: Mapping[str,
         "source_unavailable": any("missing" in code or "source_unavailable" in code for code in reasons),
         "bootstrap_required": bootstrap.get("status") == "BOOTSTRAP_REQUIRED",
     }
+
+
+def _strategy_source_authority(input_manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = input_manifest.get("strategy_source_authority")
+    if isinstance(direct, Mapping):
+        return direct
+    sources = input_manifest.get("strategy_input_sources")
+    if isinstance(sources, Mapping):
+        nested = sources.get("strategy_source_authority")
+        if isinstance(nested, Mapping):
+            return nested
+    return {}
+
+
+def _authority_path(authority: Mapping[str, Any], key: str, *, default: Path) -> Path:
+    paths = authority.get("paths") if isinstance(authority.get("paths"), Mapping) else {}
+    value = str(paths.get(key) or "")
+    if value:
+        return Path(value)
+    return default
 
 
 def _attach_pit_status_to_blockers(manifest: dict[str, Any]) -> None:
@@ -402,9 +430,9 @@ def _sector_ref(path: Path, *, market_context: Mapping[str, Any], business_date:
     return ref
 
 
-def _corporate_event_ref(*, operations_root: Path, artifact: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+def _corporate_event_ref(*, operations_root: Path, listed_issues_path: Path | None = None, artifact: Mapping[str, Any], business_date: str) -> dict[str, Any]:
     listed_ref = _parquet_date_ref(
-        operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+        listed_issues_path or operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
         business_date=business_date,
         date_candidates=("target_date", "Date", "date", "provider_effective_date"),
         role="corporate_event_listed_issues",

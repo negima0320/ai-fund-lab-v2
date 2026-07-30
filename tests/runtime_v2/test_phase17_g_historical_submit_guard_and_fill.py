@@ -20,6 +20,7 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
+    capital_deployment_policy_hash,
     load_capital_deployment_policy,
 )
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
@@ -430,6 +431,12 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         },
         policy_version=policy.policy_version if policy else "",
         policy_source=policy.policy_source if policy else "",
+        planning_authority_version="phase17_g_fixture_planning_authority",
+        planning_authority_source="order-plan-phase17-g",
+        planning_authority_hash="sha256:phase17-g-planning",
+        submit_policy_version=policy.policy_version if policy else "",
+        submit_policy_source=policy.policy_source if policy else "",
+        submit_policy_hash=capital_deployment_policy_hash(policy) if policy else "",
         evaluation_capital=policy.evaluation_capital if policy else None,
         target_investment_ratio=policy.target_investment_ratio if policy else None,
         cash_buffer=policy.cash_buffer if policy else None,

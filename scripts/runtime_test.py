@@ -34,6 +34,7 @@ from ai_fund_lab_v2.runtime_v2.ai_status import (
     build_ai_status_report,
     write_ai_status_evidence,
 )
+from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accepted_generation
 from ai_fund_lab_v2.runtime_v2.system_status import (
     build_system_status_report,
     build_system_status_scoped_view,
@@ -109,6 +110,7 @@ BACKUP_MANIFEST_SCHEMA_VERSION = "runtime_test_backup_manifest_v1"
 RESET_MANIFEST_SCHEMA_VERSION = "runtime_test_reset_manifest_v1"
 FINAL_SUMMARY_SCHEMA_VERSION = "runtime_test_final_summary_v1"
 FRESH_RUN_SUMMARY_SCHEMA_VERSION = "runtime_test_fresh_run_summary_v1"
+HISTORICAL_EVALUATION_AUTHORITY_SCHEMA_VERSION = "historical_evaluation_authority.v1"
 SUMMARY_SCHEMA_VERSION = "runtime_test_summary_v2"
 SUMMARY_SCOPE_CONTRACT_VERSION = "runtime_test_summarize_scope_contract.v1"
 PERFORMANCE_METRIC_CONTRACT_VERSION = "phase20_b_performance_metric_contract.v1"
@@ -316,6 +318,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_plan_window(fresh)
     add_mutation_safety(fresh)
     fresh.add_argument("--initial-cash", type=float)
+    fresh.add_argument(
+        "--auto-abandon-on-error",
+        action="store_true",
+        help="Automatically abandon a HALT run created by fresh-run so a later fresh-run is not blocked.",
+    )
+    fresh.add_argument("--auto-abandon-reason", default="fresh_run_auto_abandon_on_error")
 
     validate = subparsers.add_parser("validate")
     add_common(validate)
@@ -407,7 +415,7 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
 def status(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path) -> CommandResult:
     active_run = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
     active_run_id = str(active_run.get("run_id") or "") if active_run else ""
-    strategy_shadow = load_run_strategy_shadow_summary(run_dir=runs_root(evidence_root) / active_run_id) if active_run_id else {}
+    strategy_shadow = read_json_optional(runs_root(evidence_root) / active_run_id / "strategy_shadow_summary.json") if active_run_id else {}
     halt_summary = _runtime_halt_summary(runs_root(evidence_root) / active_run_id) if active_run_id else {}
     payload = base_payload("status", "PASS")
     payload.update(
@@ -472,6 +480,9 @@ def _runtime_halt_summary(run_dir: Path) -> dict[str, Any]:
     manifest_path = run_dir / "daily" / business_date / job / "runtime_manifest.json"
     if not manifest_path.is_file():
         summary["root_reason"] = str(halted_at.get("runtime_test_job_status") or halted_at.get("exit_code") or "")
+        summary["root_reason_code"] = str(halted_at.get("runtime_test_job_status") or "")
+        summary["halt_classification"] = str(halted_at.get("runtime_test_job_status") or "RUNTIME_CLI_NONZERO_EXIT")
+        summary["recommended_action"] = "Inspect the halted job evidence and Runtime CLI output."
         return summary
     manifest = read_json_optional(manifest_path)
     summary["manifest_path"] = str(manifest_path)
@@ -485,17 +496,46 @@ def _runtime_halt_summary(run_dir: Path) -> dict[str, Any]:
     first = halted_items[0] if halted_items else {}
     classification = first.get("response_classification") if isinstance(first.get("response_classification"), dict) else {}
     diagnostic = first.get("configuration_diagnostic") if isinstance(first.get("configuration_diagnostic"), dict) else {}
+    manifest_reason = _first_text(
+        manifest.get("reason"),
+        *_as_text_list(manifest.get("data_readiness_halt_reasons")),
+        *_as_text_list(manifest.get("data_readiness_review_reasons")),
+        *_as_text_list(manifest.get("errors")),
+        *_as_text_list(manifest.get("warnings")),
+        halted_at.get("runtime_test_job_status"),
+        halted_at.get("exit_code"),
+    )
+    manifest_reason_code = _first_text(
+        manifest.get("reason_code"),
+        manifest.get("root_reason_code"),
+        *_as_text_list(manifest.get("data_readiness_halt_reasons")),
+        *_as_text_list(manifest.get("data_readiness_review_reasons")),
+        halted_at.get("runtime_test_job_status"),
+    )
+    manifest_classification = _first_text(
+        manifest.get("halt_classification"),
+        manifest.get("classification"),
+        manifest.get("final_state"),
+        manifest.get("status"),
+        halted_at.get("runtime_test_job_status"),
+        "RUNTIME_CLI_NONZERO_EXIT",
+    )
+    manifest_action = _first_text(
+        manifest.get("recommended_action"),
+        manifest.get("next_operator_action"),
+        manifest.get("data_readiness_next_operator_action"),
+        "Inspect the halted job evidence and repair the root Runtime authority before resume.",
+    )
     summary.update(
         {
             "halt_classification": str(
                 classification.get("mismatch_class")
                 or classification.get("root_reason_code")
                 or classification.get("status")
-                or manifest.get("status")
-                or ""
+                or manifest_classification
             ),
-            "root_reason": str(classification.get("reason") or first.get("reason") or "; ".join(manifest.get("errors") or []) or ""),
-            "root_reason_code": str(classification.get("root_reason_code") or classification.get("mismatch_class") or ""),
+            "root_reason": str(classification.get("reason") or first.get("reason") or manifest_reason),
+            "root_reason_code": str(classification.get("root_reason_code") or classification.get("mismatch_class") or manifest_reason_code),
             "expected_hash": str(classification.get("expected_hash") or classification.get("expected_content_hash") or ""),
             "actual_hash": str(classification.get("source_hash") or classification.get("actual_content_hash") or ""),
             "expected_content_hash": str(classification.get("expected_content_hash") or classification.get("expected_hash") or ""),
@@ -508,10 +548,36 @@ def _runtime_halt_summary(run_dir: Path) -> dict[str, Any]:
                 "listed_issues_path": str(diagnostic.get("listed_issues_path") or ""),
                 "historical_asof_view_path": str(diagnostic.get("historical_asof_view_path") or ""),
             },
-            "recommended_action": str(classification.get("recommended_action") or ""),
+            "recommended_action": str(classification.get("recommended_action") or manifest_action),
         }
     )
     return summary
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value in (None, ""):
+            continue
+        text = str(value)
+        if text:
+            return text
+    return ""
+
+
+def _as_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item not in (None, "")]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _mark_run_halted(run_dir: Path, run_state: dict[str, Any], job_record: dict[str, Any]) -> None:
+    run_state["status"] = "HALT"
+    run_state["halted_at"] = job_record
+    write_json_atomic(run_dir / "run_state.json", run_state)
+    run_state["halt_summary"] = _runtime_halt_summary(run_dir)
+    write_json_atomic(run_dir / "run_state.json", run_state)
 
 
 def _collect_submit_item_results(value: Any) -> list[dict[str, Any]]:
@@ -684,12 +750,44 @@ def summarize_command(
     external_effects = _summarize_external_effects(run_dir=run_dir, fresh_summary=fresh_summary)
     observability_judgment = _observability_completeness_judgment(observability)
     performance_analysis_readiness = _performance_analysis_readiness_judgment(observability)
+    summary_authority_matrix = _build_summary_authority_matrix(
+        pm=pm,
+        plans=plans,
+        observability=observability,
+        final_state_authority=final_state_authority,
+        runtime_state_available=runtime_state_available,
+        current_hashes=current_hashes,
+        final_hashes=final_hashes,
+    )
+    requested_business_days = int(plan.get("requested_business_days") or fresh_summary.get("requested_business_days") or fresh_summary.get("business_days") or 0)
+    resolved_business_day_count = int(plan.get("resolved_business_day_count") or fresh_summary.get("resolved_business_day_count") or len(plan.get("business_dates") or completed_business_days))
+    completed_business_day_count = len(completed_business_days)
+    independent_acceptance = _summary_independent_acceptance_judgment(
+        runtime_execution_status=str(run_state.get("status") or final_summary.get("status") or ""),
+        requested_business_days=requested_business_days,
+        resolved_business_day_count=resolved_business_day_count,
+        completed_business_day_count=completed_business_day_count,
+        window_resolution_status=str(plan.get("window_resolution_status") or fresh_summary.get("window_resolution_status") or ""),
+        lifecycle_status=str(lifecycle.get("status") or ""),
+        summary_authority_matrix=summary_authority_matrix,
+        legacy_request_preserved=bool(plan.get("requested_window") or plan.get("resolved_business_day_count")),
+    )
     run_summary = {
         "profile_id": plan.get("profile_id") or fresh_summary.get("profile_id") or profile.get("profile_id", ""),
         "status": run_state.get("status") or final_summary.get("status") or "UNKNOWN",
         "final_judgment": final_summary.get("final_judgment") or final_summary.get("status") or "UNKNOWN",
+        "operational_status": final_summary.get("operational_status") or final_summary.get("status") or "UNKNOWN",
+        "strategy_review_status": final_summary.get("strategy_review_status") or "NOT_EVALUATED",
+        "close_authority_judgment": final_summary.get("close_authority_judgment") or final_summary.get("status") or "UNKNOWN",
+        "final_runtime_judgment": final_summary.get("final_runtime_judgment") or final_summary.get("final_judgment") or final_summary.get("status") or "UNKNOWN",
+        "strategy_shadow_review_required": bool(final_summary.get("strategy_shadow_review_required")),
         "completed_business_days": sorted(completed_business_days),
-        "business_day_count": len(completed_business_days),
+        "business_day_count": completed_business_day_count,
+        "requested_business_days": requested_business_days,
+        "resolved_business_day_count": resolved_business_day_count,
+        "completed_business_day_count": completed_business_day_count,
+        "window_resolution_status": plan.get("window_resolution_status") or fresh_summary.get("window_resolution_status") or "REQUEST_NOT_PRESERVED_IN_LEGACY_PLAN",
+        "request_conformance_status": independent_acceptance["requested_window_conformance_judgment"],
         "date_from": fresh_summary.get("date_from") or "",
         "date_to": fresh_summary.get("date_to") or "",
         "run_dir": str(run_dir),
@@ -700,6 +798,8 @@ def summarize_command(
         "event_collection_authority": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
         "final_state_hashes": final_hashes,
         "current_state_hashes": current_hashes,
+        "summary_authority_matrix": summary_authority_matrix,
+        "independent_acceptance": independent_acceptance,
     }
     performance_judgment = "NEGATIVE_RETURN_OBSERVED" if float(performance.get("total_return_amount") or 0.0) < 0 else "NOT_EVALUATED"
     runtime_judgment = "BLOCKED" if any(f["severity"] == "BLOCKED" for f in findings) else "PASS"
@@ -755,6 +855,7 @@ def summarize_command(
             "run_event_aggregation": "RUN_SCOPED_EVIDENCE_WITH_COMPLETED_BUSINESS_DAY_FILTER",
             "runtime_root_detail": runtime_authority,
             "shared_runtime_event_authority": "PROHIBITED",
+            "summary_authority_matrix": summary_authority_matrix,
         },
         "source_evidence": {
             "run_dir": str(run_dir),
@@ -783,6 +884,8 @@ def summarize_command(
         "performance_analysis_readiness_judgment": performance_analysis_readiness,
         "current_positions": current_positions,
         "lifecycle_consistency": lifecycle,
+        "summary_authority_matrix": summary_authority_matrix,
+        "independent_acceptance": independent_acceptance,
         "findings": findings,
         "runtime_judgment": runtime_judgment,
         "performance_judgment": performance_judgment,
@@ -805,6 +908,111 @@ def summarize_command(
 
 def _summary_finding(severity: str, reason: str, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"severity": severity, "reason": reason, "evidence": evidence or {}}
+
+
+def _build_summary_authority_matrix(
+    *,
+    pm: dict[str, Any],
+    plans: dict[str, Any],
+    observability: dict[str, Any],
+    final_state_authority: str,
+    runtime_state_available: bool,
+    current_hashes: dict[str, str],
+    final_hashes: dict[str, str],
+) -> dict[str, Any]:
+    plan_matrix = dict(plans.get("summary_authority_matrix") or {})
+    pm_source = str(pm.get("source") or "")
+    pm_authority = "RUN_SCOPED_EVIDENCE" if pm_source == "run_scoped_position_management_evidence" else (
+        "CURRENT_RUNTIME_FALLBACK_FINAL_HASH_MATCH" if pm_source == "runtime_root_position_management_decisions_completed_business_day_filter" else "UNAVAILABLE"
+    )
+    fallback_used = pm_authority.startswith("CURRENT_RUNTIME")
+    matrix = {
+        "pm_decisions": {
+            "authority": pm_authority,
+            "fallback_used": fallback_used,
+            "source": pm_source,
+            "run_scoped_empty_is_authoritative": pm_source == "run_scoped_position_management_evidence" and int(pm.get("decision_count") or 0) == 0,
+        },
+        "buy_planning": plan_matrix.get("buy_planning", {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []}),
+        "sell_planning": plan_matrix.get("sell_planning", {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []}),
+        "non_executable_sell_decisions": plan_matrix.get("non_executable_sell_decisions", {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []}),
+        "fills": {
+            "authority": "RUN_SCOPED_EVIDENCE" if observability.get("status") == "AVAILABLE" else "UNAVAILABLE",
+            "fallback_used": False,
+            "count": len(observability.get("fills") or []),
+        },
+        "position_campaigns": {
+            "authority": "RUN_SCOPED_EVIDENCE" if observability.get("status") == "AVAILABLE" else "UNAVAILABLE",
+            "fallback_used": False,
+            "count": len(observability.get("position_campaigns") or []),
+        },
+        "current_positions": {
+            "authority": final_state_authority,
+            "fallback_used": bool(runtime_state_available),
+            "final_hash_match": bool(final_hashes) and current_hashes == final_hashes,
+        },
+    }
+    for artifact_class, entry in matrix.items():
+        if isinstance(entry, dict) and entry.get("fallback_used"):
+            entry.setdefault("fallback_reason", "final_hash_match_and_run_scoped_class_absence")
+            entry.setdefault("final_hash_match", bool(final_hashes) and current_hashes == final_hashes)
+    return matrix
+
+
+def _summary_independent_acceptance_judgment(
+    *,
+    runtime_execution_status: str,
+    requested_business_days: int,
+    resolved_business_day_count: int,
+    completed_business_day_count: int,
+    window_resolution_status: str,
+    lifecycle_status: str,
+    summary_authority_matrix: dict[str, Any],
+    legacy_request_preserved: bool,
+) -> dict[str, Any]:
+    runtime_execution = "PASS" if runtime_execution_status in {"COMPLETED", "PASS"} else (runtime_execution_status or "UNKNOWN")
+    requested_window_resolution = "PASS" if window_resolution_status == "PASS" else "NOT_PASS"
+    if not legacy_request_preserved:
+        requested_window_resolution = "NOT_PASS"
+    requested_window_conformance = (
+        "PASS"
+        if legacy_request_preserved
+        and requested_business_days == resolved_business_day_count == completed_business_day_count
+        and window_resolution_status == "PASS"
+        else "NOT_PASS"
+    )
+    fallback_violations = [
+        key
+        for key, entry in summary_authority_matrix.items()
+        if isinstance(entry, dict)
+        and entry.get("fallback_used")
+        and key in {"pm_decisions", "sell_planning", "non_executable_sell_decisions", "fills", "position_campaigns"}
+        and entry.get("authority") != "RUN_SCOPED_EVIDENCE"
+    ]
+    summary_isolation = "PASS" if not fallback_violations else "NOT_PASS"
+    lifecycle_judgment = "PASS" if lifecycle_status == "PASS" else "NOT_PASS"
+    overall = (
+        "PASS"
+        if runtime_execution == "PASS"
+        and requested_window_conformance == "PASS"
+        and summary_isolation == "PASS"
+        and lifecycle_judgment == "PASS"
+        else "REVIEW_REQUIRED"
+    )
+    return {
+        "runtime_execution_judgment": runtime_execution,
+        "requested_window_resolution_judgment": requested_window_resolution,
+        "requested_window_conformance_judgment": requested_window_conformance,
+        "summary_evidence_isolation_judgment": summary_isolation,
+        "lifecycle_consistency_judgment": lifecycle_judgment,
+        "strategy_to_active_runtime_judgment": "NOT_ESTABLISHED",
+        "overall_independent_judgment": overall,
+        "fallback_violations": fallback_violations,
+        "legacy_request_preserved": legacy_request_preserved,
+        "requested_business_days": requested_business_days,
+        "resolved_business_day_count": resolved_business_day_count,
+        "completed_business_day_count": completed_business_day_count,
+    }
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1092,7 +1300,12 @@ def _collect_order_plan_items(
     available: bool,
     completed_business_days: set[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    result = {"buy": [], "sell": [], "non_executable_sell_decisions": []}
+    result = {"buy": [], "sell": [], "non_executable_sell_decisions": [], "summary_authority_matrix": {}}
+    matrix: dict[str, Any] = {
+        "buy_planning": {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []},
+        "sell_planning": {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []},
+        "non_executable_sell_decisions": {"authority": "UNAVAILABLE", "fallback_used": False, "source_paths": []},
+    }
     if available:
         for path in sorted((runtime_root / "runtime_state" / "morning_pipeline").glob("*/order_plan.json")):
             if completed_business_days and path.parent.name not in completed_business_days:
@@ -1107,6 +1320,9 @@ def _collect_order_plan_items(
                             "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
                         }
                     )
+                    matrix["buy_planning"]["authority"] = "CURRENT_RUNTIME_FALLBACK_FINAL_HASH_MATCH"
+                    matrix["buy_planning"]["fallback_used"] = True
+                    matrix["buy_planning"]["source_paths"].append(str(path))
         for path in sorted((runtime_root / "runtime_state" / "sell_pipeline").glob("*/order_plan.json")):
             if completed_business_days and path.parent.name not in completed_business_days:
                 continue
@@ -1121,6 +1337,9 @@ def _collect_order_plan_items(
                             "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
                         }
                     )
+                    matrix["sell_planning"]["authority"] = "CURRENT_RUNTIME_FALLBACK_FINAL_HASH_MATCH"
+                    matrix["sell_planning"]["fallback_used"] = True
+                    matrix["sell_planning"]["source_paths"].append(str(path))
             for item in payload.get("non_executable_sell_decisions") or []:
                 if isinstance(item, dict):
                     result["non_executable_sell_decisions"].append(
@@ -1131,6 +1350,9 @@ def _collect_order_plan_items(
                             "_run_authority": "runtime_root_final_hash_match_completed_business_day_filter",
                         }
                     )
+                    matrix["non_executable_sell_decisions"]["authority"] = "CURRENT_RUNTIME_FALLBACK_FINAL_HASH_MATCH"
+                    matrix["non_executable_sell_decisions"]["fallback_used"] = True
+                    matrix["non_executable_sell_decisions"]["source_paths"].append(str(path))
     for path in sorted(run_dir.glob("daily/*/sell_planning/sell_planning_manifest.json")):
         business_date = path.parts[-3]
         if completed_business_days and business_date not in completed_business_days:
@@ -1139,14 +1361,33 @@ def _collect_order_plan_items(
         if payload and not _matches_requested_run(payload, run_id=run_id, run_dir=run_dir):
             continue
         manifest = _manifest_payload(payload)
+        if matrix["sell_planning"]["authority"] != "RUN_SCOPED_EVIDENCE":
+            matrix["sell_planning"]["source_paths"] = []
+        matrix["sell_planning"]["authority"] = "RUN_SCOPED_EVIDENCE"
+        matrix["sell_planning"]["fallback_used"] = False
+        matrix["sell_planning"]["source_paths"].append(str(path))
+        if matrix["non_executable_sell_decisions"]["authority"] != "RUN_SCOPED_EVIDENCE":
+            matrix["non_executable_sell_decisions"]["source_paths"] = []
+        matrix["non_executable_sell_decisions"]["authority"] = "RUN_SCOPED_EVIDENCE"
+        matrix["non_executable_sell_decisions"]["fallback_used"] = False
+        matrix["non_executable_sell_decisions"]["source_paths"].append(str(path))
         if int(manifest.get("pm_decision_count") or 0) == 0 and int(manifest.get("pm_exit_count") or 0) == 0 and int(manifest.get("pm_reduce_count") or 0) == 0:
             result["sell"] = [item for item in result["sell"] if str(item.get("_plan_date") or item.get("business_date") or "") != business_date]
+            result["non_executable_sell_decisions"] = [
+                item
+                for item in result["non_executable_sell_decisions"]
+                if str(item.get("_plan_date") or item.get("business_date") or "") != business_date
+            ]
     if not result["buy"] or not result["sell"]:
         fill_plans = _run_scoped_plan_proxies_from_fills(run_dir=run_dir, run_id=run_id, completed_business_days=completed_business_days)
         if not result["buy"]:
             result["buy"] = fill_plans["buy"]
         if not result["sell"]:
             result["sell"] = fill_plans["sell"]
+    matrix["buy_planning"]["source_paths"] = sorted(set(matrix["buy_planning"]["source_paths"]))
+    matrix["sell_planning"]["source_paths"] = sorted(set(matrix["sell_planning"]["source_paths"]))
+    matrix["non_executable_sell_decisions"]["source_paths"] = sorted(set(matrix["non_executable_sell_decisions"]["source_paths"]))
+    result["summary_authority_matrix"] = matrix
     return result
 
 
@@ -3477,9 +3718,16 @@ def plan_command(
             exit_code=EXIT_PRECONDITION_FAILURE,
         ) from exc
     plan_payload["plan_persistence"] = persistence
-    plan_status = "PASS" if baseline_compatibility["baseline_compatibility_status"] == "PASS" else "PLAN_REVIEW_REQUIRED"
+    plan_status = (
+        "PASS"
+        if baseline_compatibility["baseline_compatibility_status"] == "PASS"
+        and plan_payload.get("window_resolution_status") == "PASS"
+        else "PLAN_REVIEW_REQUIRED"
+    )
     payload = base_payload("plan", plan_status)
     payload.update(plan_payload)
+    payload["window_resolution_judgment"] = plan_payload.get("window_resolution_status", "")
+    payload["request_conformance_judgment"] = plan_payload.get("request_conformance_status", "")
     payload["runtime_test_plan_schema_version"] = plan_payload["schema_version"]
     exit_code = EXIT_PASS if plan_status == "PASS" else EXIT_REVIEW_REQUIRED
     payload["exit_code"] = exit_code
@@ -3624,6 +3872,180 @@ def reset_command(
     return CommandResult(payload["status"], EXIT_PASS, runner_response(payload))
 
 
+def materialize_historical_evaluation_authority(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    profile: dict[str, Any],
+    plan_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if str(profile.get("mode") or "") != "historical":
+        return {"status": "NOT_REQUESTED", "reason": "non_historical_runtime_test_profile"}
+    resolution = resolve_accepted_generation(runtime_root)
+    if not resolution.is_resolved:
+        raise RuntimeTestError(
+            "historical evaluation authority cannot be fixed: " + resolution.block_reason,
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    manifest_path = Path(resolution.bundle_manifest_path)
+    manifest = read_json(manifest_path)
+    authority_path = run_dir / "historical_evaluation_authority.json"
+    business_dates = [
+        str(day.get("business_date") or "")
+        for day in plan_payload.get("business_dates", [])
+        if isinstance(day, dict) and day.get("business_date")
+    ]
+    freshness = manifest.get("freshness_metadata") if isinstance(manifest.get("freshness_metadata"), dict) else {}
+    field_sources = freshness.get("field_sources") if isinstance(freshness.get("field_sources"), dict) else {}
+    candidate_member = manifest.get("candidate_member") if isinstance(manifest.get("candidate_member"), dict) else {}
+    opportunity_member = manifest.get("opportunity_member") if isinstance(manifest.get("opportunity_member"), dict) else {}
+    authority = {
+        "schema_version": HISTORICAL_EVALUATION_AUTHORITY_SCHEMA_VERSION,
+        "status": "PASS",
+        "authority_contract": "run-start fixed Human Accepted Generation for Historical Runtime evaluation",
+        "evaluation_mode": "CURRENT_ACCEPTED_RUNTIME_ON_HISTORICAL_DATA",
+        "strict_oos_ai_performance": False,
+        "strict_oos_reason": "Historical Runtime performance evaluates current accepted Runtime behavior; training overlap is reported separately.",
+        "production_authority_unchanged": True,
+        "historical_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
+        "daily_pit_scope": ["market_data", "financial_data", "corporate_event", "feature", "calendar"],
+        "latest_fallback_used": False,
+        "current_pointer_updates_during_run": "IGNORED_BY_RUN_AUTHORITY",
+        "run_id": str(plan_payload.get("run_id") or ""),
+        "profile_id": str(profile.get("profile_id") or ""),
+        "runtime_root": str(runtime_root),
+        "authority_path": str(authority_path),
+        "fixed_at": utc_now(),
+        "evaluation_period": {
+            "date_from": business_dates[0] if business_dates else "",
+            "date_to": business_dates[-1] if business_dates else "",
+            "business_dates": business_dates,
+        },
+        "generation_id": resolution.generation_id,
+        "accepted_generation_id": resolution.generation_id,
+        "bundle_manifest_path": resolution.bundle_manifest_path,
+        "accepted_at": resolution.accepted_at,
+        "effective_from": resolution.effective_from,
+        "accepted_decision": resolution.authority_decision,
+        "aggregate_hash": resolution.aggregate_hash,
+        "manifest_content_hash": str((resolution.source_evidence or {}).get("manifest_content_hash") or ""),
+        "candidate_model": {
+            "artifact_path": str(candidate_member.get("model_file") or (resolution.candidate_member.artifact_path if resolution.candidate_member else "")),
+            "model_hash": str(candidate_member.get("model_hash") or (resolution.candidate_member.model_hash if resolution.candidate_member else "")),
+            "scaler": str(candidate_member.get("scaler_file") or ""),
+            "scaler_hash": str(candidate_member.get("scaler_hash") or ""),
+            "feature_schema_hash": str(candidate_member.get("feature_schema_hash") or ""),
+        },
+        "opportunity_model": {
+            "artifact_path": str(opportunity_member.get("model_file") or (resolution.opportunity_member.artifact_path if resolution.opportunity_member else "")),
+            "model_hash": str(opportunity_member.get("model_hash") or (resolution.opportunity_member.model_hash if resolution.opportunity_member else "")),
+            "scaler": str(opportunity_member.get("scaler_file") or ""),
+            "scaler_hash": str(opportunity_member.get("scaler_hash") or ""),
+            "feature_schema_hash": str(opportunity_member.get("feature_schema_hash") or ""),
+        },
+        "training_cutoff": {
+            "candidate": _freshness_field_value(field_sources, "candidate_training_cutoff"),
+            "opportunity": _freshness_field_value(field_sources, "opportunity_training_cutoff"),
+            "calibration_candidate": _freshness_field_value(field_sources, "candidate_calibration_cutoff"),
+            "calibration_opportunity": _freshness_field_value(field_sources, "opportunity_calibration_cutoff"),
+            "validation": _freshness_field_value(field_sources, "validation_cutoff"),
+        },
+        "dataset_revision": {
+            "dataset_revision_id": str(manifest.get("dataset_revision_id") or ""),
+            "dataset_source_max_date": str(freshness.get("dataset_source_max_date") or ""),
+            "dataset_target_max_date": str(freshness.get("dataset_target_max_date") or ""),
+            "raw_data_max_date_at_generation": str(freshness.get("raw_data_max_date_at_generation") or ""),
+            "normalized_data_max_date_at_generation": str(freshness.get("normalized_data_max_date_at_generation") or ""),
+        },
+        "hashes": {
+            "run_authority_hash": "",
+            "aggregate_hash": resolution.aggregate_hash,
+            "manifest_content_hash": str((resolution.source_evidence or {}).get("manifest_content_hash") or ""),
+            "candidate_model_hash": str(candidate_member.get("model_hash") or ""),
+            "candidate_scaler_hash": str(candidate_member.get("scaler_hash") or ""),
+            "opportunity_model_hash": str(opportunity_member.get("model_hash") or ""),
+            "opportunity_scaler_hash": str(opportunity_member.get("scaler_hash") or ""),
+        },
+        "runtime_version": {"source_commit": git_commit(), "source_dirty": source_dirty()},
+        "strategy_version": {"config_hashes": _strategy_config_hashes()},
+    }
+    authority["training_overlap"] = _training_overlap(
+        training_cutoff=authority["training_cutoff"],
+        evaluation_period=authority["evaluation_period"],
+    )
+    authority["hashes"]["run_authority_hash"] = "sha256:" + semantic_hash(authority | {"hashes": {**authority["hashes"], "run_authority_hash": ""}})
+    authority["run_authority_hash"] = authority["hashes"]["run_authority_hash"]
+    write_json_atomic(authority_path, authority)
+    return authority
+
+
+def validate_historical_evaluation_authority(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    expected: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    authority_path = Path(str((expected or {}).get("authority_path") or run_dir / "historical_evaluation_authority.json"))
+    if not authority_path.is_file():
+        return {"status": "BLOCK", "reason": "historical_evaluation_authority_missing", "authority_path": str(authority_path)}
+    authority = read_json_optional(authority_path)
+    resolution = resolve_accepted_generation(runtime_root, fixed_authority_path=authority_path)
+    checks = {
+        "authority_file_present": bool(authority),
+        "schema_version": authority.get("schema_version") == HISTORICAL_EVALUATION_AUTHORITY_SCHEMA_VERSION,
+        "resolution_status": resolution.is_resolved,
+        "generation_id_fixed": bool(authority.get("generation_id")) and authority.get("generation_id") == resolution.generation_id,
+        "aggregate_hash_fixed": bool(authority.get("aggregate_hash")) and authority.get("aggregate_hash") == resolution.aggregate_hash,
+        "business_date_acceptance_comparison_not_applied": authority.get("historical_business_date_acceptance_comparison") == "NOT_APPLIED_TO_ACCEPTED_GENERATION",
+        "latest_fallback_absent": authority.get("latest_fallback_used") is False,
+        "production_authority_unchanged": authority.get("production_authority_unchanged") is True,
+    }
+    if expected:
+        checks["run_authority_hash_unchanged"] = authority.get("run_authority_hash") == expected.get("run_authority_hash")
+    status = "PASS" if all(checks.values()) else "BLOCK"
+    return {
+        "schema_version": "historical_evaluation_authority_validation.v1",
+        "status": status,
+        "authority_path": str(authority_path),
+        "generation_id": str(authority.get("generation_id") or ""),
+        "run_authority_hash": str(authority.get("run_authority_hash") or ""),
+        "checks": checks,
+        "reason_codes": [] if status == "PASS" else [name for name, passed in checks.items() if not passed],
+        "current_pointer_change_ignored": True,
+        "resolver_resolution": resolution.to_dict(),
+    }
+
+
+def _freshness_field_value(field_sources: dict[str, Any], name: str) -> str:
+    payload = field_sources.get(name) if isinstance(field_sources.get(name), dict) else {}
+    return str(payload.get("value") or "")
+
+
+def _training_overlap(*, training_cutoff: dict[str, str], evaluation_period: dict[str, Any]) -> dict[str, Any]:
+    start = str(evaluation_period.get("date_from") or "")
+    cutoff_values = [value for value in training_cutoff.values() if value]
+    latest_cutoff = max(cutoff_values) if cutoff_values else ""
+    overlap = bool(start and latest_cutoff and latest_cutoff >= start)
+    return {
+        "status": "OVERLAP" if overlap else "NO_OVERLAP" if latest_cutoff and start else "UNKNOWN",
+        "latest_training_cutoff": latest_cutoff,
+        "evaluation_start": start,
+        "strict_oos_label_allowed": not overlap and bool(latest_cutoff and start),
+    }
+
+
+def _strategy_config_hashes() -> dict[str, str]:
+    root = Path("configs/strategy")
+    if not root.exists():
+        return {}
+    return {
+        str(path): sha256_file(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def run_command(
     args: argparse.Namespace,
     *,
@@ -3662,6 +4084,24 @@ def run_command(
     run_id = plan_payload["run_id"]
     run_dir = runs_root(evidence_root) / run_id
     write_json_atomic(run_dir / "plan.json", plan_payload)
+    historical_authority = materialize_historical_evaluation_authority(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        profile=profile,
+        plan_payload=plan_payload,
+    )
+    historical_authority_validation = validate_historical_evaluation_authority(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        expected=historical_authority,
+    )
+    if historical_authority_validation["status"] != "PASS":
+        raise RuntimeTestError(
+            "historical evaluation authority gate failed: "
+            + json.dumps(historical_authority_validation, ensure_ascii=False, sort_keys=True),
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
     run_state = {
         "schema_version": RUN_STATE_SCHEMA_VERSION,
         "run_id": run_id,
@@ -3672,13 +4112,19 @@ def run_command(
         "completed_jobs": [],
         "next_job": "",
         "source_baseline": source_baseline(runtime_root),
+        "historical_evaluation_authority": historical_authority,
+        "historical_evaluation_authority_validation": historical_authority_validation,
     }
     write_json_atomic(run_dir / "run_state.json", run_state)
     for day in plan_payload["business_dates"]:
         for job in day["jobs"]:
             run_state["next_job"] = f"{day['business_date']}:{job['job']}"
             write_json_atomic(run_dir / "run_state.json", run_state)
-            command_resolution = resolve_run_job_command(runtime_root=runtime_root, job_record=job)
+            command_resolution = resolve_run_job_command(
+                runtime_root=runtime_root,
+                job_record=job,
+                historical_evaluation_authority=historical_authority,
+            )
             command = command_resolution["command"]
             completed = run_runtime_cli(command, cwd=Path.cwd())
             job_record = {
@@ -3719,19 +4165,14 @@ def run_command(
             run_state["completed_jobs"].append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
             if pm_fatal:
-                run_state["status"] = "HALT"
-                run_state["halted_at"] = job_record
-                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, job_record)
                 raise RuntimeTestError(
                     f"Runtime Test stopped at {run_state['next_job']} because Position Management artifact status is HALT",
                     status="HALT",
                     exit_code=EXIT_HALT,
                 )
             if completed.returncode != 0 and not scoped_block:
-                run_state["status"] = "HALT"
-                run_state["halted_at"] = job_record
-                run_state["halt_summary"] = _runtime_halt_summary(run_dir)
-                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, job_record)
                 raise RuntimeTestError(
                     f"Runtime CLI stopped at {run_state['next_job']} with exit code {completed.returncode}",
                     status="HALT",
@@ -3752,6 +4193,7 @@ def run_command(
             business_date=str(day["business_date"]),
             feature_date=str(shadow_feature_authority.get("selected_feature_date") or ""),
             feature_date_authority=shadow_feature_authority,
+            historical_evaluation_authority_path=str(historical_authority.get("authority_path") or ""),
         )
         shadow_record = {
             "business_date": day["business_date"],
@@ -3767,9 +4209,7 @@ def run_command(
         run_state["completed_jobs"].append(shadow_record)
         write_json_atomic(run_dir / "run_state.json", run_state)
         if shadow_summary.get("runtime_mutation_performed"):
-            run_state["status"] = "HALT"
-            run_state["halted_at"] = shadow_record
-            write_json_atomic(run_dir / "run_state.json", run_state)
+            _mark_run_halted(run_dir, run_state, shadow_record)
             raise RuntimeTestError("Strategy shadow generation mutated Runtime authority state", status="HALT", exit_code=EXIT_HALT)
         run_state["completed_business_days"].append(day["business_date"])
     run_state["status"] = "COMPLETED"
@@ -3792,6 +4232,15 @@ def validate_command(
     completed_days = set(str(day) for day in (run_state.get("completed_business_days") or []))
     pm_fatal = _pm_fatal_evidence_for_run(run_dir, completed_business_days=completed_days) if args.run_id else []
     strategy_validation = validate_run_strategy_shadow(run_dir=run_dir, business_date=args.business_date or None) if args.run_id else {}
+    historical_authority_validation = (
+        validate_historical_evaluation_authority(
+            run_dir=run_dir,
+            runtime_root=runtime_root,
+            expected=run_state.get("historical_evaluation_authority") if isinstance(run_state.get("historical_evaluation_authority"), dict) else None,
+        )
+        if args.run_id
+        else {"status": "NOT_REQUESTED"}
+    )
     checks = {
         "normal_runtime_root": str(runtime_root).endswith(".runtime"),
         "current_exists": (runtime_root / "persistent_ledger" / "state.json").exists(),
@@ -3801,6 +4250,7 @@ def validate_command(
         "run_state_present": bool(run_state) if args.run_id else True,
         "position_management_halt_absent": not pm_fatal,
         "strategy_shadow_structural_validity": strategy_validation.get("structural_validity") == "PASS" if args.run_id else True,
+        "historical_evaluation_authority_gate": historical_authority_validation.get("status") == "PASS" if args.run_id else True,
     }
     status_value = "PASS" if all(checks.values()) else "VALIDATION_FAILURE"
     payload = base_payload("validate", status_value)
@@ -3812,6 +4262,7 @@ def validate_command(
             "position_management_halt_evidence": pm_fatal,
             "strategy_shadow_validation": strategy_validation,
             "strategy_shadow_policy_acceptance": strategy_validation.get("policy_acceptance", "NOT_REQUESTED") if strategy_validation else "NOT_REQUESTED",
+            "historical_evaluation_authority_validation": historical_authority_validation,
             "state_hashes": state_hashes(runtime_root),
             "repair_performed": False,
         }
@@ -3855,6 +4306,20 @@ def resume_command(
     plan_payload = load_plan(plan_path)
     validate_plan_run_id(plan_payload=plan_payload, requested_run_id=args.run_id, plan_path=plan_path)
     validate_plan_entry_gate(plan_payload)
+    historical_authority = run_state.get("historical_evaluation_authority") if isinstance(run_state.get("historical_evaluation_authority"), dict) else {}
+    historical_authority_validation = validate_historical_evaluation_authority(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        expected=historical_authority,
+    )
+    if historical_authority_validation["status"] != "PASS":
+        raise RuntimeTestError(
+            "resume rejected; historical evaluation authority gate failed: "
+            + json.dumps(historical_authority_validation, ensure_ascii=False, sort_keys=True),
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    run_state["historical_evaluation_authority_validation"] = historical_authority_validation
     completed_success = {
         (record.get("business_date"), record.get("job"))
         for record in run_state.get("completed_jobs", [])
@@ -3869,7 +4334,11 @@ def resume_command(
                 continue
             run_state["next_job"] = f"{day['business_date']}:{job['job']}"
             write_json_atomic(run_dir / "run_state.json", run_state)
-            command_resolution = resolve_run_job_command(runtime_root=runtime_root, job_record=job)
+            command_resolution = resolve_run_job_command(
+                runtime_root=runtime_root,
+                job_record=job,
+                historical_evaluation_authority=historical_authority,
+            )
             command = command_resolution["command"]
             completed = run_runtime_cli(command, cwd=Path.cwd())
             job_record = {
@@ -3911,19 +4380,14 @@ def resume_command(
             run_state.setdefault("completed_jobs", []).append(job_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
             if pm_fatal:
-                run_state["status"] = "HALT"
-                run_state["halted_at"] = job_record
-                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, job_record)
                 raise RuntimeTestError(
                     f"resume stopped at {run_state['next_job']} because Position Management artifact status is HALT",
                     status="HALT",
                     exit_code=EXIT_HALT,
                 )
             if completed.returncode != 0 and not scoped_block:
-                run_state["status"] = "HALT"
-                run_state["halted_at"] = job_record
-                run_state["halt_summary"] = _runtime_halt_summary(run_dir)
-                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, job_record)
                 raise RuntimeTestError(
                     f"resume stopped at {run_state['next_job']} with exit code {completed.returncode}",
                     status="HALT",
@@ -3946,6 +4410,7 @@ def resume_command(
                 business_date=str(day["business_date"]),
                 feature_date=str(shadow_feature_authority.get("selected_feature_date") or ""),
                 feature_date_authority=shadow_feature_authority,
+                historical_evaluation_authority_path=str(historical_authority.get("authority_path") or ""),
             )
             shadow_record = {
                 "business_date": day["business_date"],
@@ -3962,9 +4427,7 @@ def resume_command(
             run_state.setdefault("completed_jobs", []).append(shadow_record)
             write_json_atomic(run_dir / "run_state.json", run_state)
             if shadow_summary.get("runtime_mutation_performed"):
-                run_state["status"] = "HALT"
-                run_state["halted_at"] = shadow_record
-                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, shadow_record)
                 raise RuntimeTestError("Strategy shadow generation mutated Runtime authority state", status="HALT", exit_code=EXIT_HALT)
         if day["business_date"] not in run_state.get("completed_business_days", []):
             run_state.setdefault("completed_business_days", []).append(day["business_date"])
@@ -4064,9 +4527,47 @@ def abandon_command(
         )
         return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
     require_confirm(args)
+    abandon_reason = str(getattr(args, "reason", "") or "operator_abandoned_halt_run")
+    abandonment = _write_abandonment_artifacts(
+        evidence_root=evidence_root,
+        runtime_root=runtime_root,
+        profile=profile,
+        run_id=run_id,
+        run_state=run_state,
+        abandon_reason=abandon_reason,
+        abandoned_by="operator",
+    )
+    payload.update(
+        {
+            "status": "ABANDONED",
+            "final_judgment": "ABANDONED",
+            "exit_code": EXIT_PASS,
+            "abandoned_at": abandonment["abandoned_at"],
+            "abandon_reason": abandon_reason,
+            "resume_disabled": True,
+            "abandonment_path": str(run_dir / "abandonment.json"),
+            "final_summary_path": str(run_dir / "final_summary.json"),
+            "evidence_path": str(run_dir),
+            "state_hashes_after": state_hashes(runtime_root),
+        }
+    )
+    return CommandResult("ABANDONED", EXIT_PASS, runner_response(payload))
+
+
+def _write_abandonment_artifacts(
+    *,
+    evidence_root: Path,
+    runtime_root: Path,
+    profile: dict[str, Any],
+    run_id: str,
+    run_state: dict[str, Any],
+    abandon_reason: str,
+    abandoned_by: str,
+) -> dict[str, Any]:
+    run_dir = runs_root(evidence_root) / run_id
+    current_status = str(run_state.get("status") or "")
     abandoned_at = utc_now()
     final_state_snapshot = write_final_state_snapshot(run_dir=run_dir, runtime_root=runtime_root)
-    abandon_reason = str(getattr(args, "reason", "") or "operator_abandoned_halt_run")
     abandonment = {
         "schema_version": "runtime_test_abandonment_v1",
         "run_id": run_id,
@@ -4074,7 +4575,7 @@ def abandon_command(
         "previous_status": current_status,
         "abandoned_at": abandoned_at,
         "abandon_reason": abandon_reason,
-        "abandoned_by": "operator",
+        "abandoned_by": abandoned_by,
         "resume_disabled": True,
         "evidence_preserved": True,
         "trading_state_mutated": False,
@@ -4100,7 +4601,7 @@ def abandon_command(
         "previous_status": current_status,
         "abandoned_at": abandoned_at,
         "abandon_reason": abandon_reason,
-        "abandoned_by": "operator",
+        "abandoned_by": abandoned_by,
         "resume_disabled": True,
         "evidence_preserved": True,
         "trading_state_mutated": False,
@@ -4116,21 +4617,7 @@ def abandon_command(
     }
     write_json_atomic(run_dir / "abandonment.json", abandonment)
     write_json_atomic(run_dir / "final_summary.json", final_summary)
-    payload.update(
-        {
-            "status": "ABANDONED",
-            "final_judgment": "ABANDONED",
-            "exit_code": EXIT_PASS,
-            "abandoned_at": abandoned_at,
-            "abandon_reason": abandon_reason,
-            "resume_disabled": True,
-            "abandonment_path": str(run_dir / "abandonment.json"),
-            "final_summary_path": str(run_dir / "final_summary.json"),
-            "evidence_path": str(run_dir),
-            "state_hashes_after": state_hashes(runtime_root),
-        }
-    )
-    return CommandResult("ABANDONED", EXIT_PASS, runner_response(payload))
+    return abandonment
 
 
 def rollback_command(
@@ -4159,6 +4646,207 @@ def rollback_command(
     return CommandResult(payload["status"], EXIT_PASS, runner_response(payload))
 
 
+def _strategy_planning_authority_run_summary(run_dir: Path) -> dict[str, Any]:
+    daily_root = run_dir / "daily"
+    planned_dates = _runtime_test_planned_business_dates(run_dir)
+    rows: list[dict[str, Any]] = []
+    called_dates: list[str] = []
+    missing_dates: list[str] = []
+    statuses: list[str] = []
+    for business_date in planned_dates:
+        evidence_path = daily_root / business_date / "morning" / "strategy_planning_authority_evidence.json"
+        payload = read_json_optional(evidence_path)
+        details = payload.get("details") if isinstance(payload.get("details"), dict) else payload
+        status = str(details.get("status") or payload.get("status") or "NOT_EXECUTED")
+        planning_eligibility = str(details.get("planning_consumer_eligibility") or "NOT_EVALUATED")
+        called = status != "NOT_EXECUTED" and planning_eligibility != "NOT_EVALUATED"
+        if called:
+            called_dates.append(business_date)
+        else:
+            missing_dates.append(business_date)
+        statuses.append(status)
+        rows.append(
+            {
+                "business_date": business_date,
+                "called": called,
+                "status": status,
+                "planning_consumer_eligibility": planning_eligibility,
+                "strategy_artifact_eligibility": str(details.get("strategy_artifact_eligibility") or ""),
+                "pending_item_count": int(details.get("pending_item_count") or 0),
+                "pending_path": str(details.get("pending_path") or ""),
+                "broker_write_performed": bool(details.get("broker_write_performed")),
+                "runtime_switch_performed": bool(details.get("runtime_switch_performed")),
+                "legacy_formal_planning_authority_active": bool(details.get("legacy_formal_planning_authority_active", not called)),
+                "evidence_path": str(evidence_path),
+                "reason": str(details.get("reason") or payload.get("reason") or ""),
+                "reason_codes": list(details.get("reason_codes") or []),
+            }
+        )
+    if not planned_dates:
+        status = "NOT_EVALUATED"
+    elif any(row["status"] in {"BLOCK", "BLOCKED", "HALT"} for row in rows):
+        status = "BLOCK"
+    elif missing_dates or any(row["status"] in {"REVIEW_REQUIRED", "NOT_EXECUTED"} for row in rows):
+        status = "REVIEW_REQUIRED"
+    else:
+        status = "PASS"
+    return {
+        "schema_version": "runtime_test_strategy_planning_authority_run_summary_v1",
+        "status": status,
+        "planned_dates": planned_dates,
+        "called_dates": called_dates,
+        "missing_dates": missing_dates,
+        "per_day": rows,
+        "planning_consumer_eligibility": "ELIGIBLE" if called_dates and not missing_dates and status == "PASS" else "REVIEW_REQUIRED" if rows else "NOT_EVALUATED",
+        "active_runtime_consumer_eligibility": "YES" if called_dates and not missing_dates and status == "PASS" else "NO",
+        "legacy_formal_planning_authority_active": bool(missing_dates),
+        "broker_write_performed": any(row["broker_write_performed"] for row in rows),
+        "runtime_switch_performed": any(row["runtime_switch_performed"] for row in rows),
+    }
+
+
+def _strategy_shadow_blocks_operational_close(strategy_shadow: dict[str, Any]) -> bool:
+    shadow_status = str(strategy_shadow.get("strategy_shadow_judgment") or "")
+    if shadow_status == "BLOCK":
+        return True
+    if (
+        strategy_shadow.get("broker_write_performed")
+        or strategy_shadow.get("runtime_switch_performed")
+        or strategy_shadow.get("runtime_mutation_performed")
+    ):
+        return True
+    if shadow_status != "REVIEW_REQUIRED":
+        return False
+    if (
+        str(strategy_shadow.get("active_runtime_consumer_eligibility") or "") == "YES"
+        and bool(strategy_shadow.get("strategy_planning_authority_consumer_called"))
+    ):
+        return True
+    daily_summaries = strategy_shadow.get("daily_summaries")
+    if isinstance(daily_summaries, list):
+        for row in daily_summaries:
+            if not isinstance(row, dict):
+                continue
+            row_status = str(row.get("strategy_shadow_judgment") or row.get("status") or "")
+            if row_status != "REVIEW_REQUIRED":
+                continue
+            if (
+                str(row.get("active_runtime_consumer_eligibility") or "") == "YES"
+                and bool(row.get("strategy_planning_authority_consumer_called"))
+            ):
+                return True
+    return False
+
+
+def _strategy_review_status(strategy_shadow: dict[str, Any]) -> str:
+    shadow_status = str(strategy_shadow.get("strategy_shadow_judgment") or "NOT_EVALUATED")
+    if shadow_status == "BLOCK":
+        return "BLOCK"
+    if shadow_status == "REVIEW_REQUIRED" or strategy_shadow.get("review_required_dates"):
+        return "REVIEW_REQUIRED"
+    if shadow_status == "PASS":
+        return "PASS"
+    return "NOT_EVALUATED"
+
+
+def _strategy_shadow_close_review_classification(strategy_shadow: dict[str, Any]) -> str:
+    review_status = _strategy_review_status(strategy_shadow)
+    if review_status == "BLOCK":
+        return "BLOCKING_STRATEGY_SHADOW_INVALIDITY"
+    if _strategy_shadow_blocks_operational_close(strategy_shadow):
+        return "BLOCKING_STRATEGY_SHADOW_PRODUCTION_CONSUMER_CONFLICT"
+    if review_status == "REVIEW_REQUIRED":
+        return "NON_MUTATING_STRATEGY_SHADOW_REVIEW_NON_BLOCKING"
+    if review_status == "PASS":
+        return "PASS"
+    return "NOT_EVALUATED"
+
+
+def _production_planning_authority_gate_status(strategy_authority: dict[str, Any]) -> str:
+    if strategy_authority.get("broker_write_performed") or strategy_authority.get("runtime_switch_performed"):
+        return "BLOCK"
+    authority_status = str(strategy_authority.get("status") or "NOT_EVALUATED")
+    if authority_status == "BLOCK":
+        return "BLOCK"
+    if authority_status in {"REVIEW_REQUIRED", "NOT_EVALUATED"}:
+        return "REVIEW_REQUIRED"
+    return "PASS"
+
+
+def _strategy_acceptance_gate_status(*, strategy_shadow: dict[str, Any], strategy_authority: dict[str, Any]) -> str:
+    shadow_status = str(strategy_shadow.get("strategy_shadow_judgment") or "")
+    if shadow_status == "BLOCK" or _strategy_shadow_blocks_operational_close(strategy_shadow):
+        return "BLOCK"
+    return _production_planning_authority_gate_status(strategy_authority)
+
+
+def _close_authority_classification(
+    *,
+    validation_exit_code: int,
+    run_state_status: str,
+    pm_fatal: dict[str, Any],
+    strategy_shadow: dict[str, Any],
+    strategy_authority: dict[str, Any],
+    historical_authority_validation: dict[str, Any],
+) -> dict[str, Any]:
+    validation_passed = validation_exit_code == EXIT_PASS
+    trading_state_judgment = "PASS" if validation_passed and not pm_fatal else "REVIEW_REQUIRED"
+    accounting_state_judgment = "PASS" if validation_passed and not pm_fatal else "REVIEW_REQUIRED"
+    runtime_execution_judgment = "PASS" if run_state_status in {"COMPLETED", "HALT"} else "REVIEW_REQUIRED"
+    production_planning_judgment = _production_planning_authority_gate_status(strategy_authority)
+    strategy_shadow_review_status = _strategy_review_status(strategy_shadow)
+    strategy_shadow_classification = _strategy_shadow_close_review_classification(strategy_shadow)
+    historical_status = str(historical_authority_validation.get("status") or "NOT_REQUESTED")
+
+    blocking_reasons: list[str] = []
+    review_reasons: list[str] = []
+    if trading_state_judgment != "PASS":
+        review_reasons.append("trading_state_validation_not_pass")
+    if accounting_state_judgment != "PASS":
+        review_reasons.append("accounting_state_validation_not_pass")
+    if runtime_execution_judgment != "PASS":
+        review_reasons.append("runtime_execution_not_completed")
+    if historical_status == "BLOCK":
+        blocking_reasons.append("historical_evaluation_authority_block")
+    if production_planning_judgment == "BLOCK":
+        blocking_reasons.append("production_planning_authority_block")
+    elif production_planning_judgment != "PASS":
+        review_reasons.append("production_planning_authority_not_pass")
+    if strategy_shadow_classification.startswith("BLOCKING_"):
+        blocking_reasons.append("strategy_shadow_blocking_close_invalidity")
+
+    if blocking_reasons:
+        final_runtime_judgment = "BLOCK"
+    elif review_reasons:
+        final_runtime_judgment = "REVIEW_REQUIRED"
+    else:
+        final_runtime_judgment = "PASS"
+    strategy_shadow_review_required = strategy_shadow_review_status == "REVIEW_REQUIRED"
+    operational_status = "PASS" if final_runtime_judgment == "PASS" else final_runtime_judgment
+    close_authority_judgment = final_runtime_judgment
+    return {
+        "schema_version": "runtime_test_close_authority_classification_v1",
+        "trading_state_judgment": trading_state_judgment,
+        "accounting_state_judgment": accounting_state_judgment,
+        "runtime_execution_judgment": runtime_execution_judgment,
+        "production_planning_judgment": production_planning_judgment,
+        "strategy_shadow_judgment": strategy_shadow_review_status,
+        "strategy_shadow_review_required": strategy_shadow_review_required,
+        "strategy_shadow_close_classification": strategy_shadow_classification,
+        "close_authority_judgment": close_authority_judgment,
+        "final_runtime_judgment": final_runtime_judgment,
+        "operational_status": operational_status,
+        "strategy_review_status": strategy_shadow_review_status,
+        "blocking_reasons": blocking_reasons,
+        "review_reasons": review_reasons,
+    }
+
+
+def _runtime_test_planned_business_dates(run_dir: Path) -> list[str]:
+    plan = read_json_optional(run_dir / "plan.json")
+    return [str(day.get("business_date") or "") for day in plan.get("business_dates", []) if isinstance(day, dict)]
+
+
 def close_command(
     args: argparse.Namespace,
     *,
@@ -4174,13 +4862,37 @@ def close_command(
     status_value = "PASS" if validation.exit_code == EXIT_PASS and not pm_fatal and run_state.get("status") in {"COMPLETED", "HALT"} else "REVIEW_REQUIRED"
     final_state_snapshot = write_final_state_snapshot(run_dir=run_dir, runtime_root=runtime_root)
     strategy_shadow = update_run_strategy_shadow_indexes(run_dir=run_dir)
+    strategy_authority = _strategy_planning_authority_run_summary(run_dir)
+    halt_summary = _runtime_halt_summary(run_dir)
+    historical_authority = read_json_optional(run_dir / "historical_evaluation_authority.json")
+    historical_authority_validation = validate_historical_evaluation_authority(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        expected=historical_authority,
+    ) if historical_authority else {"status": "NOT_REQUESTED"}
+    close_authority = _close_authority_classification(
+        validation_exit_code=validation.exit_code,
+        run_state_status=str(run_state.get("status") or ""),
+        pm_fatal=pm_fatal,
+        strategy_shadow=strategy_shadow,
+        strategy_authority=strategy_authority,
+        historical_authority_validation=historical_authority_validation,
+    )
+    status_value = str(close_authority["final_runtime_judgment"])
     summary = {
         "schema_version": FINAL_SUMMARY_SCHEMA_VERSION,
         "run_id": args.run_id,
         "profile_id": profile["profile_id"],
         "status": status_value,
+        "operational_status": close_authority["operational_status"],
+        "strategy_review_status": close_authority["strategy_review_status"],
+        "final_runtime_judgment": close_authority["final_runtime_judgment"],
+        "final_judgment": close_authority["final_runtime_judgment"],
+        "halt_summary": halt_summary,
         "test_validity_judgment": "VALID" if status_value == "PASS" else "REVIEW_REQUIRED",
         "acceptance_gate_judgment": status_value,
+        "close_authority_judgment": close_authority["close_authority_judgment"],
+        "close_authority_classification": close_authority,
         "position_management_halt_evidence": pm_fatal,
         "final_state_hashes": state_hashes(runtime_root),
         "final_state_snapshot": {
@@ -4188,13 +4900,34 @@ def close_command(
             "manifest_path": str(run_dir / "final_state_snapshot" / "manifest.json"),
         },
         "strategy_shadow_judgment": strategy_shadow.get("strategy_shadow_judgment", "REVIEW_REQUIRED"),
+        "strategy_shadow_review_required": close_authority["strategy_shadow_review_required"],
+        "strategy_shadow_close_classification": close_authority["strategy_shadow_close_classification"],
         "strategy_dates_generated": strategy_shadow.get("business_dates_generated", []),
         "strategy_review_required_dates": strategy_shadow.get("review_required_dates", []),
         "strategy_blocked_dates": strategy_shadow.get("blocked_dates", []),
         "strategy_artifact_completeness": "PASS" if not strategy_shadow.get("missing_dates") else "REVIEW_REQUIRED",
         "strategy_lineage_completeness": strategy_shadow.get("lineage_validation", "REVIEW_REQUIRED"),
         "strategy_consumer_eligibility": strategy_shadow.get("shadow_consumer_eligibility", "REVIEW_REQUIRED"),
-        "active_runtime_consumer_eligibility": "NO",
+        "strategy_planning_authority": strategy_authority,
+        "strategy_planning_authority_status": strategy_authority.get("status", "NOT_EVALUATED"),
+        "strategy_planning_authority_dates_called": strategy_authority.get("called_dates", []),
+        "strategy_planning_authority_dates_missing": strategy_authority.get("missing_dates", []),
+        "strategy_planning_authority_acceptance": close_authority["production_planning_judgment"],
+        "production_planning_judgment": close_authority["production_planning_judgment"],
+        "trading_state_judgment": close_authority["trading_state_judgment"],
+        "accounting_state_judgment": close_authority["accounting_state_judgment"],
+        "runtime_execution_judgment": close_authority["runtime_execution_judgment"],
+        "historical_evaluation_authority": historical_authority,
+        "historical_evaluation_authority_validation": historical_authority_validation,
+        "evaluation_mode": str(historical_authority.get("evaluation_mode") or ""),
+        "training_cutoff": historical_authority.get("training_cutoff") if isinstance(historical_authority.get("training_cutoff"), dict) else {},
+        "evaluation_period": historical_authority.get("evaluation_period") if isinstance(historical_authority.get("evaluation_period"), dict) else {},
+        "training_overlap": historical_authority.get("training_overlap") if isinstance(historical_authority.get("training_overlap"), dict) else {},
+        "planning_consumer_eligibility": strategy_authority.get("planning_consumer_eligibility", "NOT_EVALUATED"),
+        "active_runtime_consumer_eligibility": strategy_authority.get("active_runtime_consumer_eligibility", "NO"),
+        "legacy_formal_planning_authority_active": bool(strategy_authority.get("legacy_formal_planning_authority_active")),
+        "legacy_authority_active": bool(strategy_shadow.get("legacy_authority_active")),
+        "legacy_authority_active_semantics": "legacy_shadow_preservation_marker_not_formal_planning_authority",
         "closed_at": utc_now(),
         "post_close_lifecycle_recommendation": "validate evidence, then explicitly rollback or transition by separate command",
     }
@@ -4426,6 +5159,19 @@ def fresh_run_command(
     )
     if run_id:
         payload["halt_summary"] = _runtime_halt_summary(runs_root(evidence_root) / run_id)
+    payload["auto_abandon"] = _maybe_auto_abandon_fresh_run(
+        args=args,
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=evidence_root,
+        run_id=run_id,
+        final_status=final_status,
+        exit_code=exit_code,
+    )
+    if payload["auto_abandon"].get("performed"):
+        payload["resume_possible"] = False
+        payload["resume_recommendation"] = "Run was automatically abandoned after fresh-run error; start a new fresh-run after reviewing evidence."
+        payload["recommended_command"] = "PYTHONPATH=src python3 scripts/runtime_test.py status"
     payload["plan_request_contract"] = {
         **plan_namespace_contract,
         "plan_request_construction": "PASS",
@@ -4440,6 +5186,86 @@ def fresh_run_command(
     payload["evidence_path"] = str(summary_path.parent)
     payload["fresh_run_summary_path"] = str(summary_path)
     return CommandResult(final_status, exit_code, runner_response(payload))
+
+
+def _maybe_auto_abandon_fresh_run(
+    *,
+    args: argparse.Namespace,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+    run_id: str,
+    final_status: str,
+    exit_code: int,
+) -> dict[str, Any]:
+    requested = bool(getattr(args, "auto_abandon_on_error", False))
+    result = {
+        "requested": requested,
+        "performed": False,
+        "reason": "",
+        "run_id": run_id,
+        "fresh_run_status": final_status,
+        "fresh_run_exit_code": exit_code,
+        "abandonment_path": "",
+        "final_summary_path": "",
+    }
+    if not requested:
+        result["reason"] = "not_requested"
+        return result
+    if final_status in {"PASS", "DRY_RUN"} or exit_code == EXIT_PASS:
+        result["reason"] = "fresh_run_completed_without_error"
+        return result
+    if not run_id:
+        result["reason"] = "no_run_id_created"
+        return result
+    try:
+        run_state = load_run_state(evidence_root, run_id)
+    except Exception as exc:
+        result["reason"] = f"run_state_unavailable:{type(exc).__name__}"
+        result["error"] = str(exc)
+        return result
+    run_status = str(run_state.get("status") or "")
+    result["run_state_status"] = run_status
+    if is_run_abandoned(evidence_root=evidence_root, run_id=run_id):
+        result.update(
+            {
+                "performed": False,
+                "reason": "already_abandoned",
+                "abandonment_path": str(runs_root(evidence_root) / run_id / "abandonment.json"),
+                "final_summary_path": str(runs_root(evidence_root) / run_id / "final_summary.json"),
+            }
+        )
+        return result
+    if run_status != "HALT":
+        result["reason"] = f"run_state_not_halt:{run_status or '<missing>'}"
+        return result
+    abandon_reason = str(getattr(args, "auto_abandon_reason", "") or "fresh_run_auto_abandon_on_error")
+    try:
+        abandonment = _write_abandonment_artifacts(
+            evidence_root=evidence_root,
+            runtime_root=runtime_root,
+            profile=profile,
+            run_id=run_id,
+            run_state=run_state,
+            abandon_reason=abandon_reason,
+            abandoned_by="fresh-run",
+        )
+    except Exception as exc:
+        result["reason"] = f"auto_abandon_failed:{type(exc).__name__}"
+        result["error"] = str(exc)
+        return result
+    result.update(
+        {
+            "performed": True,
+            "reason": "halt_run_abandoned_after_fresh_run_error",
+            "abandon_reason": abandon_reason,
+            "abandoned_at": abandonment.get("abandoned_at") or "",
+            "resume_disabled": True,
+            "abandonment_path": str(runs_root(evidence_root) / run_id / "abandonment.json"),
+            "final_summary_path": str(runs_root(evidence_root) / run_id / "final_summary.json"),
+        }
+    )
+    return result
 
 
 def show(args: argparse.Namespace) -> CommandResult:
@@ -4516,7 +5342,7 @@ def build_plan(
     date_to: str | None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    dates = resolve_business_dates(
+    window = resolve_business_window(
         profile=profile,
         runtime_root=runtime_root,
         business_days=business_days,
@@ -4524,11 +5350,12 @@ def build_plan(
         date_from=date_from,
         date_to=date_to,
     )
+    dates = list(window["resolved_business_dates"])
     final_run_id = run_id or f"runtime-test-{profile['profile_id']}-{timestamp_id()}"
     strategy_source_preflight = build_historical_strategy_preflight(
         runtime_root=runtime_root,
         requested_start_date=dates[0] if dates else "",
-        requested_business_days=len(dates),
+        requested_business_days=int(window["requested_business_days"]),
     ) if dates else {}
     days = []
     for business_date in dates:
@@ -4572,9 +5399,20 @@ def build_plan(
         "run_id": final_run_id,
         "profile_id": profile["profile_id"],
         "profile_hash": semantic_hash(profile),
-        "requested_start_date": dates[0] if dates else "",
-        "requested_end_date": dates[-1] if dates else "",
-        "requested_business_days": len(dates),
+        "requested_start_date": window["requested_start_date"],
+        "requested_end_date": window["requested_end_date"],
+        "requested_business_days": int(window["requested_business_days"]),
+        "requested_window": dict(window["requested_window"]),
+        "resolved_business_dates": dates,
+        "resolved_business_day_count": len(dates),
+        "resolved_date_from": dates[0] if dates else "",
+        "resolved_date_to": dates[-1] if dates else "",
+        "window_resolution_status": window["window_resolution_status"],
+        "window_resolution_reason": window["window_resolution_reason"],
+        "calendar_authority": dict(window["calendar_authority"]),
+        "calendar_max_date": window["calendar_max_date"],
+        "unresolved_requested_dates": list(window["unresolved_requested_dates"]),
+        "request_conformance_status": "PASS" if window["window_resolution_status"] == "PASS" else "NOT_PASS",
         "environment_id": f"{profile['mode']}:{profile['broker_environment']}",
         "runtime_root": str(runtime_root),
         "business_dates": days,
@@ -4817,7 +5655,12 @@ def runtime_cli_command(
     return command
 
 
-def resolve_run_job_command(*, runtime_root: Path, job_record: dict[str, Any]) -> dict[str, Any]:
+def resolve_run_job_command(
+    *,
+    runtime_root: Path,
+    job_record: dict[str, Any],
+    historical_evaluation_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     command = list(job_record.get("command") or [])
     job = str(job_record.get("job") or "")
     business_date = str(job_record.get("business_date") or "")
@@ -4835,6 +5678,7 @@ def resolve_run_job_command(*, runtime_root: Path, job_record: dict[str, Any]) -
         "reason": "",
     }
     if job not in FEATURE_DATE_JOBS:
+        command = command_with_historical_evaluation_authority(command, historical_evaluation_authority)
         return {"command": command, "resolution": resolution}
     contract = load_feature_date_contract(
         operations_root=runtime_root / "operations",
@@ -4849,9 +5693,11 @@ def resolve_run_job_command(*, runtime_root: Path, job_record: dict[str, Any]) -
                 "reason": "materialized_feature_date_contract_missing_at_run_boundary",
             }
         )
+        command = command_with_historical_evaluation_authority(command, historical_evaluation_authority)
         return {"command": command, "resolution": resolution}
     selected = contract.selected_feature_date
     command = command_with_option(command, "--feature-date", selected)
+    command = command_with_historical_evaluation_authority(command, historical_evaluation_authority)
     resolution.update(
         {
             "materialized_contract_present": True,
@@ -4866,6 +5712,19 @@ def resolve_run_job_command(*, runtime_root: Path, job_record: dict[str, Any]) -
         }
     )
     return {"command": command, "resolution": resolution}
+
+
+def command_with_historical_evaluation_authority(command: list[str], authority: dict[str, Any] | None) -> list[str]:
+    if not authority:
+        return command
+    authority_path = str(authority.get("authority_path") or "")
+    if not authority_path:
+        return command
+    if "--mode" in command:
+        mode_index = command.index("--mode")
+        if mode_index + 1 < len(command) and command[mode_index + 1] != "historical":
+            return command
+    return command_with_option(command, "--historical-evaluation-authority", authority_path)
 
 
 def resolve_strategy_shadow_feature_date_authority(
@@ -4994,6 +5853,210 @@ def command_without_option(command: list[str], option: str) -> list[str]:
 
 
 def resolve_business_dates(
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    business_days: int | None,
+    start_date: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> list[str]:
+    return list(
+        resolve_business_window(
+            profile=profile,
+            runtime_root=runtime_root,
+            business_days=business_days,
+            start_date=start_date,
+            date_from=date_from,
+            date_to=date_to,
+        )["resolved_business_dates"]
+    )
+
+
+def resolve_business_window(
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    business_days: int | None,
+    start_date: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict[str, Any]:
+    calendar = load_trading_calendar_authority(runtime_root=runtime_root)
+    calendar_days = list(calendar["business_days"])
+    requested_count = int(business_days or profile["business_days"])
+    if date_from and date_to:
+        requested_start = date_from
+        requested_end = date_to
+        requested_intent_dates = weekday_business_days(date_from=date_from, date_to=date_to)
+        if business_days:
+            requested_intent_dates = requested_intent_dates[:requested_count]
+    else:
+        requested_start = start_date or profile["window"]["date_from"]
+        requested_intent_dates = weekday_business_days_from_start(start_date=requested_start, business_days=requested_count)
+        requested_end = requested_intent_dates[-1] if requested_intent_dates else ""
+    if not business_days and date_from and date_to:
+        requested_count = len(requested_intent_dates)
+    if calendar_days:
+        if date_from and date_to:
+            resolved = [day for day in calendar_days if day in set(requested_intent_dates) and date_from <= day <= date_to]
+            if business_days:
+                resolved = resolved[:requested_count]
+        else:
+            resolved = [day for day in calendar_days if day >= requested_start][:requested_count]
+    elif date_from and date_to:
+        resolved = list(requested_intent_dates)
+    else:
+        resolved = list(requested_intent_dates)
+    unresolved = [day for day in requested_intent_dates[:requested_count] if day not in set(resolved)]
+    status = "PASS" if requested_count == len(resolved) else "REVIEW_REQUIRED"
+    reason = "requested_window_fully_resolved" if status == "PASS" else "requested_window_partially_resolved_calendar_authority_insufficient"
+    return {
+        "requested_start_date": requested_start,
+        "requested_end_date": requested_end,
+        "requested_business_days": requested_count,
+        "requested_window": {
+            "requested_start_date": requested_start,
+            "requested_end_date": requested_end,
+            "requested_business_days": requested_count,
+            "requested_intent_dates": requested_intent_dates[:requested_count],
+            "request_source": "cli_or_profile_window",
+        },
+        "resolved_business_dates": resolved,
+        "resolved_business_day_count": len(resolved),
+        "resolved_date_from": resolved[0] if resolved else "",
+        "resolved_date_to": resolved[-1] if resolved else "",
+        "window_resolution_status": status,
+        "window_resolution_reason": reason,
+        "calendar_authority": calendar,
+        "calendar_max_date": calendar.get("max_date", ""),
+        "unresolved_requested_dates": unresolved,
+    }
+
+
+def weekday_business_days_from_start(*, start_date: str, business_days: int) -> list[str]:
+    start = date.fromisoformat(start_date)
+    days: list[str] = []
+    current = start
+    while len(days) < business_days:
+        if current.weekday() < 5:
+            days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def load_trading_calendar_authority(*, runtime_root: Path) -> dict[str, Any]:
+    base_path = runtime_root / "operations" / "jquants" / "historical_snapshots" / "trading_calendar" / "data.parquet"
+    base_days = _read_calendar_business_days(base_path)
+    overlays = _validated_calendar_overlay_authorities(runtime_root=runtime_root)
+    composed_days = sorted({*base_days, *(day for overlay in overlays for day in overlay["business_days"])})
+    source_paths = [str(base_path)] + [overlay["path"] for overlay in overlays]
+    return {
+        "schema_version": "runtime_test_calendar_authority_v1",
+        "authority": "validated_canonical_calendar_base_plus_validated_incremental_staging_overlay" if overlays else "canonical_calendar_base",
+        "status": "PASS" if composed_days else "MISSING",
+        "path": str(base_path),
+        "source_paths": source_paths,
+        "source_hashes": {path: file_ref(Path(path)).get("sha256", "") for path in source_paths},
+        "base_path": str(base_path),
+        "base_max_date": max(base_days) if base_days else "",
+        "overlay_count": len(overlays),
+        "overlays": overlays,
+        "business_days": composed_days,
+        "max_date": max(composed_days) if composed_days else "",
+        "duplicate_policy": "Date key dedupe; validated overlay may extend base but does not mutate canonical",
+        "canonical_mutated": False,
+    }
+
+
+def _read_calendar_business_days(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(path)
+    except Exception:
+        return []
+    if "Date" not in frame.columns:
+        return []
+    calendar_state_columns = [column for column in ("HolDiv", "HolidayDivision", "holiday_division") if column in frame.columns]
+    if calendar_state_columns:
+        mask = None
+        for column in calendar_state_columns:
+            column_mask = frame[column].notna() & frame[column].map(_is_calendar_open_value)
+            mask = column_mask if mask is None else mask | column_mask
+        frame = frame[mask].copy()
+    return sorted(str(value) for value in frame["Date"].dropna().unique())
+
+
+def _validated_calendar_overlay_authorities(*, runtime_root: Path) -> list[dict[str, Any]]:
+    runs_root = runtime_root / "market_data_acquisition" / "runs"
+    if not runs_root.is_dir():
+        return []
+    overlays: list[dict[str, Any]] = []
+    for calendar_path in sorted(runs_root.glob("*/raw/jquants/trading_calendar/data.parquet")):
+        run_root = calendar_path.parents[3]
+        eligibility = _validated_acquisition_staging_for_calendar(run_root=run_root, calendar_path=calendar_path)
+        if eligibility["status"] != "PASS":
+            continue
+        days = _read_calendar_business_days(calendar_path)
+        overlays.append(
+            {
+                **eligibility,
+                "path": str(calendar_path),
+                "business_days": days,
+                "min_date": min(days) if days else "",
+                "max_date": max(days) if days else "",
+                "content_hash": file_ref(calendar_path).get("sha256", ""),
+            }
+        )
+    return overlays
+
+
+def _validated_acquisition_staging_for_calendar(*, run_root: Path, calendar_path: Path) -> dict[str, Any]:
+    state_path = run_root / "state.json"
+    plan_path = run_root / "plan.json"
+    if not state_path.is_file() or not plan_path.is_file() or not calendar_path.is_file():
+        return {"status": "BLOCK", "reason": "STAGING_VALIDATION_ARTIFACT_MISSING", "run_root": str(run_root)}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "BLOCK", "reason": f"STAGING_VALIDATION_ARTIFACT_UNREADABLE:{type(exc).__name__}", "run_root": str(run_root)}
+    final = dict(state.get("final_validation") or {})
+    inventory = dict(final.get("normalized_inventory") or {})
+    schema = dict(final.get("schema_comparison") or {})
+    lineage = dict(final.get("jquants_lineage") or {})
+    blocked = []
+    if state.get("status") != "PASS" or plan.get("status") != "PASS" or final.get("status") != "PASS":
+        blocked.append("STAGING_FINAL_VALIDATION_NOT_PASS")
+    if state.get("acquisition_run_id") != run_root.name or plan.get("acquisition_run_id") != run_root.name:
+        blocked.append("STAGING_RUN_ID_MISMATCH")
+    if inventory.get("duplicate_key_count"):
+        blocked.append("STAGING_DUPLICATE_KEYS")
+    if int(final.get("future_date_count") or 0):
+        blocked.append("STAGING_FUTURE_DATE_ROWS")
+    if lineage.get("status") != "PASS":
+        blocked.append("STAGING_LINEAGE_NOT_PASS")
+    if schema.get("status") != "PASS" or schema.get("runtime_merge_compatible") is not True:
+        blocked.append("STAGING_SCHEMA_NOT_RUNTIME_COMPATIBLE")
+    return {
+        "status": "PASS" if not blocked else "BLOCK",
+        "reason": "validated_incremental_staging_ready" if not blocked else blocked[0],
+        "run_root": str(run_root),
+        "acquisition_run_id": str(state.get("acquisition_run_id") or ""),
+        "state_path": str(state_path),
+        "plan_path": str(plan_path),
+        "blocked_reasons": blocked,
+    }
+
+
+def _is_calendar_open_value(value: Any) -> bool:
+    return str(value).strip() in {"1", "1.0"}
+
+
+def _legacy_resolve_business_dates(
     *,
     profile: dict[str, Any],
     runtime_root: Path,
@@ -6547,6 +7610,13 @@ def _fresh_step_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "requested_business_days",
         "requested_start_date",
         "requested_end_date",
+        "resolved_business_day_count",
+        "resolved_date_from",
+        "resolved_date_to",
+        "window_resolution_status",
+        "window_resolution_reason",
+        "request_conformance_status",
+        "unresolved_requested_dates",
         "job_sequence",
         "completed_business_days",
         "checks",
@@ -6562,7 +7632,7 @@ def _fresh_run_dry_run_steps(*, profile: dict[str, Any], runtime_root: Path, evi
     steps["status"] = _fresh_step("status", "PLANNED_READ_ONLY", {"runtime_root": str(runtime_root), "external_effect_policy": profile["external_effect_policy"]})
     steps["backup"] = _fresh_step("backup", "PLANNED_NO_WRITE", {"target_root": str(backups_root(evidence_root)), "scope": list(RESETTABLE_RELATIVE_PATHS), "excluded_prefixes": list(RESET_EXCLUDED_RELATIVE_PREFIXES)})
     steps["reset"] = _fresh_step("reset", "PLANNED_NO_MUTATION", {"initial_state": profile["initial_state"], "partial_reset_prohibited": True})
-    steps["plan"] = _fresh_step("plan", "PLANNED_NO_WRITE", {"run_id": plan_payload["run_id"], "requested_business_days": plan_payload["requested_business_days"], "requested_start_date": plan_payload["requested_start_date"], "requested_end_date": plan_payload["requested_end_date"], "job_sequence": plan_payload["job_sequence"], "strategy_shadow": plan_payload.get("strategy_shadow", {})})
+    steps["plan"] = _fresh_step("plan", "PLANNED_NO_WRITE", {"run_id": plan_payload["run_id"], "requested_business_days": plan_payload["requested_business_days"], "requested_start_date": plan_payload["requested_start_date"], "requested_end_date": plan_payload["requested_end_date"], "resolved_business_day_count": plan_payload.get("resolved_business_day_count", 0), "resolved_date_from": plan_payload.get("resolved_date_from", ""), "resolved_date_to": plan_payload.get("resolved_date_to", ""), "window_resolution_status": plan_payload.get("window_resolution_status", ""), "window_resolution_reason": plan_payload.get("window_resolution_reason", ""), "request_conformance_status": plan_payload.get("request_conformance_status", ""), "unresolved_requested_dates": plan_payload.get("unresolved_requested_dates", []), "job_sequence": plan_payload["job_sequence"], "strategy_shadow": plan_payload.get("strategy_shadow", {})})
     steps["run"] = _fresh_step("run", "PLANNED_NO_EXECUTION", {"job_sequence": plan_payload["job_sequence"], "strategy_shadow_execution_order": (plan_payload.get("strategy_shadow") or {}).get("execution_order", ""), "runtime_cli_module": RUNTIME_CLI_MODULE})
     steps["validate"] = _fresh_step("validate", "PLANNED_NO_EXECUTION", {"checks": ["Runtime root", "Current", "Pending", "Runtime State", "external effect policy", "run state", "state hashes", "strategy shadow structural evidence"]})
     steps["close"] = _fresh_step("close", "PLANNED_NO_MUTATION", {"final_summary": "planned"})
@@ -6622,6 +7692,22 @@ def _fresh_run_summary(
         "date_from": plan_payload.get("requested_start_date") or "",
         "date_to": plan_payload.get("requested_end_date") or "",
         "business_days": int(plan_payload.get("requested_business_days") or 0),
+        "requested_business_days": int(plan_payload.get("requested_business_days") or 0),
+        "resolved_business_day_count": int(plan_payload.get("resolved_business_day_count") or len(plan_payload.get("business_dates") or [])),
+        "resolved_date_from": plan_payload.get("resolved_date_from") or "",
+        "resolved_date_to": plan_payload.get("resolved_date_to") or "",
+        "completed_business_day_count": len(completed_days),
+        "window_resolution_status": plan_payload.get("window_resolution_status") or "",
+        "window_resolution_reason": plan_payload.get("window_resolution_reason") or "",
+        "request_conformance_status": "PASS" if int(plan_payload.get("requested_business_days") or 0) == len(completed_days) and plan_payload.get("window_resolution_status") == "PASS" else "NOT_PASS",
+        "unresolved_requested_dates": list(plan_payload.get("unresolved_requested_dates") or []),
+        "independent_acceptance": _independent_acceptance_judgment(
+            runtime_execution_status=status,
+            requested_business_days=int(plan_payload.get("requested_business_days") or 0),
+            resolved_business_day_count=int(plan_payload.get("resolved_business_day_count") or len(plan_payload.get("business_dates") or [])),
+            completed_business_day_count=len(completed_days),
+            window_resolution_status=str(plan_payload.get("window_resolution_status") or ""),
+        ),
         "initial_cash": float(initial_cash if initial_cash is not None else profile["initial_state"]["cash"]),
         "steps": steps,
         "status_result": steps["status"]["status"],
@@ -6819,6 +7905,37 @@ def directory_hash(path: Path) -> str:
         if child.is_file():
             entries.append({"path": str(child.relative_to(path)), "size": child.stat().st_size, "sha256": sha256_file(child)})
     return semantic_hash(entries)
+
+
+def _independent_acceptance_judgment(
+    *,
+    runtime_execution_status: str,
+    requested_business_days: int,
+    resolved_business_day_count: int,
+    completed_business_day_count: int,
+    window_resolution_status: str,
+) -> dict[str, Any]:
+    runtime_execution = "PASS" if runtime_execution_status == "PASS" else runtime_execution_status or "UNKNOWN"
+    requested_window_resolution = "PASS" if window_resolution_status == "PASS" else "NOT_PASS"
+    requested_window_conformance = (
+        "PASS"
+        if requested_business_days == resolved_business_day_count == completed_business_day_count
+        and window_resolution_status == "PASS"
+        else "NOT_PASS"
+    )
+    overall = "PASS" if runtime_execution == "PASS" and requested_window_conformance == "PASS" else "REVIEW_REQUIRED"
+    return {
+        "runtime_execution_judgment": runtime_execution,
+        "requested_window_resolution_judgment": requested_window_resolution,
+        "requested_window_conformance_judgment": requested_window_conformance,
+        "summary_evidence_isolation_judgment": "NOT_EVALUATED_IN_FRESH_RUN_SUMMARY",
+        "lifecycle_consistency_judgment": "NOT_EVALUATED_IN_FRESH_RUN_SUMMARY",
+        "strategy_to_active_runtime_judgment": "NOT_ESTABLISHED",
+        "overall_independent_judgment": overall,
+        "requested_business_days": requested_business_days,
+        "resolved_business_day_count": resolved_business_day_count,
+        "completed_business_day_count": completed_business_day_count,
+    }
 
 
 def sha256_file(path: Path) -> str:

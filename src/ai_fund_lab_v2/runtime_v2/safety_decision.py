@@ -106,6 +106,8 @@ def safety_allows_action(decision: RuntimeSafetyDecision, *, action: str, side: 
         return False, "BLOCKED", decision.reason or "safety action scope blocked"
     if decision.action_permissions is not None:
         return False, "REVIEW_REQUIRED", decision.reason or "safety action scope missing"
+    if decision.decision == "NEUTRAL":
+        return False, "REVIEW_REQUIRED", decision.reason or "safety neutral decision requires scoped permissions"
     if decision.decision == "REVIEW_REQUIRED" or decision.review_required:
         return False, "REVIEW_REQUIRED", decision.reason or "safety review required"
     if action == "submit" and decision.block_submit:
@@ -136,7 +138,7 @@ def _decision_from_payload(
     mode: str,
 ) -> RuntimeSafetyDecision:
     decision = str(payload.get("decision") or "").upper()
-    if decision not in {"ALLOW", "REVIEW_REQUIRED", "BLOCKED", "HALT"}:
+    if decision not in {"ALLOW", "NEUTRAL", "REVIEW_REQUIRED", "BLOCKED", "HALT"}:
         decision = "REVIEW_REQUIRED"
     review_required = _bool(payload.get("review_required"), default=decision == "REVIEW_REQUIRED")
     halt_runtime = _bool(payload.get("halt_runtime"), default=decision == "HALT")

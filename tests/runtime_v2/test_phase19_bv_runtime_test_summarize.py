@@ -498,6 +498,67 @@ def test_phase19_by_summarize_excludes_shared_sell_plans_outside_run_period(tmp_
     assert payload["lifecycle_consistency"]["checks"]["SELL_PLAN_TO_SUBMIT"] is True
 
 
+def test_phase23_ag_summarize_excludes_current_non_executable_sell_when_run_scoped_pm_is_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    evidence_root = tmp_path / "reports" / "runtime_tests"
+    run_dir = evidence_root / "runs" / RUN_ID
+    _write_json(
+        root / "runtime_state" / "sell_pipeline" / "2026-07-06" / "order_plan.json",
+        {
+            "business_date": "2026-07-06",
+            "status": "NO_ACTION",
+            "reason": "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+            "items": [],
+            "non_executable_sell_decisions": [
+                {
+                    "business_date": "2026-07-06",
+                    "symbol": "43780",
+                    "source_decision_id": "pm-2026-07-06-43780-reduce",
+                    "quantity_contract": {
+                        "source_decision": "REDUCE",
+                        "reason": "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                        "status": "NOT_EXECUTABLE",
+                        "effective_action": "NO_SELL_ORDER",
+                        "pending_order_generated": False,
+                        "runtime_continuation_status": "PASS",
+                        "position_lifecycle_event": "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY",
+                        "position_quantity_before": 300.0,
+                        "position_quantity_after": 300.0,
+                        "expected_remaining_quantity": 300.0,
+                        "final_sell_quantity": 0.0,
+                        "rounded_executable_quantity": 0.0,
+                        "execution_feasibility_status": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                    },
+                }
+            ],
+        },
+    )
+    _write_json(root / "pending_order_plan" / "pending_order_plan.json", {"state": "EMPTY", "items": []})
+    _write_json(root / "persistent_ledger" / "state.json", {"cash": 1000.0, "market_value": 0.0, "total_equity": 1000.0, "positions": []})
+    _write_json(run_dir / "plan.json", {"schema_version": runner.PLAN_SCHEMA_VERSION, "run_id": RUN_ID, "profile_id": "historical-smoke", "runtime_root": str(root), "requested_business_days": 1, "resolved_business_day_count": 1, "window_resolution_status": "PASS", "business_dates": [{"business_date": "2026-07-06"}]})
+    _write_json(run_dir / "run_state.json", {"schema_version": runner.RUN_STATE_SCHEMA_VERSION, "run_id": RUN_ID, "status": "COMPLETED", "completed_business_days": ["2026-07-06"]})
+    _write_json(run_dir / "fresh_run_summary.json", {"schema_version": runner.FRESH_RUN_SUMMARY_SCHEMA_VERSION, "run_id": RUN_ID, "profile_id": "historical-smoke", "date_from": "2026-07-06", "date_to": "2026-07-06", "initial_cash": 1000.0, "external_effect_policy": {"broker_write": False, "external_delivery": False, "jquants_fetch": False, "tachibana_api": False}})
+    _write_json(run_dir / "daily" / "2026-07-06" / "sell_planning" / "position_management_evidence.json", {"status": "NO_POSITION", "pm_decision_count": 0, "pm_hold_count": 0, "pm_add_count": 0, "pm_reduce_count": 0, "pm_exit_count": 0, "runtime_test_run_id": RUN_ID})
+    _write_json(run_dir / "daily" / "2026-07-06" / "sell_planning" / "sell_planning_manifest.json", {"manifest": {"business_date": "2026-07-06", "pm_decision_count": 0, "pm_reduce_count": 0, "pm_exit_count": 0, "runtime_test_run_id": RUN_ID, "runtime_test_evidence_root": str(run_dir)}})
+    _write_json(run_dir / "daily" / "2026-07-06" / "position_management" / "pm_decisions.json", {"run_id": RUN_ID, "business_date": "2026-07-06", "decisions": [], "pm_decision_count": 0})
+    _write_json(run_dir / "daily" / "2026-07-06" / "execution" / "fills.json", {"run_id": RUN_ID, "business_date": "2026-07-06", "fills": []})
+    _write_json(run_dir / "daily" / "2026-07-06" / "positions" / "position_campaigns.json", {"run_id": RUN_ID, "business_date": "2026-07-06", "position_campaigns": []})
+    _write_json(run_dir / "daily" / "2026-07-06" / "submit" / "external_effect_audit.json", {"status": "PASS"})
+    _write_json(run_dir / "final_summary.json", {"schema_version": runner.FINAL_SUMMARY_SCHEMA_VERSION, "run_id": RUN_ID, "status": "PASS", "final_judgment": "PASS", "final_state_hashes": runner.state_hashes(root)})
+
+    payload = call_main(runner, ["summarize", "--run-id", RUN_ID, "--runtime-root", str(root), "--evidence-root", str(evidence_root)], capsys)
+
+    assert payload["_exit_code"] == runner.EXIT_PASS
+    assert payload["pm_decisions"]["decision_count"] == 0
+    assert payload["reduce_exit"]["non_executable_reduce_terminal_count"] == 0
+    assert payload["lifecycle_consistency"]["checks"]["PM_REDUCE_TO_PARTIAL_SELL_PLAN"] is True
+    assert payload["lifecycle_consistency"]["status"] == "PASS"
+    assert payload["summary_authority_matrix"]["non_executable_sell_decisions"]["authority"] == "RUN_SCOPED_EVIDENCE"
+    assert payload["summary_authority_matrix"]["non_executable_sell_decisions"]["fallback_used"] is False
+    assert payload["independent_acceptance"]["summary_evidence_isolation_judgment"] == "PASS"
+
+
 def test_phase19_by_summarize_missing_in_period_sell_linkage_is_review_required(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     runner = load_runner()
     root, evidence_root = _make_summary_fixture(runner, tmp_path, lifecycle_mismatch=True)

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import opportunity_no_buy_reason_blocks_buy
 from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     INCOMPATIBLE_DATE,
     INCOMPATIBLE_HASH,
@@ -37,7 +39,6 @@ RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED",
 BLOCKING_UPSTREAM_STATUSES = {INCOMPATIBLE_SCHEMA, INCOMPATIBLE_DATE, INCOMPATIBLE_HASH, SOURCE_BLOCKED, SOURCE_MISSING}
 REVIEW_UPSTREAM_STATUSES = {SOURCE_REVIEW_REQUIRED, SOURCE_NOT_ELIGIBLE}
 FORBIDDEN_CONCRETE_FIELDS = {
-    "target_weight",
     "target_weight_pct",
     "weight_percentage",
     "target_position_count",
@@ -235,6 +236,25 @@ def build_portfolio_construction_payload(
         pm_rows=_pm_rows(position_management_artifact_path),
     )
     reason_codes.extend(reconciliation_reasons)
+    weight_contract = _resolve_target_weight_contract(
+        business_date=business_date,
+        members=members,
+        policy_config_summary=policy_config_summary,
+        portfolio_policy_reference=str(policy_result.get("artifact_path") or portfolio_policy_artifact_path or ""),
+        source_hashes=[
+            {"role": "candidate", "path": candidate_summary.source_ref, "sha256": _strip_sha256(candidate_summary.source_hash)},
+            {"role": "opportunity", "path": opportunity_summary.source_ref, "sha256": _strip_sha256(opportunity_summary.source_hash)},
+            {"role": "current_portfolio", "path": current_portfolio_summary.source_ref, "sha256": _strip_sha256(current_portfolio_summary.source_hash)},
+            {"role": "policy_config", "path": policy_config_summary.source_ref, "sha256": _strip_sha256(policy_config_summary.source_hash)},
+        ],
+    )
+    members = weight_contract["members"]
+    reason_codes.extend(weight_contract["reason_codes"])
+    if weight_contract["status"] == "BLOCK":
+        producer_status = "BLOCK"
+        source_status = "AUTHORITY_CONFLICT"
+    elif weight_contract["status"] == "REVIEW_REQUIRED" and producer_status != "BLOCK":
+        producer_status = "REVIEW_REQUIRED"
     duplicate_conflicts = [reason for reason in reconciliation_reasons if reason.startswith("duplicate_security_unresolved")]
     if duplicate_conflicts:
         producer_status = "BLOCK"
@@ -325,15 +345,21 @@ def build_portfolio_construction_payload(
         ),
         "portfolio_members": members,
         "member_count": len(members),
+        "target_weight_method": weight_contract["method"],
+        "portfolio_policy_allocation_authority": weight_contract["portfolio_policy_allocation_authority"],
+        "target_gross_exposure": weight_contract["target_gross_exposure"],
+        "resolved_target_member_count": weight_contract["resolved_target_member_count"],
+        "single_name_weight_cap": weight_contract["single_name_weight_cap"],
+        "total_target_weight": weight_contract["total_target_weight"],
         "membership_intent_taxonomy": sorted(MEMBERSHIP_INTENTS),
         "weight_intent_taxonomy": sorted(WEIGHT_INTENTS),
         "position_count_policy_reference": str((policy_result.get("artifact_path") or portfolio_policy_artifact_path or "")),
         "cash_policy_reference": str((policy_result.get("artifact_path") or portfolio_policy_artifact_path or "")),
         "exposure_policy_reference": str((policy_result.get("artifact_path") or portfolio_policy_artifact_path or "")),
-        "concrete_values_decided": False,
+        "concrete_values_decided": weight_contract["status"] == "PASS",
         "position_count_decided": False,
         "cash_ratio_decided": False,
-        "exposure_decided": False,
+        "exposure_decided": weight_contract["target_gross_exposure"] is not None,
         "position_sizing_decided": False,
         "allocation_decided": False,
         "quantity_decided": False,
@@ -488,10 +514,8 @@ def validate_portfolio_construction_artifact(payload: dict[str, Any]) -> dict[st
     if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
         errors.append("phase22_e_runtime_consumer_eligibility_must_be_not_eligible")
     for field in (
-        "concrete_values_decided",
         "position_count_decided",
         "cash_ratio_decided",
-        "exposure_decided",
         "position_sizing_decided",
         "allocation_decided",
         "quantity_decided",
@@ -694,9 +718,18 @@ def _reconcile_members(
     for row in opportunity_order:
         code = _code(row)
         candidate = candidate_by_code.get(code)
-        eligible = _candidate_eligible(candidate or row)
+        no_buy_reason = str(row.get("no_buy_reason") or "").strip()
+        no_buy_blocked = opportunity_no_buy_reason_blocks_buy(no_buy_reason)
+        eligible = _candidate_eligible(candidate or row) and not no_buy_blocked
         membership_intent = "ADD_CANDIDATE" if eligible else "EXCLUDE"
         weight_intent = "INCREASE" if eligible else "AVOID"
+        eligibility_reason = (
+            f"opportunity_no_buy_reason_present:{no_buy_reason}"
+            if no_buy_blocked
+            else "candidate_eligible"
+            if eligible
+            else "candidate_ineligible"
+        )
         members.append(
             _member(
                 business_date=business_date,
@@ -708,7 +741,7 @@ def _reconcile_members(
                 candidate=candidate,
                 opportunity=row,
                 pm=None,
-                reason_codes=["opportunity_rank_preserved", "candidate_eligible" if eligible else "candidate_ineligible"],
+                reason_codes=["opportunity_rank_preserved", eligibility_reason],
             )
         )
         used_codes.add(code)
@@ -755,8 +788,23 @@ def _member(
     return {
         "member_id": f"phase22-e-{business_date}-{security_code}",
         "security_code": security_code,
+        "symbol": security_code,
         "current_position": current_position,
         "membership_intent": membership_intent,
+        "target_membership": membership_intent in {"RETAIN", "ADD_CANDIDATE"},
+        "target_weight": 0.0,
+        "target_weight_authority": {},
+        "target_weight_resolution": {
+            "status": "REVIEW_REQUIRED",
+            "reason": "target_weight_authority_not_resolved",
+            "resolved_weight": 0.0,
+            "base_weight": 0.0,
+            "adjustments": [],
+            "cap_applied": False,
+            "normalization_applied": False,
+            "zero_weight_reason": "unresolved_authority",
+            "review_reason": "target_weight_authority_not_resolved",
+        },
         "construction_priority": construction_priority,
         "weight_intent": weight_intent,
         "candidate_reference": str((candidate or {}).get("candidate_id") or (candidate or {}).get("source_ref") or ""),
@@ -766,12 +814,221 @@ def _member(
         "input_candidate_order": _candidate_order(candidate or {}),
         "input_opportunity_rank": _rank(opportunity or {}),
         "input_score": _score(opportunity or candidate or {}),
+        **_score_authority_payload(business_date=business_date, candidate=candidate, opportunity=opportunity),
         "pm_action": str((pm or {}).get("action") or ""),
         "pm_intensity": str((pm or {}).get("intensity") or ""),
+        "membership_reason": ";".join(sorted(set(reason_codes))),
+        "weight_reason": "target_weight_authority_not_resolved",
         "confidence": _confidence(opportunity or candidate or pm or {}),
         "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
         "reason_codes": sorted(set(reason_codes)),
     }
+
+
+def _resolve_target_weight_contract(
+    *,
+    business_date: str,
+    members: list[dict[str, Any]],
+    policy_config_summary: PortfolioConstructionSourceSummary,
+    portfolio_policy_reference: str,
+    source_hashes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summary = dict(policy_config_summary.summary or {})
+    policy_authority = resolve_portfolio_policy_allocation_authority(
+        business_date=business_date,
+        policy_config_summary=policy_config_summary,
+        portfolio_policy_reference=portfolio_policy_reference,
+        source_hashes=source_hashes,
+    )
+    target_gross_exposure = policy_authority["target_gross_exposure"]
+    target_member_count = policy_authority["target_position_count"]
+    single_name_cap = policy_authority["single_name_weight_cap"]
+    source_paths = [item["path"] for item in source_hashes if item.get("path")]
+    status = policy_authority["status"]
+    reason_codes: list[str] = list(policy_authority["reason_codes"])
+    method = {
+        "method_id": "production_v1_equal_weight_target_allocation",
+        "method_version": "phase23_ao_v1",
+        "basis": "target_gross_exposure / resolved_target_member_count with single-name cap",
+        "opportunity_score_weight_transform_used": False,
+    }
+    selected_candidates = _select_target_members(members, target_member_count if target_member_count is not None else 0)
+    selected_codes = {row["security_code"] for row in selected_candidates}
+    effective_count = len(selected_codes)
+    if target_member_count == 0 or target_gross_exposure == 0:
+        effective_count = 0
+    base_weight = 0.0
+    if status == "PASS" and effective_count > 0:
+        base_weight = min(float(target_gross_exposure) / float(effective_count), float(single_name_cap))
+    total_weight = 0.0
+    weighted: list[dict[str, Any]] = []
+    for row in members:
+        selected = row["security_code"] in selected_codes and status == "PASS" and effective_count > 0
+        raw_score = row.get("runtime_opportunity_score")
+        zero_reason = ""
+        review_reason = ""
+        reason = "target_weight_resolved"
+        weight = round(base_weight, 6) if selected else 0.0
+        if status != "PASS":
+            zero_reason = "unresolved_authority"
+            review_reason = "target_weight_authority_unresolved"
+            reason = "target_weight_authority_unresolved"
+        elif row.get("membership_intent") in {"EXCLUDE", "UNRESOLVED"}:
+            zero_reason = "opportunity_not_selected"
+            reason = "member_not_selected"
+        elif row.get("membership_intent") in {"REDUCE_CANDIDATE", "REMOVE_CANDIDATE"}:
+            zero_reason = "existing_position_reduce_or_exit"
+            reason = "existing_position_reduce_or_exit"
+        elif target_gross_exposure == 0:
+            zero_reason = "policy_zero_exposure"
+            reason = "policy_zero_exposure"
+        elif target_member_count == 0:
+            zero_reason = "no_investable_capacity"
+            reason = "no_investable_capacity"
+        elif isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) and float(raw_score) < 0 and not row.get("current_position"):
+            zero_reason = "opportunity_not_selected"
+            reason = "negative_opportunity_not_selected"
+            weight = 0.0
+        elif not selected:
+            zero_reason = "opportunity_not_selected"
+            reason = "opportunity_not_selected"
+        cap_applied = selected and status == "PASS" and target_gross_exposure is not None and effective_count > 0 and float(target_gross_exposure) / float(effective_count) > float(single_name_cap)
+        target_membership = selected
+        authority = {
+            "authority_type": "TARGET_WEIGHT_AUTHORITY",
+            "method_id": method["method_id"],
+            "method_version": method["method_version"],
+            "business_date": business_date,
+            "portfolio_policy_decision_id": policy_authority["source_decision_id"],
+            "portfolio_policy_artifact_path": policy_authority["source_artifact_path"],
+            "portfolio_policy_artifact_hash": policy_authority["source_artifact_hash"],
+            "target_position_count": target_member_count,
+            "target_gross_exposure": target_gross_exposure,
+            "cash_reserve": policy_authority["cash_reserve"],
+            "resolved_target_member_count": effective_count,
+            "single_name_weight_cap": single_name_cap,
+            "portfolio_policy_reference": portfolio_policy_reference,
+            "opportunity_reference": row.get("opportunity_reference", ""),
+            "existing_position_reference": row.get("position_management_reference", "") if row.get("current_position") else "",
+            "position_management_reference": row.get("position_management_reference", ""),
+            "source_artifact_paths": source_paths,
+            "source_artifact_hashes": source_hashes,
+            "PIT_status": "PASS",
+        }
+        resolution = {
+            "status": "PASS" if status == "PASS" else "REVIEW_REQUIRED",
+            "reason": reason,
+            "resolved_weight": weight,
+            "base_weight": round(base_weight, 6),
+            "adjustments": [],
+            "cap_applied": cap_applied,
+            "normalization_applied": False,
+            "zero_weight_reason": zero_reason,
+            "review_reason": review_reason,
+        }
+        if weight == 0 and not zero_reason and status == "PASS":
+            resolution["zero_weight_reason"] = "other_explicit_contract_reason"
+        updated = {
+            **row,
+            "target_membership": target_membership,
+            "target_weight": weight,
+            "target_weight_authority": authority,
+            "target_weight_resolution": resolution,
+            "weight_reason": reason,
+        }
+        weighted.append(updated)
+        total_weight += weight
+    if target_gross_exposure is not None and total_weight > float(target_gross_exposure) + 0.000001:
+        status = "BLOCK"
+        reason_codes.append("total_target_weight_above_target_gross_exposure")
+    return {
+        "status": status,
+        "reason_codes": reason_codes,
+        "method": method,
+        "members": weighted,
+        "target_gross_exposure": target_gross_exposure,
+        "resolved_target_member_count": effective_count,
+        "single_name_weight_cap": single_name_cap,
+        "total_target_weight": round(total_weight, 6),
+        "portfolio_policy_allocation_authority": policy_authority,
+    }
+
+
+def resolve_portfolio_policy_allocation_authority(
+    *,
+    business_date: str,
+    policy_config_summary: PortfolioConstructionSourceSummary,
+    portfolio_policy_reference: str,
+    source_hashes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    summary = dict(policy_config_summary.summary or {})
+    target_gross_exposure_ratio = _optional_ratio(summary.get("target_gross_exposure_ratio"))
+    target_gross_exposure = _optional_ratio(summary.get("target_gross_exposure", summary.get("target_gross_exposure_ratio")))
+    cash_reserve_ratio = _optional_ratio(summary.get("cash_reserve_ratio"))
+    cash_reserve = _optional_ratio(summary.get("cash_reserve", summary.get("cash_reserve_ratio")))
+    target_member_count = _optional_int(summary.get("target_position_count", summary.get("resolved_target_member_count")))
+    single_name_cap = _optional_ratio(summary.get("single_name_weight_cap"))
+    source_hash = _strip_sha256(str(policy_config_summary.source_hash or ""))
+    for item in source_hashes:
+        if item.get("role") in {"policy_config", "portfolio_policy"} and item.get("sha256"):
+            source_hash = _strip_sha256(str(item.get("sha256") or source_hash))
+    reason_codes: list[str] = []
+    missing: list[str] = []
+    invalid: list[str] = []
+    if target_member_count is None:
+        missing.append("target_position_count")
+    elif target_member_count < 0:
+        invalid.append("target_position_count")
+    if target_gross_exposure is None:
+        missing.append("target_gross_exposure")
+    if cash_reserve is None:
+        missing.append("cash_reserve")
+    if single_name_cap is None:
+        missing.append("single_name_weight_cap")
+    if target_gross_exposure_ratio is not None and target_gross_exposure is not None and abs(float(target_gross_exposure_ratio) - float(target_gross_exposure)) > 0.000001:
+        invalid.append("target_gross_exposure_ratio_conflict")
+    if cash_reserve_ratio is not None and cash_reserve is not None and abs(float(cash_reserve_ratio) - float(cash_reserve)) > 0.000001:
+        invalid.append("cash_reserve_ratio_conflict")
+    if policy_config_summary.business_date != business_date:
+        invalid.append("business_date_mismatch")
+    if invalid:
+        reason_codes.extend(f"portfolio_policy_allocation_authority_invalid:{field}" for field in invalid)
+    if missing:
+        reason_codes.extend(f"portfolio_policy_allocation_authority_missing:{field}" for field in missing)
+    status = "BLOCK" if invalid else "REVIEW_REQUIRED" if missing else "PASS"
+    if status != "PASS":
+        reason_codes.append("target_weight_authority_unresolved")
+    return {
+        "status": status,
+        "reason_codes": sorted(set(reason_codes)),
+        "target_position_count": target_member_count,
+        "target_gross_exposure": target_gross_exposure,
+        "cash_reserve": cash_reserve,
+        "single_name_weight_cap": single_name_cap,
+        "deployment_posture": str(summary.get("deployment_posture") or ""),
+        "source_decision_id": str(summary.get("decision_id") or summary.get("artifact_hash") or source_hash),
+        "source_artifact_path": portfolio_policy_reference or policy_config_summary.source_ref,
+        "source_artifact_hash": source_hash,
+        "business_date": policy_config_summary.business_date,
+        "review_reason": ",".join(reason_codes),
+    }
+
+
+def _select_target_members(members: list[dict[str, Any]], target_member_count: int) -> list[dict[str, Any]]:
+    if target_member_count <= 0:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for row in members:
+        score = row.get("runtime_opportunity_score")
+        negative_new = isinstance(score, (int, float)) and not isinstance(score, bool) and float(score) < 0 and not row.get("current_position")
+        selectable = row.get("membership_intent") == "RETAIN" or (row.get("membership_intent") == "ADD_CANDIDATE" and not negative_new)
+        reason_codes = {str(reason) for reason in row.get("reason_codes") or []}
+        occupies_buy_slot = row.get("membership_intent") in {"RETAIN", "ADD_CANDIDATE"} or any(reason.startswith("opportunity_no_buy_reason_present:") for reason in reason_codes)
+        if occupies_buy_slot:
+            candidates.append({**row, "_selection_selectable": selectable})
+    ordered = sorted(candidates, key=lambda row: (_positive_int(row.get("construction_priority"), 999999), str(row.get("security_code") or "")))
+    window = ordered[:target_member_count]
+    return [{key: value for key, value in row.items() if key != "_selection_selectable"} for row in window if row.get("_selection_selectable")]
 
 
 def _validate_member(member: Any, *, index: int) -> list[str]:
@@ -781,14 +1038,21 @@ def _validate_member(member: Any, *, index: int) -> list[str]:
     required = {
         "member_id",
         "security_code",
+        "symbol",
         "current_position",
         "membership_intent",
+        "target_membership",
+        "target_weight",
+        "target_weight_authority",
+        "target_weight_resolution",
         "construction_priority",
         "weight_intent",
         "candidate_reference",
         "opportunity_reference",
         "position_management_reference",
         "portfolio_policy_reference",
+        "membership_reason",
+        "weight_reason",
         "confidence",
         "uncertainty",
         "reason_codes",
@@ -796,6 +1060,29 @@ def _validate_member(member: Any, *, index: int) -> list[str]:
     errors.extend(f"portfolio_member_required_field_missing:{index}:{field}" for field in sorted(required - set(member)))
     if not member.get("security_code"):
         errors.append(f"security_code_empty:{index}")
+    if member.get("symbol") != member.get("security_code"):
+        errors.append(f"symbol_security_code_mismatch:{index}")
+    if not isinstance(member.get("target_membership"), bool):
+        errors.append(f"invalid_target_membership:{index}")
+    target_weight = member.get("target_weight")
+    if isinstance(target_weight, bool) or not isinstance(target_weight, (int, float)) or not math.isfinite(float(target_weight)) or not 0 <= float(target_weight) <= 1:
+        errors.append(f"invalid_target_weight:{index}")
+    if not isinstance(member.get("target_weight_authority"), dict):
+        errors.append(f"invalid_target_weight_authority:{index}")
+    if not isinstance(member.get("target_weight_resolution"), dict):
+        errors.append(f"invalid_target_weight_resolution:{index}")
+    else:
+        resolution = member.get("target_weight_resolution") or {}
+        if resolution.get("status") not in {"PASS", "REVIEW_REQUIRED"}:
+            errors.append(f"invalid_target_weight_resolution_status:{index}")
+        resolved = resolution.get("resolved_weight")
+        if (
+            resolution.get("status") == "PASS"
+            and (isinstance(resolved, bool) or not isinstance(resolved, (int, float)) or abs(float(target_weight or 0.0) - float(resolved)) > 0.000001)
+        ):
+            errors.append(f"target_weight_resolution_mismatch:{index}")
+        if float(target_weight or 0.0) == 0.0 and not resolution.get("zero_weight_reason") and resolution.get("status") == "PASS":
+            errors.append(f"missing_zero_weight_reason:{index}")
     if member.get("membership_intent") not in MEMBERSHIP_INTENTS:
         errors.append(f"invalid_membership_intent:{index}")
     if member.get("weight_intent") not in WEIGHT_INTENTS:
@@ -807,6 +1094,28 @@ def _validate_member(member: Any, *, index: int) -> list[str]:
         errors.append(f"invalid_confidence:{index}")
     if not isinstance(member.get("reason_codes"), list):
         errors.append(f"reason_codes_not_list:{index}")
+    if "runtime_opportunity_score" in member:
+        score = member.get("runtime_opportunity_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+            errors.append(f"invalid_runtime_opportunity_score:{index}")
+        authority = member.get("runtime_opportunity_score_authority")
+        if not isinstance(authority, dict):
+            errors.append(f"missing_runtime_opportunity_score_authority:{index}")
+        elif authority.get("prediction_semantics") != "runtime_opportunity_score":
+            errors.append(f"invalid_runtime_opportunity_score_semantics:{index}")
+    if "allocation_quality_score" in member:
+        score = member.get("allocation_quality_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(float(score)) or not 0 <= float(score) <= 1:
+            errors.append(f"invalid_allocation_quality_score:{index}")
+        authority = member.get("allocation_quality_authority")
+        if not isinstance(authority, dict):
+            errors.append(f"missing_allocation_quality_authority:{index}")
+        elif authority.get("output_semantics") != "allocation_quality_score":
+            errors.append(f"invalid_allocation_quality_semantics:{index}")
+    if "quality_score" in member:
+        errors.append(f"legacy_quality_score_forbidden:{index}")
+    if "quality_score_authority" in member:
+        errors.append(f"legacy_quality_score_authority_forbidden:{index}")
     for field in sorted(FORBIDDEN_CONCRETE_FIELDS & set(member)):
         errors.append(f"concrete_field_forbidden:{index}:{field}")
     return errors
@@ -896,6 +1205,100 @@ def _score(row: Mapping[str, Any]) -> float:
         return round(float(value), 8)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_ratio(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    numeric = float(value)
+    if not 0 <= numeric <= 1:
+        return None
+    return numeric
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _positive_int(value: Any, default: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return default
+    return value
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _score_source_field(row: Mapping[str, Any], fields: tuple[str, ...]) -> str:
+    for key in fields:
+        value = row.get(key)
+        if _finite_number(value) is not None:
+            return key
+    return ""
+
+
+def _score_authority_payload(
+    *,
+    business_date: str,
+    candidate: Mapping[str, Any] | None,
+    opportunity: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if opportunity:
+        source_field = _score_source_field(opportunity, ("expected_edge_score", "opportunity_score", "score"))
+        if source_field:
+            score = _finite_number(opportunity.get(source_field))
+            if score is not None:
+                payload["runtime_opportunity_score"] = round(score, 8)
+                payload["runtime_opportunity_score_authority"] = {
+                    "authority": "OPPORTUNITY_RANKING_AUTHORITY",
+                    "canonical_field": "runtime_opportunity_score",
+                    "source_field": source_field,
+                    "source_decision_id": str(opportunity.get("opportunity_id") or opportunity.get("source_ref") or ""),
+                    "source_artifact_class": "opportunity",
+                    "source_artifact_path": str(opportunity.get("source_artifact_path") or ""),
+                    "source_artifact_hash": str(opportunity.get("source_artifact_hash") or ""),
+                    "candidate_reference": str((candidate or {}).get("candidate_id") or (candidate or {}).get("source_ref") or ""),
+                    "opportunity_reference": str(opportunity.get("opportunity_id") or opportunity.get("source_ref") or ""),
+                    "prediction_semantics": str(opportunity.get("prediction_semantics") or "runtime_opportunity_score"),
+                    "transformation_stage": str(opportunity.get("transformation_stage") or "accepted_generation_bound_imputer_scaler_model"),
+                    "calibration_applied": bool(opportunity.get("calibration_applied")) if "calibration_applied" in opportunity else False,
+                    "population_scope": str(opportunity.get("population_scope") or "CandidateTopN_single_business_day"),
+                    "business_date": business_date,
+                }
+    quality_source = opportunity or candidate or {}
+    quality_field = _score_source_field(quality_source, ("allocation_quality_score",))
+    if quality_field:
+        quality = _finite_number(quality_source.get(quality_field))
+        if quality is not None:
+            payload["allocation_quality_score"] = round(quality, 8)
+            payload["allocation_quality_authority"] = {
+                "authority": "ALLOCATION_QUALITY_AUTHORITY",
+                "canonical_field": "allocation_quality_score",
+                "source_field": quality_field,
+                "source_decision_id": str((opportunity or {}).get("opportunity_id") or (candidate or {}).get("candidate_id") or ""),
+                "source_artifact_class": "opportunity" if opportunity else ("candidate" if candidate else ""),
+                "candidate_reference": str((candidate or {}).get("candidate_id") or (candidate or {}).get("source_ref") or ""),
+                "opportunity_reference": str((opportunity or {}).get("opportunity_id") or (opportunity or {}).get("source_ref") or ""),
+                "input_semantics": str(quality_source.get("allocation_quality_input_semantics") or "allocation_quality_score"),
+                "output_semantics": "allocation_quality_score",
+                "output_range_contract": "[0,1]",
+                "business_date": business_date,
+                "pit_status": "PIT",
+            }
+    return payload
 
 
 def _candidate_eligible(row: Mapping[str, Any] | None) -> bool:

@@ -20,6 +20,9 @@ class FakeClient:
     def fetch_all_trading_calendar(self, **kwargs: Any) -> list[dict[str, Any]]:
         return self.records
 
+    def fetch_all_earnings_calendar(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.records
+
     def fetch_all_fins_summary(self, **kwargs: Any) -> list[dict[str, Any]]:
         return self.records
 
@@ -96,6 +99,88 @@ def test_ingestor_saves_code_less_trading_calendar(tmp_path: Path) -> None:
     assert len(records) == 1
     assert records[0]["business_key"] == "2026-06-01"
     assert records[0]["code"] == ""
+
+
+def test_ingestor_saves_earnings_calendar_to_raw_collection(tmp_path: Path) -> None:
+    paths = RuntimePaths(runtime_dir=tmp_path / "runtime")
+    ingestor = JQuantsRawIngestor(
+        client=FakeClient([{"Date": "2026-08-08", "Code": "72030", "CoName": "Toyota"}]),
+        store=MarketDataStore(paths),
+        paths=paths,
+    )
+
+    result = ingestor.fetch_and_store("earnings_calendar", date="2026-06-01")
+
+    assert result.records_saved == 1
+    assert result.output_path.endswith("data/raw/jquants/earnings_calendar/data.jsonl")
+    records = MarketDataStore(paths).read_raw_collection("jquants/earnings_calendar")
+    assert records[0]["endpoint"] == "/v2/equities/earnings-calendar"
+    assert records[0]["target_date"] == "2026-08-08"
+    assert records[0]["fetched_at"]
+
+
+def test_fins_summary_preserves_same_day_same_code_distinct_disc_no(tmp_path: Path) -> None:
+    paths = RuntimePaths(runtime_dir=tmp_path / "runtime")
+    ingestor = JQuantsRawIngestor(
+        client=FakeClient(
+            [
+                {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590001", "DiscTime": "15:00:00", "DocType": "ForecastRevision"},
+                {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590002", "DiscTime": "15:10:00", "DocType": "DividendForecastRevision"},
+            ]
+        ),
+        store=MarketDataStore(paths),
+        paths=paths,
+    )
+
+    result = ingestor.fetch_and_store("fins_summary", date="2026-07-14")
+
+    records = MarketDataStore(paths).read_raw_collection("jquants/fins_summary")
+    assert result.records_saved == 2
+    assert result.validation_status == "OK"
+    assert len(records) == 2
+    assert {record["DiscNo"] for record in records} == {"20260714590001", "20260714590002"}
+    assert len({record["business_key"] for record in records}) == 2
+    assert result.diff_summary is not None
+    assert result.diff_summary["duplicate_key_count"] == 0
+    assert result.diff_summary["business_key_collision_count"] == 0
+
+
+def test_fins_summary_exact_duplicate_disc_no_collapses_with_diagnostic(tmp_path: Path) -> None:
+    paths = RuntimePaths(runtime_dir=tmp_path / "runtime")
+    record = {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590001", "DiscTime": "15:00:00", "DocType": "ForecastRevision"}
+    ingestor = JQuantsRawIngestor(client=FakeClient([dict(record), dict(record)]), store=MarketDataStore(paths), paths=paths)
+
+    result = ingestor.fetch_and_store("fins_summary", date="2026-07-14")
+
+    records = MarketDataStore(paths).read_raw_collection("jquants/fins_summary")
+    assert result.records_saved == 2
+    assert result.validation_status == "WARNING"
+    assert len(records) == 1
+    assert result.diff_summary is not None
+    assert result.diff_summary["duplicate_key_count"] == 1
+    assert result.diff_summary["exact_source_duplicate_count"] == 1
+    assert result.diff_summary["business_key_collision_count"] == 0
+
+
+def test_fins_summary_missing_disc_no_fallback_preserves_distinct_disclosures(tmp_path: Path) -> None:
+    paths = RuntimePaths(runtime_dir=tmp_path / "runtime")
+    ingestor = JQuantsRawIngestor(
+        client=FakeClient(
+            [
+                {"DiscDate": "2026-07-14", "Code": "94440", "DiscTime": "15:00:00", "DocType": "ForecastRevision", "CurPerType": "FY", "CurPerEn": "2026-03-31"},
+                {"DiscDate": "2026-07-14", "Code": "94440", "DiscTime": "15:10:00", "DocType": "DividendForecastRevision", "CurPerType": "FY", "CurPerEn": "2026-03-31"},
+            ]
+        ),
+        store=MarketDataStore(paths),
+        paths=paths,
+    )
+
+    result = ingestor.fetch_and_store("fins_summary", date="2026-07-14")
+
+    records = MarketDataStore(paths).read_raw_collection("jquants/fins_summary")
+    assert result.validation_status == "OK"
+    assert len(records) == 2
+    assert len({record["business_key"] for record in records}) == 2
 
 
 def test_daily_quotes_empty_result_writes_missing_log(tmp_path: Path) -> None:

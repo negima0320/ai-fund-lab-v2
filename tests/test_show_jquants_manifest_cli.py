@@ -43,6 +43,24 @@ def write_manifest(runtime_dir: Path) -> None:
             request_params={"endpoint_name": "listed_issues"},
         ),
     )
+    append_manifest(
+        manifest_path(paths.raw_data),
+        ManifestEntry(
+            fetched_at=now_utc(),
+            endpoint="/v2/equities/earnings-calendar",
+            target_date="2026-08-08",
+            from_date=None,
+            to_date=None,
+            record_count=1,
+            storage_format="parquet",
+            storage_path=str(paths.raw_data / "jquants" / "earnings_calendar" / "data.parquet"),
+            status="OK",
+            validation_status="OK",
+            schema_version=1,
+            diff_summary={"inserted_count": 1, "updated_count": 0, "unchanged_count": 0, "duplicate_key_count": 0},
+            request_params={"endpoint_name": "earnings_calendar"},
+        ),
+    )
 
 
 def test_show_jquants_manifest_latest_table(tmp_path: Path, capsys) -> None:
@@ -53,6 +71,8 @@ def test_show_jquants_manifest_latest_table(tmp_path: Path, capsys) -> None:
 
     output = capsys.readouterr().out
     assert "schema" in output
+    assert "exact_dups" in output
+    assert "key_collisions" in output
     assert "/v2/equities/bars/daily" in output
     assert "ERROR" in output
 
@@ -78,3 +98,13 @@ def test_show_jquants_manifest_filters_and_summary(tmp_path: Path, capsys) -> No
     assert "manifest_count" in output
     assert "/v2/equities/master" in output
     assert "/v2/equities/bars/daily" not in output
+
+
+def test_show_jquants_manifest_accepts_earnings_calendar(tmp_path: Path, capsys) -> None:
+    runtime_dir = tmp_path / "runtime"
+    write_manifest(runtime_dir)
+
+    main(["--endpoint", "earnings_calendar", "--runtime-dir", str(runtime_dir), "--latest"])
+
+    output = capsys.readouterr().out
+    assert "/v2/equities/earnings-calendar" in output

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -16,14 +17,24 @@ CONFIG_SCHEMA_VERSION = "position_sizing_config.v1"
 PRODUCER_VERSION = "phase22_j_position_sizing_producer.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
+ALLOCATION_QUALITY_AUTHORITY = "ALLOCATION_QUALITY_AUTHORITY"
+ALLOCATION_QUALITY_CANONICAL_FIELD = "allocation_quality_score"
+ALLOCATION_QUALITY_LEGACY_FIELD = "quality_score"
+RAW_OPPORTUNITY_AUTHORITY = "OPPORTUNITY_RANKING_AUTHORITY"
+RAW_OPPORTUNITY_CANONICAL_FIELD = "runtime_opportunity_score"
+RAW_OPPORTUNITY_LEGACY_FIELDS = ("input_score", "opportunity_score")
+REFERENCE_PRICE_AUTHORITY = "REFERENCE_PRICE_AUTHORITY"
 
 SOURCE_STATUSES_BLOCK = {"BLOCK", "MISSING", "HASH_MISMATCH", "AUTHORITY_CONFLICT"}
 SIZING_STATUSES = {
     "SIZED",
     "CAPPED",
+    "RESOLVED_ZERO_ALLOCATION",
+    "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
     "MINIMUM_NOTIONAL_UNMET",
     "VOLATILITY_UNAVAILABLE",
     "QUALITY_UNAVAILABLE",
+    "TARGET_WEIGHT_UNAVAILABLE",
     "UPSTREAM_REVIEW_REQUIRED",
     "SAFETY_CONSTRAINED",
     "WITHHELD",
@@ -71,6 +82,72 @@ class PositionSizingSourceSummary:
             "summary": dict(self.summary or {}),
             "business_date_aligned": self.business_date == requested_business_date,
             "feature_date_lte_business_date": bool(self.feature_date and self.feature_date <= requested_business_date),
+        }
+
+
+@dataclass(frozen=True)
+class QualityResolution:
+    resolved_quality: float | None
+    authority: str
+    resolution_status: str
+    source_field: str
+    canonical_field: str
+    legacy_alias_used: bool
+    review_reason: str
+    source_decision_id: str
+    source_artifact_class: str
+    lineage: Mapping[str, Any]
+    fields_observed: Mapping[str, float]
+    conflict_detected: bool
+    legacy_usage: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resolved_quality": self.resolved_quality,
+            "authority": self.authority,
+            "resolution_status": self.resolution_status,
+            "source_field": self.source_field,
+            "canonical_field": self.canonical_field,
+            "legacy_alias_used": self.legacy_alias_used,
+            "review_reason": self.review_reason,
+            "source_decision_id": self.source_decision_id,
+            "source_artifact_class": self.source_artifact_class,
+            "lineage": dict(self.lineage),
+            "fields_observed": dict(self.fields_observed),
+            "conflict_detected": self.conflict_detected,
+            "legacy_usage": self.legacy_usage,
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeOpportunityScoreResolution:
+    resolved_score: float | None
+    authority: str
+    resolution_status: str
+    source_field: str
+    canonical_field: str
+    legacy_attribution_used: bool
+    review_reason: str
+    source_decision_id: str
+    source_artifact_class: str
+    lineage: Mapping[str, Any]
+    fields_observed: Mapping[str, float]
+    conflict_detected: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "resolved_score": self.resolved_score,
+            "authority": self.authority,
+            "resolution_status": self.resolution_status,
+            "source_field": self.source_field,
+            "canonical_field": self.canonical_field,
+            "legacy_attribution_used": self.legacy_attribution_used,
+            "review_reason": self.review_reason,
+            "source_decision_id": self.source_decision_id,
+            "source_artifact_class": self.source_artifact_class,
+            "lineage": dict(self.lineage),
+            "fields_observed": dict(self.fields_observed),
+            "conflict_detected": self.conflict_detected,
         }
 
 
@@ -221,6 +298,8 @@ def build_position_sizing_payload(
             status = "BLOCK"
             source_status = "AUTHORITY_CONFLICT"
             reasons.append(f"{name}_block:{summary.status}")
+        elif _capital_deployment_shadow_cycle_placeholder(name, summary):
+            continue
         elif summary.status != "PASS" and status != "BLOCK":
             status = "REVIEW_REQUIRED"
             reasons.append(f"{name}_review_required:{summary.status}")
@@ -294,8 +373,14 @@ def build_position_sizing_payload(
             safety_cap=safety_cap or 0.0,
         )
         reasons.extend(sizing_reasons)
-        if any(item["sizing_status"] in {"QUALITY_UNAVAILABLE", "VOLATILITY_UNAVAILABLE", "MINIMUM_NOTIONAL_UNMET", "WITHHELD"} for item in positions):
+        if any(item["sizing_status"] in {"TARGET_WEIGHT_UNAVAILABLE", "QUALITY_UNAVAILABLE", "VOLATILITY_UNAVAILABLE", "WITHHELD"} for item in positions):
             status = "REVIEW_REQUIRED"
+            for item in positions:
+                if item["sizing_status"] == "TARGET_WEIGHT_UNAVAILABLE":
+                    resolution = item.get("target_weight_resolution") or {}
+                    review_reason = str(resolution.get("review_reason") or resolution.get("reason") or "target_weight_authority_unavailable")
+                    reasons.append(review_reason)
+                    reasons.append("target_weight_authority_unavailable")
         total_target_weight = round(sum(float(item["target_weight"]) for item in positions), 6)
         if target_exposure is not None and total_target_weight > target_exposure + 0.000001:
             status = "BLOCK"
@@ -475,7 +560,18 @@ def sha256_file(path: Path) -> str:
 
 def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, Any], ...], target_count: int, target_exposure: float, portfolio_value: float, safety_cap: float) -> tuple[list[dict[str, Any]], list[str]]:
     if target_count <= 0 or target_exposure <= 0:
-        return ([_unresolved_position(row, config=config, safety_cap=safety_cap) for row in rows], ["position_count_or_exposure_unresolved"])
+        return (
+            [
+                _zero_allocation_position(
+                    row,
+                    config=config,
+                    safety_cap=safety_cap,
+                    reason="actual_target_position_count_zero" if target_count <= 0 else "target_gross_exposure_zero",
+                )
+                for row in rows
+            ],
+            [],
+        )
     base = target_exposure / float(target_count)
     raw: list[dict[str, Any]] = []
     reasons: list[str] = []
@@ -491,14 +587,50 @@ def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, An
             target_weight = round(float(item["capped_weight"]) * scale, 6)
             target_notional = round(target_weight * portfolio_value, 2)
             min_notional = float(item["minimum_meaningful_notional"])
+            current_notional = round(float(item["current_weight"]) * portfolio_value, 2)
+            incremental = round(target_notional - current_notional, 2)
             if 0 < target_notional < min_notional:
-                item = {**item, "target_weight": 0.0, "weight_delta": round(0.0 - float(item["current_weight"]), 6), "target_notional": 0.0, "sizing_status": "MINIMUM_NOTIONAL_UNMET", "uncertainty": "MINIMUM_NOTIONAL_UNMET", "reason_codes": sorted(set(item["reason_codes"] + ["minimum_meaningful_notional_unmet"]))}
+                item = {
+                    **item,
+                    "target_weight": target_weight,
+                    "weight_delta": round(target_weight - float(item["current_weight"]), 6),
+                    "target_notional": target_notional,
+                    "current_notional": current_notional,
+                    "incremental_target_notional": incremental,
+                    "incremental_buy_notional": 0.0,
+                    "target_quantity_candidate": 0,
+                    "quantity_delta_candidate": int(0 - float(item["current_quantity"])),
+                    "quantity_status": "NO_ORDER_MINIMUM_NOTIONAL_UNMET",
+                    "sizing_status": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                    "uncertainty": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                    "reason_codes": sorted(set(item["reason_codes"] + ["minimum_meaningful_notional_unmet"])),
+                }
             else:
-                current_notional = round(float(item["current_weight"]) * portfolio_value, 2)
-                incremental = round(target_notional - current_notional, 2)
                 item = {**item, "target_weight": target_weight, "weight_delta": round(target_weight - float(item["current_weight"]), 6), "target_notional": target_notional, "current_notional": current_notional, "incremental_target_notional": incremental, "incremental_buy_notional": round(max(incremental, 0.0), 2)}
         positions.append(item)
     return positions, reasons
+
+
+def _zero_allocation_position(row: Mapping[str, Any], *, config: PositionSizingConfig, safety_cap: float, reason: str) -> dict[str, Any]:
+    base = _raw_position(row, config=config, base=0.0, max_weight=min(config.strategy_maximum_position_weight, safety_cap), portfolio_value=0.0)
+    return {
+        **base,
+        "base_weight": 0.0,
+        "quality_adjustment": 0.0,
+        "volatility_adjustment": 0.0,
+        "pm_intent_adjustment": 0.0,
+        "adjusted_weight": 0.0,
+        "capped_weight": 0.0,
+        "target_weight": 0.0,
+        "weight_delta": round(0.0 - float(base["current_weight"]), 6),
+        "target_notional": 0.0,
+        "current_notional": 0.0,
+        "incremental_target_notional": 0.0,
+        "incremental_buy_notional": 0.0,
+        "sizing_status": "RESOLVED_ZERO_ALLOCATION",
+        "uncertainty": "RESOLVED_ZERO_ALLOCATION",
+        "reason_codes": sorted(set([reason, "zero_allocation_authorized"])),
+    }
 
 
 def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base: float, max_weight: float, portfolio_value: float) -> dict[str, Any]:
@@ -508,37 +640,57 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
     if pm_action not in PM_ACTIONS:
         pm_action = "UNRESOLVED"
     current_weight = _ratio(row.get("current_weight"), 0.0)
-    quality = _quality_multiplier(row, config)
+    target_weight_resolution = resolve_target_weight(row)
+    runtime_opportunity_resolution = resolve_runtime_opportunity_score(row)
+    quality_resolution = resolve_quality_score(row)
+    quality = 1.0
     vol = _volatility_multiplier(row, config)
     reasons = [f"pm_action:{pm_action}", f"membership_intent:{membership}"]
     status = "SIZED"
     uncertainty = "LOW"
-    if quality is None:
-        quality = 0.0
-        status = "QUALITY_UNAVAILABLE"
-        uncertainty = "QUALITY_UNAVAILABLE"
-        reasons.append("quality_missing_fail_closed")
+    target = target_weight_resolution["resolved_weight"]
+    if target_weight_resolution["status"] != "PASS":
+        target = 0.0
+        status = "TARGET_WEIGHT_UNAVAILABLE"
+        uncertainty = "TARGET_WEIGHT_UNAVAILABLE"
+        reasons.append("target_weight_missing_fail_closed")
+        reasons.append(str(target_weight_resolution["review_reason"]))
     if vol is None:
-        vol = 0.0
-        status = "VOLATILITY_UNAVAILABLE"
-        uncertainty = "VOLATILITY_UNAVAILABLE"
-        reasons.append("volatility_missing_fail_closed")
-    adjusted = base * quality * vol * float(config.pm_intent_adjustment.get(pm_action, 1.0))
+        vol = 1.0
+        reasons.append("volatility_missing_noncanonical_observability")
+    adjusted = target
     if pm_action == "EXIT" or membership in {"REMOVE_CANDIDATE", "EXCLUDE"}:
         adjusted = 0.0
     elif pm_action == "REDUCE":
         adjusted = min(adjusted, current_weight * 0.5)
-    elif pm_action == "ADD":
-        adjusted = max(adjusted, current_weight + base * 0.25)
-    elif pm_action == "HOLD" and current_weight > 0:
-        adjusted = max(min(adjusted, max_weight), min(current_weight, max_weight))
     capped = min(max(adjusted, 0.0), max_weight)
     if capped < adjusted:
         status = "CAPPED"
         reasons.append("position_concentration_cap_applied")
-    price = _positive_float(row.get("reference_price"), 0.0)
+    reference_price_resolution = resolve_reference_price(row)
+    price = _positive_float(reference_price_resolution["resolved_price"], 0.0)
     min_notional = _minimum_notional(config, price)
     target = round(capped, 6) if status in {"SIZED", "CAPPED"} else 0.0
+    current_quantity = _positive_float(row.get("current_quantity"), 0.0)
+    trading_unit = _positive_float(row.get("trading_unit"), _positive_float(config.minimum_meaningful_notional.get("tradable_unit"), 100.0))
+    target_notional = round(target * portfolio_value, 2)
+    target_quantity_candidate = 0
+    price_required = target_notional > 0
+    quantity_status = "RESOLVED_ZERO_DELTA" if current_quantity == 0 else "RESOLVED_CANDIDATE"
+    if price_required and reference_price_resolution["status"] != "PASS":
+        quantity_status = "PRICE_UNAVAILABLE"
+        reasons.append(str(reference_price_resolution["review_reason"] or "reference_price_unavailable"))
+    elif price_required and price > 0 and trading_unit > 0:
+        raw_quantity = int(target_notional // (price * trading_unit)) * int(trading_unit)
+        target_quantity_candidate = max(raw_quantity, 0)
+        quantity_status = "RESOLVED_ZERO_DELTA" if target_quantity_candidate == current_quantity else "RESOLVED_CANDIDATE"
+    if status in {"SIZED", "CAPPED"} and 0 < target_notional < min_notional:
+        status = "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+        uncertainty = "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+        reasons.append("minimum_meaningful_notional_unmet")
+        target_quantity_candidate = 0
+        quantity_status = "NO_ORDER_MINIMUM_NOTIONAL_UNMET"
+    quantity_delta_candidate = int(target_quantity_candidate - current_quantity)
     return {
         "security_code": code,
         "position_reference": str(row.get("position_reference") or row.get("member_id") or code),
@@ -553,14 +705,39 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
         "capped_weight": round(capped, 6),
         "target_weight": target,
         "weight_delta": round(target - current_weight, 6),
-        "target_notional": round(target * portfolio_value, 2),
+        "target_notional": target_notional if status != "TARGET_WEIGHT_UNAVAILABLE" else 0.0,
         "current_notional": round(current_weight * portfolio_value, 2),
         "incremental_target_notional": round((target - current_weight) * portfolio_value, 2),
         "incremental_buy_notional": round(max((target - current_weight) * portfolio_value, 0.0), 2),
+        "target_weight_authority": dict(row.get("target_weight_authority") or {}),
+        "target_weight_resolution": dict(target_weight_resolution),
+        "target_quantity_candidate": target_quantity_candidate,
+        "current_quantity": int(current_quantity),
+        "quantity_delta_candidate": quantity_delta_candidate,
+        "quantity_status": quantity_status,
+        "reference_price": price if reference_price_resolution["status"] == "PASS" else None,
+        "reference_price_authority": dict(row.get("reference_price_authority") or {}),
+        "reference_price_resolution": reference_price_resolution,
+        "reference_price_required": price_required,
+        "reference_price_type": str(row.get("reference_price_type") or ""),
+        "reference_price_date": str(row.get("reference_price_date") or ""),
+        "trading_unit": int(trading_unit),
+        "trading_unit_authority": str(row.get("trading_unit_authority") or config.config_source + "#minimum_meaningful_notional.tradable_unit"),
+        "sizing_reason": ";".join(sorted(set(reasons))),
         "minimum_meaningful_notional": round(min_notional, 2),
         "maximum_position_weight": round(max_weight, 6),
         "sizing_priority": _positive_int(row.get("allocation_priority") or row.get("construction_priority"), 999),
         "sizing_status": status,
+        "runtime_opportunity_score": runtime_opportunity_resolution.resolved_score,
+        "runtime_opportunity_score_authority": runtime_opportunity_resolution.authority,
+        "runtime_opportunity_score_resolution": runtime_opportunity_resolution.to_dict(),
+        "allocation_quality_score": quality_resolution.resolved_quality,
+        "allocation_quality_authority": quality_resolution.authority,
+        "allocation_quality_resolution": quality_resolution.to_dict(),
+        "legacy_quality_path_status": "NON_CANONICAL_OBSERVABILITY",
+        "quality_score": quality_resolution.resolved_quality,
+        "quality_authority": quality_resolution.authority,
+        "quality_resolution": quality_resolution.to_dict(),
         "confidence": round(min(_ratio(row.get("confidence"), 1.0), _ratio(row.get("opportunity_confidence"), 1.0)), 6),
         "uncertainty": uncertainty,
         "reason_codes": sorted(set(reasons)),
@@ -598,8 +775,397 @@ def _unresolved_position(row: Mapping[str, Any], *, config: PositionSizingConfig
     }
 
 
-def _quality_multiplier(row: Mapping[str, Any], config: PositionSizingConfig) -> float | None:
-    score = row.get("opportunity_score")
+def _capital_deployment_shadow_cycle_placeholder(name: str, summary: PositionSizingSourceSummary) -> bool:
+    if name != "capital_deployment" or summary.status == "PASS":
+        return False
+    return str((summary.summary or {}).get("reason") or "") == "capital_deployment_is_downstream_of_position_sizing_in_shadow_chain"
+
+
+def resolve_quality_score(row: Mapping[str, Any]) -> QualityResolution:
+    return resolve_allocation_quality_score(row)
+
+
+def resolve_target_weight(row: Mapping[str, Any]) -> dict[str, Any]:
+    value = row.get("target_weight")
+    authority = row.get("target_weight_authority")
+    resolution = row.get("target_weight_resolution")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "target_weight_invalid",
+            "resolved_weight": 0.0,
+            "base_weight": 0.0,
+            "adjustments": [],
+            "cap_applied": False,
+            "normalization_applied": False,
+            "zero_weight_reason": "unresolved_authority",
+            "review_reason": "target_weight_invalid",
+        }
+    if not isinstance(authority, Mapping) or authority.get("authority_type") != "TARGET_WEIGHT_AUTHORITY":
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "target_weight_authority_missing",
+            "resolved_weight": 0.0,
+            "base_weight": 0.0,
+            "adjustments": [],
+            "cap_applied": False,
+            "normalization_applied": False,
+            "zero_weight_reason": "unresolved_authority",
+            "review_reason": "target_weight_authority_missing",
+        }
+    if not isinstance(resolution, Mapping) or resolution.get("status") not in {"PASS", "REVIEW_REQUIRED"}:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "target_weight_resolution_missing",
+            "resolved_weight": 0.0,
+            "base_weight": 0.0,
+            "adjustments": [],
+            "cap_applied": False,
+            "normalization_applied": False,
+            "zero_weight_reason": "unresolved_authority",
+            "review_reason": "target_weight_resolution_missing",
+        }
+    if resolution.get("status") != "PASS":
+        return {**dict(resolution), "resolved_weight": 0.0, "review_reason": resolution.get("review_reason") or resolution.get("reason") or "target_weight_review_required"}
+    resolved = round(float(value), 8)
+    return {
+        **dict(resolution),
+        "status": "PASS",
+        "resolved_weight": resolved,
+        "review_reason": "",
+    }
+
+
+def resolve_reference_price(row: Mapping[str, Any]) -> dict[str, Any]:
+    value = row.get("reference_price")
+    authority = row.get("reference_price_authority")
+    resolution = row.get("reference_price_resolution")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "reference_price_missing_or_invalid",
+            "resolved_price": None,
+            "source_field": "",
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": "reference_price_missing_or_invalid",
+            "latest_fallback_used": False,
+        }
+    if not isinstance(authority, Mapping) or authority.get("authority_type") != REFERENCE_PRICE_AUTHORITY:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "reference_price_authority_missing",
+            "resolved_price": None,
+            "source_field": "",
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": "reference_price_authority_missing",
+            "latest_fallback_used": False,
+        }
+    if authority.get("latest_fallback_used") is True:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "reference_price_latest_fallback_forbidden",
+            "resolved_price": None,
+            "source_field": str(authority.get("source_field") or ""),
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": "reference_price_latest_fallback_forbidden",
+            "latest_fallback_used": True,
+        }
+    if str(authority.get("PIT_status") or "") == "BLOCK":
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "reference_price_pit_invalid",
+            "resolved_price": None,
+            "source_field": str(authority.get("source_field") or ""),
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": "reference_price_pit_invalid",
+            "latest_fallback_used": False,
+        }
+    if isinstance(resolution, Mapping) and resolution.get("status") not in {"PASS", "REVIEW_REQUIRED"}:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "reference_price_resolution_invalid",
+            "resolved_price": None,
+            "source_field": str(authority.get("source_field") or ""),
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": "reference_price_resolution_invalid",
+            "latest_fallback_used": False,
+        }
+    if isinstance(resolution, Mapping) and resolution.get("status") == "REVIEW_REQUIRED":
+        return {
+            **dict(resolution),
+            "status": "REVIEW_REQUIRED",
+            "resolved_price": None,
+            "authority_type": REFERENCE_PRICE_AUTHORITY,
+            "review_reason": resolution.get("review_reason") or resolution.get("reason") or "reference_price_review_required",
+            "latest_fallback_used": False,
+        }
+    return {
+        "status": "PASS",
+        "reason": "reference_price_resolved",
+        "resolved_price": round(float(value), 10),
+        "source_field": str(authority.get("source_field") or "reference_price"),
+        "authority_type": REFERENCE_PRICE_AUTHORITY,
+        "source_authority": str(authority.get("source_authority") or ""),
+        "source_path": str(authority.get("source_path") or ""),
+        "source_hash": str(authority.get("source_hash") or ""),
+        "price_type": str(authority.get("price_type") or row.get("reference_price_type") or ""),
+        "price_date": str(authority.get("price_date") or row.get("reference_price_date") or ""),
+        "review_reason": "",
+        "latest_fallback_used": False,
+    }
+
+
+def resolve_runtime_opportunity_score(row: Mapping[str, Any]) -> RuntimeOpportunityScoreResolution:
+    fields: dict[str, float] = {}
+    invalid: list[str] = []
+    for field in (RAW_OPPORTUNITY_CANONICAL_FIELD, *RAW_OPPORTUNITY_LEGACY_FIELDS):
+        if field not in row:
+            continue
+        value = row.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            invalid.append(field)
+            continue
+        fields[field] = float(value)
+    authority_payload = row.get("runtime_opportunity_score_authority")
+    lineage = dict(authority_payload) if isinstance(authority_payload, Mapping) else {}
+    source_decision_id = str(
+        lineage.get("source_decision_id")
+        or row.get("opportunity_reference")
+        or row.get("candidate_reference")
+        or row.get("position_reference")
+        or row.get("member_id")
+        or row.get("security_code")
+        or ""
+    )
+    source_artifact_class = str(
+        lineage.get("source_artifact_class")
+        or ("opportunity" if row.get("opportunity_reference") else ("candidate" if row.get("candidate_reference") else ""))
+    )
+    if invalid:
+        return RuntimeOpportunityScoreResolution(
+            resolved_score=None,
+            authority=RAW_OPPORTUNITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+            legacy_attribution_used=False,
+            review_reason="runtime_opportunity_score_invalid:" + ",".join(sorted(invalid)),
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=False,
+        )
+    if not fields:
+        return RuntimeOpportunityScoreResolution(
+            resolved_score=None,
+            authority=RAW_OPPORTUNITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+            legacy_attribution_used=False,
+            review_reason="runtime_opportunity_score_missing",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed={},
+            conflict_detected=False,
+        )
+    if RAW_OPPORTUNITY_CANONICAL_FIELD in fields and not lineage:
+        return RuntimeOpportunityScoreResolution(
+            resolved_score=None,
+            authority=RAW_OPPORTUNITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+            legacy_attribution_used=False,
+            review_reason="runtime_opportunity_score_authority_missing",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=False,
+        )
+    semantics = str(lineage.get("prediction_semantics") or lineage.get("semantics") or "")
+    if RAW_OPPORTUNITY_CANONICAL_FIELD in fields and semantics and semantics != "runtime_opportunity_score":
+        return RuntimeOpportunityScoreResolution(
+            resolved_score=None,
+            authority=RAW_OPPORTUNITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+            legacy_attribution_used=False,
+            review_reason="runtime_opportunity_score_semantic_conflict",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=True,
+        )
+    unique_values = {round(value, 12) for value in fields.values()}
+    if len(unique_values) > 1:
+        return RuntimeOpportunityScoreResolution(
+            resolved_score=None,
+            authority=RAW_OPPORTUNITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+            legacy_attribution_used=RAW_OPPORTUNITY_CANONICAL_FIELD not in fields,
+            review_reason="runtime_opportunity_score_field_conflict",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=True,
+        )
+    source_field = RAW_OPPORTUNITY_CANONICAL_FIELD if RAW_OPPORTUNITY_CANONICAL_FIELD in fields else next(field for field in RAW_OPPORTUNITY_LEGACY_FIELDS if field in fields)
+    return RuntimeOpportunityScoreResolution(
+        resolved_score=round(fields[source_field], 8),
+        authority=RAW_OPPORTUNITY_AUTHORITY,
+        resolution_status="PASS",
+        source_field=source_field,
+        canonical_field=RAW_OPPORTUNITY_CANONICAL_FIELD,
+        legacy_attribution_used=source_field != RAW_OPPORTUNITY_CANONICAL_FIELD,
+        review_reason="",
+        source_decision_id=source_decision_id,
+        source_artifact_class=source_artifact_class,
+        lineage=lineage,
+        fields_observed=fields,
+        conflict_detected=False,
+    )
+
+
+def resolve_allocation_quality_score(row: Mapping[str, Any]) -> QualityResolution:
+    fields: dict[str, float] = {}
+    invalid: list[str] = []
+    for field in (ALLOCATION_QUALITY_CANONICAL_FIELD, ALLOCATION_QUALITY_LEGACY_FIELD):
+        if field not in row:
+            continue
+        value = row.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+            invalid.append(field)
+            continue
+        fields[field] = float(value)
+    authority_payload = row.get("allocation_quality_authority")
+    if not isinstance(authority_payload, Mapping) and ALLOCATION_QUALITY_LEGACY_FIELD in fields:
+        authority_payload = row.get("quality_score_authority")
+    lineage = dict(authority_payload) if isinstance(authority_payload, Mapping) else {}
+    source_decision_id = str(
+        lineage.get("source_decision_id")
+        or row.get("opportunity_reference")
+        or row.get("candidate_reference")
+        or row.get("position_reference")
+        or row.get("member_id")
+        or row.get("security_code")
+        or ""
+    )
+    source_artifact_class = str(
+        lineage.get("source_artifact_class")
+        or ("opportunity" if row.get("opportunity_reference") else ("candidate" if row.get("candidate_reference") else ""))
+    )
+    if invalid:
+        return QualityResolution(
+            resolved_quality=None,
+            authority=ALLOCATION_QUALITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+            legacy_alias_used=False,
+            review_reason="allocation_quality_score_invalid:" + ",".join(sorted(invalid)),
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=False,
+            legacy_usage="",
+        )
+    if not fields:
+        legacy_raw = [field for field in RAW_OPPORTUNITY_LEGACY_FIELDS if field in row]
+        return QualityResolution(
+            resolved_quality=None,
+            authority=ALLOCATION_QUALITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+            legacy_alias_used=False,
+            review_reason="allocation_quality_score_missing",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed={},
+            conflict_detected=False,
+            legacy_usage="raw_attribution_only:" + ",".join(legacy_raw) if legacy_raw else "",
+        )
+    if not lineage:
+        return QualityResolution(
+            resolved_quality=None,
+            authority=ALLOCATION_QUALITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+            legacy_alias_used=False,
+            review_reason="allocation_quality_authority_missing",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=False,
+            legacy_usage="",
+        )
+    semantics = str(lineage.get("output_semantics") or lineage.get("semantics") or "")
+    if semantics and semantics != "allocation_quality_score":
+        return QualityResolution(
+            resolved_quality=None,
+            authority=ALLOCATION_QUALITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+            legacy_alias_used=False,
+            review_reason="allocation_quality_semantic_conflict",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=True,
+            legacy_usage="",
+        )
+    unique_values = {round(value, 12) for value in fields.values()}
+    if len(unique_values) > 1:
+        return QualityResolution(
+            resolved_quality=None,
+            authority=ALLOCATION_QUALITY_AUTHORITY,
+            resolution_status="REVIEW_REQUIRED",
+            source_field="",
+            canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+            legacy_alias_used=ALLOCATION_QUALITY_CANONICAL_FIELD not in fields,
+            review_reason="allocation_quality_score_field_conflict",
+            source_decision_id=source_decision_id,
+            source_artifact_class=source_artifact_class,
+            lineage=lineage,
+            fields_observed=fields,
+            conflict_detected=True,
+            legacy_usage="legacy_quality_score" if ALLOCATION_QUALITY_LEGACY_FIELD in fields else "",
+        )
+    source_field = ALLOCATION_QUALITY_CANONICAL_FIELD if ALLOCATION_QUALITY_CANONICAL_FIELD in fields else ALLOCATION_QUALITY_LEGACY_FIELD
+    return QualityResolution(
+        resolved_quality=round(fields[source_field], 8),
+        authority=ALLOCATION_QUALITY_AUTHORITY,
+        resolution_status="PASS",
+        source_field=source_field,
+        canonical_field=ALLOCATION_QUALITY_CANONICAL_FIELD,
+        legacy_alias_used=source_field != ALLOCATION_QUALITY_CANONICAL_FIELD,
+        review_reason="",
+        source_decision_id=source_decision_id,
+        source_artifact_class=source_artifact_class,
+        lineage=lineage,
+        fields_observed=fields,
+        conflict_detected=False,
+        legacy_usage="legacy_quality_score" if source_field == ALLOCATION_QUALITY_LEGACY_FIELD else "",
+    )
+
+
+def _quality_multiplier(resolution: QualityResolution, config: PositionSizingConfig) -> float | None:
+    score = resolution.resolved_quality
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         return None
     adj = config.opportunity_adjustment
@@ -697,24 +1263,47 @@ def _rows_with_price_volatility(
 ) -> tuple[Mapping[str, Any], ...]:
     if not rows or price_volatility_summary.status != "PASS":
         return rows
-    volatility_by_code: dict[str, float] = {}
+    price_inputs_by_code: dict[str, dict[str, Any]] = {}
     for row in price_volatility_summary.rows:
         if not isinstance(row, Mapping):
             continue
         code = str(row.get("symbol") or row.get("code") or row.get("security_code") or "")
-        value = row.get("volatility_value", row.get("volatility_return_std_20d"))
-        if not code or isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
+        if not code:
             continue
-        volatility_by_code[code] = float(value)
-    if not volatility_by_code:
+        payload: dict[str, Any] = {}
+        value = row.get("volatility_value", row.get("volatility_return_std_20d"))
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and float(value) > 0:
+            payload["volatility"] = float(value)
+            payload["volatility_source"] = price_volatility_summary.source_ref
+        price = row.get("reference_price")
+        if not isinstance(price, bool) and isinstance(price, (int, float)) and math.isfinite(float(price)) and float(price) > 0:
+            payload["reference_price"] = float(price)
+            payload["reference_price_source"] = price_volatility_summary.source_ref
+            for field in ("reference_price_authority", "reference_price_resolution", "reference_price_type", "reference_price_date"):
+                if field in row:
+                    payload[field] = row.get(field)
+        if payload:
+            price_inputs_by_code[code] = payload
+    if not price_inputs_by_code:
         return rows
     enriched: list[Mapping[str, Any]] = []
     for row in rows:
         code = str(row.get("security_code") or row.get("symbol") or row.get("code") or "")
-        if code in volatility_by_code and row.get("volatility") in (None, ""):
-            enriched.append({**dict(row), "volatility": volatility_by_code[code], "volatility_source": price_volatility_summary.source_ref})
-        else:
+        if code not in price_inputs_by_code:
             enriched.append(row)
+            continue
+        updates = {}
+        for key, value in price_inputs_by_code[code].items():
+            if key in {"volatility", "reference_price"} and row.get(key) not in (None, ""):
+                continue
+            if key.endswith("_authority") and isinstance(row.get(key), Mapping):
+                continue
+            if key.endswith("_resolution") and isinstance(row.get(key), Mapping):
+                continue
+            if key in {"reference_price_type", "reference_price_date", "reference_price_source", "volatility_source"} and row.get(key) not in (None, ""):
+                continue
+            updates[key] = value
+        enriched.append({**dict(row), **updates} if updates else row)
     return tuple(enriched)
 
 
@@ -732,6 +1321,39 @@ def _validate_position(position: Any, *, index: int, safety_cap: float | None) -
         value = position.get(field)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 10:
             errors.append(f"invalid_multiplier:position:{index}:{field}")
+    for field in ("quality_score", "allocation_quality_score"):
+        if field in position:
+            quality_score = position.get(field)
+            if quality_score is not None and (
+                isinstance(quality_score, bool)
+                or not isinstance(quality_score, (int, float))
+                or not math.isfinite(float(quality_score))
+                or not 0 <= float(quality_score) <= 1
+            ):
+                errors.append(f"invalid_{field}:position:{index}")
+    if "runtime_opportunity_score" in position:
+        raw_score = position.get("runtime_opportunity_score")
+        if raw_score is not None and (isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)) or not math.isfinite(float(raw_score))):
+            errors.append(f"invalid_runtime_opportunity_score:position:{index}")
+    if "quality_authority" in position and position.get("quality_authority") != ALLOCATION_QUALITY_AUTHORITY:
+        errors.append(f"invalid_quality_authority:position:{index}")
+    if "allocation_quality_authority" in position and position.get("allocation_quality_authority") != ALLOCATION_QUALITY_AUTHORITY:
+        errors.append(f"invalid_allocation_quality_authority:position:{index}")
+    if "runtime_opportunity_score_authority" in position and position.get("runtime_opportunity_score_authority") != RAW_OPPORTUNITY_AUTHORITY:
+        errors.append(f"invalid_runtime_opportunity_score_authority:position:{index}")
+    if "quality_resolution" in position:
+        resolution = position.get("quality_resolution")
+        if not isinstance(resolution, dict):
+            errors.append(f"invalid_quality_resolution:position:{index}")
+        elif resolution.get("resolution_status") not in {"PASS", "REVIEW_REQUIRED"}:
+            errors.append(f"invalid_quality_resolution_status:position:{index}")
+    for field in ("allocation_quality_resolution", "runtime_opportunity_score_resolution"):
+        if field in position:
+            resolution = position.get(field)
+            if not isinstance(resolution, dict):
+                errors.append(f"invalid_{field}:position:{index}")
+            elif resolution.get("resolution_status") not in {"PASS", "REVIEW_REQUIRED"}:
+                errors.append(f"invalid_{field}_status:position:{index}")
     target = _ratio_field(errors, position, "target_weight", prefix=f"position:{index}:")
     maximum = _ratio_field(errors, position, "maximum_position_weight", prefix=f"position:{index}:")
     if target is not None and maximum is not None and target > maximum + 0.000001:

@@ -45,6 +45,9 @@ from ai_fund_lab_v2.runtime_v2.planning.morning_pipeline import (
     evaluate_morning_capability,
     run_morning_ai_planning_pending_pipeline,
 )
+from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import (
+    activate_strategy_planning_authority,
+)
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
     evaluate_sell_planning_capability,
     run_sell_planning_pending_pipeline,
@@ -55,6 +58,7 @@ from ai_fund_lab_v2.runtime_v2.pending_promotion import run_submit_pending_promo
 from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicyError,
+    capital_deployment_policy_hash,
     invalid_policy_manifest_fields,
     load_capital_deployment_policy,
     missing_policy_manifest_fields,
@@ -77,6 +81,10 @@ from ai_fund_lab_v2.runtime_v2.storage.json_safe import JsonSerializationContrac
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import reject_mode_rooted_runtime_root
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 from ai_fund_lab_v2.runtime_v2.submit.models import SubmitEnvironmentGuardContext
+from ai_fund_lab_v2.strategy.shadow_runtime import (
+    generate_strategy_shadow_for_day,
+    update_run_strategy_shadow_indexes,
+)
 
 EXIT_SUCCESS = 0
 EXIT_BLOCKED = 10
@@ -141,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     current_valuation_manifest: dict[str, Any] = {}
     broker_readonly_manifest: dict[str, Any] = {}
     runtime_state_manifest: dict[str, Any] = {}
+    strategy_planning_authority_manifest: dict[str, Any] = {}
     environment_composition = None
     environment_manifest: dict[str, Any] = {}
     non_trading_day_evidence = _non_trading_day_demo_override_evidence(args, business_date)
@@ -553,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_model_path=args.candidate_model_path,
                 opportunity_model_path=args.opportunity_model_path,
                 opportunity_training_metrics_path=args.opportunity_training_metrics_path,
+                historical_evaluation_authority_path=args.historical_evaluation_authority or None,
                 selected_rank_limit=args.max_orders,
                 now=evaluation_time,
             )
@@ -603,24 +613,61 @@ def main(argv: list[str] | None = None) -> int:
                 final_state = "BLOCKED"
                 errors.append(morning_capability_decision.reason)
         if args.job == "morning" and exit_code == EXIT_SUCCESS:
-            morning_result = run_morning_ai_planning_pending_pipeline(
+            strategy_run_dir = _strategy_planning_run_dir(args=args, run_id=run_id)
+            strategy_summary = generate_strategy_shadow_for_day(
+                run_dir=strategy_run_dir,
                 runtime_root=Path(args.runtime_root),
+                run_id=args.runtime_test_run_id or run_id,
+                profile_id=args.runtime_test_profile_id or args.mode,
                 business_date=business_date,
-                mode=args.mode,
-                feature_root=Path(args.feature_root),
-                feature_date=args.feature_date,
-                max_orders=args.max_orders,
-                capital_deployment_policy=capital_deployment_policy,
-                safety_decision=effective_safety_decision,
-                ai_signals=buy_ai_result.ai_signals,
-                buy_ai_context=buy_ai_manifest,
-                environment_capability_context=morning_capability_context,
+                feature_date=args.feature_date or business_date,
+                feature_date_authority={
+                    "authority_status": "PASS",
+                    "planned_feature_date": args.feature_date or business_date,
+                    "materialized_feature_date": args.feature_date or business_date,
+                    "selected_feature_date": args.feature_date or business_date,
+                    "feature_date_authority_source": "daily_operation_morning_strategy_planning_authority",
+                    "planned_matches_materialized": True,
+                },
+                historical_evaluation_authority_path=args.historical_evaluation_authority or "",
             )
             stages.append(
                 _stage(
-                    "morning_ai_planning_pending_pipeline",
+                    "phase22_strategy_artifact_generation",
+                    strategy_summary.get("strategy_shadow_judgment", "REVIEW_REQUIRED"),
+                    "Phase22 Strategy artifacts generated for formal Planning Authority consumption.",
+                    strategy_summary,
+                )
+            )
+            strategy_dir = strategy_run_dir / "daily" / business_date / "strategy"
+            morning_result = activate_strategy_planning_authority(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                strategy_dir=strategy_dir,
+                target_session_date=business_date,
+                environment_capability_context=morning_capability_context,
+                safety_authority_payload=_strategy_planning_safety_authority_payload(
+                    args=args,
+                    business_date=business_date,
+                    safety_decision=effective_safety_decision,
+                    data_readiness_manifest=data_readiness_manifest,
+                ),
+                submit_policy_authority_payload=_strategy_planning_submit_policy_authority_payload(
+                    capital_deployment_policy=capital_deployment_policy,
+                ),
+            )
+            strategy_planning_authority_manifest = morning_result.to_stage_details()
+            _mark_strategy_planning_authority_consumer_called(
+                strategy_run_dir=strategy_run_dir,
+                strategy_dir=strategy_dir,
+                result=strategy_planning_authority_manifest,
+            )
+            stages.append(
+                _stage(
+                    "phase23_i_strategy_planning_authority_pipeline",
                     morning_result.status,
-                    "Morning AI/Planning/Approval/Pending pipeline executed.",
+                    "Phase22 Strategy Planning Authority consumed artifacts and wrote Pending without Broker Write.",
                     morning_result.to_stage_details(),
                 )
             )
@@ -693,6 +740,9 @@ def main(argv: list[str] | None = None) -> int:
                     exit_decisions=pm_result.sell_exit_decisions,
                     max_orders=args.max_orders,
                     capital_deployment_policy=capital_deployment_policy,
+                    submit_policy_context=_strategy_planning_submit_policy_authority_payload(
+                        capital_deployment_policy=capital_deployment_policy,
+                    ),
                     safety_decision=effective_safety_decision,
                     environment_capability_context=sell_capability_context,
                 )
@@ -975,6 +1025,7 @@ def main(argv: list[str] | None = None) -> int:
                 current_valuation_manifest=current_valuation_manifest,
                 broker_readonly_manifest=broker_readonly_manifest,
                 runtime_state_manifest=runtime_state_manifest,
+                strategy_planning_authority_manifest=strategy_planning_authority_manifest,
                 environment_manifest=environment_manifest,
                 submit_result=submit_result if "submit_result" in locals() else None,
             ),
@@ -1054,6 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         current_valuation_manifest=current_valuation_manifest,
         broker_readonly_manifest=broker_readonly_manifest,
         runtime_state_manifest=runtime_state_manifest,
+        strategy_planning_authority_manifest=strategy_planning_authority_manifest,
         environment_manifest=environment_manifest,
         submit_result=submit_result if "submit_result" in locals() else None,
     )
@@ -1123,6 +1175,7 @@ def _build_manifest(
     current_valuation_manifest: dict[str, Any],
     broker_readonly_manifest: dict[str, Any],
     runtime_state_manifest: dict[str, Any],
+    strategy_planning_authority_manifest: dict[str, Any],
     environment_manifest: dict[str, Any],
     submit_result: Any,
 ) -> dict[str, Any]:
@@ -1132,6 +1185,8 @@ def _build_manifest(
         "runtime_test_run_id": args.runtime_test_run_id or "",
         "runtime_test_profile_id": args.runtime_test_profile_id or "",
         "runtime_test_evidence_root": args.runtime_test_evidence_root or "",
+        "historical_evaluation_authority_path": args.historical_evaluation_authority or "",
+        "historical_evaluation_authority_mode": "RUN_START_FIXED" if args.historical_evaluation_authority else "",
         "started_at": started_at,
         "finished_at": _utc_now(),
         "business_date": business_date,
@@ -1160,6 +1215,7 @@ def _build_manifest(
         **current_valuation_manifest,
         **broker_readonly_manifest,
         **runtime_state_manifest,
+        **_strategy_planning_authority_manifest_fields(strategy_planning_authority_manifest),
         **environment_manifest,
         **capital_policy_manifest,
         **safety_manifest_fields(runtime_safety_decision),
@@ -1199,6 +1255,9 @@ def _submit_manifest_fields(submit_result: Any) -> dict[str, Any]:
         "pending_plan_present": bool(getattr(submit_result, "pending_plan_present", False)),
         "pending_item_count": int(getattr(submit_result, "pending_item_count", 0) or 0),
         "no_action_reason": str(getattr(submit_result, "no_action_reason", "") or ""),
+        "no_order_authority_status": str(getattr(submit_result, "no_order_authority_status", "") or ""),
+        "no_order_authority_reason": str(getattr(submit_result, "no_order_authority_reason", "") or ""),
+        "no_order_authority_evidence": dict(getattr(submit_result, "no_order_authority_evidence", {}) or {}),
         "submit_action": str(getattr(submit_result, "submit_action", "UNKNOWN") or "UNKNOWN"),
         "submitted_count": int(getattr(submit_result, "submitted_count", 0) or 0),
         "blocked_count": int(getattr(submit_result, "blocked_count", 0) or 0),
@@ -1259,6 +1318,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--runtime-test-profile-id")
     parser.add_argument("--runtime-test-evidence-root")
     parser.add_argument("--runtime-test-source-commit")
+    parser.add_argument("--historical-evaluation-authority")
     return parser.parse_args(argv)
 
 
@@ -1266,6 +1326,8 @@ def _validate_rehearsal_args(args: argparse.Namespace) -> None:
     if args.mode == "simulation":
         raise ValueError("simulation is not a formal Runtime environment; use --mode historical")
     reject_mode_rooted_runtime_root(Path(args.runtime_root))
+    if args.max_orders is not None and args.max_orders < 0:
+        raise ValueError("--max-orders must be non-negative")
     if args.mode == "historical":
         if not args.business_date:
             raise ValueError("historical mode requires --business-date")
@@ -1273,27 +1335,32 @@ def _validate_rehearsal_args(args: argparse.Namespace) -> None:
             raise ValueError("historical mode requires --evaluation-time")
         if args.broker_environment not in {None, "historical_simulated"}:
             raise ValueError("historical mode requires --broker-environment historical_simulated")
+        if args.historical_evaluation_authority and not Path(args.historical_evaluation_authority).is_file():
+            raise ValueError("historical evaluation authority file is missing")
         if args.notification_mode != "payload-only":
             raise ValueError("historical mode requires --notification-mode payload-only")
-        if args.max_orders is not None and args.max_orders < 0:
-            raise ValueError("--max-orders must be non-negative")
+        if _as_bool(args.market_refresh_allow_api_fetch):
+            raise ValueError("historical mode requires --market-refresh-allow-api-fetch false")
+        if _as_bool(args.submit_enabled) and args.job != "submit":
+            raise ValueError("Runtime v2 daily scheduler allows --submit-enabled true only for submit job")
         return
-    if args.mode == "production" and args.allow_non_trading_day_demo:
-        return
-    if args.job in {"safety_evaluation", "safety_refresh"} and args.mode in {"demo", "production"}:
-        return
-    if args.mode != "demo":
-        raise ValueError("Runtime v2 daily scheduler rehearsal allows --mode demo only")
-    if _as_bool(args.submit_enabled) and args.job != "submit":
-        raise ValueError("Runtime v2 daily scheduler rehearsal allows --submit-enabled true only for submit job")
+    if args.historical_evaluation_authority:
+        raise ValueError("--historical-evaluation-authority is allowed only with --mode historical")
     if args.notification_mode != "payload-only":
-        raise ValueError("Runtime v2 daily scheduler rehearsal requires --notification-mode payload-only")
-    runtime_root = Path(args.runtime_root)
-    runtime_root_text = str(runtime_root)
-    if runtime_root_text.endswith("/demo") or "/demo/" in runtime_root_text:
-        raise ValueError("mode-rooted Current path is not allowed")
-    if args.max_orders is not None and args.max_orders < 0:
-        raise ValueError("--max-orders must be non-negative")
+        raise ValueError("Runtime v2 daily scheduler requires --notification-mode payload-only")
+    if _as_bool(args.submit_enabled) and args.job != "submit":
+        raise ValueError("Runtime v2 daily scheduler allows --submit-enabled true only for submit job")
+    if args.mode == "production":
+        if _as_bool(args.submit_enabled):
+            raise ValueError("production submit requires explicit production acceptance outside scheduler rehearsal")
+        return
+    if args.mode == "demo":
+        runtime_root = Path(args.runtime_root)
+        runtime_root_text = str(runtime_root)
+        if runtime_root_text.endswith("/demo") or "/demo/" in runtime_root_text:
+            raise ValueError("mode-rooted Current path is not allowed")
+        return
+    raise ValueError(f"unsupported Runtime v2 daily scheduler mode: {args.mode}")
 
 
 def _non_trading_day_demo_override_evidence(args: argparse.Namespace, business_date: str) -> dict[str, Any]:
@@ -1630,6 +1697,76 @@ def _stage(name: str, status: str, message: str, details: dict[str, Any] | None 
     return payload
 
 
+def _strategy_planning_run_dir(*, args: argparse.Namespace, run_id: str) -> Path:
+    if args.runtime_test_evidence_root:
+        return Path(args.runtime_test_evidence_root)
+    return Path(args.runtime_root) / "runtime_state" / "strategy_planning" / run_id
+
+
+def _strategy_planning_authority_manifest_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {
+            "strategy_planning_authority": "NOT_EVALUATED",
+            "strategy_planning_authority_active": False,
+            "strategy_consumer_broker_write_allowed": False,
+            "strategy_consumer_broker_write_performed": False,
+            "strategy_consumer_runtime_switch_performed": False,
+            "legacy_planning_authority_used": False,
+        }
+    return {
+        "strategy_planning_authority": payload.get("planning_consumer_eligibility") or "",
+        "strategy_planning_authority_active": payload.get("planning_consumer_eligibility") == "ELIGIBLE",
+        "strategy_artifact_eligibility": payload.get("strategy_artifact_eligibility") or "",
+        "strategy_consumer_broker_write_allowed": bool(payload.get("broker_write_allowed")),
+        "strategy_consumer_broker_write_performed": bool(payload.get("broker_write_performed")),
+        "strategy_consumer_runtime_switch_performed": bool(payload.get("runtime_switch_performed")),
+        "legacy_planning_authority_used": bool(payload.get("legacy_planning_authority_used")),
+        "strategy_planning_order_plan_path": payload.get("order_plan_artifact_path") or "",
+        "strategy_planning_pending_path": payload.get("pending_path") or "",
+        "strategy_planning_selected_symbols": payload.get("selected_symbols") or [],
+    }
+
+
+def _mark_strategy_planning_authority_consumer_called(
+    *,
+    strategy_run_dir: Path,
+    strategy_dir: Path,
+    result: dict[str, Any],
+) -> None:
+    summary_path = strategy_dir / "strategy_shadow_summary.json"
+    if not summary_path.is_file():
+        return
+    summary = _read_json_file(summary_path)
+    planning_eligible = result.get("planning_consumer_eligibility") == "ELIGIBLE"
+    summary.update(
+        {
+            "strategy_planning_authority_consumer_called": True,
+            "strategy_planning_authority_consumer_status": result.get("status") or "",
+            "strategy_planning_authority_consumer_reason": result.get("reason") or "",
+            "strategy_planning_authority_active": planning_eligible,
+            "active_runtime_consumer_eligibility": "YES" if planning_eligible else "NO",
+            "strategy_planning_authority_evidence": {
+                "schema_version": "phase23_r_strategy_consumer_observability.v1",
+                "planning_consumer_eligibility": result.get("planning_consumer_eligibility") or "",
+                "strategy_artifact_eligibility": result.get("strategy_artifact_eligibility") or "",
+                "plan_count": result.get("plan_count") or 0,
+                "pending_item_count": result.get("pending_item_count") or 0,
+                "selected_symbols": result.get("selected_symbols") or [],
+                "reason_codes": result.get("reason_codes") or [],
+                "order_plan_artifact_path": result.get("order_plan_artifact_path") or "",
+                "pending_path": result.get("pending_path") or "",
+                "approval_artifact_path": result.get("approval_artifact_path") or "",
+                "broker_write_allowed": bool(result.get("broker_write_allowed")),
+                "broker_write_performed": bool(result.get("broker_write_performed")),
+                "runtime_switch_performed": bool(result.get("runtime_switch_performed")),
+                "legacy_formal_planning_authority_active": bool(result.get("legacy_formal_planning_authority_active")),
+            },
+        }
+    )
+    _write_json_file(summary_path, summary)
+    update_run_strategy_shadow_indexes(run_dir=strategy_run_dir)
+
+
 def _buy_lifecycle_continuity_stages(sell_continuity: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         _stage(
@@ -1727,6 +1864,48 @@ def _historical_safety_manifest_override(*, args: argparse.Namespace, data_readi
     }
 
 
+def _strategy_planning_safety_authority_payload(
+    *,
+    args: argparse.Namespace,
+    business_date: str,
+    safety_decision: RuntimeSafetyDecision | None,
+    data_readiness_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(safety_manifest_fields(safety_decision))
+    if args.mode == "historical" and data_readiness_manifest.get("data_readiness_safety_authority"):
+        payload.update(
+            {
+                "safety_authority": data_readiness_manifest.get("data_readiness_safety_authority") or "",
+                "safety_authority_type": data_readiness_manifest.get("data_readiness_safety_authority_type") or "",
+                "safety_business_date": data_readiness_manifest.get("data_readiness_safety_authority_business_date") or business_date,
+                "temporal_authority_business_date": data_readiness_manifest.get("data_readiness_safety_authority_business_date") or business_date,
+                "safety_policy_version": data_readiness_manifest.get("data_readiness_safety_authority_policy_version") or payload.get("safety_policy_version") or "",
+                "safety_source": data_readiness_manifest.get("data_readiness_safety_authority_source") or payload.get("safety_source") or "",
+                "safety_decision": payload.get("safety_decision") or "NEUTRAL",
+                "safety_reason": data_readiness_manifest.get("data_readiness_safety_reason") or payload.get("safety_reason") or "",
+            }
+        )
+    if args.runtime_test_run_id:
+        payload["runtime_test_run_id"] = args.runtime_test_run_id
+    if args.runtime_test_profile_id:
+        payload["runtime_test_profile_id"] = args.runtime_test_profile_id
+    if args.runtime_test_evidence_root:
+        payload["runtime_test_evidence_root"] = args.runtime_test_evidence_root
+    return payload
+
+
+def _strategy_planning_submit_policy_authority_payload(*, capital_deployment_policy: Any | None) -> dict[str, Any]:
+    if capital_deployment_policy is None:
+        return {}
+    return {
+        "submit_policy_authority": "capital_deployment_policy",
+        "submit_policy_schema_version": "phase23_bb_submit_policy_authority.v1",
+        "submit_policy_version": capital_deployment_policy.policy_version,
+        "submit_policy_source": capital_deployment_policy.policy_source,
+        "submit_policy_hash": capital_deployment_policy_hash(capital_deployment_policy),
+    }
+
+
 def _effective_runtime_safety_decision(
     *,
     args: argparse.Namespace,
@@ -1744,7 +1923,7 @@ def _effective_runtime_safety_decision(
         safety_source="data_readiness_historical_temporal_authority",
         business_date=business_date,
         runtime_mode="historical",
-        decision="ALLOW",
+        decision="NEUTRAL",
         reason=reason,
         review_required=False,
         block_buy=False,
@@ -1877,7 +2056,8 @@ def _write_morning_manifest_evidence(
             "reason": "environment_capability_decision_stage_not_reached",
         },
     )
-    planning = _stage_details(stages, "morning_ai_planning_pending_pipeline")
+    strategy_planning = _stage_details(stages, "phase23_i_strategy_planning_authority_pipeline")
+    planning = strategy_planning or _stage_details(stages, "morning_ai_planning_pending_pipeline")
     sell_continuity = _stage_details(stages, "buy_lifecycle_sell_continuity")
     sell_authorization = _stage_details(stages, "buy_lifecycle_sell_authorization_continuity")
     _write_json_file(
@@ -1907,6 +2087,19 @@ def _write_morning_manifest_evidence(
                 warnings=list(manifest.get("warnings") or []),
             )
             or "planning_stage_not_reached",
+        },
+    )
+    _write_json_file(
+        evidence_dir / "strategy_planning_authority_evidence.json",
+        strategy_planning
+        or {
+            "status": "NOT_EXECUTED",
+            "reason": "phase23_i_strategy_planning_authority_stage_not_reached",
+            "planning_consumer_eligibility": "NOT_EVALUATED",
+            "legacy_formal_planning_authority_active": True,
+            "legacy_comparison_artifact_present": False,
+            "broker_write_performed": False,
+            "runtime_switch_performed": False,
         },
     )
     pending_path = str((planning or {}).get("pending_path") or "")

@@ -195,6 +195,7 @@ def build_market_data_warmup_sufficiency(
     path = Path(source_path) if source_path is not None else root / NORMALIZED_RELATIVE_PATH
     inventory = parquet_inventory(path)
     source_dates = [str(item) for item in inventory.get("unique_dates", [])]
+    source_date_set = set(source_dates)
     required_start = required_source_start_date(
         target_start_date=target_start_date,
         available_dates=source_dates,
@@ -202,14 +203,35 @@ def build_market_data_warmup_sufficiency(
     )
     actual_earliest = str(inventory.get("earliest_date") or "")
     actual_latest = str(inventory.get("latest_date") or "")
-    missing = []
+    required_business_dates = []
+    available_business_dates = []
     if required_start and actual_earliest:
-        missing = [day for day in source_dates if required_start <= day < target_start_date]
+        required_business_dates = _required_business_date_window(
+            target_start_date=target_start_date,
+            available_dates=source_dates,
+            maximum_required_warmup_business_days=_positive_warmup_days(maximum_required_warmup_business_days),
+        )
+        available_business_dates = [day for day in required_business_dates if day in source_date_set]
         expected_count = int(maximum_required_warmup_business_days)
-        missing_count = max(0, expected_count - len(missing))
+        missing_count = max(0, expected_count - len(available_business_dates))
     else:
         missing_count = int(maximum_required_warmup_business_days)
-    sufficient = bool(actual_earliest and actual_latest and required_start and actual_earliest <= required_start and actual_latest >= target_start_date)
+    target_date_available = target_start_date in source_date_set
+    sufficient = bool(
+        actual_earliest
+        and actual_latest
+        and required_start
+        and missing_count == 0
+        and target_date_available
+    )
+    if sufficient:
+        reason = "HISTORICAL_SOURCE_WARMUP_SUFFICIENT"
+    elif not source_dates:
+        reason = "SOURCE_ROWS_EMPTY"
+    elif not target_date_available:
+        reason = "QUOTE_TARGET_DATE_MISSING"
+    else:
+        reason = "HISTORICAL_SOURCE_WARMUP_INSUFFICIENT"
     return {
         "schema_version": WARMUP_SCHEMA_VERSION,
         "component_id": "runtime_market_data_warmup_sufficiency",
@@ -221,8 +243,12 @@ def build_market_data_warmup_sufficiency(
         "actual_source_latest_date": actual_latest,
         "source_path": str(path),
         "missing_warmup_business_days": int(missing_count),
+        "required_business_dates_count": len(required_business_dates),
+        "available_business_dates_count": len(available_business_dates),
+        "target_date_available": target_date_available,
+        "target_date_missing": not target_date_available,
         "warmup_sufficiency_judgment": "PASS" if sufficient else "BLOCK",
-        "reason": "HISTORICAL_SOURCE_WARMUP_SUFFICIENT" if sufficient else "HISTORICAL_SOURCE_WARMUP_INSUFFICIENT",
+        "reason": reason,
         "affected_components": [
             "Candidate Feature",
             "Opportunity Feature",
@@ -239,6 +265,32 @@ def build_market_data_warmup_sufficiency(
 
 def _positive_warmup_days(value: int) -> int:
     return max(1, int(value))
+
+
+def _required_business_date_window(
+    *,
+    target_start_date: str,
+    available_dates: list[str],
+    maximum_required_warmup_business_days: int,
+) -> list[str]:
+    target = str(target_start_date)
+    dates = sorted(day for day in available_dates if day <= target)
+    if len(dates) >= maximum_required_warmup_business_days:
+        return dates[-maximum_required_warmup_business_days:]
+    fallback_start = required_source_start_date(
+        target_start_date=target,
+        available_dates=available_dates,
+        maximum_required_warmup_business_days=maximum_required_warmup_business_days,
+    )
+    start = date.fromisoformat(fallback_start)
+    end = date.fromisoformat(target)
+    days: list[str] = []
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days[-maximum_required_warmup_business_days:]
 
 
 def required_source_start_date(

@@ -5,6 +5,7 @@ from typing import Any
 
 from ai_fund_lab_v2.data_sources.jquants.client import (
     JQUANTS_DAILY_QUOTES_ENDPOINT,
+    JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
     JQUANTS_FINS_SUMMARY_ENDPOINT,
     JQUANTS_LISTED_ISSUES_ENDPOINT,
     JQUANTS_TRADING_CALENDAR_ENDPOINT,
@@ -18,6 +19,7 @@ from ai_fund_lab_v2.runtime import RuntimePaths
 RAW_COLLECTIONS = {
     "daily_quotes": "jquants/equities_bars_daily",
     "listed_issues": "jquants/listed_issues",
+    "earnings_calendar": "jquants/earnings_calendar",
     "trading_calendar": "jquants/trading_calendar",
     "fins_summary": "jquants/fins_summary",
 }
@@ -25,6 +27,7 @@ RAW_COLLECTIONS = {
 ENDPOINT_PATHS = {
     "daily_quotes": JQUANTS_DAILY_QUOTES_ENDPOINT,
     "listed_issues": JQUANTS_LISTED_ISSUES_ENDPOINT,
+    "earnings_calendar": JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
     "trading_calendar": JQUANTS_TRADING_CALENDAR_ENDPOINT,
     "fins_summary": JQUANTS_FINS_SUMMARY_ENDPOINT,
 }
@@ -79,6 +82,8 @@ class JQuantsRawIngestor:
                 to_date=to_date,
                 max_pages=max_pages,
             )
+        elif endpoint_name == "earnings_calendar":
+            records = self.client.fetch_all_earnings_calendar(max_pages=max_pages)
         elif endpoint_name == "fins_summary":
             records = self.client.fetch_all_fins_summary(date=date, code=code, max_pages=max_pages)
         else:

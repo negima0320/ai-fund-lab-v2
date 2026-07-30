@@ -18,21 +18,22 @@ EXPECTED_ARTIFACTS = (
     "market_context",
     "corporate_event",
     "portfolio_policy",
-    "dynamic_position_count",
-    "dynamic_cash_exposure",
     "portfolio_construction",
     "position_sizing",
     "position_management",
     "runtime_planning",
 )
+OPTIONAL_NON_CANONICAL_ARTIFACTS = (
+    "dynamic_position_count",
+    "dynamic_cash_exposure",
+)
 
 DEPENDENCIES = (
     ("market_context", "portfolio_policy"),
     ("corporate_event", "portfolio_policy"),
-    ("portfolio_policy", "dynamic_position_count"),
-    ("portfolio_policy", "dynamic_cash_exposure"),
-    ("dynamic_position_count", "position_sizing"),
-    ("dynamic_cash_exposure", "position_sizing"),
+    ("portfolio_policy", "position_management"),
+    ("portfolio_policy", "portfolio_construction"),
+    ("portfolio_policy", "position_sizing"),
     ("portfolio_construction", "position_sizing"),
     ("position_sizing", "position_management"),
     ("portfolio_construction", "runtime_planning"),
@@ -131,6 +132,15 @@ def build_strategy_decision_trace(
             blocking.extend(summary["blocking_reasons"])
         if summary["producer_result_status"] == "REVIEW_REQUIRED":
             review.extend(f"{kind}:{reason}" for reason in summary["reason_codes"])
+    for kind in OPTIONAL_NON_CANONICAL_ARTIFACTS:
+        path_value = artifact_paths.get(kind)
+        if not path_value:
+            continue
+        summary, payload = _artifact_summary(kind, path_value, business_date=business_date)
+        if summary["status"] != "MISSING":
+            artifacts[kind] = {**summary, "canonical_artifact": False, "artifact_policy": "NON_CANONICAL_OBSERVABILITY"}
+            if payload:
+                artifact_payloads[kind] = payload
 
     status_propagation = _status_propagation(artifacts)
     reason_aggregation = _reason_aggregation(artifacts)
@@ -182,8 +192,8 @@ def build_strategy_decision_trace(
         "dependency_graph": [{"source_artifact": source, "consumer_artifact": consumer} for source, consumer in DEPENDENCIES],
         "market_context": artifacts["market_context"],
         "portfolio_policy": artifacts["portfolio_policy"],
-        "dynamic_position_count": artifacts["dynamic_position_count"],
-        "dynamic_cash_exposure": artifacts["dynamic_cash_exposure"],
+        "dynamic_position_count": artifacts.get("dynamic_position_count") or _merged_artifact_summary("dynamic_position_count", artifact_payloads.get("portfolio_policy", {})),
+        "dynamic_cash_exposure": artifacts.get("dynamic_cash_exposure") or _merged_artifact_summary("dynamic_cash_exposure", artifact_payloads.get("portfolio_policy", {})),
         "portfolio_construction": artifacts["portfolio_construction"],
         "position_sizing": artifacts["position_sizing"],
         "position_management": artifacts["position_management"],
@@ -339,6 +349,36 @@ def _artifact_summary(kind: str, path_value: Path | str | None, *, business_date
     }, payload
 
 
+def _merged_artifact_summary(kind: str, portfolio_policy_payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "artifact_type": kind,
+        "path": str(portfolio_policy_payload.get("artifact_path") or ""),
+        "schema_version": str(portfolio_policy_payload.get("schema_version") or ""),
+        "producer_version": str(portfolio_policy_payload.get("producer_version") or ""),
+        "business_date": str(portfolio_policy_payload.get("business_date") or ""),
+        "feature_date": str(portfolio_policy_payload.get("feature_date") or ""),
+        "status": "MERGED",
+        "artifact_hash": str(portfolio_policy_payload.get("artifact_hash") or ""),
+        "artifact_hash_valid": True,
+        "artifact_lifecycle_status": str(portfolio_policy_payload.get("artifact_lifecycle_status") or ""),
+        "producer_result_status": str(portfolio_policy_payload.get("producer_result_status") or ""),
+        "source_authority_status": str(portfolio_policy_payload.get("source_authority_status") or ""),
+        "runtime_consumer_eligibility": str(portfolio_policy_payload.get("runtime_consumer_eligibility") or ""),
+        "source_artifacts": [],
+        "source_hashes": [],
+        "config_hash": "",
+        "reason_codes": [],
+        "confidence": portfolio_policy_payload.get("confidence"),
+        "uncertainty": str(portfolio_policy_payload.get("uncertainty") or ""),
+        "lineage_status": "PASS",
+        "blocking_reasons": [],
+        "review_gaps": [],
+        "authority_owner": "portfolio_policy",
+        "artifact_policy": str(portfolio_policy_payload.get(f"{kind}_artifact_policy") or "REMOVE"),
+        "runtime_wiring": "REMOVE_RUNTIME_WIRING",
+    }
+
+
 def _missing_summary(kind: str) -> dict[str, Any]:
     return {
         "artifact_type": kind,
@@ -436,8 +476,8 @@ def _per_symbol_attribution(payloads: Mapping[str, Mapping[str, Any]]) -> list[d
 def _portfolio_attribution(payloads: Mapping[str, Mapping[str, Any]], positions: list[dict[str, Any]]) -> dict[str, Any]:
     market = payloads.get("market_context", {})
     policy = payloads.get("portfolio_policy", {})
-    dpc = payloads.get("dynamic_position_count", {})
-    dce = payloads.get("dynamic_cash_exposure", {})
+    dpc = payloads.get("dynamic_position_count", {}) or policy
+    dce = payloads.get("dynamic_cash_exposure", {}) or policy
     sizing = payloads.get("position_sizing", {})
     pm_payload = payloads.get("position_management", {})
     action_counts = Counter(str(row.get("action") or "UNRESOLVED") for row in _rows(pm_payload, "positions"))
@@ -449,7 +489,7 @@ def _portfolio_attribution(payloads: Mapping[str, Mapping[str, Any]], positions:
         "sector_context_count": len(market.get("sector_contexts") or []),
         "portfolio_policy_posture": policy.get("risk_posture") or policy.get("policy_posture"),
         "target_position_count": dpc.get("target_position_count"),
-        "target_cash_ratio": dce.get("target_cash_ratio"),
+        "target_cash_ratio": dce.get("target_cash_ratio") or dce.get("cash_reserve_ratio"),
         "portfolio_total_equity": dce.get("portfolio_total_equity"),
         "current_cash": dce.get("current_cash"),
         "current_market_value": dce.get("current_market_value"),
@@ -487,9 +527,10 @@ def _portfolio_attribution(payloads: Mapping[str, Mapping[str, Any]], positions:
 
 
 def _legacy_comparison(legacy: Mapping[str, Any], payloads: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    dynamic_count = (payloads.get("dynamic_position_count") or {}).get("target_position_count")
-    dynamic_exposure = (payloads.get("dynamic_cash_exposure") or {}).get("target_gross_exposure_ratio")
-    dynamic_cash = (payloads.get("dynamic_cash_exposure") or {}).get("target_cash_ratio")
+    policy = payloads.get("portfolio_policy") or {}
+    dynamic_count = (payloads.get("dynamic_position_count") or policy).get("target_position_count")
+    dynamic_exposure = (payloads.get("dynamic_cash_exposure") or policy).get("target_gross_exposure_ratio")
+    dynamic_cash = (payloads.get("dynamic_cash_exposure") or policy).get("target_cash_ratio") or policy.get("cash_reserve_ratio")
     sizing_rows = _rows(payloads.get("position_sizing", {}), "positions")
     pm_rows = _rows(payloads.get("position_management", {}), "positions")
     return {

@@ -30,6 +30,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExecutionRecord, LedgerPositionRecord
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     is_mode_rooted_runtime_root,
     reject_mode_rooted_runtime_root,
@@ -460,15 +461,22 @@ def _resolve_no_action_execution_authority(
     }
     if not pending_read.valid:
         return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
-    if pending_read.classification != "EMPTY":
+    active_no_order = pending_read.plan is not None and pending_read.plan.state == PendingPlanState.EMPTY
+    if pending_read.classification != "EMPTY" and not active_no_order:
         return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
-    empty_reason = _validate_empty_pending_payload(
-        pending_read.payload,
-        business_date=business_date,
-        environment=mode,
-    )
-    if empty_reason:
-        return {"status": "BLOCKED", "reason": empty_reason, **evidence}
+    if pending_read.classification == "EMPTY":
+        empty_reason = _validate_empty_pending_payload(
+            pending_read.payload,
+            business_date=business_date,
+            environment=mode,
+        )
+        if empty_reason:
+            return {"status": "BLOCKED", "reason": empty_reason, **evidence}
+    elif pending_read.plan is not None:
+        if pending_read.plan.target_session_date != business_date:
+            return {"status": "BLOCKED", "reason": "pending EMPTY target_session_date mismatch", **evidence}
+        if pending_read.plan.items:
+            return {"status": "BLOCKED", "reason": "pending EMPTY active no-order requires empty items", **evidence}
     submit = _load_submit_no_action_authority(runtime_root=runtime_root, business_date=business_date)
     evidence.update(
         {
@@ -512,11 +520,22 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
             _int_value(payload.get("exit_code"), -1) == 0
             and str(payload.get("final_state") or "") != "BLOCKED"
             and bool(payload.get("pending_read_valid")) is True
-            and str(payload.get("pending_classification") or "") == "EMPTY"
-            and bool(payload.get("pending_active")) is False
-            and bool(payload.get("pending_plan_present")) is False
+            and (
+                (
+                    str(payload.get("pending_classification") or "") == "EMPTY"
+                    and bool(payload.get("pending_active")) is False
+                    and bool(payload.get("pending_plan_present")) is False
+                    and submit_action == "NO_ACTION"
+                )
+                or (
+                    str(payload.get("pending_classification") or "") == "VALID"
+                    and bool(payload.get("pending_plan_present")) is True
+                    and submit_action == "NO_SUBMISSION_REQUIRED"
+                    and str(payload.get("no_order_authority_status") or "") == "PASS"
+                    and str((payload.get("no_order_authority_evidence") or {}).get("status") or "") == "PASS"
+                )
+            )
             and _int_value(payload.get("pending_item_count"), 0) == 0
-            and submit_action == "NO_ACTION"
             and _int_value(payload.get("submitted_count"), 0) == 0
             and _int_value(payload.get("blocked_count"), 0) == 0
             and bool(payload.get("review_required")) is False

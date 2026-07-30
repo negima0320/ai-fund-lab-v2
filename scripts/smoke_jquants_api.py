@@ -19,7 +19,7 @@ from ai_fund_lab_v2.data_store import MarketDataStore
 from ai_fund_lab_v2.logging import configure_runtime_logger
 from ai_fund_lab_v2.runtime import RuntimePaths
 
-ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "trading_calendar", "fins_summary", "all")
+ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "earnings_calendar", "trading_calendar", "fins_summary", "all")
 IngestorFactory = Callable[[RuntimePaths], JQuantsRawIngestor]
 
 

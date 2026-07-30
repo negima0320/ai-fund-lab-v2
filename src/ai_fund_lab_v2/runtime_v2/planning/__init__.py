@@ -16,6 +16,10 @@ from ai_fund_lab_v2.runtime_v2.planning.order_plan_builder import (
     promote_order_plan_result_to_pending,
 )
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
+from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import (
+    StrategyPlanningAuthorityResult,
+    activate_strategy_planning_authority,
+)
 
 __all__ = [
     "AIPlanningSignal",
@@ -27,6 +31,8 @@ __all__ = [
     "PlanningInput",
     "PlanningResult",
     "RuntimeSafetyContext",
+    "StrategyPlanningAuthorityResult",
+    "activate_strategy_planning_authority",
     "build_order_plan",
     "order_plan_to_pending_items",
     "promote_order_plan_result_to_pending",

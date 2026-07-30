@@ -125,6 +125,9 @@ class SubmitPipelineResult:
     pending_plan_present: bool = False
     pending_item_count: int = 0
     no_action_reason: str = ""
+    no_order_authority_status: str = ""
+    no_order_authority_reason: str = ""
+    no_order_authority_evidence: dict[str, Any] = field(default_factory=dict)
     submit_action: str = "UNKNOWN"
     review_required: bool = False
     halt_required: bool = False
@@ -225,6 +228,7 @@ def run_submit_pipeline(
             pending_read.payload,
             business_date=business_date,
             environment=mode,
+            runtime_root=runtime_root_path,
         )
         if empty_reason:
             return _blocked_result(
@@ -237,6 +241,7 @@ def run_submit_pipeline(
                 pending_plan_present=pending_read.plan is not None,
                 pending_item_count=_payload_item_count(pending_read.payload),
                 no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+                status="REVIEW_REQUIRED",
             )
         return _empty_pending_result(
             runtime_root=runtime_root_path,
@@ -256,6 +261,39 @@ def run_submit_pipeline(
             no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
         )
     pending = pending_read.plan
+    if pending.state == PendingPlanState.EMPTY:
+        no_order_reason, no_order_evidence = _validate_authorized_no_order(
+            pending=pending,
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            environment=mode,
+        )
+        if no_order_reason:
+            return _blocked_result(
+                reason=no_order_reason,
+                runtime_root=runtime_root_path,
+                pending_path=str(pending_read.path),
+                status="REVIEW_REQUIRED",
+                pending_read_valid=pending_read.valid,
+                pending_classification=pending_read.classification,
+                pending_active=_payload_bool(pending_read.payload, "active_pending"),
+                pending_plan_present=True,
+                pending_item_count=len(pending.items),
+                no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+                no_order_authority_status="REVIEW_REQUIRED",
+                no_order_authority_reason=no_order_reason,
+                no_order_authority_evidence=no_order_evidence,
+            )
+        return _authorized_no_order_result(
+            runtime_root=runtime_root_path,
+            pending_path=str(pending_read.path),
+            pending=pending,
+            evidence=no_order_evidence,
+            pending_read_valid=pending_read.valid,
+            pending_classification=pending_read.classification,
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+        )
     guard_reason = _pending_submit_guard(pending, business_date=business_date)
     if guard_reason:
         return _blocked_result(reason=guard_reason, runtime_root=runtime_root_path, pending_path=str(pending_read.path))
@@ -569,6 +607,13 @@ def _empty_pending_result(
         pending_plan_present=False,
         pending_item_count=0,
         no_action_reason=_payload_text(payload, "no_action_reason") or "no_active_pending_orders",
+        no_order_authority_status="PASS",
+        no_order_authority_reason="authorized_no_order_empty_container",
+        no_order_authority_evidence={
+            "authority_type": "EMPTY_CONTAINER_NO_ACTIVE_PENDING",
+            "status": "PASS",
+            "state": str((payload or {}).get("state") or (payload or {}).get("status") or ""),
+        },
         submit_action="NO_ACTION",
         review_required=False,
         halt_required=False,
@@ -580,8 +625,9 @@ def _validate_empty_pending_payload(
     *,
     business_date: str,
     environment: str,
+    runtime_root: Path,
 ) -> str:
-    _ = business_date, environment
+    _ = environment, runtime_root
     if not isinstance(payload, Mapping):
         return "pending EMPTY classification payload missing"
     if bool(payload.get("active_pending", True)):
@@ -594,7 +640,227 @@ def _validate_empty_pending_payload(
     approved_item_ids = payload.get("approved_item_ids")
     if approved_item_ids not in (None, []) and approved_item_ids != ():
         return "pending EMPTY classification approved item ids must be empty"
-    return ""
+    authority = payload.get("no_order_authority")
+    if isinstance(authority, Mapping):
+        if str(authority.get("status") or "") != "NO_ORDER_AUTHORIZED":
+            return "pending EMPTY no_order_authority status mismatch"
+        if str(authority.get("business_date") or "") != business_date:
+            return "pending EMPTY no_order_authority business_date mismatch"
+        return ""
+    return "pending EMPTY no_order_authority missing"
+
+
+def _authorized_no_order_result(
+    *,
+    runtime_root: Path,
+    pending_path: str,
+    pending: PendingOrderPlan,
+    evidence: dict[str, Any],
+    pending_read_valid: bool,
+    pending_classification: str,
+    pending_active: bool | None,
+    no_action_reason: str,
+) -> SubmitPipelineResult:
+    return SubmitPipelineResult(
+        status="PASS",
+        reason="NO_ORDER_AUTHORIZED",
+        pending_plan_id=pending.pending_plan_id,
+        pending_path=pending_path,
+        orders_ledger_path=str(runtime_root / "persistent_ledger" / "orders.jsonl"),
+        demo_submit_executed=False,
+        submitted_count=0,
+        accepted_count=0,
+        rejected_count=0,
+        unknown_count=0,
+        blocked_count=0,
+        pending_consumed=False,
+        submitted_order_ids=(),
+        ledger_order_record_ids=(),
+        submitted_symbols=(),
+        item_results=(),
+        pending_read_valid=pending_read_valid,
+        pending_classification=pending_classification,
+        pending_active=pending_active,
+        pending_plan_present=True,
+        pending_item_count=0,
+        no_action_reason=no_action_reason or "strategy_planning_no_order_authorized",
+        no_order_authority_status="PASS",
+        no_order_authority_reason="strategy_planning_no_order_authorized",
+        no_order_authority_evidence=evidence,
+        submit_action="NO_SUBMISSION_REQUIRED",
+        review_required=False,
+        halt_required=False,
+    )
+
+
+def _validate_authorized_no_order(
+    *,
+    pending: PendingOrderPlan,
+    runtime_root: Path,
+    business_date: str,
+    environment: str,
+) -> tuple[str, dict[str, Any]]:
+    evidence: dict[str, Any] = {
+        "authority_type": "AUTHORIZED_NO_ORDER",
+        "status": "REVIEW_REQUIRED",
+        "pending_plan_id": pending.pending_plan_id,
+        "pending_state": pending.state.value,
+        "pending_item_count": len(pending.items),
+        "pending_approved_item_count": len(pending.approved_item_ids),
+        "business_date": business_date,
+    }
+    if pending.environment != environment:
+        return "authorized no-order pending environment mismatch", evidence
+    if pending.target_session_date != business_date:
+        return "authorized no-order pending target_session_date mismatch", evidence
+    if pending.plan_created_date != business_date:
+        return "authorized no-order pending plan_created_date mismatch", evidence
+    if pending.approval is not None:
+        return "authorized no-order pending approval link must be absent", evidence
+    if pending.items:
+        return "authorized no-order pending items must be empty", evidence
+    if pending.approved_item_ids:
+        return "authorized no-order approved item ids must be empty", evidence
+    if pending.consume.consumed:
+        return "authorized no-order consumed pending cannot submit", evidence
+    order_plan_path = _resolve_runtime_authority_path(runtime_root, pending.source_order_plan.path)
+    evidence["order_plan_path"] = str(order_plan_path)
+    if not order_plan_path.is_file():
+        return "authorized no-order order plan missing", evidence
+    order_plan_hash = _file_sha256(order_plan_path)
+    evidence["order_plan_hash"] = order_plan_hash
+    evidence["pending_source_order_plan_hash"] = pending.source_order_plan.artifact_hash
+    if pending.source_order_plan.artifact_hash != order_plan_hash:
+        return "authorized no-order order plan hash mismatch", evidence
+    try:
+        order_plan = json.loads(order_plan_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "authorized no-order order plan invalid json", evidence
+    approval_path = order_plan_path.with_name("approval_artifact.json")
+    evidence["approval_artifact_path"] = str(approval_path)
+    if not approval_path.is_file():
+        return "authorized no-order approval artifact missing", evidence
+    approval_hash = _file_sha256(approval_path)
+    evidence["approval_artifact_hash"] = approval_hash
+    try:
+        approval = json.loads(approval_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "authorized no-order approval artifact invalid json", evidence
+    runtime_planning_path = _resolve_runtime_authority_path(runtime_root, str(order_plan.get("strategy_artifact_path") or ""))
+    position_sizing_path = _resolve_runtime_authority_path(runtime_root, str(order_plan.get("position_sizing_artifact_path") or ""))
+    evidence.update(
+        {
+            "order_plan_status": str(order_plan.get("status") or ""),
+            "order_plan_business_date": str(order_plan.get("business_date") or ""),
+            "order_plan_target_session_date": str(order_plan.get("target_session_date") or ""),
+            "planning_consumer_eligibility": str(order_plan.get("planning_consumer_eligibility") or ""),
+            "approval_status": str(approval.get("status") or ""),
+            "approval_business_date": str(approval.get("business_date") or ""),
+            "approval_order_plan_hash": str(approval.get("order_plan_hash") or ""),
+            "approval_pending_plan_id": str(approval.get("pending_plan_id") or ""),
+            "runtime_planning_path": str(runtime_planning_path),
+            "position_sizing_path": str(position_sizing_path),
+        }
+    )
+    if str(order_plan.get("status") or "") != "NO_ORDER_AUTHORIZED":
+        return "authorized no-order order plan status mismatch", evidence
+    if str(order_plan.get("planning_consumer_eligibility") or "") != "NO_ORDER_AUTHORIZED":
+        return "authorized no-order planning consumer eligibility mismatch", evidence
+    if str(order_plan.get("business_date") or "") != business_date:
+        return "authorized no-order order plan business_date mismatch", evidence
+    if str(order_plan.get("target_session_date") or "") != business_date:
+        return "authorized no-order order plan target_session_date mismatch", evidence
+    if str(order_plan.get("order_plan_id") or "") != pending.source_order_plan.order_plan_id:
+        return "authorized no-order order_plan_id mismatch", evidence
+    if order_plan.get("items") not in ([], ()):
+        return "authorized no-order order plan items must be empty", evidence
+    if bool(order_plan.get("broker_write_performed")):
+        return "authorized no-order broker_write_performed must be false", evidence
+    if bool(order_plan.get("production_decision_allowed")):
+        return "authorized no-order production_decision_allowed must be false", evidence
+    if bool(order_plan.get("silent_fallback_used")) or bool(order_plan.get("latest_fallback_used")):
+        return "authorized no-order fallback flag must be false", evidence
+    if str(approval.get("status") or "") != "NO_ORDER_AUTHORIZED":
+        return "authorized no-order approval status mismatch", evidence
+    if str(approval.get("business_date") or "") != business_date:
+        return "authorized no-order approval business_date mismatch", evidence
+    if str(approval.get("target_session_date") or business_date) != business_date:
+        return "authorized no-order approval target_session_date mismatch", evidence
+    if str(approval.get("pending_plan_id") or pending.pending_plan_id) != pending.pending_plan_id:
+        return "authorized no-order approval pending_plan_id mismatch", evidence
+    if str(approval.get("order_plan_id") or "") != pending.source_order_plan.order_plan_id:
+        return "authorized no-order approval order_plan_id mismatch", evidence
+    if str(approval.get("order_plan_hash") or "") != order_plan_hash:
+        return "authorized no-order approval order_plan_hash mismatch", evidence
+    if int(approval.get("pending_item_count") or 0) != 0:
+        return "authorized no-order approval pending_item_count must be zero", evidence
+    if int(approval.get("quantity_unresolved_count") or 0) != 0:
+        return "authorized no-order quantity unresolved count must be zero", evidence
+    if int(approval.get("review_required_quantity_count") or 0) != 0:
+        return "authorized no-order review required quantity count must be zero", evidence
+    runtime_planning_hash = _file_sha256(runtime_planning_path) if runtime_planning_path.is_file() else ""
+    position_sizing_hash = _file_sha256(position_sizing_path) if position_sizing_path.is_file() else ""
+    evidence["runtime_planning_hash"] = runtime_planning_hash
+    evidence["position_sizing_hash"] = position_sizing_hash
+    if str(approval.get("runtime_planning_hash") or runtime_planning_hash) != runtime_planning_hash:
+        return "authorized no-order runtime planning hash mismatch", evidence
+    if str(approval.get("position_sizing_hash") or position_sizing_hash) != position_sizing_hash:
+        return "authorized no-order position sizing hash mismatch", evidence
+    if runtime_planning_path.is_file():
+        runtime_planning = json.loads(runtime_planning_path.read_text(encoding="utf-8"))
+        evidence["runtime_planning_status"] = str(runtime_planning.get("producer_result_status") or "")
+        evidence["runtime_planning_quantity_unresolved_count"] = _count_runtime_planning_quantity_unresolved(runtime_planning)
+        evidence["runtime_planning_review_required_quantity_count"] = _count_runtime_planning_review_required_quantity(runtime_planning)
+        if str(runtime_planning.get("business_date") or "") != business_date:
+            return "authorized no-order runtime planning business_date mismatch", evidence
+        if str(runtime_planning.get("producer_result_status") or "") != "PASS":
+            return "authorized no-order runtime planning status mismatch", evidence
+        if evidence["runtime_planning_quantity_unresolved_count"] != 0:
+            return "authorized no-order runtime planning quantity unresolved", evidence
+        if evidence["runtime_planning_review_required_quantity_count"] != 0:
+            return "authorized no-order runtime planning review quantity unresolved", evidence
+    else:
+        return "authorized no-order runtime planning artifact missing", evidence
+    evidence["status"] = "PASS"
+    return "", evidence
+
+
+def _count_runtime_planning_quantity_unresolved(payload: Mapping[str, Any]) -> int:
+    plans = payload.get("plans")
+    if not isinstance(plans, list):
+        return 0
+    return sum(1 for plan in plans if isinstance(plan, Mapping) and str(plan.get("quantity_status") or "").startswith("REVIEW_REQUIRED"))
+
+
+def _count_runtime_planning_review_required_quantity(payload: Mapping[str, Any]) -> int:
+    plans = payload.get("plans")
+    if not isinstance(plans, list):
+        return 0
+    return sum(1 for plan in plans if isinstance(plan, Mapping) and bool(plan.get("quantity_required")) and not plan.get("planned_quantity"))
+
+
+def _resolve_runtime_authority_path(runtime_root: Path, raw_path: str) -> Path:
+    if not raw_path:
+        return Path("")
+    path = Path(raw_path)
+    if path.is_absolute() or path.exists():
+        return path
+    candidate = runtime_root / path
+    if candidate.exists():
+        return candidate
+    parts = path.parts
+    if parts and parts[0] == runtime_root.name:
+        stripped = Path(*parts[1:])
+        candidate = runtime_root / stripped
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def _file_sha256(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _payload_text(payload: Mapping[str, Any] | None, key: str) -> str:
@@ -710,6 +976,12 @@ def _approval_from_pending(pending: PendingOrderPlan) -> ApprovalArtifact:
         policy_version=pending.approval.policy_version,
         policy_source=pending.approval.policy_source,
         pending_policy_hash=pending.approval.pending_policy_hash,
+        planning_authority_version=pending.approval.planning_authority_version,
+        planning_authority_source=pending.approval.planning_authority_source,
+        planning_authority_hash=pending.approval.planning_authority_hash,
+        submit_policy_version=pending.approval.submit_policy_version,
+        submit_policy_source=pending.approval.submit_policy_source,
+        submit_policy_hash=pending.approval.submit_policy_hash,
         safety_decision_id=pending.approval.safety_decision_id,
         safety_policy_version=pending.approval.safety_policy_version,
         approved_order_conditions=pending.approval.approved_order_conditions,
@@ -728,12 +1000,25 @@ def _policy_consistency_evidence(
         "pending_policy_version": pending.policy_version,
         "pending_policy_source": pending.policy_source,
         "pending_policy_hash": pending.pending_policy_hash,
+        "planning_authority_version": pending.planning_authority_version,
+        "planning_authority_source": pending.planning_authority_source,
+        "planning_authority_hash": pending.planning_authority_hash,
+        "approval_planning_authority_version": approval.planning_authority_version,
+        "approval_planning_authority_source": approval.planning_authority_source,
+        "approval_planning_authority_hash": approval.planning_authority_hash,
+        "pending_submit_policy_version": pending.submit_policy_version,
+        "pending_submit_policy_source": pending.submit_policy_source,
+        "pending_submit_policy_hash": pending.submit_policy_hash,
+        "approval_submit_policy_version": approval.submit_policy_version,
+        "approval_submit_policy_source": approval.submit_policy_source,
+        "approval_submit_policy_hash": approval.submit_policy_hash,
         "approval_policy_version": approval.policy_version,
         "approval_policy_source": approval.policy_source,
         "approval_pending_policy_hash": approval.pending_policy_hash,
         "active_policy_version": active_policy.policy_version,
         "active_policy_source": active_policy.policy_source,
         "active_policy_hash": active_hash,
+        "comparison_authority": "submit_policy_authority",
         "policy_mismatch_reason": "",
         "policy_mismatch_manual_review_required": False,
     }
@@ -748,18 +1033,18 @@ def _policy_consistency_evidence(
         )
         return evidence
     mismatches = []
-    if pending.policy_version != active_policy.policy_version:
-        mismatches.append("pending_policy_version")
-    if pending.policy_source != active_policy.policy_source:
-        mismatches.append("pending_policy_source")
-    if pending.pending_policy_hash != active_hash:
-        mismatches.append("pending_policy_hash")
-    if approval.policy_version != pending.policy_version:
-        mismatches.append("approval_policy_version")
-    if approval.policy_source != pending.policy_source:
-        mismatches.append("approval_policy_source")
-    if approval.pending_policy_hash != pending.pending_policy_hash:
-        mismatches.append("approval_pending_policy_hash")
+    if pending.submit_policy_version != active_policy.policy_version:
+        mismatches.append("pending_submit_policy_version")
+    if pending.submit_policy_source != active_policy.policy_source:
+        mismatches.append("pending_submit_policy_source")
+    if pending.submit_policy_hash != active_hash:
+        mismatches.append("pending_submit_policy_hash")
+    if approval.submit_policy_version != pending.submit_policy_version:
+        mismatches.append("approval_submit_policy_version")
+    if approval.submit_policy_source != pending.submit_policy_source:
+        mismatches.append("approval_submit_policy_source")
+    if approval.submit_policy_hash != pending.submit_policy_hash:
+        mismatches.append("approval_submit_policy_hash")
     if mismatches:
         evidence.update(
             {
@@ -777,10 +1062,12 @@ def _missing_policy_evidence_reason(
     approval: ApprovalArtifact,
     active_hash: str,
 ) -> str:
-    if not pending.policy_version or not pending.policy_source or not pending.pending_policy_hash:
-        return "missing_policy_evidence"
-    if not approval.policy_version or not approval.policy_source or not approval.pending_policy_hash:
-        return "missing_approval_policy_evidence"
+    if not pending.submit_policy_version or not pending.submit_policy_source or not pending.submit_policy_hash:
+        return "missing_submit_policy_evidence"
+    if not approval.submit_policy_version or not approval.submit_policy_source or not approval.submit_policy_hash:
+        return "missing_approval_submit_policy_evidence"
+    if not pending.planning_authority_version or not pending.planning_authority_source:
+        return "missing_planning_lineage_evidence"
     if not active_hash:
         return "active_policy_hash_missing"
     return ""
@@ -1420,6 +1707,8 @@ def _submit_opportunity_buy_eligibility(*, item: Any, business_date: str):
         "symbol": item.symbol,
         "business_date": str(listed_info.get("opportunity_business_date") or business_date),
         "feature_date": feature_date,
+        "opportunity_authority": listed_info.get("opportunity_authority"),
+        "opportunity_row_id": listed_info.get("opportunity_row_id"),
         "expected_edge_score": listed_info.get("opportunity_expected_edge_score"),
         "expected_return": listed_info.get("opportunity_expected_return"),
         "no_buy_reason": listed_info.get("opportunity_no_buy_reason"),
@@ -1432,6 +1721,7 @@ def _submit_opportunity_buy_eligibility(*, item: Any, business_date: str):
         opportunity_artifact_path=opportunity_artifact_path or None,
         opportunity_row=row if listed_info else None,
         expected_artifact_hash=str(listed_info.get("opportunity_artifact_hash") or ""),
+        require_row_identity=bool(opportunity_artifact_path),
         excluded_at_stage="submit_guard",
     )
 
@@ -1449,6 +1739,8 @@ def _opportunity_buy_eligibility_evidence_fields(payload: Mapping[str, Any]) -> 
         "opportunity_buy_rank": payload.get("buy_rank"),
         "opportunity_artifact_path": str(payload.get("opportunity_artifact_path") or ""),
         "opportunity_artifact_hash": str(payload.get("opportunity_artifact_hash") or ""),
+        "opportunity_row_id": str(payload.get("opportunity_row_id") or ""),
+        "opportunity_authority": str(payload.get("opportunity_authority") or ""),
         "opportunity_business_date": str(payload.get("business_date") or ""),
         "opportunity_feature_date": str(payload.get("feature_date") or ""),
         "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
@@ -1599,6 +1891,9 @@ def _blocked_result(
     pending_plan_present: bool = False,
     pending_item_count: int = 0,
     no_action_reason: str = "",
+    no_order_authority_status: str = "",
+    no_order_authority_reason: str = "",
+    no_order_authority_evidence: dict[str, Any] | None = None,
 ) -> SubmitPipelineResult:
     return SubmitPipelineResult(
         status=status,
@@ -1623,6 +1918,9 @@ def _blocked_result(
         pending_plan_present=pending_plan_present,
         pending_item_count=pending_item_count,
         no_action_reason=no_action_reason,
+        no_order_authority_status=no_order_authority_status,
+        no_order_authority_reason=no_order_authority_reason,
+        no_order_authority_evidence=no_order_authority_evidence or {},
         submit_action="BLOCKED",
         review_required=status == "REVIEW_REQUIRED",
         halt_required=status == "HALT",

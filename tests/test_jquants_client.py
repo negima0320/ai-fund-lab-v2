@@ -11,6 +11,7 @@ from ai_fund_lab_v2.config import JQuantsSettings
 from ai_fund_lab_v2.data_sources.jquants import JQuantsClient, JQuantsClientError
 from ai_fund_lab_v2.data_sources.jquants.client import (
     JQUANTS_DAILY_QUOTES_ENDPOINT,
+    JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
     JQUANTS_FINS_SUMMARY_ENDPOINT,
     JQUANTS_LISTED_ISSUES_ENDPOINT,
     JQUANTS_TRADING_CALENDAR_ENDPOINT,
@@ -75,6 +76,12 @@ def test_jquants_client_uses_mock_and_does_not_call_real_api(tmp_path: Path) -> 
             {"from_date": "2026-06-01", "to_date": "2026-06-30"},
             JQUANTS_TRADING_CALENDAR_ENDPOINT,
             {"from": ["2026-06-01"], "to": ["2026-06-30"]},
+        ),
+        (
+            "fetch_earnings_calendar",
+            {"pagination_key": "next"},
+            JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+            {"pagination_key": ["next"]},
         ),
         (
             "fetch_fins_summary",

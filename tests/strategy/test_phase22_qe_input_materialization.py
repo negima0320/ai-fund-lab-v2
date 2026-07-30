@@ -32,6 +32,11 @@ def test_phase22_qe_price_volatility_materializes_pit_valid_source_hash(tmp_path
     assert payload["pit_validation"]["future_rows_consumed"] is False
     assert payload["source_content_hash"]
     assert payload["rows"][0]["volatility_value"] > 0
+    assert payload["rows"][0]["reference_price"] > 0
+    assert payload["rows"][0]["reference_price_authority"]["authority_type"] == "REFERENCE_PRICE_AUTHORITY"
+    assert payload["rows"][0]["reference_price_authority"]["source_authority"] == "MARKET_EVIDENCE_AUTHORITY"
+    assert payload["rows"][0]["reference_price_authority"]["latest_fallback_used"] is False
+    assert payload["rows"][0]["reference_price_resolution"]["status"] == "PASS"
     assert payload["rows"][0]["decision_resolution"] == "RESOLVED"
 
 
@@ -114,7 +119,21 @@ def test_phase22_qe_position_sizing_joins_materialized_volatility_rows(tmp_path:
         source_ref=str(source),
         source_hash="abc",
         rows=(
-            {"symbol": "1001", "volatility_value": 0.018},
+            {
+                "symbol": "1001",
+                "volatility_value": 0.018,
+                "reference_price": 500.0,
+                "reference_price_authority": {
+                    "authority_type": "REFERENCE_PRICE_AUTHORITY",
+                    "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+                    "latest_fallback_used": False,
+                    "PIT_status": "PASS",
+                    "source_field": "close",
+                },
+                "reference_price_resolution": {"status": "PASS", "resolved_price": 500.0, "review_reason": ""},
+                "reference_price_type": "planning_reference_close",
+                "reference_price_date": BUSINESS_DATE,
+            },
             {"symbol": "1002", "volatility_value": 0.022},
         ),
         summary={"coverage_status": "FULL"},
@@ -130,6 +149,8 @@ def test_phase22_qe_position_sizing_joins_materialized_volatility_rows(tmp_path:
 
     assert rows[0]["volatility"] == 0.018
     assert rows[0]["volatility_source"] == str(source)
+    assert rows[0]["reference_price"] == 500.0
+    assert rows[0]["reference_price_authority"]["authority_type"] == "REFERENCE_PRICE_AUTHORITY"
     assert rows[1]["volatility"] == 0.03
 
 

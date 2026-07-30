@@ -17,7 +17,7 @@ from ai_fund_lab_v2.config import load_settings
 from ai_fund_lab_v2.data_sources.jquants.raw_ingestion import ENDPOINT_PATHS
 from ai_fund_lab_v2.data_store import manifest_path, read_manifest
 
-ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "trading_calendar", "fins_summary", "all")
+ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "earnings_calendar", "trading_calendar", "fins_summary", "all")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -140,7 +140,10 @@ def print_table(rows: list[dict], needs: bool = False, summary: bool = False) ->
             print(f"{row.get('endpoint')} | {row.get('target_date')} | {row.get('from_date')} | {row.get('to_date')} | {row.get('reason')}")
         return
 
-    print("fetched_at | endpoint | target_date | from_date | to_date | records | format | schema | validation | inserted | updated | unchanged | duplicates | status")
+    print(
+        "fetched_at | endpoint | target_date | from_date | to_date | records | format | schema | validation | "
+        "inserted | updated | unchanged | duplicates | exact_dups | key_collisions | status"
+    )
     for row in rows:
         diff = row.get("diff_summary", {})
         print(
@@ -148,7 +151,8 @@ def print_table(rows: list[dict], needs: bool = False, summary: bool = False) ->
             f"{row.get('from_date')} | {row.get('to_date')} | {row.get('record_count')} | "
             f"{row.get('storage_format')} | {row.get('schema_version')} | {row.get('validation_status')} | "
             f"{diff.get('inserted_count', '')} | {diff.get('updated_count', '')} | "
-            f"{diff.get('unchanged_count', '')} | {diff.get('duplicate_key_count', '')} | {row.get('status')}"
+            f"{diff.get('unchanged_count', '')} | {diff.get('duplicate_key_count', '')} | "
+            f"{diff.get('exact_source_duplicate_count', '')} | {diff.get('business_key_collision_count', '')} | {row.get('status')}"
         )
 
 

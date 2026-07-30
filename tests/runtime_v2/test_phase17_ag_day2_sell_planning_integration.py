@@ -284,6 +284,7 @@ def _runtime_root(tmp_path: Path, *, mode: str = "historical", valuation_as_of: 
             "safety_status": "REVIEW_REQUIRED",
         },
     )
+    _write_calendar(root)
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
@@ -334,6 +335,20 @@ def _write_feature_artifacts(root: Path) -> Path:
                 "current_price": 101.0,
                 "unrealized_return": 0.01,
                 "quantity": 100.0,
+                "feature_as_of_date": BUSINESS_DATE,
+                "price_momentum_return_5d": 0.0,
+                "price_momentum_return_20d": 0.0,
+                "trend_close_over_ma_20d": 0.0,
+                "trend_ma_5_20_ratio": 0.0,
+                "volume_momentum_ratio_5d": 0.0,
+                "volatility_return_std_20d": 0.0,
+                "feature_source_artifact": "phase17_ag_fixture",
+                "feature_source_hash": "phase17-ag-fixture-hash",
+                "required_features": [],
+                "optional_features": [],
+                "missing_features": [],
+                "defaulted_features": [],
+                "temporal_validation_status": "PASS",
                 "feature_version": "runtime_v2_pm_feature_input_v1",
                 "data_until": BUSINESS_DATE,
                 "created_at": BUSINESS_DATE + "T08:00:00+09:00",
@@ -416,6 +431,14 @@ def _feature_row(symbol: str, required_columns: tuple[str, ...]) -> dict:
     for column in required_columns:
         row.setdefault(column, 0.0)
     return row
+
+
+def _write_calendar(root: Path) -> None:
+    rows = [
+        {"Date": PREVIOUS_TRADING_DATE, "HolidayDivision": "1"},
+        {"Date": BUSINESS_DATE, "HolidayDivision": "1"},
+    ]
+    _write_jsonl(root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.jsonl", rows)
 
 
 def _write_empty_no_action_pending(root: Path, tmp_path: Path) -> None:

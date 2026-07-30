@@ -13,13 +13,14 @@ if str(SRC_DIR) not in sys.path:
 
 from ai_fund_lab_v2.config import load_settings
 from ai_fund_lab_v2.data_quality import FetchPlanBuilder, TradingCalendarService
+from ai_fund_lab_v2.data_quality.trading_calendar import CalendarDataNotFoundError
 from ai_fund_lab_v2.data_quality.trading_calendar import iter_dates
 from ai_fund_lab_v2.data_sources.jquants import ENDPOINT_PATHS, JQuantsClient, JQuantsRawIngestor
 from ai_fund_lab_v2.data_sources.jquants.raw_ingestion import raw_output_path
 from ai_fund_lab_v2.data_store import MarketDataStore
 from ai_fund_lab_v2.logging import configure_runtime_logger
 
-ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "trading_calendar", "fins_summary", "all")
+ENDPOINT_CHOICES = ("daily_quotes", "listed_issues", "earnings_calendar", "trading_calendar", "fins_summary", "all")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,7 +34,14 @@ def main(argv: list[str] | None = None) -> int:
     paths.ensure_base_dirs()
     store = MarketDataStore(paths, raw_storage_format=settings.raw_storage_format)
 
-    plan_items = build_plan(args, store)
+    try:
+        plan_items = build_plan(args, store)
+    except CalendarDataNotFoundError as exc:
+        print(f"ERROR fetch plan unavailable: {exc}", file=sys.stderr)
+        return 2
+    if args.from_date and args.to_date and not plan_items:
+        print(empty_plan_error_message(args, store), file=sys.stderr)
+        return 2
 
     if args.dry_run:
         for item in plan_items:
@@ -85,6 +93,18 @@ def build_plan(args: argparse.Namespace, store: MarketDataStore):
         FetchPlanItem(endpoint_name, date=args.date, from_date=args.from_date, to_date=args.to_date, reason="explicit_args")
         for endpoint_name in endpoint_names
     ]
+
+
+def empty_plan_error_message(args: argparse.Namespace, store: MarketDataStore) -> str:
+    rows = store.read_raw_collection("jquants/trading_calendar")
+    dates = sorted(str(row.get("target_date") or row.get("Date") or "") for row in rows if row.get("target_date") or row.get("Date"))
+    coverage = f"trading_calendar_coverage={dates[0]}..{dates[-1]} rows={len(rows)}" if dates else "trading_calendar_coverage=missing"
+    return (
+        "ERROR fetch plan is empty: "
+        f"endpoint={args.endpoint} from_date={args.from_date} to_date={args.to_date} {coverage}. "
+        "No API request, storage write, or manifest append was performed. "
+        "Materialize trading_calendar coverage for the requested range or choose a range with business days."
+    )
 
 
 def log_skipped_non_business_days(args: argparse.Namespace, plan_items, logger) -> None:

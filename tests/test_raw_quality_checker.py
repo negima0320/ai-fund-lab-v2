@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ai_fund_lab_v2.data_quality import FetchPlanBuilder, RawQualityChecker, TradingCalendarService
 from ai_fund_lab_v2.data_quality.normalization import normalize_daily_quotes, write_daily_quotes_normalized
-from ai_fund_lab_v2.data_store import MarketDataStore
+from ai_fund_lab_v2.data_store import ManifestEntry, MarketDataStore, append_manifest, create_storage_backend, manifest_path, now_utc
 from ai_fund_lab_v2.runtime import RuntimePaths
 from tests.test_trading_calendar_service import calendar_store
 
@@ -97,6 +97,23 @@ def test_raw_quality_report_includes_validation_summary(tmp_path: Path) -> None:
     assert "missing_required_fields" in report.validation
 
 
+def test_raw_quality_accepts_earnings_calendar_snapshot_without_date_gap(tmp_path: Path) -> None:
+    store = calendar_store(tmp_path)
+    store.save_raw(
+        [{"Date": "2026-08-08", "Code": "72030", "CoName": "Toyota"}],
+        endpoint="/v2/equities/earnings-calendar",
+        collection="jquants/earnings_calendar",
+    )
+    checker = checker_for(store, tmp_path)
+
+    report = checker.check("earnings_calendar", "2026-07-06", "2026-07-10")
+
+    assert report.expected_dates == []
+    assert report.missing_dates == []
+    assert report.validation["status"] == "OK"
+    assert report.status == "OK"
+
+
 def test_raw_quality_distinguishes_raw_v1_error_from_normalized_v2_ok(tmp_path: Path) -> None:
     store = calendar_store(tmp_path)
     adjusted_only = {
@@ -119,6 +136,67 @@ def test_raw_quality_distinguishes_raw_v1_error_from_normalized_v2_ok(tmp_path: 
     assert report.normalized is not None
     assert report.normalized["validation"]["status"] == "OK"
     assert report.normalized["schema_version"] == 2
+
+
+def test_raw_quality_ignores_inactive_legacy_storage_format_after_parquet_manifest(tmp_path: Path) -> None:
+    store = calendar_store(tmp_path)
+    store.save_raw(
+        [{"Date": "2026-07-06", "HolDiv": "1"}, {"Date": "2026-07-07", "HolDiv": "1"}],
+        endpoint="/v2/markets/calendar",
+        collection="jquants/trading_calendar",
+    )
+    paths = store.paths
+    MarketDataStore(paths, raw_storage_format="parquet").save_raw(
+        [{"Date": "2026-07-06", "HolDiv": "1"}, {"Date": "2026-07-07", "HolDiv": "1"}],
+        endpoint="/v2/markets/calendar",
+        collection="jquants/trading_calendar",
+    )
+    base_path = paths.raw_data / "jquants" / "fins_summary" / "data"
+    old_jsonl = [{"DiscDate": "2026-06-01", "Code": "13010", "DiscNo": "20260601590001"}]
+    current_parquet = [
+        {
+            "DiscDate": "2026-07-06",
+            "Code": "72030",
+            "DiscNo": "20260706590001",
+            "business_key": "fins_summary:2026-07-06:72030:20260706590001",
+            "target_date": "2026-07-06",
+            "endpoint": "/v2/fins/summary",
+        },
+        {
+            "DiscDate": "2026-07-07",
+            "Code": "72030",
+            "DiscNo": "20260707590001",
+            "business_key": "fins_summary:2026-07-07:72030:20260707590001",
+            "target_date": "2026-07-07",
+            "endpoint": "/v2/fins/summary",
+        },
+    ]
+    create_storage_backend("jsonl").write_records(create_storage_backend("jsonl").path_for(base_path), old_jsonl)
+    create_storage_backend("parquet").write_records(create_storage_backend("parquet").path_for(base_path), current_parquet)
+    append_manifest(
+        manifest_path(paths.raw_data),
+        ManifestEntry(
+            fetched_at=now_utc(),
+            endpoint="/v2/fins/summary",
+            target_date="2026-07-07",
+            from_date=None,
+            to_date=None,
+            record_count=1,
+            storage_format="parquet",
+            storage_path=str(create_storage_backend("parquet").path_for(base_path)),
+            status="OK",
+            validation_status="OK",
+            schema_version=1,
+            diff_summary={"duplicate_key_count": 0},
+            request_params={"endpoint_name": "fins_summary"},
+        ),
+    )
+    checker = checker_for(MarketDataStore(paths, raw_storage_format="parquet"), tmp_path)
+
+    report = checker.check("fins_summary", "2026-07-06", "2026-07-07")
+
+    assert report.storage_count_mismatch is False
+    assert report.status == "OK"
 
 
 def checker_for(store: MarketDataStore, tmp_path: Path) -> RawQualityChecker:

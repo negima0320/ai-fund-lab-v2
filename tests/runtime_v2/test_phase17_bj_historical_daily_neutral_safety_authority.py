@@ -201,6 +201,7 @@ def _runtime_root(tmp_path: Path, *, mode: str, pending: dict[str, Any]) -> Path
         },
     )
     _write_json(root / "pending_order_plan" / "pending_order_plan.json", pending)
+    _write_calendar(root)
     _write_feature_inputs(root / "operations" / "feature_artifacts")
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
@@ -247,14 +248,24 @@ def _approved_pending(*, target_date: str) -> dict[str, Any]:
 def _safety_context(safety_date: str) -> dict[str, Any]:
     return {
         "safety_authority": "historical_initial_no_external_effect",
-        "safety_decision": "ALLOW",
+        "safety_decision_id": f"historical-neutral-safety:{safety_date}",
+        "safety_decision": "NEUTRAL",
         "safety_policy_version": "historical_replay_neutral_safety_v1",
         "safety_source": "data_readiness_historical_temporal_authority",
         "safety_business_date": safety_date,
+        "temporal_authority_business_date": safety_date,
         "runtime_test_run_id": RUN_ID,
         "runtime_test_profile_id": PROFILE_ID,
         "runtime_test_evidence_root": str(_evidence_root(Path("/tmp/phase17-bj-fixture"))),
     }
+
+
+def _write_calendar(root: Path) -> None:
+    rows = [
+        {"Date": PREVIOUS_DATE, "HolidayDivision": "1"},
+        {"Date": BUSINESS_DATE, "HolidayDivision": "1"},
+    ]
+    _write_jsonl(root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.jsonl", rows)
 
 
 def _write_feature_inputs(feature_root: Path) -> None:

@@ -20,6 +20,7 @@ from tests.runtime_v2.test_phase17_ag_day2_sell_planning_integration import (
     _write_empty_no_action_pending,
     _write_feature_artifacts,
     _write_json,
+    _write_jsonl,
 )
 
 
@@ -177,6 +178,7 @@ def _submit_ready_root(tmp_path: Path, *, mode: str, valuation_as_of: str) -> Pa
         return _production_ready_root(tmp_path, valuation_as_of=valuation_as_of)
     root = _runtime_root(tmp_path, mode=mode, valuation_as_of=valuation_as_of)
     if mode == "historical":
+        _write_historical_calendar_authority(tmp_path)
         _write_empty_no_action_pending(root, tmp_path)
     else:
         _write_json(
@@ -216,3 +218,32 @@ def _submit_ready_root(tmp_path: Path, *, mode: str, valuation_as_of: str) -> Pa
             },
         )
     return root
+
+
+def _write_historical_calendar_authority(tmp_path: Path) -> None:
+    evidence_root = _evidence_root(tmp_path)
+    calendar_path = evidence_root / "daily" / BUSINESS_DATE / "market_refresh" / "inputs" / "historical_asof" / BUSINESS_DATE / "raw" / "jquants" / "trading_calendar" / "data.jsonl"
+    _write_jsonl(
+        calendar_path,
+        [
+            {"Date": PREVIOUS_TRADING_DATE, "target_date": PREVIOUS_TRADING_DATE, "HolDiv": "1"},
+            {"Date": BUSINESS_DATE, "target_date": BUSINESS_DATE, "HolDiv": "1"},
+        ],
+    )
+    _write_json(
+        evidence_root
+        / "daily"
+        / BUSINESS_DATE
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / BUSINESS_DATE
+        / "logical_input_manifest.json",
+        {
+            "schema_version": "runtime_historical_logical_input_manifest_v1",
+            "status": "PASS",
+            "business_date": BUSINESS_DATE,
+            "logical_cutoff": BUSINESS_DATE,
+            "logical_paths": {"trading_calendar": str(calendar_path)},
+        },
+    )

@@ -17,8 +17,13 @@ from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, Current
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.composition import compose_with_existing_buy_pending, read_active_buy_pending
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
+from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
+    HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+    HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+    materialize_historical_pending_safety_context,
+)
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
-from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy, capital_deployment_policy_hash
 from ai_fund_lab_v2.runtime_v2.planning.add_consumer import AddConsumerResult, build_add_pending_items
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal, CapitalAllocationSignal, PlanningInput, RuntimeSafetyContext
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
@@ -249,6 +254,7 @@ def run_sell_planning_pending_pipeline(
     exit_decisions: tuple[SellExitDecision, ...],
     max_orders: int | None = None,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
+    submit_policy_context: Mapping[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
     environment_capability_context: dict[str, Any] | None = None,
 ) -> SellPlanningPipelineResult:
@@ -267,6 +273,10 @@ def run_sell_planning_pending_pipeline(
     runtime_root_path = Path(runtime_root)
     _reject_mode_rooted_runtime_root(runtime_root_path)
     target_session_date = business_date
+    canonical_submit_policy_context = _submit_policy_context(
+        submit_policy_context,
+        capital_deployment_policy=capital_deployment_policy,
+    )
     runtime_safety_decision = safety_decision or load_runtime_safety_decision(
         runtime_root=runtime_root_path,
         business_date=business_date,
@@ -343,6 +353,7 @@ def run_sell_planning_pending_pipeline(
                 current_exposure=current_exposure,
                 add_result=add_result,
                 existing_buy_pending=existing_buy_pending,
+                submit_policy_context=canonical_submit_policy_context,
                 safety_decision=runtime_safety_decision,
             )
         return _write_no_signal_pending(
@@ -463,7 +474,16 @@ def run_sell_planning_pending_pipeline(
         for item in planning_result.order_plan.items
         if not item.blocked and not item.review_required and item.quantity > 0
     )
-    pending_items = sell_pending_items + add_result.accepted_items
+    pending_items = tuple(
+        _pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context)
+        for item in sell_pending_items + add_result.accepted_items
+    )
+    order_plan_payload["submit_policy_context"] = canonical_submit_policy_context or None
+    order_plan_payload["submit_policy_version"] = str(canonical_submit_policy_context.get("submit_policy_version") or "")
+    order_plan_payload["submit_policy_source"] = str(canonical_submit_policy_context.get("submit_policy_source") or "")
+    order_plan_payload["submit_policy_hash"] = str(canonical_submit_policy_context.get("submit_policy_hash") or "")
+    order_plan_payload["items"] = [_jsonable(item) for item in pending_items]
+    order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     pending = promote_order_plan_to_pending(
         order_plan_id=planning_result.order_plan.order_plan_id,
         source_order_plan_path=str(order_plan_path),
@@ -473,6 +493,7 @@ def run_sell_planning_pending_pipeline(
         intended_submit_date=target_session_date,
         target_session_date=target_session_date,
         items=pending_items,
+        submit_policy_context=canonical_submit_policy_context,
     )
     pending = _attach_historical_safety_authority(
         pending=pending,
@@ -689,12 +710,18 @@ def _write_add_pending(
     current_exposure: float,
     add_result: AddConsumerResult,
     existing_buy_pending,
+    submit_policy_context: Mapping[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     order_plan_path = artifact_dir / "pm_add_order_plan.json"
     approval_path = artifact_dir / "pm_add_approval_artifact.json"
+    canonical_submit_policy_context = _submit_policy_context(submit_policy_context)
+    pending_items = tuple(
+        _pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context)
+        for item in add_result.accepted_items
+    )
     order_plan_payload = {
         "schema_version": "1",
         "order_plan_id": f"order-plan-pm-add-{business_date}",
@@ -702,8 +729,12 @@ def _write_add_pending(
         "business_date": business_date,
         "target_session_date": target_session_date,
         "status": "PASS",
+        "submit_policy_context": canonical_submit_policy_context or None,
+        "submit_policy_version": str(canonical_submit_policy_context.get("submit_policy_version") or ""),
+        "submit_policy_source": str(canonical_submit_policy_context.get("submit_policy_source") or ""),
+        "submit_policy_hash": str(canonical_submit_policy_context.get("submit_policy_hash") or ""),
         "pm_add_consumer": add_result.to_evidence(),
-        "items": [_jsonable(item) for item in add_result.accepted_items],
+        "items": [_jsonable(item) for item in pending_items],
     }
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     pending = promote_order_plan_to_pending(
@@ -714,7 +745,8 @@ def _write_add_pending(
         plan_created_date=business_date,
         intended_submit_date=target_session_date,
         target_session_date=target_session_date,
-        items=add_result.accepted_items,
+        items=pending_items,
+        submit_policy_context=canonical_submit_policy_context,
     )
     pending = _attach_historical_safety_authority(
         pending=pending,
@@ -784,27 +816,29 @@ def _attach_historical_safety_authority(
     safety_decision: RuntimeSafetyDecision | None,
     environment_capability_context: dict[str, Any] | None,
 ):
-    if safety_decision is None or str(safety_decision.decision or "").upper() != "ALLOW":
+    if safety_decision is None:
         return pending
     context = environment_capability_context or {}
     if str(context.get("runtime_mode") or "") != "historical":
         return pending
-    safety_context = {
-        **_safety_context_payload(safety_decision),
-        "safety_authority": "historical_initial_no_external_effect",
-        "safety_business_date": business_date,
-    }
-    if context.get("runtime_test_run_id"):
-        safety_context["runtime_test_run_id"] = str(context.get("runtime_test_run_id") or "")
-    if context.get("runtime_test_profile_id"):
-        safety_context["runtime_test_profile_id"] = str(context.get("runtime_test_profile_id") or "")
-    if context.get("runtime_test_evidence_root"):
-        safety_context["runtime_test_evidence_root"] = str(context.get("runtime_test_evidence_root") or "")
+    safety_context = materialize_historical_pending_safety_context(
+        safety_decision_id=safety_decision.safety_decision_id,
+        safety_policy_version=safety_decision.safety_policy_version or HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
+        safety_source=safety_decision.safety_source or HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+        safety_decision=safety_decision.decision,
+        safety_reason=safety_decision.reason,
+        safety_business_date=business_date,
+        runtime_test_run_id=str(context.get("runtime_test_run_id") or ""),
+        runtime_test_profile_id=str(context.get("runtime_test_profile_id") or ""),
+        runtime_test_evidence_root=str(context.get("runtime_test_evidence_root") or ""),
+    )
+    if not safety_context:
+        return pending
     return replace(
         pending,
         safety_context=safety_context,
-        safety_decision_id=safety_decision.safety_decision_id,
-        safety_policy_version=safety_decision.safety_policy_version,
+        safety_decision_id=safety_context["safety_decision_id"],
+        safety_policy_version=safety_context["safety_policy_version"],
     )
 
 
@@ -896,6 +930,52 @@ def _pending_item(item) -> PendingOrderItem:
         safety_decision=item.safety_decision,
         safety_reason=item.safety_reason,
         quantity_contract=item.quantity_contract,
+    )
+
+
+def _submit_policy_context(
+    payload: Mapping[str, Any] | None,
+    *,
+    capital_deployment_policy: CapitalDeploymentPolicy | None = None,
+) -> dict[str, Any]:
+    if not payload:
+        if capital_deployment_policy is None:
+            return {}
+        return {
+            "submit_policy_authority": "capital_deployment_policy",
+            "submit_policy_schema_version": "phase23_bb_submit_policy_authority.v1",
+            "submit_policy_version": capital_deployment_policy.policy_version,
+            "submit_policy_source": capital_deployment_policy.policy_source,
+            "submit_policy_hash": capital_deployment_policy_hash(capital_deployment_policy),
+        }
+    policy_version = str(payload.get("submit_policy_version") or "")
+    policy_source = str(payload.get("submit_policy_source") or "")
+    policy_hash = str(payload.get("submit_policy_hash") or "")
+    if not policy_version and not policy_source and not policy_hash:
+        return {}
+    return {
+        "submit_policy_authority": str(payload.get("submit_policy_authority") or "capital_deployment_policy"),
+        "submit_policy_schema_version": str(
+            payload.get("submit_policy_schema_version") or "phase23_bb_submit_policy_authority.v1"
+        ),
+        "submit_policy_version": policy_version,
+        "submit_policy_source": policy_source,
+        "submit_policy_hash": policy_hash,
+    }
+
+
+def _pending_item_with_submit_policy_context(
+    *,
+    item: PendingOrderItem,
+    submit_policy_context: Mapping[str, Any],
+) -> PendingOrderItem:
+    if not submit_policy_context:
+        return item
+    return replace(
+        item,
+        submit_policy_version=str(submit_policy_context.get("submit_policy_version") or ""),
+        submit_policy_source=str(submit_policy_context.get("submit_policy_source") or ""),
+        submit_policy_hash=str(submit_policy_context.get("submit_policy_hash") or ""),
     )
 
 

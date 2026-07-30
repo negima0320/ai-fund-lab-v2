@@ -16,6 +16,9 @@ from ai_fund_lab_v2.runtime_v2.pending.models import (
     PendingSourceOrderPlan,
     PendingSubmitConstraints,
 )
+from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
+    materialize_historical_pending_safety_context,
+)
 
 
 def promote_order_plan_to_pending(
@@ -28,6 +31,8 @@ def promote_order_plan_to_pending(
     intended_submit_date: str,
     target_session_date: str,
     items: Sequence[PendingOrderItem],
+    planning_lineage_context: dict | None = None,
+    submit_policy_context: dict | None = None,
 ) -> PendingOrderPlan:
     if not order_plan_id:
         raise ValueError("order_plan_id is required")
@@ -37,10 +42,18 @@ def promote_order_plan_to_pending(
         raise ValueError("source_order_plan_hash is required")
     item_tuple = tuple(items)
     policy_context = _policy_context_from_items(item_tuple)
-    safety_context = _safety_context_from_items(item_tuple)
+    planning_context = dict(planning_lineage_context or _planning_lineage_context_from_items(item_tuple))
+    submit_context = dict(submit_policy_context or _submit_policy_context_from_items(item_tuple))
+    safety_context = _safety_context_from_items(item_tuple, target_session_date=target_session_date)
     policy_version = str(policy_context.get("policy_version") or "")
     policy_source = str(policy_context.get("policy_source") or "")
     pending_policy_hash = _policy_hash(policy_context) if policy_context else ""
+    planning_authority_version = str(planning_context.get("planning_authority_version") or "")
+    planning_authority_source = str(planning_context.get("planning_authority_source") or "")
+    planning_authority_hash = str(planning_context.get("planning_authority_hash") or "")
+    submit_policy_version = str(submit_context.get("submit_policy_version") or "")
+    submit_policy_source = str(submit_context.get("submit_policy_source") or "")
+    submit_policy_hash = str(submit_context.get("submit_policy_hash") or "")
     return PendingOrderPlan(
         schema_version="1",
         pending_plan_id=f"pending-{order_plan_id}",
@@ -68,6 +81,14 @@ def promote_order_plan_to_pending(
         policy_version=policy_version,
         policy_source=policy_source,
         pending_policy_hash=pending_policy_hash,
+        planning_lineage_context=planning_context or None,
+        planning_authority_version=planning_authority_version,
+        planning_authority_source=planning_authority_source,
+        planning_authority_hash=planning_authority_hash,
+        submit_policy_context=submit_context or None,
+        submit_policy_version=submit_policy_version,
+        submit_policy_source=submit_policy_source,
+        submit_policy_hash=submit_policy_hash,
         safety_context=safety_context or None,
         safety_decision_id=str(safety_context.get("safety_decision_id") or ""),
         safety_policy_version=str(safety_context.get("safety_policy_version") or ""),
@@ -112,6 +133,12 @@ def attach_approval_link(
             policy_version=plan.policy_version,
             policy_source=plan.policy_source,
             pending_policy_hash=plan.pending_policy_hash,
+            planning_authority_version=plan.planning_authority_version,
+            planning_authority_source=plan.planning_authority_source,
+            planning_authority_hash=plan.planning_authority_hash,
+            submit_policy_version=plan.submit_policy_version,
+            submit_policy_source=plan.submit_policy_source,
+            submit_policy_hash=plan.submit_policy_hash,
             safety_decision_id=plan.safety_decision_id,
             safety_policy_version=plan.safety_policy_version,
             approved_order_conditions=approved_order_conditions,
@@ -146,15 +173,56 @@ def _policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
     return {}
 
 
-def _safety_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
+def _planning_lineage_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
+    for item in items:
+        if item.planning_authority_version or item.planning_authority_source or item.planning_authority_hash:
+            return {
+                "planning_authority_version": item.planning_authority_version,
+                "planning_authority_source": item.planning_authority_source,
+                "planning_authority_hash": item.planning_authority_hash,
+            }
+        if item.policy_version or item.policy_source:
+            return {
+                "planning_authority_version": item.policy_version,
+                "planning_authority_source": item.policy_source,
+                "planning_authority_hash": "",
+                "legacy_policy_field_used": True,
+            }
+    return {}
+
+
+def _submit_policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
+    for item in items:
+        if item.submit_policy_version or item.submit_policy_source or item.submit_policy_hash:
+            return {
+                "submit_policy_version": item.submit_policy_version,
+                "submit_policy_source": item.submit_policy_source,
+                "submit_policy_hash": item.submit_policy_hash,
+            }
+    return {}
+
+
+def _safety_context_from_items(items: tuple[PendingOrderItem, ...], *, target_session_date: str) -> dict:
     for item in items:
         if item.safety_decision_id or item.safety_policy_version:
+            historical_context = materialize_historical_pending_safety_context(
+                safety_decision_id=item.safety_decision_id,
+                safety_policy_version=item.safety_policy_version,
+                safety_source=item.safety_source,
+                safety_decision=item.safety_decision,
+                safety_reason=item.safety_reason,
+                safety_business_date=target_session_date,
+            )
+            if historical_context:
+                return historical_context
             return {
                 "safety_decision_id": item.safety_decision_id,
                 "safety_policy_version": item.safety_policy_version,
                 "safety_source": item.safety_source,
                 "safety_decision": item.safety_decision,
                 "safety_reason": item.safety_reason,
+                "safety_business_date": target_session_date,
+                "temporal_authority_business_date": target_session_date,
             }
     return {}
 

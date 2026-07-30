@@ -22,14 +22,13 @@ from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
     AcceptedGenerationResolution,
     resolve_accepted_generation,
 )
-from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import CANONICAL_ALIAS_POLICY
-from scripts.run_phase4bg_formal_candidate_inference import (
+from ai_fund_lab_v2.candidate_ai.formal_inference import (
     audit_inference_features,
     build_scored_candidates,
-    _feature_matrix as candidate_feature_matrix,
-    _predict_scores as predict_candidate_scores,
+    feature_matrix as candidate_feature_matrix,
+    predict_scores as predict_candidate_scores,
 )
-
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import CANONICAL_ALIAS_POLICY
 from ai_fund_lab_v2.opportunity_ai.inference import (
     BLOCKED_BY_INFERENCE,
     READY_FOR_PHASE5G_QUALITY_AUDIT,
@@ -150,6 +149,7 @@ def produce_buy_ai_decisions(
     opportunity_model_path: Path | str | None = None,
     opportunity_training_metrics_path: Path | str | None = None,
     accepted_buy_ai_bundle_path: Path | str | None = None,
+    historical_evaluation_authority_path: Path | str | None = None,
     top_n: int = 50,
     selected_rank_limit: int | None = None,
     now: datetime | None = None,
@@ -174,7 +174,11 @@ def produce_buy_ai_decisions(
     )
     accepted_generation_resolution: AcceptedGenerationResolution | None = None
     if not allow_isolated_test_paths:
-        accepted_generation_resolution = resolve_accepted_generation(root)
+        accepted_generation_resolution = resolve_accepted_generation(
+            root,
+            business_date=None if historical_evaluation_authority_path else business_date,
+            fixed_authority_path=historical_evaluation_authority_path,
+        )
         if not accepted_generation_resolution.is_resolved:
             return _accepted_generation_block_result(
                 resolution=accepted_generation_resolution,

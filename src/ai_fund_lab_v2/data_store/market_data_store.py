@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
+import json
 
-from ai_fund_lab_v2.data_store.schema import ValidationResult, validate_records
+from ai_fund_lab_v2.data_store.schema import ValidationResult, fins_summary_business_key, validate_records
 from ai_fund_lab_v2.data_store.storage_backends import StorageBackend, create_storage_backend
 from ai_fund_lab_v2.runtime.paths import RuntimePaths
 
@@ -26,6 +27,8 @@ class DiffSummary:
     unchanged_count: int
     deleted_or_missing_count: int
     duplicate_key_count: int
+    exact_source_duplicate_count: int
+    business_key_collision_count: int
     changed_keys_sample: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +40,8 @@ class DiffSummary:
             "unchanged_count": self.unchanged_count,
             "deleted_or_missing_count": self.deleted_or_missing_count,
             "duplicate_key_count": self.duplicate_key_count,
+            "exact_source_duplicate_count": self.exact_source_duplicate_count,
+            "business_key_collision_count": self.business_key_collision_count,
             "changed_keys_sample": self.changed_keys_sample,
         }
 
@@ -179,18 +184,21 @@ class MarketDataStore:
             or default_target_date
         )
         normalized["code"] = str(normalized.get("code") or normalized.get("Code") or normalized.get("LocalCode") or "")
-        normalized["business_key"] = str(
-            normalized.get("business_key")
-            or normalized.get("code")
-            or normalized.get("Code")
-            or normalized.get("LocalCode")
-            or normalized.get("Date")
-            or normalized.get("date")
-            or normalized.get("DisclosedDate")
-            or normalized.get("DiscDate")
-            or normalized.get("target_date")
-            or ""
-        )
+        if not normalized.get("business_key") and endpoint == "/v2/fins/summary":
+            normalized["business_key"] = fins_summary_business_key(normalized)
+        else:
+            normalized["business_key"] = str(
+                normalized.get("business_key")
+                or normalized.get("code")
+                or normalized.get("Code")
+                or normalized.get("LocalCode")
+                or normalized.get("Date")
+                or normalized.get("date")
+                or normalized.get("DisclosedDate")
+                or normalized.get("DiscDate")
+                or normalized.get("target_date")
+                or ""
+            )
         normalized["source"] = normalized.get("source") or source
         normalized["endpoint"] = normalized.get("endpoint") or endpoint
 
@@ -216,6 +224,7 @@ class MarketDataStore:
         unchanged = [key for key in incoming_keys if key in before and before[key] == after.get(key)]
         deleted_or_missing = [key for key in before if key not in after]
         duplicate_key_count = max(0, len(incoming_keys) - len(set(incoming_keys)))
+        exact_source_duplicate_count, business_key_collision_count = self._incoming_duplicate_breakdown(incoming)
         changed_keys = inserted + updated + deleted_or_missing
         return DiffSummary(
             record_count_before=len(existing),
@@ -225,5 +234,29 @@ class MarketDataStore:
             unchanged_count=len(unchanged),
             deleted_or_missing_count=len(deleted_or_missing),
             duplicate_key_count=duplicate_key_count,
+            exact_source_duplicate_count=exact_source_duplicate_count,
+            business_key_collision_count=business_key_collision_count,
             changed_keys_sample=["|".join(key) for key in changed_keys[:10]],
         )
+
+    def _incoming_duplicate_breakdown(self, incoming: list[dict[str, Any]]) -> tuple[int, int]:
+        grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for record in incoming:
+            grouped.setdefault(self._key(record), []).append(record)
+        exact_duplicates = 0
+        key_collisions = 0
+        for records in grouped.values():
+            if len(records) < 2:
+                continue
+            fingerprints: dict[str, int] = {}
+            for record in records:
+                fingerprint = self._source_row_fingerprint(record)
+                fingerprints[fingerprint] = fingerprints.get(fingerprint, 0) + 1
+            exact_duplicates += sum(count - 1 for count in fingerprints.values() if count > 1)
+            key_collisions += max(0, len(fingerprints) - 1)
+        return exact_duplicates, key_collisions
+
+    def _source_row_fingerprint(self, record: dict[str, Any]) -> str:
+        ignored = {"business_key", "code", "endpoint", "fetched_at", "source", "target_date", "pagination_page", "pagination_key"}
+        payload = {key: value for key, value in record.items() if key not in ignored}
+        return json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str, separators=(",", ":"))

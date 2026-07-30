@@ -236,6 +236,34 @@ Broker State freshness
 
 `latest` filesystem paths, mtime ordering, newest training directory, and newest Registry item are not authority.
 
+## Phase23-P Historical Evaluation Authority Semantics
+
+Production and Demo Runtime use date-local Accepted Generation authority. For a
+Production/Demo business date, a Runtime-consumable Accepted Generation must
+satisfy:
+
+```text
+accepted_at <= business_date
+effective_from <= business_date
+```
+
+Historical Runtime performance evaluation has a separate run authority boundary:
+at Historical run start, the runner fixes one current Human Accepted Generation
+and records it as `historical_evaluation_authority.json`. Historical daily
+inference consumes that fixed run authority for the entire run. It does not
+compare the Accepted Generation `accepted_at` or `effective_from` to each
+historical business date.
+
+This does not make Accepted Generation historical-only. The model, scaler,
+feature schema, lifecycle gate, AI consumer, Strategy, Planning, Safety, PM, and
+Submit Decision remain Production-common. Only the daily input sources are
+historical point-in-time sources.
+
+Historical performance evaluation is distinct from strict out-of-sample AI
+performance. The run summary must expose training cutoff, evaluation period,
+training overlap, and evaluation mode. When overlap exists, the result must not
+be labeled `STRICT_OOS`.
+
 ## Failure and Rollback Contract
 
 If retraining, calibration, validation, or acceptance fails:

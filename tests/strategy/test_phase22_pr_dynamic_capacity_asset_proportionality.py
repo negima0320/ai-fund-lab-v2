@@ -116,7 +116,62 @@ def _sizing_payload(tmp_path: Path, *, rows: list[dict[str, object]]) -> dict[st
 
 
 def _row(code: str, *, current_weight: float) -> dict[str, object]:
-    return {"security_code": code, "membership_intent": "ADD_CANDIDATE", "pm_action": "NEW", "current_weight": current_weight, "opportunity_score": 0.5, "volatility": 0.03, "reference_price": 500}
+    target_weight = 0.16
+    return {
+        "security_code": code,
+        "membership_intent": "ADD_CANDIDATE",
+        "pm_action": "NEW",
+        "current_weight": current_weight,
+        "target_weight": target_weight,
+        "target_weight_authority": {
+            "authority_type": "TARGET_WEIGHT_AUTHORITY",
+            "method_id": "test_production_v1_equal_weight_target_allocation",
+            "method_version": "phase23_ao_test_v1",
+            "business_date": "2026-07-15",
+            "target_gross_exposure": 0.8,
+            "resolved_target_member_count": 5,
+            "single_name_weight_cap": 0.25,
+            "portfolio_policy_reference": "policy-test",
+            "dynamic_position_count_reference": "dynamic-position-count-test",
+            "opportunity_reference": f"opportunity-{code}",
+            "existing_position_reference": f"current-{code}" if current_weight else "",
+            "position_management_reference": f"pm-{code}",
+            "source_artifact_paths": [],
+            "source_artifact_hashes": [],
+            "PIT_status": "PASS",
+        },
+        "target_weight_resolution": {
+            "status": "PASS",
+            "reason": "target_weight_resolved",
+            "resolved_weight": target_weight,
+            "base_weight": target_weight,
+            "adjustments": [],
+            "cap_applied": False,
+            "normalization_applied": False,
+            "zero_weight_reason": "",
+            "review_reason": "",
+        },
+        "runtime_opportunity_score": 0.5,
+        "runtime_opportunity_score_authority": {
+            "authority": "OPPORTUNITY_RANKING_AUTHORITY",
+            "canonical_field": "runtime_opportunity_score",
+            "source_decision_id": f"opportunity-{code}",
+            "source_artifact_class": "opportunity",
+            "source_field": "runtime_opportunity_score",
+            "prediction_semantics": "runtime_opportunity_score",
+        },
+        "allocation_quality_score": 0.5,
+        "allocation_quality_authority": {
+            "authority": "ALLOCATION_QUALITY_AUTHORITY",
+            "canonical_field": "allocation_quality_score",
+            "source_decision_id": f"allocation-quality-{code}",
+            "source_artifact_class": "portfolio_construction",
+            "source_field": "allocation_quality_score",
+            "output_semantics": "allocation_quality_score",
+        },
+        "volatility": 0.03,
+        "reference_price": 500,
+    }
 
 
 def _dpc_summary(tmp_path: Path, kind: str, summary: dict[str, object]) -> dpc.DynamicPositionCountSourceSummary:

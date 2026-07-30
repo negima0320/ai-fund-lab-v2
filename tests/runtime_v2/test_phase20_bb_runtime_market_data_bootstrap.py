@@ -63,6 +63,43 @@ def test_phase20_bb_warmup_guard_blocks_short_runtime_source(tmp_path: Path) -> 
     assert guard["missing_warmup_business_days"] > 0
 
 
+def test_phase23_ac_warmup_guard_distinguishes_target_date_missing(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    path = root / "operations/jquants/raw_normalized/jquants/equities_bars_daily/data.parquet"
+    path.parent.mkdir(parents=True)
+    days = pd.bdate_range("2026-04-21", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    assert len(days) == 61
+    _quotes(days).to_parquet(path, index=False)
+
+    guard = build_market_data_warmup_sufficiency(
+        runtime_root=root,
+        target_start_date="2026-07-15",
+        target_end_date="2026-07-15",
+    )
+
+    assert guard["warmup_sufficiency_judgment"] == "BLOCK"
+    assert guard["reason"] == "QUOTE_TARGET_DATE_MISSING"
+    assert guard["missing_warmup_business_days"] == 0
+    assert guard["target_date_available"] is False
+
+
+def test_phase23_ac_warmup_guard_distinguishes_empty_source(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    path = root / "operations/jquants/raw_normalized/jquants/equities_bars_daily/data.parquet"
+    path.parent.mkdir(parents=True)
+    _quotes([]).to_parquet(path, index=False)
+
+    guard = build_market_data_warmup_sufficiency(
+        runtime_root=root,
+        target_start_date="2026-07-15",
+        target_end_date="2026-07-15",
+    )
+
+    assert guard["warmup_sufficiency_judgment"] == "BLOCK"
+    assert guard["reason"] == "SOURCE_ROWS_EMPTY"
+    assert guard["target_date_available"] is False
+
+
 def test_phase20_bb_bootstrap_plan_rejects_non_five_year_source(tmp_path: Path) -> None:
     root = tmp_path / ".runtime"
     target = root / "operations/jquants/raw_normalized/jquants/equities_bars_daily/data.parquet"

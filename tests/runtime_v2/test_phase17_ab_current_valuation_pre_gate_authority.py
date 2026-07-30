@@ -228,6 +228,7 @@ def _evaluate(runtime_root: Path, tmp_path: Path):
 
 def _runtime_root(tmp_path: Path, *, mode: str = "historical") -> Path:
     root = tmp_path / ".runtime"
+    _write_contract_calendar(root)
     _write_json(
         root / "persistent_ledger" / "state.json",
         {
@@ -283,6 +284,16 @@ def _runtime_root(tmp_path: Path, *, mode: str = "historical") -> Path:
     for name in ("orders", "executions", "cash", "events", "positions"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
+
+
+def _write_contract_calendar(root: Path) -> None:
+    _write_jsonl(
+        root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.jsonl",
+        [
+            {"Date": "2026-07-03", "target_date": "2026-07-03", "HolDiv": "1"},
+            {"Date": BUSINESS_DATE, "target_date": BUSINESS_DATE, "HolDiv": "1"},
+        ],
+    )
 
 
 def _position(symbol: str) -> dict:
@@ -354,12 +365,20 @@ def _write_stale_latest_safety(runtime_root: Path) -> None:
 
 def _write_historical_asof_view(evidence_root: Path, tmp_path: Path, pd) -> None:
     parquet = tmp_path / "normalized_ohlcv.parquet"
+    calendar = tmp_path / "trading_calendar.jsonl"
     pd.DataFrame(
         [
             {"Date": BUSINESS_DATE, "Code": symbol, "Close": 1000.0}
             for symbol in ("81050", "67400", "66590", "36670", "45640")
         ]
     ).to_parquet(parquet)
+    _write_jsonl(
+        calendar,
+        [
+            {"Date": "2026-07-03", "target_date": "2026-07-03", "HolDiv": "1"},
+            {"Date": BUSINESS_DATE, "target_date": BUSINESS_DATE, "HolDiv": "1"},
+        ],
+    )
     _write_json(
         evidence_root / "daily" / BUSINESS_DATE / "market_refresh" / "historical_asof_view.json",
         {
@@ -377,6 +396,16 @@ def _write_historical_asof_view(evidence_root: Path, tmp_path: Path, pd) -> None
                     "business_date": BUSINESS_DATE,
                     "physical_source_path": str(parquet),
                     "physical_source_hash": "fixture",
+                    "logical_cutoff": BUSINESS_DATE,
+                    "logical_max_date": BUSINESS_DATE,
+                },
+                {
+                    "authority": "trading_calendar",
+                    "status": "PASS",
+                    "reason": "historical_calendar_authority_ready",
+                    "business_date": BUSINESS_DATE,
+                    "physical_source_path": str(calendar),
+                    "physical_source_hash": "fixture-calendar",
                     "logical_cutoff": BUSINESS_DATE,
                     "logical_max_date": BUSINESS_DATE,
                 }

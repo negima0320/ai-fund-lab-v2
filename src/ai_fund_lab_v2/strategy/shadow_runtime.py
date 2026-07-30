@@ -7,10 +7,7 @@ from typing import Any, Mapping
 
 from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accepted_generation
 from ai_fund_lab_v2.runtime_v2.safety.portfolio_limits import load_portfolio_safety_limits
-from ai_fund_lab_v2.strategy import capital_deployment
 from ai_fund_lab_v2.strategy import corporate_event
-from ai_fund_lab_v2.strategy import dynamic_cash_exposure
-from ai_fund_lab_v2.strategy import dynamic_position_count
 from ai_fund_lab_v2.strategy import input_materialization
 from ai_fund_lab_v2.strategy import market_context
 from ai_fund_lab_v2.strategy import portfolio_construction
@@ -31,12 +28,9 @@ ARTIFACT_FILENAMES = {
     "market_context": "market_context.json",
     "corporate_event": "corporate_event.json",
     "portfolio_policy": "portfolio_policy.json",
-    "dynamic_position_count": "dynamic_position_count.json",
-    "dynamic_cash_exposure": "dynamic_cash_exposure.json",
     "portfolio_construction": "portfolio_construction.json",
     "position_sizing": "position_sizing.json",
     "position_management": "position_management.json",
-    "capital_deployment": "capital_deployment.json",
     "runtime_planning": "runtime_planning.json",
 }
 
@@ -70,6 +64,7 @@ def generate_strategy_shadow_for_day(
     business_date: str,
     feature_date: str = "",
     feature_date_authority: Mapping[str, Any] | None = None,
+    historical_evaluation_authority_path: str = "",
 ) -> dict[str, Any]:
     strategy_dir = run_dir / "daily" / business_date / "strategy"
     strategy_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +74,13 @@ def generate_strategy_shadow_for_day(
         planned_feature_date=feature_date,
         feature_date_authority=feature_date_authority,
     )
+    operations_root = runtime_root / "operations"
+    strategy_sources = _resolve_strategy_source_authority(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        operations_root=operations_root,
+    )
     manifest = _build_input_manifest(
         run_id=run_id,
         profile_id=profile_id,
@@ -86,6 +88,8 @@ def generate_strategy_shadow_for_day(
         business_date=business_date,
         feature_date=str(feature_authority.get("selected_feature_date") or business_date),
         feature_date_authority=feature_authority,
+        historical_evaluation_authority_path=historical_evaluation_authority_path,
+        strategy_source_authority=strategy_sources,
     )
     _write_json(strategy_dir / "input_manifest.json", manifest)
 
@@ -110,10 +114,10 @@ def generate_strategy_shadow_for_day(
                 "artifact_hash": _file_hash(artifact_paths[name]),
             }
 
-    operations_root = runtime_root / "operations"
     as_of = f"{business_date}T00:00:00+00:00"
     candidate = _ai_output_summary(runtime_root / "runtime_state" / "buy_ai" / business_date / "candidate_decisions.json", business_date=business_date)
     opportunity = _ai_output_summary(runtime_root / "runtime_state" / "buy_ai" / business_date / "opportunity_rankings.json", business_date=business_date)
+    opportunity_artifact_path = _optional_opportunity_artifact_path(opportunity, business_date=business_date)
     current = _current_summary(runtime_root=runtime_root, business_date=business_date)
     cash = _cash_summary(runtime_root=runtime_root, business_date=business_date)
     exposure = _exposure_summary(runtime_root=runtime_root, business_date=business_date)
@@ -121,7 +125,7 @@ def generate_strategy_shadow_for_day(
     safety = _safety_summary()
     input_source_paths = {name: strategy_dir / filename for name, filename in INPUT_SOURCE_FILENAMES.items()}
     input_symbols = _strategy_input_symbols(candidate, opportunity, current)
-    price_source = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    price_source = Path(strategy_sources["paths"]["normalized_ohlcv"])
     price_volatility = input_materialization.produce_price_volatility_artifact(
         business_date=business_date,
         feature_date=str(feature_authority.get("selected_feature_date") or business_date),
@@ -141,25 +145,39 @@ def generate_strategy_shadow_for_day(
     input_source_manifest = {
         "price_volatility": _input_source_ref(price_volatility),
         "technical_features": _input_source_ref(technical_features),
+        "strategy_source_authority": strategy_sources,
     }
 
     produce(
         "market_context",
         lambda: market_context.produce_market_context_artifact(
             business_date=business_date,
-            input_paths=market_context.resolve_default_input_paths(operations_root),
+            input_paths=market_context.MarketContextInputPaths(
+                daily_quotes_path=Path(strategy_sources["paths"]["normalized_ohlcv"]),
+                listed_issues_path=Path(strategy_sources["paths"]["listed_issues"]),
+                trading_calendar_path=Path(strategy_sources["paths"]["trading_calendar"]),
+            ),
             config=_load_optional(lambda: market_context.load_market_context_config(Path("configs/strategy/market_context.json"))),
             output_path=artifact_paths["market_context"],
             as_of=as_of,
+            expected_source_hashes=strategy_sources["expected_hashes"],
         ),
     )
     produce(
         "corporate_event",
         lambda: corporate_event.produce_corporate_event_artifact(
             business_date=business_date,
-            input_paths=corporate_event.resolve_default_input_paths(operations_root),
+            input_paths=corporate_event.CorporateEventInputPaths(
+                listed_issues_path=Path(strategy_sources["paths"]["listed_issues"]),
+                trading_calendar_path=Path(strategy_sources["paths"]["trading_calendar"]),
+                earnings_schedule_path=_optional_path(strategy_sources["paths"].get("earnings_schedule")),
+                financial_statements_path=_optional_path(strategy_sources["paths"].get("financial_statements")),
+                corporate_actions_path=_optional_path(strategy_sources["paths"].get("corporate_actions")),
+            ),
             output_path=artifact_paths["corporate_event"],
             as_of=as_of,
+            expected_source_hashes=strategy_sources["expected_hashes"],
+            require_full_source_coverage=not bool(strategy_sources.get("run_scoped_historical_authority_used")),
         ),
     )
     pp_config = _portfolio_policy_config()
@@ -178,45 +196,10 @@ def generate_strategy_shadow_for_day(
             current_portfolio_summary=current["summary"],
             current_cash_summary=cash["summary"],
             current_exposure_summary=exposure["summary"],
+            pending_reservation_summary=pending["summary"],
+            safety_limit_summary=safety["summary"],
             policy_config=pp_config,
             output_path=artifact_paths["portfolio_policy"],
-            as_of=as_of,
-        ),
-    )
-    dpc_config = _load_optional(lambda: dynamic_position_count.load_dynamic_position_count_config(Path("configs/strategy/dynamic_position_count.json")))
-    safety_limits = _load_optional(lambda: load_portfolio_safety_limits(Path("configs/safety/portfolio_limits.json"), legacy_active_max_positions=5))
-    produce(
-        "dynamic_position_count",
-        lambda: dynamic_position_count.produce_dynamic_position_count_artifact(
-            business_date=business_date,
-            market_context_summary=_dpc_summary(results.get("market_context", {}), business_date),
-            portfolio_policy_summary=_dpc_summary(results.get("portfolio_policy", {}), business_date),
-            candidate_summary=_dpc_summary(candidate, business_date),
-            opportunity_summary=_dpc_summary(opportunity, business_date),
-            current_portfolio_summary=_dpc_summary(current, business_date),
-            safety_hard_maximum=getattr(safety_limits, "safety_hard_maximum", None),
-            existing_active_max_positions=5,
-            config=dpc_config,
-            output_path=artifact_paths["dynamic_position_count"],
-            as_of=as_of,
-        ),
-    )
-    dce_config = _load_optional(lambda: dynamic_cash_exposure.load_dynamic_cash_exposure_config(Path("configs/strategy/dynamic_cash_exposure.json")))
-    produce(
-        "dynamic_cash_exposure",
-        lambda: dynamic_cash_exposure.produce_dynamic_cash_exposure_artifact(
-            business_date=business_date,
-            market_context_summary=_dce_summary(results.get("market_context", {}), business_date),
-            portfolio_policy_summary=_dce_summary(results.get("portfolio_policy", {}), business_date),
-            dynamic_position_count_summary=_dce_summary(results.get("dynamic_position_count", {}), business_date),
-            candidate_summary=_dce_summary(candidate, business_date),
-            opportunity_summary=_dce_summary(opportunity, business_date),
-            current_cash_summary=_dce_summary(cash, business_date),
-            current_exposure_summary=_dce_summary(exposure, business_date),
-            pending_reservation_summary=_dce_summary(pending, business_date),
-            safety_limit_summary=_dce_summary(safety, business_date),
-            config=dce_config,
-            output_path=artifact_paths["dynamic_cash_exposure"],
             as_of=as_of,
         ),
     )
@@ -229,6 +212,7 @@ def generate_strategy_shadow_for_day(
             corporate_event_artifact_path=artifact_paths["corporate_event"],
             portfolio_policy_artifact_path=artifact_paths["portfolio_policy"],
             existing_pm_decisions=_existing_pm_decisions(runtime_root=runtime_root, business_date=business_date),
+            runtime_current_positions=_runtime_current_position_rows(current),
             position_lifecycle_summary=_pm_summary(current, business_date),
             technical_feature_summary=_pm_summary(_materialized_summary(technical_features), business_date),
             opportunity_summary=_pm_summary(opportunity, business_date),
@@ -249,7 +233,7 @@ def generate_strategy_shadow_for_day(
             opportunity_summary=_pc_summary(opportunity, business_date),
             current_portfolio_summary=_pc_summary(current, business_date),
             pending_summary=_pc_summary(pending, business_date),
-            policy_config_summary=_pc_summary(policy_config_summary, business_date),
+            policy_config_summary=_pc_summary(results.get("portfolio_policy", policy_config_summary), business_date),
             output_path=artifact_paths["portfolio_construction"],
             as_of=as_of,
         ),
@@ -261,8 +245,8 @@ def generate_strategy_shadow_for_day(
             business_date=business_date,
             portfolio_construction_summary=_ps_summary(results.get("portfolio_construction", {}), business_date),
             capital_deployment_summary=_ps_summary({"status": "REVIEW_REQUIRED", "summary": {"reason": "capital_deployment_is_downstream_of_position_sizing_in_shadow_chain"}}, business_date),
-            dynamic_cash_exposure_summary=_ps_summary(results.get("dynamic_cash_exposure", {}), business_date),
-            dynamic_position_count_summary=_ps_summary(results.get("dynamic_position_count", {}), business_date),
+            dynamic_cash_exposure_summary=_ps_summary(results.get("portfolio_policy", {}), business_date),
+            dynamic_position_count_summary=_ps_summary(results.get("portfolio_policy", {}), business_date),
             position_management_summary=_ps_summary(results.get("position_management", {}), business_date),
             opportunity_summary=_ps_summary(opportunity, business_date),
             current_position_summary=_ps_summary(current, business_date),
@@ -274,35 +258,21 @@ def generate_strategy_shadow_for_day(
         ),
     )
     produce(
-        "capital_deployment",
-        lambda: capital_deployment.produce_capital_deployment_artifact(
-            business_date=business_date,
-            portfolio_construction_artifact_path=artifact_paths["portfolio_construction"],
-            portfolio_policy_artifact_path=artifact_paths["portfolio_policy"],
-            position_management_artifact_path=artifact_paths["position_management"],
-            current_cash_summary=_cd_summary(cash, business_date),
-            current_exposure_summary=_cd_summary(exposure, business_date),
-            current_portfolio_summary=_cd_summary(current, business_date),
-            pending_reservation_summary=_cd_summary(pending, business_date),
-            policy_config_summary=_cd_summary(policy_config_summary, business_date),
-            output_path=artifact_paths["capital_deployment"],
-            as_of=as_of,
-        ),
-    )
-    produce(
         "runtime_planning",
         lambda: runtime_planning.produce_runtime_planning_artifact(
             business_date=business_date,
             portfolio_construction_artifact_path=artifact_paths["portfolio_construction"],
-            capital_deployment_artifact_path=artifact_paths["capital_deployment"],
+            capital_deployment_artifact_path=None,
             portfolio_policy_artifact_path=artifact_paths["portfolio_policy"],
             position_management_artifact_path=artifact_paths["position_management"],
+            position_sizing_artifact_path=artifact_paths["position_sizing"],
             current_portfolio_summary=_rp_summary(current, business_date),
             current_cash_summary=_rp_summary(cash, business_date),
             current_position_summary=_rp_summary(current, business_date),
             pending_summary=_rp_summary(pending, business_date),
             planning_config_summary=_rp_summary({"status": "PASS", "source_ref": "configs/runtime_v2/capital_deployment.json", "source_hash": _file_hash(Path("configs/runtime_v2/capital_deployment.json")), "summary": {}}, business_date),
             output_path=artifact_paths["runtime_planning"],
+            opportunity_artifact_path=opportunity_artifact_path,
             as_of=as_of,
         ),
     )
@@ -310,7 +280,7 @@ def generate_strategy_shadow_for_day(
         business_date=business_date,
         profile=profile_id,
         run_id=run_id,
-        artifact_paths={k: artifact_paths[k] for k in ARTIFACT_FILENAMES if k != "capital_deployment"},
+        artifact_paths={k: artifact_paths[k] for k in ARTIFACT_FILENAMES},
         output_path=strategy_dir / "strategy_decision_trace.json",
         legacy_context={"max_positions": 5, "target_investment_ratio": 0.85, "cash_buffer": 0.15},
         outcome_context={
@@ -358,6 +328,9 @@ def generate_strategy_shadow_for_day(
         "active_runtime_consumer_eligibility": "NO",
         "runtime_switch_performed": False,
         "legacy_authority_active": True,
+        "legacy_authority_active_semantics": "phase22_shadow_preservation_marker_not_formal_planning_authority",
+        "legacy_formal_planning_authority_active": False,
+        "strategy_planning_authority_consumer_called": False,
     }
     _write_json(strategy_dir / "strategy_shadow_summary.json", summary)
     source_payload = source_manifest.build_strategy_source_manifest(
@@ -421,6 +394,9 @@ def update_run_strategy_shadow_indexes(*, run_dir: Path) -> dict[str, Any]:
     for item in summaries:
         for component in item.get("root_blocker_components", []) or []:
             root_counts[str(component)] = root_counts.get(str(component), 0) + 1
+    consumer_called = any(bool(item.get("strategy_planning_authority_consumer_called")) for item in summaries)
+    active_consumer = any(str(item.get("active_runtime_consumer_eligibility") or "") == "YES" for item in summaries)
+    strategy_authority_active = any(bool(item.get("strategy_planning_authority_active")) for item in summaries)
     manifest = {
         "schema_version": STRATEGY_SHADOW_RUN_MANIFEST_SCHEMA_VERSION,
         "run_id": run_dir.name,
@@ -445,9 +421,13 @@ def update_run_strategy_shadow_indexes(*, run_dir: Path) -> dict[str, Any]:
         "broker_write_performed": False,
         "external_delivery_performed": False,
         "shadow_consumer_eligibility": "REVIEW_REQUIRED" if review or blocked else "YES" if summaries else "NO",
-        "active_runtime_consumer_eligibility": "NO",
+        "active_runtime_consumer_eligibility": "YES" if active_consumer else "NO",
         "runtime_switch_performed": False,
         "legacy_authority_active": True,
+        "legacy_authority_active_semantics": "phase22_shadow_preservation_marker_not_formal_planning_authority",
+        "legacy_formal_planning_authority_active": not strategy_authority_active,
+        "strategy_planning_authority_active": strategy_authority_active,
+        "strategy_planning_authority_consumer_called": consumer_called,
     }
     manifest["artifact_count"] = sum(int(item.get("artifact_count") or 0) for item in summaries)
     manifest["hash_validation"] = "PASS" if summaries else "REVIEW_REQUIRED"
@@ -481,15 +461,11 @@ def validate_run_strategy_shadow(*, run_dir: Path, business_date: str | None = N
         missing = [name for name in required if not (strategy_dir / name).is_file()]
         checks: dict[str, Any] = {}
         if not missing:
-            dpc = _read_json(strategy_dir / "dynamic_position_count.json")
-            dce = _read_json(strategy_dir / "dynamic_cash_exposure.json")
+            pp = _read_json(strategy_dir / "portfolio_policy.json")
             sizing = _read_json(strategy_dir / "position_sizing.json")
             input_manifest = _read_json(strategy_dir / "input_manifest.json")
             source_payload = _read_json(strategy_dir / "source_manifest.json")
             pit = source_payload.get("pit_validation") if isinstance(source_payload.get("pit_validation"), dict) else {}
-            total_equity = _float(dce.get("portfolio_total_equity"))
-            target_ratio = _float(dce.get("target_invested_ratio", dce.get("target_gross_exposure_ratio")))
-            target_notional = _float(dce.get("target_invested_notional"))
             checks = {
                 "source_manifest_completeness": "PASS" if _source_manifest_complete(source_payload) else "REVIEW_REQUIRED",
                 "source_manifest_hash_reference": "PASS" if input_manifest.get("source_manifest_hash") == source_manifest.manifest_hash(source_payload) else "BLOCK",
@@ -497,11 +473,11 @@ def validate_run_strategy_shadow(*, run_dir: Path, business_date: str | None = N
                 "pit_validation_status": "PASS" if pit.get("status") == "PASS" else "REVIEW_REQUIRED" if pit.get("status") == "REVIEW_REQUIRED" else "BLOCK" if pit.get("status") == "BLOCK" else "REVIEW_REQUIRED",
                 "latest_fallback_absence": "PASS" if pit.get("latest_fallback_used") is False else "BLOCK",
                 "current_state_leakage_absence": "PASS" if pit.get("current_state_leakage_detected") is False else "BLOCK",
-                "total_equity_lineage": "PASS" if total_equity >= 0 and dce.get("source_as_of") else "REVIEW_REQUIRED",
-                "ratio_to_notional_consistency": "PASS" if abs(round(total_equity * target_ratio, 2) - target_notional) <= 0.01 else "BLOCK",
-                "fixed_cap_non_use": "PASS" if dpc.get("strategy_fixed_position_cap_used") is False and dce.get("strategy_fixed_jpy_exposure_cap_used") is False and dce.get("legacy_max_exposure_authority_used") is False else "BLOCK",
-                "legacy_authority_isolation": "PASS" if dpc.get("legacy_authority_active") is True and dce.get("legacy_authority_active") is True else "REVIEW_REQUIRED",
-                "pending_single_deduction": "PASS" if dce.get("pending_deduction_count") in (0, 1) else "BLOCK",
+                "portfolio_policy_target_position_count_authority": "PASS" if "target_position_count" in pp else "BLOCK",
+                "portfolio_policy_target_gross_exposure_authority": "PASS" if "target_gross_exposure_ratio" in pp else "BLOCK",
+                "portfolio_policy_cash_reserve_authority": "PASS" if "cash_reserve_ratio" in pp else "BLOCK",
+                "fixed_cap_non_use": "PASS" if pp.get("dynamic_position_count_artifact_policy") == "REMOVE" and pp.get("dynamic_cash_exposure_artifact_policy") == "REMOVE" else "BLOCK",
+                "legacy_authority_isolation": "PASS" if pp.get("legacy_authority_active") is False else "REVIEW_REQUIRED",
                 "target_weight_sum": "PASS" if _float(sizing.get("total_target_weight")) <= _float(sizing.get("target_gross_exposure_ratio")) + 0.000001 else "BLOCK",
                 "feature_date_authority_present": "PASS" if isinstance(input_manifest.get("feature_date_authority"), dict) else "REVIEW_REQUIRED",
             }
@@ -520,8 +496,22 @@ def validate_run_strategy_shadow(*, run_dir: Path, business_date: str | None = N
     }
 
 
-def _build_input_manifest(*, run_id: str, profile_id: str, runtime_root: Path, business_date: str, feature_date: str, feature_date_authority: Mapping[str, Any]) -> dict[str, Any]:
-    resolution = resolve_accepted_generation(runtime_root)
+def _build_input_manifest(
+    *,
+    run_id: str,
+    profile_id: str,
+    runtime_root: Path,
+    business_date: str,
+    feature_date: str,
+    feature_date_authority: Mapping[str, Any],
+    historical_evaluation_authority_path: str = "",
+    strategy_source_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolution = resolve_accepted_generation(
+        runtime_root,
+        business_date=None if historical_evaluation_authority_path else business_date,
+        fixed_authority_path=historical_evaluation_authority_path or None,
+    )
     manifest = _read_json(Path(resolution.bundle_manifest_path)) if resolution.bundle_manifest_path and Path(resolution.bundle_manifest_path).is_file() else {}
     candidate_member = manifest.get("candidate_member") if isinstance(manifest.get("candidate_member"), dict) else {}
     opportunity_member = manifest.get("opportunity_member") if isinstance(manifest.get("opportunity_member"), dict) else {}
@@ -541,10 +531,13 @@ def _build_input_manifest(*, run_id: str, profile_id: str, runtime_root: Path, b
         "feature_date_authority": dict(feature_date_authority),
         "profile": profile_id,
         "runtime_root": str(runtime_root),
-        "trading_calendar": str(runtime_root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet"),
+        "historical_evaluation_authority_path": historical_evaluation_authority_path,
+        "historical_evaluation_authority_mode": "RUN_START_FIXED" if historical_evaluation_authority_path else "",
+        "strategy_source_authority": dict(strategy_source_authority or {}),
+        "trading_calendar": str((strategy_source_authority or {}).get("paths", {}).get("trading_calendar") or runtime_root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet"),
         "jquants_sources": {"operations_root": str(runtime_root / "operations")},
-        "listed_info_source": str(runtime_root / "operations" / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet"),
-        "market_quote_source": str(runtime_root / "operations" / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"),
+        "listed_info_source": str((strategy_source_authority or {}).get("paths", {}).get("listed_issues") or runtime_root / "operations" / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet"),
+        "market_quote_source": str((strategy_source_authority or {}).get("paths", {}).get("normalized_ohlcv") or runtime_root / "operations" / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"),
         "accepted_generation": resolution.to_dict(),
         "accepted_generation_id": resolution.generation_id,
         "candidate_model_reference": str(candidate_member.get("model_file") or (resolution.candidate_member.artifact_path if resolution.candidate_member else "")),
@@ -727,18 +720,168 @@ def _pm_accepted_generation_reference(manifest: Mapping[str, Any]) -> position_m
 
 def _ai_output_summary(path: Path, *, business_date: str) -> dict[str, Any]:
     payload = _read_json(path) if path.is_file() else {}
-    rows = payload if isinstance(payload, list) else payload.get("decisions") or payload.get("rankings") or payload.get("items") or []
+    rows = payload if isinstance(payload, list) else payload.get("rows") or payload.get("decisions") or payload.get("rankings") or payload.get("items") or []
     if not isinstance(rows, list):
         rows = []
+    source_hash = _file_hash(path)
+    payload_business_date = str(payload.get("business_date") or business_date) if isinstance(payload, Mapping) else business_date
+    payload_feature_date = str(payload.get("feature_date") or payload_business_date) if isinstance(payload, Mapping) else business_date
+    kind = "candidate" if path.name == "candidate_decisions.json" else "opportunity" if path.name == "opportunity_rankings.json" else "ai_output"
+    adapted_rows = _candidate_downstream_rows(
+        rows,
+        payload=payload if isinstance(payload, Mapping) else {},
+        path=path,
+        source_hash=source_hash,
+        business_date=business_date,
+        kind=kind,
+    )
+    rejection_distribution: dict[str, int] = {}
+    for row in adapted_rows:
+        reason = str(row.get("rejection_reason") or "ACCEPTED")
+        rejection_distribution[reason] = rejection_distribution.get(reason, 0) + 1
     return {
         "status": "PASS" if path.is_file() else "MISSING",
-        "business_date": business_date,
-        "feature_date": business_date,
+        "business_date": payload_business_date,
+        "feature_date": payload_feature_date,
         "source_ref": str(path),
-        "source_hash": _file_hash(path),
-        "summary": {"row_count": len(rows), "schema_version": payload.get("schema_version", "") if isinstance(payload, dict) else ""},
-        "rows": tuple(row for row in rows if isinstance(row, Mapping)),
+        "source_hash": source_hash,
+        "summary": {
+            "row_count": len(adapted_rows),
+            "raw_row_count": len(rows),
+            "schema_version": payload.get("schema_version", payload.get("artifact_schema_version", "")) if isinstance(payload, dict) else "",
+            "candidate_adapter_contract_version": "runtime_buy_ai_candidate_downstream_adapter.v1" if kind == "candidate" else "",
+            "opportunity_adapter_contract_version": "runtime_buy_ai_opportunity_downstream_adapter.v1" if kind == "opportunity" else "",
+            "source_available": path.is_file(),
+            "consumer_eligible_rows": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE"),
+            **(
+                {"candidate_capacity_count": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE")}
+                if kind == "candidate"
+                else {"opportunity_capacity_count": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE")}
+                if kind == "opportunity"
+                else {}
+            ),
+            "rejection_reason_distribution": rejection_distribution,
+            "silent_empty_fallback_used": False,
+        },
+        "rows": tuple(adapted_rows),
     }
+
+
+def _optional_opportunity_artifact_path(opportunity_summary: Mapping[str, Any], *, business_date: str) -> Path | None:
+    if str(opportunity_summary.get("status") or "") != "PASS":
+        return None
+    if str(opportunity_summary.get("business_date") or "") != business_date:
+        return None
+    path = Path(str(opportunity_summary.get("source_ref") or ""))
+    if not path.is_file():
+        return None
+    return path
+
+
+def _candidate_downstream_rows(
+    rows: list[Any],
+    *,
+    payload: Mapping[str, Any],
+    path: Path,
+    source_hash: str,
+    business_date: str,
+    kind: str,
+) -> list[dict[str, Any]]:
+    generation = payload.get("generation_bound_inference") if isinstance(payload.get("generation_bound_inference"), Mapping) else {}
+    accepted_generation_id = str(generation.get("accepted_generation_id") or "")
+    accepted_generation_hash = str(generation.get("manifest_hash") or "")
+    feature_contract_hash = str(generation.get("feature_order_hash") or "")
+    payload_business_date = str(payload.get("business_date") or business_date)
+    payload_feature_date = str(payload.get("feature_date") or payload_business_date)
+    adapted: list[dict[str, Any]] = []
+    for index, item in enumerate(rows, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        code = str(row.get("security_code") or row.get("code") or row.get("symbol") or row.get("LocalCode") or "").strip()
+        source_row_date = str(row.get("target_date") or row.get("feature_date") or payload_feature_date)
+        row_business_date = str(row.get("business_date") or payload_business_date)
+        row_feature_date = str(row.get("feature_date") or source_row_date)
+        eligible, rejection_reason = _candidate_downstream_eligibility(row, code=code, business_date=business_date, source_row_date=source_row_date)
+        score = row.get("candidate_score", row.get("opportunity_score", row.get("expected_edge_score", row.get("score"))))
+        rank = row.get("candidate_rank", row.get("buy_rank", row.get("rank", index)))
+        identity = {
+            "kind": kind,
+            "business_date": business_date,
+            "source_row_date": source_row_date,
+            "security_code": code,
+            "rank": rank,
+            "source_hash": source_hash,
+        }
+        row_id = hashlib.sha256(json.dumps(identity, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:20]
+        adapted.append(
+            {
+                **row,
+                "security_code": code,
+                "symbol": str(row.get("symbol") or code),
+                "business_date": row_business_date,
+                "feature_date": row_feature_date,
+                "source_row_date": source_row_date,
+                "candidate_id": str(row.get("candidate_id") or (f"candidate-{business_date}-{code}-{row_id}" if kind == "candidate" else "")),
+                "opportunity_id": str(row.get("opportunity_id") or (f"opportunity-{business_date}-{code}-{row_id}" if kind == "opportunity" else "")),
+                "candidate_order": _int_or_default(row.get("candidate_order", row.get("candidate_rank", rank)), index),
+                "rank": _int_or_default(rank, index),
+                "score": _float(row.get("score", score), default=0.0),
+                "candidate_score": _float(row.get("candidate_score", score), default=0.0) if kind == "candidate" else row.get("candidate_score"),
+                "expected_edge_score": _float(row.get("expected_edge_score", score), default=0.0) if kind == "opportunity" else row.get("expected_edge_score", score),
+                "eligibility_status": "ELIGIBLE" if eligible else "REJECTED",
+                "candidate_membership_status": "ELIGIBLE" if eligible else "REJECTED",
+                "runtime_consumer_eligibility": "ELIGIBLE" if eligible else "NOT_ELIGIBLE",
+                "rejection_reason": rejection_reason,
+                "reason_codes": _row_reason_codes(row, rejection_reason=rejection_reason),
+                "accepted_generation_id": accepted_generation_id,
+                "accepted_generation_hash": accepted_generation_hash,
+                "feature_contract_hash": feature_contract_hash,
+                "technical_features_join_key": {"code": code, "target_date": source_row_date},
+                "source_ref": str(path),
+                "source_hash": source_hash,
+                "artifact_hash": source_hash,
+                "source_artifact_hash": source_hash,
+                "source_row_hash": hashlib.sha256(json.dumps(row, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
+                "adapter_contract_version": "runtime_buy_ai_candidate_downstream_adapter.v1" if kind == "candidate" else "runtime_buy_ai_opportunity_downstream_adapter.v1",
+                "decision_resolution": "RESOLVED" if eligible else "UNRESOLVED",
+                "latest_fallback_used": False,
+                "future_row_used": False,
+            }
+        )
+    return adapted
+
+
+def _candidate_downstream_eligibility(row: Mapping[str, Any], *, code: str, business_date: str, source_row_date: str) -> tuple[bool, str]:
+    if not code:
+        return False, "SCHEMA_MISMATCH:security_code_missing"
+    if not source_row_date or source_row_date > business_date:
+        return False, "PIT_INVALID:future_source_row_date"
+    if row.get("universe_eligible") is False or row.get("eligible") is False:
+        return False, str(row.get("excluded_reason") or row.get("reason") or "POLICY_REJECTED")
+    excluded = str(row.get("excluded_reason") or "").strip()
+    if excluded:
+        return False, excluded
+    return True, ""
+
+
+def _row_reason_codes(row: Mapping[str, Any], *, rejection_reason: str) -> list[str]:
+    raw = row.get("reason_codes")
+    reasons = [str(item) for item in raw if str(item)] if isinstance(raw, list) else []
+    for field in ("candidate_reason", "reason"):
+        text = str(row.get(field) or "")
+        if text:
+            reasons.extend(part for part in text.split("|") if part)
+    if rejection_reason:
+        reasons.append(rejection_reason)
+    return sorted(set(reasons))
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any]:
@@ -794,16 +937,165 @@ def _safety_summary() -> dict[str, Any]:
     }
 
 
+def _resolve_strategy_source_authority(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    operations_root: Path,
+) -> dict[str, Any]:
+    default_paths = {
+        "normalized_ohlcv": operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
+        "raw_ohlcv": operations_root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet",
+        "listed_issues": operations_root / "jquants" / "raw" / "jquants" / "listed_issues" / "data.parquet",
+        "trading_calendar": operations_root / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet",
+        "earnings_schedule": operations_root / "jquants" / "raw" / "jquants" / "earnings_calendar" / "data.parquet",
+        "financial_statements": operations_root / "jquants" / "raw" / "jquants" / "fins_summary" / "data.parquet",
+        "corporate_actions": operations_root / "jquants" / "raw" / "jquants" / "corporate_actions" / "data.parquet",
+    }
+    asof_path = run_dir / "daily" / business_date / "market_refresh" / "historical_asof_view.json"
+    manifest_path = asof_path.parent / "inputs" / "historical_asof" / business_date / "logical_input_manifest.json"
+    if not asof_path.is_file() and not manifest_path.is_file():
+        return _strategy_source_authority_payload(
+            business_date=business_date,
+            authority="operations_canonical_source_authority",
+            resolution_source="operations_default",
+            manifest_path=manifest_path,
+            paths=default_paths,
+            source_identities={},
+            run_scoped=False,
+            status="PASS",
+            reason="operations_default_source_authority",
+        )
+    if not manifest_path.is_file():
+        missing = _missing_strategy_source_paths(manifest_path)
+        return _strategy_source_authority_payload(
+            business_date=business_date,
+            authority="historical_asof_source_authority",
+            resolution_source="missing_historical_logical_input_manifest",
+            manifest_path=manifest_path,
+            paths=missing,
+            source_identities={},
+            run_scoped=True,
+            status="BLOCK",
+            reason="historical_logical_input_manifest_missing",
+        )
+    manifest = _read_json(manifest_path)
+    logical_paths = manifest.get("logical_paths") if isinstance(manifest.get("logical_paths"), dict) else {}
+    source_identities = manifest.get("source_identities") if isinstance(manifest.get("source_identities"), dict) else {}
+    if str(manifest.get("business_date") or "") != business_date or str(manifest.get("status") or "") != "PASS":
+        missing = _missing_strategy_source_paths(manifest_path)
+        return _strategy_source_authority_payload(
+            business_date=business_date,
+            authority="historical_asof_source_authority",
+            resolution_source="invalid_historical_logical_input_manifest",
+            manifest_path=manifest_path,
+            paths=missing,
+            source_identities=source_identities,
+            run_scoped=True,
+            status="BLOCK",
+            reason="historical_logical_input_manifest_invalid",
+        )
+    paths = {
+        "normalized_ohlcv": Path(str(logical_paths.get("normalized_ohlcv") or "")),
+        "raw_ohlcv": Path(str(logical_paths.get("raw_ohlcv") or "")),
+        "listed_issues": Path(str(logical_paths.get("listed_issues") or "")),
+        "trading_calendar": Path(str(logical_paths.get("trading_calendar") or "")),
+        # These roles are not authorized by current historical_asof manifests.
+        # Keep them empty so Historical never falls back to operations latest.
+        "earnings_schedule": Path(),
+        "financial_statements": Path(),
+        "corporate_actions": Path(),
+    }
+    return _strategy_source_authority_payload(
+        business_date=business_date,
+        authority="historical_asof_source_authority",
+        resolution_source="run_scoped_historical_logical_input_manifest",
+        manifest_path=manifest_path,
+        paths=paths,
+        source_identities=source_identities,
+        run_scoped=True,
+        status="PASS",
+        reason="historical_asof_strategy_sources_resolved",
+    )
+
+
+def _strategy_source_authority_payload(
+    *,
+    business_date: str,
+    authority: str,
+    resolution_source: str,
+    manifest_path: Path,
+    paths: Mapping[str, Path],
+    source_identities: Mapping[str, Any],
+    run_scoped: bool,
+    status: str,
+    reason: str,
+) -> dict[str, Any]:
+    expected_hashes: dict[str, str] = {}
+    role_map = {
+        "normalized_ohlcv": "jquants_daily_quotes",
+        "listed_issues": "jquants_listed_issues",
+        "trading_calendar": "jquants_trading_calendar",
+        "earnings_schedule": "jquants_earnings_schedule",
+        "financial_statements": "jquants_financial_statements",
+        "corporate_actions": "jquants_corporate_actions",
+    }
+    for logical_id, producer_role in role_map.items():
+        identity = source_identities.get(logical_id) if isinstance(source_identities, Mapping) else None
+        if isinstance(identity, Mapping):
+            expected = str(identity.get("physical_file_hash") or "")
+            if expected:
+                expected_hashes[producer_role] = expected
+    resolved_paths = {key: str(path) for key, path in paths.items()}
+    source_records = {}
+    for key, path in paths.items():
+        exists = bool(str(path)) and path.is_file()
+        source_records[key] = {
+            "path": str(path),
+            "exists": exists,
+            "sha256": _file_hash(path) if exists else "",
+            "expected_sha256": expected_hashes.get(role_map.get(key, ""), ""),
+            "business_date": business_date,
+            "pit_status": "PASS" if exists else "MISSING",
+        }
+    return {
+        "schema_version": "phase23_bm_strategy_source_authority.v1",
+        "status": status,
+        "reason": reason,
+        "authority": authority,
+        "business_date": business_date,
+        "resolution_source": resolution_source,
+        "source_manifest_path": str(manifest_path),
+        "source_manifest_hash": _file_hash(manifest_path) if manifest_path.is_file() else "",
+        "run_scoped_historical_authority_used": run_scoped and status == "PASS",
+        "operations_latest_fallback_used": False if run_scoped else False,
+        "paths": resolved_paths,
+        "source_records": source_records,
+        "expected_hashes": expected_hashes,
+    }
+
+
+def _missing_strategy_source_paths(manifest_path: Path) -> dict[str, Path]:
+    root = manifest_path.parent / "__missing_historical_strategy_source_authority__"
+    return {
+        "normalized_ohlcv": root / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet",
+        "raw_ohlcv": root / "raw" / "jquants" / "equities_bars_daily" / "data.parquet",
+        "listed_issues": root / "raw" / "jquants" / "listed_issues" / "data.parquet",
+        "trading_calendar": root / "raw" / "jquants" / "trading_calendar" / "data.parquet",
+        "earnings_schedule": Path(),
+        "financial_statements": Path(),
+        "corporate_actions": Path(),
+    }
+
+
+def _optional_path(value: Any) -> Path | None:
+    text = str(value or "")
+    return Path(text) if text else None
+
+
 def _pp_summary(item: Mapping[str, Any], business_date: str) -> portfolio_policy.PortfolioPolicyInputSummary:
     return portfolio_policy.PortfolioPolicyInputSummary(status=str(item.get("status") or "MISSING"), business_date=str(item.get("business_date") or business_date), feature_date=str(item.get("feature_date") or business_date), summary=dict(item.get("summary") or {}), source_ref=str(item.get("source_ref") or ""), source_hash=str(item.get("source_hash") or ""))
-
-
-def _dpc_summary(item: Mapping[str, Any], business_date: str) -> dynamic_position_count.DynamicPositionCountSourceSummary:
-    return dynamic_position_count.DynamicPositionCountSourceSummary(**_summary_kwargs(item, business_date))
-
-
-def _dce_summary(item: Mapping[str, Any], business_date: str) -> dynamic_cash_exposure.CashExposureSourceSummary:
-    return dynamic_cash_exposure.CashExposureSourceSummary(**_summary_kwargs(item, business_date))
 
 
 def _pc_summary(item: Mapping[str, Any], business_date: str) -> portfolio_construction.PortfolioConstructionSourceSummary:
@@ -813,15 +1105,13 @@ def _pc_summary(item: Mapping[str, Any], business_date: str) -> portfolio_constr
 
 def _ps_summary(item: Mapping[str, Any], business_date: str) -> position_sizing.PositionSizingSourceSummary:
     kw = _summary_kwargs(item, business_date)
-    return position_sizing.PositionSizingSourceSummary(**kw, rows=tuple(item.get("rows") or ()))
+    payload = _payload_from_summary_item(item)
+    rows = item.get("rows") or payload.get("portfolio_members") or payload.get("positions") or payload.get("members") or ()
+    return position_sizing.PositionSizingSourceSummary(**kw, rows=tuple(rows))
 
 
 def _pm_summary(item: Mapping[str, Any], business_date: str) -> position_management.PMSourceSummary:
     return position_management.PMSourceSummary(**_summary_kwargs(item, business_date))
-
-
-def _cd_summary(item: Mapping[str, Any], business_date: str) -> capital_deployment.CapitalDeploymentSourceSummary:
-    return capital_deployment.CapitalDeploymentSourceSummary(**_summary_kwargs(item, business_date))
 
 
 def _rp_summary(item: Mapping[str, Any], business_date: str) -> runtime_planning.RuntimePlanningSourceSummary:
@@ -830,14 +1120,32 @@ def _rp_summary(item: Mapping[str, Any], business_date: str) -> runtime_planning
 
 
 def _summary_kwargs(item: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+    payload = _payload_from_summary_item(item)
+    summary = dict(item.get("summary") or {})
+    if not summary and payload:
+        summary = dict(payload)
     return {
         "status": str(item.get("status") or "MISSING"),
-        "business_date": str(item.get("business_date") or business_date),
-        "feature_date": str(item.get("feature_date") or business_date),
+        "business_date": str(item.get("business_date") or payload.get("business_date") or business_date),
+        "feature_date": str(item.get("feature_date") or payload.get("feature_date") or business_date),
         "source_ref": str(item.get("source_ref") or item.get("artifact_path") or ""),
         "source_hash": str(item.get("source_hash") or item.get("artifact_hash") or ""),
-        "summary": dict(item.get("summary") or {}),
+        "summary": summary,
     }
+
+
+def _payload_from_summary_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    payload = item.get("payload")
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    path = Path(str(item.get("artifact_path") or ""))
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _existing_pm_decisions(*, runtime_root: Path, business_date: str) -> list[dict[str, Any]]:
@@ -851,6 +1159,38 @@ def _existing_pm_decisions(*, runtime_root: Path, business_date: str) -> list[di
         if isinstance(rows, list):
             return [dict(row) for row in rows if isinstance(row, Mapping)]
     return []
+
+
+def _runtime_current_position_rows(current: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows = current.get("rows") if isinstance(current, Mapping) else []
+    if not isinstance(rows, (list, tuple)):
+        return []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip()
+        if not symbol:
+            continue
+        quantity = _float(row.get("quantity"), default=0.0)
+        if quantity <= 0:
+            continue
+        result.append(
+            {
+                "position_id": str(row.get("position_id") or row.get("current_position_reference") or f"runtime-current-{symbol}"),
+                "symbol": symbol,
+                "quantity": quantity,
+                "average_price": _float(row.get("average_price"), default=0.0),
+                "acquired_at": str(row.get("acquired_at") or row.get("opened_at") or ""),
+                "as_of": str(row.get("as_of") or current.get("business_date") or ""),
+                "position_state_as_of": str(row.get("position_state_as_of") or row.get("as_of") or current.get("business_date") or ""),
+                "valuation_as_of": str(row.get("valuation_as_of") or row.get("valuation_date") or row.get("as_of") or current.get("business_date") or ""),
+                "position_lifecycle_id": str(row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or ""),
+                "technical_features_join_key": {"code": symbol, "target_date": str(current.get("business_date") or "")},
+                "source": "runtime_current_position_adapter_input",
+            }
+        )
+    return result
 
 
 def _legacy_shadow_comparison(results: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:

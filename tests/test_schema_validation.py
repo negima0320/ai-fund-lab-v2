@@ -38,6 +38,44 @@ def test_fins_summary_empty_is_allowed() -> None:
     assert result.status == "OK"
 
 
+def test_fins_summary_schema_uses_disc_no_as_disclosure_identity() -> None:
+    result = validate_records(
+        "fins_summary",
+        [
+            {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590001", "DocType": "ForecastRevision"},
+            {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590002", "DocType": "DividendForecastRevision"},
+        ],
+    )
+
+    assert result.status == "OK"
+    assert result.duplicate_key_count == 0
+
+
+def test_fins_summary_schema_warns_on_exact_disclosure_identity_duplicate() -> None:
+    record = {"DiscDate": "2026-07-14", "Code": "94440", "DiscNo": "20260714590001", "DocType": "ForecastRevision"}
+    result = validate_records("fins_summary", [dict(record), dict(record)])
+
+    assert result.status == "WARNING"
+    assert result.duplicate_key_count == 1
+
+
+def test_earnings_calendar_schema_validation_ok() -> None:
+    result = validate_records(
+        "earnings_calendar",
+        [{"Date": "2026-08-08", "Code": "72030", "CoName": "Toyota", "FQ": "1Q"}],
+    )
+
+    assert result.status == "OK"
+    assert result.schema_version == 1
+
+
+def test_earnings_calendar_schema_missing_key_is_error() -> None:
+    result = validate_records("earnings_calendar", [{"Date": "2026-08-08", "CoName": "Toyota"}])
+
+    assert result.status == "ERROR"
+    assert result.missing_key_count == 1
+
+
 def test_schema_detects_duplicate_business_key() -> None:
     record = {"Date": "2026-06-01", "HolDiv": "1"}
     result = validate_records("trading_calendar", [record, record])

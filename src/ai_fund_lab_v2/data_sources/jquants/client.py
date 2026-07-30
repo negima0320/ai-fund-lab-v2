@@ -13,6 +13,11 @@ from typing import Any
 
 from ai_fund_lab_v2.config.settings import JQuantsSettings
 from ai_fund_lab_v2.data.jquants_fetch_policy import (
+    JQUANTS_DAILY_QUOTES_ENDPOINT,
+    JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+    JQUANTS_FINS_SUMMARY_ENDPOINT,
+    JQUANTS_LISTED_ISSUES_ENDPOINT,
+    JQUANTS_TRADING_CALENDAR_ENDPOINT,
     JQuantsRateLimitPolicy,
     JQuantsRetryPolicy,
     RateLimitState,
@@ -23,10 +28,6 @@ from ai_fund_lab_v2.data.jquants_fetch_policy import (
 from ai_fund_lab_v2.logging.runtime_logging import configure_runtime_logger
 from ai_fund_lab_v2.runtime.paths import RuntimePaths
 
-JQUANTS_DAILY_QUOTES_ENDPOINT = "/v2/equities/bars/daily"
-JQUANTS_LISTED_ISSUES_ENDPOINT = "/v2/equities/master"
-JQUANTS_TRADING_CALENDAR_ENDPOINT = "/v2/markets/calendar"
-JQUANTS_FINS_SUMMARY_ENDPOINT = "/v2/fins/summary"
 PAGINATION_KEY = "pagination_key"
 
 
@@ -122,6 +123,12 @@ class JQuantsClient:
             ),
         )
 
+    def fetch_earnings_calendar(self, *, pagination_key: str | None = None) -> dict[str, Any]:
+        return self.get(
+            JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+            params=build_endpoint_params(JQUANTS_EARNINGS_CALENDAR_ENDPOINT, pagination_key=pagination_key),
+        )
+
     def fetch_fins_summary(
         self,
         *,
@@ -205,6 +212,14 @@ class JQuantsClient:
             params=self._calendar_params(**kwargs),
             max_pages=max_pages,
             target_date=kwargs.get("date") or kwargs.get("from_date"),
+        )
+
+    def fetch_all_earnings_calendar(self, *, max_pages: int = 100) -> list[dict[str, Any]]:
+        return self.fetch_all_pages(
+            JQUANTS_EARNINGS_CALENDAR_ENDPOINT,
+            params={},
+            max_pages=max_pages,
+            target_date=None,
         )
 
     def fetch_all_fins_summary(self, *, max_pages: int = 100, **kwargs: Any) -> list[dict[str, Any]]:
