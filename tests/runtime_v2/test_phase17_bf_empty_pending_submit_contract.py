@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from ai_fund_lab_v2.runtime_v2.cli import run_daily_operation
+from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import materialize_empty_pending_no_order_authority
 from ai_fund_lab_v2.runtime_v2.submit import pipeline as submit_pipeline
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 from scripts.runtime_test import collect_runtime_cli_job_evidence
@@ -23,7 +24,11 @@ def test_phase17_bf_empty_pending_submit_pipeline_returns_no_action_pass(tmp_pat
     _write_asset_state(runtime_root)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
     pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
-    pending_payload = _empty_pending_payload(business_date="2026-07-08", environment="demo")
+    pending_payload = _authorized_empty_pending_payload(
+        runtime_root,
+        business_date="2026-07-08",
+        environment="demo",
+    )
     _write_json(pending_path, pending_payload)
 
     result = run_submit_pipeline(
@@ -61,7 +66,11 @@ def test_phase17_bf_empty_pending_submit_cli_exits_zero_and_records_manifest(tmp
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
     _write_json(
         runtime_root / "pending_order_plan" / "pending_order_plan.json",
-        _empty_pending_payload(business_date="2026-07-08", environment="demo"),
+        _authorized_empty_pending_payload(
+            runtime_root,
+            business_date="2026-07-08",
+            environment="demo",
+        ),
     )
 
     exit_code = run_daily_operation.main(
@@ -128,9 +137,9 @@ def test_phase17_bf_empty_pending_temporal_metadata_is_not_order_authority(tmp_p
         },
     )
 
-    assert result.status == "PASS"
-    assert result.submit_action == "NO_ACTION"
-    assert result.reason == "pending_empty_no_action"
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.submit_action == "BLOCKED"
+    assert result.reason == "pending EMPTY no_order_authority missing"
     assert result.submitted_count == 0
     assert result.pending_consumed is False
 
@@ -138,17 +147,17 @@ def test_phase17_bf_empty_pending_temporal_metadata_is_not_order_authority(tmp_p
 def test_phase17_bf_empty_pending_missing_safety_authority_is_no_action(tmp_path):
     result = _run_empty_payload_variant(tmp_path, {"safety_context": {}})
 
-    assert result.status == "PASS"
-    assert result.submit_action == "NO_ACTION"
-    assert result.reason == "pending_empty_no_action"
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.submit_action == "BLOCKED"
+    assert result.reason == "pending EMPTY no_order_authority missing"
     assert result.submitted_count == 0
 
 
 def test_phase17_bf_empty_pending_active_contradiction_fails_closed(tmp_path):
     result = _run_empty_payload_variant(tmp_path, {"active_pending": True})
 
-    assert result.status == "BLOCKED"
-    assert result.reason == "pending state is not APPROVED"
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "authorized no-order order plan hash mismatch"
     assert result.demo_submit_executed is False
 
 
@@ -300,6 +309,44 @@ def _empty_pending_payload(*, business_date: str, environment: str) -> dict:
         "safety_decision_id": "safety-phase17-bf",
         "safety_policy_version": "safety_policy_v1",
     }
+
+
+def _authorized_empty_pending_payload(runtime_root: Path, *, business_date: str, environment: str) -> dict:
+    _write_empty_authority_source_artifacts(runtime_root, business_date=business_date, environment=environment)
+    return materialize_empty_pending_no_order_authority(
+        _empty_pending_payload(business_date=business_date, environment=environment),
+        runtime_root=runtime_root,
+        business_date=business_date,
+        target_session_date=business_date,
+        environment=environment,
+        authority_reason="empty_pending_no_executable_order_items",
+        sell_order_plan_path=runtime_root / "runtime_state" / "sell_pipeline" / business_date / "order_plan.json",
+        sell_approval_path=runtime_root / "runtime_state" / "sell_pipeline" / business_date / "approval_artifact.json",
+        sell_reason="NO_SIGNAL:phase17_bf_fixture",
+    )
+
+
+def _write_empty_authority_source_artifacts(runtime_root: Path, *, business_date: str, environment: str) -> None:
+    _write_json(
+        runtime_root / "runtime_state" / "sell_pipeline" / business_date / "order_plan.json",
+        {
+            "schema_version": "1",
+            "order_plan_id": f"order-plan-empty-{business_date}",
+            "environment": environment,
+            "business_date": business_date,
+            "target_session_date": business_date,
+            "status": "NO_ACTION",
+            "items": [],
+            "reason": "NO_SIGNAL:phase17_bf_fixture",
+        },
+    )
+    _write_json(
+        runtime_root / "runtime_state" / "sell_pipeline" / business_date / "approval_artifact.json",
+        {
+            "status": "NO_SIGNAL",
+            "reason": "NO_SIGNAL:phase17_bf_fixture",
+        },
+    )
 
 
 def _write_json(path: Path, payload: dict) -> None:

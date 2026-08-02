@@ -84,6 +84,61 @@ def test_phase17_bj_approved_pending_safety_mismatch_remains_review_required(tmp
     assert result.payload["components"]["safety"]["historical_neutral_authority_generated_or_resolved"] is False
 
 
+def test_phase24_ih_same_day_failed_attempt_pending_does_not_block_daily_neutral_safety(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, mode="historical", pending=_failed_same_day_strategy_pending())
+
+    result = _evaluate(tmp_path, root, mode="historical", broker_environment="historical_simulated")
+
+    assert result.status == "READY"
+    safety = result.payload["components"]["safety"]
+    pending = result.payload["components"]["pending"]
+    retry = safety["failed_attempt_pending_retry"]
+    assert safety["historical_neutral_authority_generated_or_resolved"] is True
+    assert safety["historical_neutral_safety_resolution_status"] == "READY"
+    assert safety["historical_neutral_safety_resolution_reason"] == "historical_daily_neutral_safety_authority_ready"
+    assert safety["historical_safety_temporal_authority"] == "historical_initial_no_external_effect"
+    assert retry["pending_artifact_retry_eligibility"] == "RETRY_INPUT_INELIGIBLE"
+    assert retry["pending_artifact_authority_eligibility"] == "AUTHORITY_INELIGIBLE"
+    assert retry["pending_artifact_attempt_status"] == "BLOCKED"
+    assert retry["failed_attempt_artifact_quarantined"] is True
+    assert pending["failed_attempt_pending_retry"]["reason"] == "failed_attempt_pending_retry_input_ineligible"
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase24_ij_same_day_empty_unscoped_review_pending_is_retry_ineligible(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, mode="historical", pending=_failed_same_day_empty_unscoped_review_pending())
+
+    result = _evaluate(tmp_path, root, mode="historical", broker_environment="historical_simulated")
+
+    assert result.status == "READY"
+    safety = result.payload["components"]["safety"]
+    pending = result.payload["components"]["pending"]
+    retry = pending["failed_attempt_pending_retry"]
+    assert pending["status"] == "READY"
+    assert pending["reason"] == "failed_attempt_pending_retry_input_ineligible"
+    assert safety["historical_neutral_authority_generated_or_resolved"] is True
+    assert retry["pending_artifact_retry_eligibility"] == "RETRY_INPUT_INELIGIBLE"
+    assert retry["pending_artifact_authority_eligibility"] == "AUTHORITY_INELIGIBLE"
+    assert retry["pending_artifact_attempt_status"] == "REVIEW_REQUIRED"
+    assert retry["review_required_empty_unscoped_failed_attempt"] is True
+    assert retry["safety_context_complete"] is True
+    assert retry["planning_authority_complete"] is True
+    assert "pending_review_required" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase24_ih_blocked_pending_with_items_remains_fail_closed(tmp_path: Path) -> None:
+    blocked = _failed_same_day_strategy_pending()
+    blocked["items"] = [{"pending_item_id": "blocked-buy-1", "symbol": "81050", "side": "BUY", "quantity": 100}]
+    root = _runtime_root(tmp_path, mode="historical", pending=blocked)
+
+    result = _evaluate(tmp_path, root, mode="historical", broker_environment="historical_simulated")
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+    assert result.payload["components"]["safety"]["historical_neutral_authority_generated_or_resolved"] is False
+
+
 def test_phase17_bj_production_and_demo_missing_safety_still_review_required(tmp_path: Path) -> None:
     for mode, broker_environment in (("production", "production"), ("demo", "demo")):
         root = _runtime_root(tmp_path / mode, mode=mode, pending=_empty_pending(target_date=BUSINESS_DATE, mode=mode))
@@ -242,6 +297,67 @@ def _approved_pending(*, target_date: str) -> dict[str, Any]:
         "approval": {"approval_status": "APPROVED", "pending_policy_hash": "policy-hash"},
         "items": [{"symbol": "81050", "side": "BUY", "quantity": 100}],
         "safety_context": _safety_context(target_date),
+    }
+
+
+def _failed_same_day_strategy_pending() -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "pending_plan_id": f"pending-strategy-review-{BUSINESS_DATE}",
+        "state": "BLOCKED",
+        "environment": "historical",
+        "created_at": BUSINESS_DATE,
+        "updated_at": BUSINESS_DATE,
+        "plan_created_date": BUSINESS_DATE,
+        "intended_submit_date": BUSINESS_DATE,
+        "target_session_date": BUSINESS_DATE,
+        "source_order_plan": {
+            "order_plan_id": f"strategy-review-{BUSINESS_DATE}",
+            "path": f".runtime/runtime_state/strategy_planning/{BUSINESS_DATE}/order_plan.json",
+            "artifact_hash": "failed-attempt-order-plan-hash",
+        },
+        "approved_item_ids": [],
+        "items": [],
+        "consume": {"consumed": False},
+        "safety_context": None,
+        "safety_decision_id": "",
+        "safety_policy_version": "",
+        "planning_authority_hash": "",
+        "planning_authority_source": "",
+        "planning_authority_version": "",
+        "review_scope": "",
+        "sell_continuation_allowed": False,
+    }
+
+
+def _failed_same_day_empty_unscoped_review_pending() -> dict[str, Any]:
+    authority_hash = "0e6035a7ca90974b5c890ed314fcd853ddab74bc19c02554515dd5b95421a475"
+    return {
+        "schema_version": "1",
+        "pending_plan_id": f"pending-strategy-plan-historical-{BUSINESS_DATE}-0e6035a7ca90974b",
+        "state": "REVIEW_REQUIRED",
+        "environment": "historical",
+        "created_at": BUSINESS_DATE,
+        "updated_at": BUSINESS_DATE,
+        "plan_created_date": BUSINESS_DATE,
+        "intended_submit_date": BUSINESS_DATE,
+        "target_session_date": BUSINESS_DATE,
+        "source_order_plan": {
+            "order_plan_id": f"strategy-plan-historical-{BUSINESS_DATE}-0e6035a7ca90974b",
+            "path": f".runtime/runtime_state/strategy_planning/{BUSINESS_DATE}/order_plan.json",
+            "artifact_hash": authority_hash,
+        },
+        "items": [],
+        "consume": {"consumed": False},
+        "safety_context": _safety_context(BUSINESS_DATE),
+        "safety_decision_id": f"historical-neutral-safety:{BUSINESS_DATE}",
+        "safety_policy_version": "historical_replay_neutral_safety_v1",
+        "planning_authority_hash": authority_hash,
+        "planning_authority_source": f"strategy-plan-historical-{BUSINESS_DATE}-0e6035a7ca90974b",
+        "planning_authority_version": "phase22_strategy_runtime_planning",
+        "review_scope": "",
+        "sell_continuation_allowed": False,
+        "approved_item_ids": [],
     }
 
 

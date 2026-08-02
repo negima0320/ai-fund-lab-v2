@@ -364,11 +364,23 @@ def build_dynamic_position_count_payload(
     if unresolved_target:
         minimum_position_count = 0 if config is None else config.strategy_minimum_position_count
         target_position_count = None
+        calculated_target_position_count = None
         maximum_position_count = None
         capacity_status = "SOURCE_UNAVAILABLE" if producer_status != "BLOCK" else "SOURCE_UNAVAILABLE"
         posture = "UNRESOLVED"
         confidence = 0.0
         uncertainty = "UPSTREAM_REVIEW_REQUIRED" if producer_status == "REVIEW_REQUIRED" else "BLOCKING_INPUT"
+        exploratory_entry = _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=target_position_count,
+            floor_applied=False,
+            floor_value=0,
+            buy_eligible_count=None,
+            eligibility="BLOCKED",
+            severe_risk_exclusion=True,
+            reason_codes=["exploratory_entry_blocked_by_unresolved_target"],
+        )
+        reason_codes.extend(exploratory_entry["reason_codes"])
     else:
         decision = _decide_counts(
             config=config,
@@ -380,12 +392,29 @@ def build_dynamic_position_count_payload(
         )
         minimum_position_count = decision["minimum_position_count"]
         target_position_count = decision["target_position_count"]
+        calculated_target_position_count = decision["calculated_target_position_count"]
         maximum_position_count = decision["maximum_position_count"]
         capacity_status = decision["capacity_constraint_status"]
         posture = decision["position_count_posture"]
         confidence = decision["confidence"]
         uncertainty = decision["uncertainty"]
         reason_codes.extend(decision["reason_codes"])
+        exploratory_entry = _resolve_exploratory_entry_floor(
+            calculated_target_position_count=calculated_target_position_count,
+            current_target_position_count=target_position_count,
+            meaningful_allocation_position_count=meaningful_allocation_position_count,
+            opportunity_summary=opportunity_summary.summary,
+            market_context=market_context_summary.summary,
+            portfolio_policy=portfolio_policy_summary.summary,
+            producer_status=producer_status,
+        )
+        target_position_count = exploratory_entry["final_target_position_count"]
+        posture = _position_count_posture(
+            target_position_count=target_position_count,
+            current_position_count=current_position_count,
+            entry_posture=str(portfolio_policy_summary.summary.get("entry_posture") or "UNRESOLVED"),
+        )
+        reason_codes.extend(exploratory_entry["reason_codes"])
 
     source_artifacts = [
         {"role": name, "path": summary.source_ref, "required": True, "status": summary.status}
@@ -434,6 +463,7 @@ def build_dynamic_position_count_payload(
         ),
         "target_position_count_resolution": numeric_resolution(target_position_count, unresolved=target_position_count is None),
         "minimum_position_count": minimum_position_count,
+        "calculated_target_position_count": calculated_target_position_count,
         "target_position_count": target_position_count,
         "maximum_position_count": maximum_position_count,
         "safety_hard_maximum": resolved_safety_hard_maximum,
@@ -468,6 +498,12 @@ def build_dynamic_position_count_payload(
         "capacity_constraint_reasons": sorted(set(decision["reason_codes"] if not unresolved_target else [])),
         "capacity_conflicts": capacity_conflicts,
         "capacity_review_reasons": sorted(set(capacity_review_reasons)),
+        "exploratory_entry_floor_applied": exploratory_entry["floor_applied"],
+        "exploratory_entry_floor_value": exploratory_entry["floor_value"],
+        "exploratory_entry_eligibility": exploratory_entry["eligibility"],
+        "exploratory_entry_buy_eligible_count": exploratory_entry["buy_eligible_count"],
+        "exploratory_entry_severe_risk_exclusion": exploratory_entry["severe_risk_exclusion"],
+        "exploratory_entry_reason_codes": exploratory_entry["reason_codes"],
         "source_paths": [item["path"] for item in source_artifacts],
         "source_schema_versions": {
             "candidate": candidate_capacity_resolution.source_schema_version,
@@ -518,6 +554,7 @@ def build_dynamic_position_count_payload(
         "position_count_posture": posture,
         "minimum_position_count": minimum_position_count,
         "target_position_count": target_position_count,
+        "calculated_target_position_count": calculated_target_position_count,
         "maximum_position_count": maximum_position_count,
         "strategy_fixed_position_cap_used": False,
         "actual_target_position_count": actual_target_position_count,
@@ -525,6 +562,9 @@ def build_dynamic_position_count_payload(
         "candidate_capacity_resolution": candidate_capacity_resolution.to_dict(),
         "opportunity_capacity_resolution": opportunity_capacity_resolution.to_dict(),
         "capacity_resolution_status": "PASS" if not capacity_review_reasons else "REVIEW_REQUIRED",
+        "exploratory_entry_floor_applied": exploratory_entry["floor_applied"],
+        "exploratory_entry_eligibility": exploratory_entry["eligibility"],
+        "exploratory_entry_reason_codes": exploratory_entry["reason_codes"],
         "reason_codes": payload["reason_codes"],
         "runtime_behavior_changed": False,
     }
@@ -700,6 +740,21 @@ def validate_dynamic_position_count_artifact(payload: dict[str, Any]) -> dict[st
             errors.append(f"phase22_h_field_must_be_false:{field}")
     if payload.get("legacy_authority_active") is not True:
         errors.append("phase22_h_legacy_authority_must_remain_active")
+    calculated = payload.get("calculated_target_position_count")
+    if calculated is not None and (isinstance(calculated, bool) or not isinstance(calculated, int) or calculated < 0):
+        errors.append("invalid_count:calculated_target_position_count")
+    floor_value = payload.get("exploratory_entry_floor_value")
+    if floor_value is not None and (isinstance(floor_value, bool) or not isinstance(floor_value, int) or floor_value < 0):
+        errors.append("invalid_count:exploratory_entry_floor_value")
+    buy_eligible_count = payload.get("exploratory_entry_buy_eligible_count")
+    if buy_eligible_count is not None and (isinstance(buy_eligible_count, bool) or not isinstance(buy_eligible_count, int) or buy_eligible_count < 0):
+        errors.append("invalid_count:exploratory_entry_buy_eligible_count")
+    if "exploratory_entry_floor_applied" in payload and not isinstance(payload.get("exploratory_entry_floor_applied"), bool):
+        errors.append("exploratory_entry_floor_applied_not_bool")
+    if "exploratory_entry_severe_risk_exclusion" in payload and not isinstance(payload.get("exploratory_entry_severe_risk_exclusion"), bool):
+        errors.append("exploratory_entry_severe_risk_exclusion_not_bool")
+    if "exploratory_entry_reason_codes" in payload and not isinstance(payload.get("exploratory_entry_reason_codes"), list):
+        errors.append("exploratory_entry_reason_codes_not_list")
     if errors:
         raise DynamicPositionCountSchemaError(";".join(errors))
     return {"status": "PASS", "errors": []}
@@ -959,14 +1014,11 @@ def _decide_counts(
         capacity_status = "OPPORTUNITY_CONSTRAINED"
         reason_codes.append("opportunity_capacity_constrained")
 
-    if entry_posture == "PAUSE" or target == 0:
-        posture = "PAUSE_NEW_ENTRY"
-    elif target > current_position_count:
-        posture = "INCREASE"
-    elif target < current_position_count:
-        posture = "DECREASE"
-    else:
-        posture = "MAINTAIN"
+    posture = _position_count_posture(
+        target_position_count=target,
+        current_position_count=current_position_count,
+        entry_posture=entry_posture,
+    )
     confidence = min(
         _ratio(market_context.get("confidence"), default=1.0),
         _ratio(portfolio_policy.get("confidence"), default=1.0),
@@ -975,6 +1027,7 @@ def _decide_counts(
         confidence = min(confidence, 0.8)
     return {
         "minimum_position_count": int(minimum),
+        "calculated_target_position_count": int(target),
         "target_position_count": int(target),
         "maximum_position_count": None,
         "capacity_constraint_status": capacity_status,
@@ -983,6 +1036,164 @@ def _decide_counts(
         "uncertainty": uncertainty,
         "reason_codes": reason_codes,
     }
+
+
+def _resolve_exploratory_entry_floor(
+    *,
+    calculated_target_position_count: int,
+    current_target_position_count: int,
+    meaningful_allocation_position_count: int,
+    opportunity_summary: Mapping[str, Any],
+    market_context: Mapping[str, Any],
+    portfolio_policy: Mapping[str, Any],
+    producer_status: str,
+) -> dict[str, Any]:
+    floor_value = 1
+    reason_codes: list[str] = []
+    if producer_status != "PASS":
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=None,
+            eligibility="BLOCKED",
+            severe_risk_exclusion=True,
+            reason_codes=["exploratory_entry_blocked_by_authority_status"],
+        )
+    if current_target_position_count > 0:
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=_buy_eligible_opportunity_count(opportunity_summary),
+            eligibility="NOT_REQUIRED",
+            severe_risk_exclusion=False,
+            reason_codes=["exploratory_entry_not_required_nonzero_target"],
+        )
+    if meaningful_allocation_position_count <= 0:
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=_buy_eligible_opportunity_count(opportunity_summary),
+            eligibility="NOT_ELIGIBLE",
+            severe_risk_exclusion=False,
+            reason_codes=["exploratory_entry_unavailable_no_meaningful_capacity"],
+        )
+    severe_reasons = _severe_risk_exclusion_reasons(market_context, portfolio_policy)
+    if severe_reasons:
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=_buy_eligible_opportunity_count(opportunity_summary),
+            eligibility="BLOCKED",
+            severe_risk_exclusion=True,
+            reason_codes=["exploratory_entry_blocked_by_severe_risk", *severe_reasons],
+        )
+    buy_eligible_count = _buy_eligible_opportunity_count(opportunity_summary)
+    if buy_eligible_count is None:
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=None,
+            eligibility="NOT_ELIGIBLE",
+            severe_risk_exclusion=False,
+            reason_codes=["exploratory_entry_unavailable_buy_eligible_authority_missing"],
+        )
+    if buy_eligible_count <= 0:
+        return _exploratory_entry_result(
+            calculated_target_position_count=calculated_target_position_count,
+            final_target_position_count=current_target_position_count,
+            floor_applied=False,
+            floor_value=floor_value,
+            buy_eligible_count=buy_eligible_count,
+            eligibility="NOT_ELIGIBLE",
+            severe_risk_exclusion=False,
+            reason_codes=["exploratory_entry_unavailable_no_buy_eligible_opportunity"],
+        )
+    reason_codes.extend(
+        [
+            "market_context_zero_capacity",
+            "buy_eligible_opportunity_present",
+            "exploratory_entry_floor_applied",
+        ]
+    )
+    return _exploratory_entry_result(
+        calculated_target_position_count=calculated_target_position_count,
+        final_target_position_count=min(floor_value, meaningful_allocation_position_count),
+        floor_applied=True,
+        floor_value=floor_value,
+        buy_eligible_count=buy_eligible_count,
+        eligibility="ELIGIBLE",
+        severe_risk_exclusion=False,
+        reason_codes=reason_codes,
+    )
+
+
+def _exploratory_entry_result(
+    *,
+    calculated_target_position_count: int | None,
+    final_target_position_count: int | None,
+    floor_applied: bool,
+    floor_value: int,
+    buy_eligible_count: int | None,
+    eligibility: str,
+    severe_risk_exclusion: bool,
+    reason_codes: list[str],
+) -> dict[str, Any]:
+    return {
+        "calculated_target_position_count": calculated_target_position_count,
+        "final_target_position_count": final_target_position_count,
+        "floor_applied": floor_applied,
+        "floor_value": floor_value,
+        "buy_eligible_count": buy_eligible_count,
+        "eligibility": eligibility,
+        "severe_risk_exclusion": severe_risk_exclusion,
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def _buy_eligible_opportunity_count(opportunity_summary: Mapping[str, Any]) -> int | None:
+    for field in ("buy_eligible_opportunity_count", "canonical_buy_eligible_count", "opportunity_buy_eligible_count"):
+        value = opportunity_summary.get(field)
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
+def _severe_risk_exclusion_reasons(market_context: Mapping[str, Any], portfolio_policy: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    risk_posture = str(portfolio_policy.get("risk_posture") or "UNRESOLVED")
+    entry_posture = str(portfolio_policy.get("entry_posture") or "UNRESOLVED")
+    uncertainty = str(market_context.get("uncertainty") or portfolio_policy.get("uncertainty") or "LOW")
+    if risk_posture == "RISK_OFF":
+        reasons.append("severe_risk_exclusion:risk_posture:RISK_OFF")
+    if entry_posture == "PAUSE":
+        reasons.append("severe_risk_exclusion:entry_posture:PAUSE")
+    if uncertainty in {"HIGH", "UPSTREAM_REVIEW_REQUIRED"}:
+        reasons.append(f"severe_risk_exclusion:uncertainty:{uncertainty}")
+    return reasons
+
+
+def _position_count_posture(*, target_position_count: int | None, current_position_count: int, entry_posture: str) -> str:
+    if target_position_count is None:
+        return "UNRESOLVED"
+    if entry_posture == "PAUSE" or target_position_count == 0:
+        return "PAUSE_NEW_ENTRY"
+    if target_position_count > current_position_count:
+        return "INCREASE"
+    if target_position_count < current_position_count:
+        return "DECREASE"
+    return "MAINTAIN"
 
 
 def _summary_count(summary: DynamicPositionCountSourceSummary, field: str, *, fallback_field: str) -> int:

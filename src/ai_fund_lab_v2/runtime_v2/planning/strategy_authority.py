@@ -21,6 +21,11 @@ from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
     materialize_historical_pending_safety_context,
 )
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
+    CapitalDeploymentPolicyError,
+    load_capital_deployment_policy,
+)
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
 from ai_fund_lab_v2.strategy.runtime_planning import (
     RuntimePlanningSchemaError,
     validate_runtime_planning_artifact,
@@ -59,6 +64,10 @@ class StrategyPlanningAuthorityResult:
     no_action: bool
     reason_codes: tuple[str, ...]
     lineage: dict[str, Any]
+    pending_commit_status: str = "COMMITTED_CURRENT"
+    pending_authority_eligibility: str = "AUTHORITY_ELIGIBLE"
+    pending_retry_eligibility: str = "RETRY_INPUT_ELIGIBLE"
+    atomic_commit_decision: str = "COMMIT"
 
     def to_stage_details(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -106,6 +115,7 @@ def activate_strategy_planning_authority(
         environment_capability_context=environment_capability_context,
     )
     submit_policy_context = _resolve_submit_policy_context(submit_policy_authority_payload)
+    submit_feasibility_policy = _load_submit_feasibility_policy(submit_policy_context)
     if not runtime_planning_path.is_file():
         return _write_review_pending(
             runtime_root=runtime_root_path,
@@ -204,6 +214,7 @@ def activate_strategy_planning_authority(
                 "pending_item_generated": item is not None,
                 "reason": item_reason,
                 "position_sizing_used": bool(sizing_by_symbol.get(str(plan.get("security_code") or ""))),
+                **_rank_authority_lineage_from_plan(plan),
             }
         )
         if item is not None:
@@ -262,6 +273,10 @@ def activate_strategy_planning_authority(
             safety_decision_id=str(safety_context.get("safety_decision_id") or ""),
             safety_policy_version=str(safety_context.get("safety_policy_version") or ""),
         )
+    pending_commit_status = "COMMITTED_CURRENT"
+    pending_authority_eligibility = "AUTHORITY_ELIGIBLE"
+    pending_retry_eligibility = "RETRY_INPUT_ELIGIBLE"
+    atomic_commit_decision = "COMMIT"
     if pending_items:
         request = build_approval_request(
             pending_plan=pending,
@@ -280,10 +295,21 @@ def activate_strategy_planning_authority(
             ),
         )
         _write_json(approval_path, _jsonable(approval))
-        pending = link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
+        pending = link_approval_to_pending(
+            pending_plan=pending,
+            approval_artifact=approval,
+            planning_submit_feasibility_current=load_runtime_current_exposure(
+                runtime_root_path / "persistent_ledger" / "state.json"
+            ),
+            planning_submit_feasibility_policy=submit_feasibility_policy,
+        )
     elif reason_codes:
         _write_json(approval_path, {"status": "REVIEW_REQUIRED", "reason": "strategy_planning_authority_unresolved", "business_date": business_date, "reason_codes": sorted(set(reason_codes))})
         pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED)
+        pending_commit_status = "NOT_COMMITTED_REVIEW_REQUIRED_EMPTY_UNSCOPED"
+        pending_authority_eligibility = "AUTHORITY_INELIGIBLE"
+        pending_retry_eligibility = "RETRY_INPUT_INELIGIBLE"
+        atomic_commit_decision = "SKIP_CURRENT_PENDING_COMMIT"
     else:
         _write_no_order_approval_artifact(
             approval_path=approval_path,
@@ -297,7 +323,8 @@ def activate_strategy_planning_authority(
             target_session_date=target_session_date,
         )
         pending = replace(pending, state=PendingPlanState.EMPTY)
-    write_pending_order_plan(pending_path, pending)
+    if pending_commit_status == "COMMITTED_CURRENT":
+        write_pending_order_plan(pending_path, pending)
     return StrategyPlanningAuthorityResult(
         status="PASS" if pending_items else ("REVIEW_REQUIRED" if reason_codes else "NO_ORDER_AUTHORIZED"),
         reason="" if pending_items else ("strategy_planning_authority_unresolved" if reason_codes else "strategy_planning_no_order_authorized"),
@@ -330,6 +357,10 @@ def activate_strategy_planning_authority(
             "safety_authority": _safety_lineage(safety_context=safety_context),
             "submit_policy_authority": _submit_policy_lineage(submit_policy_context=submit_policy_context),
         },
+        pending_commit_status=pending_commit_status,
+        pending_authority_eligibility=pending_authority_eligibility,
+        pending_retry_eligibility=pending_retry_eligibility,
+        atomic_commit_decision=atomic_commit_decision,
     )
 
 
@@ -410,6 +441,39 @@ def _pending_item_from_strategy_plan(
         capital_allocation_status="APPROVED",
         capital_allocation_reason="phase22_strategy_position_sizing_consumed",
     ), "pending_item_generated"
+
+
+def _rank_authority_lineage_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+    opportunity_authority = plan.get("opportunity_authority") if isinstance(plan.get("opportunity_authority"), Mapping) else {}
+    source_rank = plan.get("opportunity_buy_rank")
+    if source_rank in (None, ""):
+        source_rank = opportunity_authority.get("opportunity_buy_rank", opportunity_authority.get("opportunity_rank"))
+    source_path = str(plan.get("opportunity_artifact_path") or opportunity_authority.get("opportunity_artifact_path") or "")
+    source_hash = str(plan.get("opportunity_artifact_hash") or opportunity_authority.get("opportunity_artifact_hash") or "")
+    row_id = str(plan.get("opportunity_row_id") or opportunity_authority.get("opportunity_row_id") or "")
+    row_hash = str(plan.get("opportunity_row_authority_hash") or opportunity_authority.get("row_authority_hash") or "")
+    rank_authority = str(plan.get("rank_authority") or "")
+    if not rank_authority and source_rank not in (None, ""):
+        rank_authority = "OPPORTUNITY_BUY_RANK_AUTHORITY"
+    portfolio_rank = plan.get("portfolio_input_opportunity_rank")
+    if portfolio_rank in (None, ""):
+        portfolio_rank = source_rank
+    sizing_rank = plan.get("position_sizing_opportunity_buy_rank")
+    if sizing_rank in (None, ""):
+        sizing_rank = source_rank
+    return {
+        "opportunity_buy_rank": _int_or_none(source_rank),
+        "portfolio_input_opportunity_rank": _int_or_none(portfolio_rank),
+        "position_sizing_opportunity_buy_rank": _int_or_none(sizing_rank),
+        "rank_authority_status": str(plan.get("rank_authority_status") or ("PASS" if source_rank not in (None, "") else "")),
+        "rank_authority": rank_authority,
+        "rank_authority_field": str(plan.get("rank_authority_field") or ("buy_rank" if source_rank not in (None, "") else "")),
+        "rank_authority_reason": str(plan.get("rank_authority_reason") or ""),
+        "opportunity_row_id": row_id,
+        "opportunity_row_authority_hash": row_hash,
+        "opportunity_artifact_path": source_path,
+        "opportunity_artifact_hash": source_hash,
+    }
 
 
 def _resolve_plan_price_authority(*, plan: Mapping[str, Any], symbol: str, business_date: str) -> dict[str, Any]:
@@ -570,6 +634,16 @@ def _resolve_submit_policy_context(payload: Mapping[str, Any] | None) -> dict[st
     }
 
 
+def _load_submit_feasibility_policy(submit_policy_context: Mapping[str, Any]) -> Any | None:
+    source = str(submit_policy_context.get("submit_policy_source") or "")
+    if not source:
+        return None
+    try:
+        return load_capital_deployment_policy(source)
+    except (CapitalDeploymentPolicyError, OSError):
+        return None
+
+
 def _planning_lineage_context(*, order_plan_payload: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "planning_authority_version": str(order_plan_payload.get("planning_authority") or "phase22_strategy_runtime_planning"),
@@ -722,7 +796,11 @@ def _write_review_pending(
         items=(),
     )
     pending = replace(pending, state=PendingPlanState.BLOCKED if status == "BLOCKED" else PendingPlanState.REVIEW_REQUIRED)
-    write_pending_order_plan(pending_path, pending)
+    pending_commit_status = (
+        "NOT_COMMITTED_BLOCKED_EMPTY_UNSCOPED"
+        if status == "BLOCKED"
+        else "NOT_COMMITTED_REVIEW_REQUIRED_EMPTY_UNSCOPED"
+    )
     return StrategyPlanningAuthorityResult(
         status=status,
         reason=reason,
@@ -750,6 +828,10 @@ def _write_review_pending(
         no_action=False,
         reason_codes=reason_codes,
         lineage=lineage,
+        pending_commit_status=pending_commit_status,
+        pending_authority_eligibility="AUTHORITY_INELIGIBLE",
+        pending_retry_eligibility="RETRY_INPUT_INELIGIBLE",
+        atomic_commit_decision="SKIP_CURRENT_PENDING_COMMIT",
     )
 
 
@@ -857,6 +939,15 @@ def _positive_float(value: Any, *, default: float = 0.0) -> float:
     if not math.isfinite(result) or result <= 0:
         return default
     return result
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _read_json(path: Path) -> dict[str, Any]:

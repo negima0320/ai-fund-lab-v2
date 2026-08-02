@@ -4305,7 +4305,12 @@ def resume_command(
         raise RuntimeTestError("resume requires the original plan.json", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
     plan_payload = load_plan(plan_path)
     validate_plan_run_id(plan_payload=plan_payload, requested_run_id=args.run_id, plan_path=plan_path)
-    validate_plan_entry_gate(plan_payload)
+    validate_plan_entry_gate(
+        plan_payload,
+        run_dir=run_dir,
+        run_state=run_state,
+        resume=True,
+    )
     historical_authority = run_state.get("historical_evaluation_authority") if isinstance(run_state.get("historical_evaluation_authority"), dict) else {}
     historical_authority_validation = validate_historical_evaluation_authority(
         run_dir=run_dir,
@@ -5457,16 +5462,47 @@ def build_plan(
     }
 
 
-def validate_plan_entry_gate(plan_payload: dict[str, Any]) -> None:
+def validate_plan_entry_gate(
+    plan_payload: dict[str, Any],
+    *,
+    run_dir: Path | None = None,
+    run_state: dict[str, Any] | None = None,
+    resume: bool = False,
+) -> None:
     validate_schema(
         payload=plan_payload,
         artifact_name="runtime test plan",
         supported=SUPPORTED_PLAN_SCHEMA_VERSIONS,
     )
     failures: list[dict[str, Any]] = []
+    resume_classification = _resume_day_classification(run_state or {}) if resume else {}
     for day in plan_payload.get("business_dates", []):
         business_date = str(day.get("business_date") or "")
         feature = dict(day.get("feature_date_evidence") or {})
+        lifecycle_state = resume_classification.get(business_date, "FUTURE")
+        if resume and lifecycle_state in {"COMPLETED", "FAILED"}:
+            run_scoped = _run_scoped_feature_date_contract_evidence(
+                run_dir=run_dir,
+                business_date=business_date,
+            )
+            checks = _resume_feature_date_checks(
+                day=day,
+                feature=feature,
+                run_scoped=run_scoped,
+                lifecycle_state=lifecycle_state,
+            )
+            failed = [name for name, passed in checks.items() if not passed]
+            if failed:
+                failures.append(
+                    {
+                        "business_date": business_date,
+                        "resume_lifecycle_state": lifecycle_state,
+                        "failed_checks": failed,
+                        "feature_date_evidence": feature,
+                        "run_scoped_feature_date_evidence": run_scoped,
+                    }
+                )
+            continue
         expected = str(feature.get("profile_expected_selected_feature_date") or "")
         selected = str(feature.get("selected_feature_date") or "")
         source = str(feature.get("source") or "")
@@ -5502,6 +5538,97 @@ def validate_plan_entry_gate(plan_payload: dict[str, Any]) -> None:
             status="PRECONDITION_FAILURE",
             exit_code=EXIT_PRECONDITION_FAILURE,
         )
+
+
+def _resume_day_classification(run_state: dict[str, Any]) -> dict[str, str]:
+    classification = {
+        str(day): "COMPLETED"
+        for day in run_state.get("completed_business_days", [])
+        if str(day)
+    }
+    failed_day = str((run_state.get("halted_at") or {}).get("business_date") or "")
+    if not failed_day:
+        next_job = str(run_state.get("next_job") or "")
+        failed_day = next_job.split(":", 1)[0] if ":" in next_job else ""
+    if failed_day:
+        classification[failed_day] = "FAILED"
+    return classification
+
+
+def _resume_feature_date_checks(
+    *,
+    day: dict[str, Any],
+    feature: dict[str, Any],
+    run_scoped: dict[str, Any],
+    lifecycle_state: str,
+) -> dict[str, bool]:
+    expected = str(feature.get("profile_expected_selected_feature_date") or "")
+    plan_selected = str(feature.get("selected_feature_date") or day.get("feature_date") or "")
+    run_selected = str(run_scoped.get("selected_feature_date") or "")
+    return {
+        "resume_lifecycle_state_materialized": lifecycle_state in {"COMPLETED", "FAILED"},
+        "run_scoped_contract_authority_present": bool(run_scoped),
+        "run_scoped_contract_source_normal": str(run_scoped.get("feature_date_authority_source") or "") == "normal_feature_date_contract",
+        "run_scoped_status_pass": str(run_scoped.get("status") or "") == "PASS",
+        "run_scoped_selected_feature_date_present": bool(run_selected),
+        "run_scoped_selected_matches_plan": bool(run_selected) and (not plan_selected or run_selected == plan_selected),
+        "run_scoped_selected_matches_profile_expected": bool(run_selected) and (not expected or run_selected == expected),
+        "plan_expectation_not_used_as_materialized_authority": str(feature.get("authority_status") or "") == "NOT_YET_MATERIALIZED"
+        or str(feature.get("source") or "") == "runtime_test_plan_schedule_expectation",
+    }
+
+
+def _run_scoped_feature_date_contract_evidence(*, run_dir: Path | None, business_date: str) -> dict[str, Any]:
+    if run_dir is None or not business_date:
+        return {}
+    daily_dir = Path(run_dir) / "daily" / business_date
+    if not daily_dir.exists():
+        return {}
+    preferred = [
+        daily_dir / "data_readiness" / "data_readiness.json",
+        daily_dir / "market_refresh" / "runtime_manifest.json",
+        daily_dir / "morning" / "runtime_manifest.json",
+        daily_dir / "morning" / "morning_manifest.json",
+        daily_dir / "strategy" / "input_manifest.json",
+        daily_dir / "market_refresh" / "inputs" / "historical_asof" / business_date / "logical_input_manifest.json",
+    ]
+    candidates = [path for path in preferred if path.exists()]
+    candidates.extend(path for path in sorted(daily_dir.rglob("*.json")) if path not in set(candidates))
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        evidence = _find_feature_date_contract_evidence(payload)
+        if evidence:
+            evidence = dict(evidence)
+            evidence["run_scoped_evidence_path"] = str(path)
+            evidence.setdefault("contract_hash", semantic_hash(evidence))
+            evidence.setdefault("status", "PASS")
+            return evidence
+    return {}
+
+
+def _find_feature_date_contract_evidence(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        source = str(value.get("feature_date_authority_source") or value.get("contract_source") or "")
+        selected = str(value.get("selected_feature_date") or "")
+        if source in {"normal_feature_date_contract", "materialized_feature_date_contract"} and selected:
+            evidence = dict(value)
+            evidence["feature_date_authority_source"] = "normal_feature_date_contract"
+            evidence["selected_feature_date"] = selected
+            evidence["status"] = str(evidence.get("status") or "PASS")
+            return evidence
+        for child in value.values():
+            found = _find_feature_date_contract_evidence(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_feature_date_contract_evidence(child)
+            if found:
+                return found
+    return {}
 
 
 def persist_runtime_test_plan(

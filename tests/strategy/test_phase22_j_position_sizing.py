@@ -635,6 +635,29 @@ def test_phase22_pw_reason_codes_distinguish_actual_weight_and_aggregate_exposur
     assert "aggregate_target_weight_above_exposure_cap" in str(aggregate_error.value)
 
 
+def test_phase24_ii_position_sizing_allows_serialized_target_weight_rounding_tolerance(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "phase24_ii_rounding", target_count=6, exposure=0.79, rows=_rows(6)).payload
+
+    assert payload["producer_result_status"] == "PASS"
+    assert payload["total_target_weight"] == 0.790002
+    assert payload["target_gross_exposure_ratio"] == 0.79
+    assert payload["target_weight_sum_tolerance"] == 0.000003
+    assert payload["target_weight_precision"]["rounding_digits"] == 6
+    assert "aggregate_target_weight_above_exposure_cap" not in payload["reason_codes"]
+    assert validate_position_sizing_artifact(payload)["status"] == "PASS"
+
+
+def test_phase24_ii_position_sizing_blocks_real_aggregate_exposure_overflow(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "phase24_ii_real_overflow", target_count=6, exposure=0.79, rows=_rows(6)).payload
+    overflow = json.loads(json.dumps(payload))
+    overflow["total_target_weight"] = 0.791
+
+    with pytest.raises(PositionSizingSchemaError) as aggregate_error:
+        validate_position_sizing_artifact(overflow)
+
+    assert "aggregate_target_weight_above_exposure_cap" in str(aggregate_error.value)
+
+
 def test_phase22_pw_valid_configuration_has_no_cap_violation_reason(tmp_path: Path) -> None:
     payload = _produce(tmp_path / "valid_contract").payload
 

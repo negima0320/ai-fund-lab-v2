@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 from ai_fund_lab_v2.broker.settings import BrokerSettings
@@ -49,6 +50,126 @@ def test_phase21_b_no_signal_without_existing_buy_writes_empty(tmp_path):
     assert result.preserved_existing_buy_pending is False
     assert pending["status"] == "EMPTY"
     assert pending["active_pending"] is False
+    assert pending["no_order_authority_status"] == "PASS"
+    assert pending["no_order_authority"]["status"] == "NO_ORDER_AUTHORIZED"
+    assert "sell_no_signal" in pending["no_order_authority"]["authority_reason_codes"]
+
+
+def test_phase24_e1_mixed_empty_materializes_no_order_authority_and_submit_accepts(tmp_path):
+    business_date = "2022-07-06"
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path, max_buy_order_amount=12_920)
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current_state(
+        runtime_root,
+        positions=[_current_position("94320", quantity=1100, price=153.3, as_of=business_date)],
+        as_of=business_date,
+    )
+    _write_strategy_no_order_authority(runtime_root, business_date=business_date)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="demo",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="94320",
+                quantity=0,
+                reason="add",
+                source_decision="ADD",
+                source_decision_id="pm-2022-07-06-94320-add",
+            ),
+        ),
+        capital_deployment_policy=policy,
+        submit_policy_context=_submit_policy_context(policy),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert result.status == "NO_SIGNAL"
+    assert result.add_consumer_status == "REJECTED"
+    assert result.add_rejected_count == 1
+    assert pending["state"] == "EMPTY"
+    assert pending["items"] == []
+    assert pending["no_order_authority_status"] == "PASS"
+    reason_codes = pending["no_order_authority"]["authority_reason_codes"]
+    assert "existing_position_capacity_satisfied" in reason_codes
+    assert "pm_add_rejected_lot_size_not_viable" in reason_codes
+    assert "sell_no_signal" in reason_codes
+    assert "no_executable_order_items" in reason_codes
+    assert submit.status == "PASS"
+    assert submit.submitted_count == 0
+    assert submit.no_order_authority_status == "PASS"
+    assert submit.submit_action == "NO_ACTION"
+
+
+def test_phase24_e1_empty_no_order_authority_business_date_mismatch_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path)
+    _write_current_state(runtime_root, positions=[_current_position("6522", quantity=100, price=102)])
+    run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        exit_decisions=(),
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = _load_json(pending_path)
+    pending["no_order_authority"]["business_date"] = "2026-07-07"
+    _write_json(pending_path, pending)
+
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert submit.status == "REVIEW_REQUIRED"
+    assert submit.reason == "pending EMPTY no_order_authority business_date mismatch"
+
+
+def test_phase24_e1_empty_no_order_authority_source_hash_mismatch_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path)
+    _write_current_state(runtime_root, positions=[_current_position("6522", quantity=100, price=102)])
+    run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        exit_decisions=(),
+    )
+    order_plan_path = runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "order_plan.json"
+    order_plan = _load_json(order_plan_path)
+    order_plan["reason"] = "tampered"
+    _write_json(order_plan_path, order_plan)
+
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert submit.status == "REVIEW_REQUIRED"
+    assert submit.reason == "pending EMPTY no_order_authority source_artifact hash mismatch"
 
 
 def test_phase21_b_sell_order_composes_existing_buy_and_sell_pending(tmp_path):
@@ -344,7 +465,7 @@ def _policy(tmp_path: Path):
     return load_capital_deployment_policy(_policy_path(tmp_path))
 
 
-def _policy_path(tmp_path: Path) -> Path:
+def _policy_path(tmp_path: Path, *, max_buy_order_amount=None) -> Path:
     path = tmp_path / "capital_deployment_policy.json"
     _write_json(
         path,
@@ -358,7 +479,7 @@ def _policy_path(tmp_path: Path) -> Path:
             "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
-            "max_buy_order_amount": None,
+            "max_buy_order_amount": max_buy_order_amount,
             "max_sell_liquidation_amount": None,
             "buy_notional_policy": "derived_from_capital_allocation_and_constraints",
             "sell_liquidation_policy": "current_owned_available_quantity_policy",
@@ -379,6 +500,53 @@ def _submit_policy_context(policy) -> dict:
         "submit_policy_source": policy.policy_source,
         "submit_policy_hash": capital_deployment_policy_hash(policy),
     }
+
+
+def _write_strategy_no_order_authority(root: Path, *, business_date: str) -> None:
+    strategy_dir = root / "runtime_state" / "strategy_planning" / business_date
+    order_plan = {
+        "schema_version": "phase23_i_strategy_authority_order_plan.v1",
+        "order_plan_id": f"strategy-plan-demo-{business_date}-no-order",
+        "environment": "demo",
+        "business_date": business_date,
+        "target_session_date": business_date,
+        "status": "NO_ORDER_AUTHORIZED",
+        "planning_consumer_eligibility": "NO_ORDER_AUTHORIZED",
+        "planning_authority": "phase22_strategy_runtime_planning",
+        "strategy_artifact_path": str(root / "strategy" / business_date / "runtime_planning.json"),
+        "position_sizing_artifact_path": str(root / "strategy" / business_date / "position_sizing.json"),
+        "items": [],
+        "strategy_item_lineage": [
+            {
+                "planning_id": f"rp-{business_date}-94320-no-action",
+                "security_code": "94320",
+                "planning_intent": "NO_ACTION",
+                "order_side_intent": "NONE",
+                "pending_item_generated": False,
+                "reason": "no_action_strategy_intent",
+            }
+        ],
+        "broker_write_allowed": False,
+        "broker_write_performed": False,
+        "production_decision_allowed": False,
+        "silent_fallback_used": False,
+        "latest_fallback_used": False,
+        "future_information_used": False,
+    }
+    _write_json(strategy_dir / "order_plan.json", order_plan)
+    _write_json(
+        strategy_dir / "approval_artifact.json",
+        {
+            "schema_version": "phase23_ab_no_order_authorized_approval.v1",
+            "status": "NO_ORDER_AUTHORIZED",
+            "reason": "strategy_planning_no_order_authorized",
+            "business_date": business_date,
+            "target_session_date": business_date,
+            "pending_item_count": 0,
+            "order_plan_id": order_plan["order_plan_id"],
+            "order_plan_hash": hashlib.sha256((strategy_dir / "order_plan.json").read_bytes()).hexdigest(),
+        },
+    )
 
 
 def _demo_settings() -> BrokerSettings:

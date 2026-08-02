@@ -678,6 +678,97 @@ Phase21-Dでは値を変更しない。Phase22設計では以下に分離する�
 Strategy Target:
 
 - target cash ratio
+
+## Phase24-HT Planning Submit Feasibility Boundary
+
+Planning Submit Feasibility is added to the Planning Layer as execution feasibility, not Strategy decision-making.
+
+It may read:
+
+```text
+active CapitalDeploymentPolicy
+Runtime Current / Persistent Ledger
+Safety decision
+Pending duplicate / reservation evidence
+planned BUY estimated_amount
+planned SELL estimated_amount
+```
+
+It must not change:
+
+```text
+Strategy
+PM
+Opportunity Ranking
+Portfolio Policy
+Position Sizing
+BUY quantity
+target exposure
+cash reserve
+max_exposure
+```
+
+Contract:
+
+```text
+Strategy / Position Sizing may propose target notional and quantity.
+Planning Submit Feasibility determines whether the proposed execution
+intent can become APPROVED Pending under active Runtime hard authorities.
+Submit Guard remains the final hard guard before Broker boundary.
+```
+
+Phase24-ID clarifies that Submit Feasibility is aggregate over the approved
+Pending batch, not only item-scoped.  Strategy may produce several BUY intents,
+but Runtime feasibility must reserve cash, buying_power, exposure, and active
+max_positions across those BUY intents before the plan can become submittable.
+SELL proceeds or exposure reductions are not credited to same-day BUY capacity
+without a later explicit Strategy/Runtime contract.
+
+This clarification does not alter Strategy ranking, portfolio construction,
+PM, target exposure, position sizing, or generated BUY quantity.  It only
+defines whether the generated execution set is feasible for the execution
+boundary.
+
+Failure behavior:
+
+```text
+PASS:
+  The item may proceed to Pending approval when other approval evidence passes.
+
+REVIEW_REQUIRED:
+  The item must not be APPROVED Pending.
+
+HALT:
+  Used only for Safety halt or invalid required Runtime authority after the
+  expected materialization point.
+```
+
+## Phase24-HV BUY Review / SELL Continuation Boundary
+
+BUY item-scoped execution review is not a Strategy decision and must not mutate Strategy, PM, Ranking, Portfolio Policy, Position Sizing, target exposure, max exposure, or BUY quantity.
+
+When Planning Submit Feasibility classifies a BUY item as non-submittable, Strategy intent remains auditable:
+
+```text
+BUY intent preserved
+BUY item state = REVIEW_REQUIRED
+approved BUY ids = empty
+review_scope = BUY_ITEM_SCOPED_REVIEW when the violation is item-scoped
+```
+
+This scope does not authorize the BUY. It only allows Runtime consumers to determine whether independent SELL authority may continue through Position Management and SELL Planning.
+
+SELL continuation requires separate Runtime authority:
+
+```text
+valid Current / Persistent Ledger position authority
+valid PM authority
+valid SELL Planning input authority
+valid Safety authority
+Submit Guard final revalidation
+```
+
+Portfolio-scoped, global-safety, unknown-authority, corrupt, ambiguous, or stale review remains fail-closed and must not be downgraded by Strategy.
 - target exposure
 - target position count
 - target position weight
@@ -1173,3 +1264,21 @@ Phase22実装は以下を満たす。
 | Experiment Acceptance | Single-change + multi-regime | return only | 過学習防止 | DECIDED |
 
 Open decisionsはPhase22実装前に必要Evidenceを明示して閉じる。
+
+## 27. Phase24-HY Ranking Consumer Alignment
+
+Portfolio Construction consumes BUY AI opportunity ranking as an execution input authority. The canonical semantic field is `opportunity_buy_rank`; the current Runtime BUY AI artifact materializes this value as `buy_rank` in `.runtime/runtime_state/buy_ai/<business_date>/opportunity_rankings.json`.
+
+Strategy consumers must keep these rank semantics separate:
+
+| Field | Meaning | Authority |
+|---|---|---|
+| `candidate_rank` | Candidate model order before opportunity ranking | Candidate artifact only |
+| `opportunity_buy_rank` | Canonical BUY opportunity rank | Opportunity ranking artifact `buy_rank` |
+| `input_opportunity_rank` | Portfolio Construction copy of `opportunity_buy_rank` | Opportunity ranking artifact row |
+| `portfolio_selection_order` | Portfolio Construction target selection order | Portfolio Construction |
+| `runtime_planning_order` | Runtime Planning emission/order trace | Runtime Planning |
+
+Opportunity rows must not use `candidate_rank`, candidate model rank, adapter array index, or recomputed rank as the opportunity rank. If an opportunity row has no usable `buy_rank` / `opportunity_buy_rank`, or if rank authority fields conflict, the consumer must fail closed with `REVIEW_REQUIRED` / row rejection before Portfolio Construction selection. Candidate rows may continue to use `candidate_rank` as candidate authority, but that value is not an opportunity rank.
+
+This contract does not change Opportunity Ranking production, `expected_edge_score`, eligibility, Portfolio Policy, Position Sizing policy, PM, Re-entry, Submit Guard, max exposure, cash buffer, or future-PnL boundaries.

@@ -24,7 +24,7 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     load_capital_deployment_policy,
 )
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
-from ai_fund_lab_v2.runtime_v2.submit.models import SubmitEnvironmentGuardContext
+from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, SubmitEnvironmentGuardContext
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import _approval_from_pending, run_submit_pipeline
 
 
@@ -154,6 +154,63 @@ def test_phase20_bq_historical_submit_pipeline_fills_9000_series_without_broker_
     assert evidence["historical_replay"] is True
 
 
+def test_phase24_im_historical_submit_materializes_corporate_action_authority_before_guard(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="SELL")
+    pd.DataFrame(
+        [{"Date": BUSINESS_DATE, "Code": SYMBOL, "AdjFactor": 0.3333333333333333, "C": 795.0, "AdjC": 795.0}]
+    ).to_parquet(tmp_path / "raw_ohlcv.parquet", index=False)
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+
+    authority_path = runtime_root / "runtime_state" / "corporate_action_adjustments" / BUSINESS_DATE / f"{SYMBOL}.json"
+    authority_hash = _sha(authority_path)
+    guard = result.submit_guard_item_evidence[0]
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.submitted_count == 0
+    assert authority_path.exists()
+    assert guard["corporate_action_event_status"] == "IMPACT_DETECTED"
+    assert guard["corporate_action_event_type"] == "UNKNOWN_ADJFACTOR_IMPACT"
+    assert guard["corporate_action_adjustment_authority_status"] == "REVIEW_REQUIRED"
+    assert guard["corporate_action_adjustment_authority_path"] == str(authority_path)
+    assert guard["corporate_action_adjustment_authority_hash"] == authority_hash
+    assert "corporate_action_type_unresolved" in guard["corporate_action_reason_codes"]
+
+    adapter_result = adapter.preflight(
+        RuntimeV2SubmitCommand(
+            command_id="phase24-im-adapter-command",
+            environment="historical",
+            pending_plan_id="pending-phase24-im",
+            pending_item_id="item-1",
+            approval_hash="sha256:approval",
+            symbol=SYMBOL,
+            side="SELL",
+            quantity=100.0,
+            order_type="MARKET",
+            price_type="MARKET",
+            limit_price=0.0,
+            estimated_amount=300000.0,
+            target_session_date=BUSINESS_DATE,
+            live_order_allowed=True,
+            listed_info={"code": SYMBOL, "trading_unit": 100},
+        )
+    )
+    adapter_classification = adapter_result.response_classification
+    assert adapter_classification["corporate_action_adjustment_authority_path"] == str(authority_path)
+    assert adapter_classification["corporate_action_adjustment_authority_hash"] == authority_hash
+    assert adapter_classification["corporate_action_event_status"] == guard["corporate_action_event_status"]
+    assert adapter_classification["corporate_action_adjustment_authority_status"] == guard["corporate_action_adjustment_authority_status"]
+
+
 def test_phase17_g_historical_adapter_prefers_run_scoped_asof_hash_over_stale_manifest(tmp_path: Path) -> None:
     runtime_root, _, _ = _runtime_fixture(tmp_path, side="BUY")
     stale_manifest = tmp_path / "stale_pit_manifest.json"
@@ -183,6 +240,21 @@ def test_phase17_g_historical_adapter_prefers_run_scoped_asof_hash_over_stale_ma
                         "physical_source_hash": _sha(tmp_path / "ohlcv.parquet"),
                     }
                 ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    logical_manifest = asof_view.parent / "inputs" / "historical_asof" / BUSINESS_DATE / "logical_input_manifest.json"
+    logical_manifest.parent.mkdir(parents=True, exist_ok=True)
+    logical_manifest.write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "business_date": BUSINESS_DATE,
+                "feature_date": BUSINESS_DATE,
+                "as_of_date": BUSINESS_DATE,
+                "materialization_id": f"test-historical-asof:{BUSINESS_DATE}",
+                "logical_paths": {"normalized_ohlcv": str(tmp_path / "ohlcv.parquet")},
             }
         ),
         encoding="utf-8",

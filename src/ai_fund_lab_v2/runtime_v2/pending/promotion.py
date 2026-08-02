@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Sequence
 
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import capital_deployment_policy_hash_from_context
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle import validate_pending_transition
 from ai_fund_lab_v2.runtime_v2.pending.models import (
     PendingApprovalLink,
@@ -18,6 +19,10 @@ from ai_fund_lab_v2.runtime_v2.pending.models import (
 )
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
     materialize_historical_pending_safety_context,
+)
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
+    RuntimeCurrentExposure,
+    evaluate_planning_submit_feasibility,
 )
 
 
@@ -104,12 +109,55 @@ def attach_approval_link(
     approved_item_ids: Sequence[str],
     approval_expires_at: str,
     approved_order_conditions: dict | None = None,
+    planning_submit_feasibility_current: RuntimeCurrentExposure | None = None,
+    planning_submit_feasibility_policy: CapitalDeploymentPolicy | None = None,
 ) -> PendingOrderPlan:
     approved_tuple = tuple(approved_item_ids)
     item_ids = {item.pending_item_id for item in plan.items}
     missing = tuple(item_id for item_id in approved_tuple if item_id not in item_ids)
     if missing:
         raise ValueError(f"approved_item_ids not in pending items: {', '.join(missing)}")
+    approved_items = tuple(item for item in plan.items if item.pending_item_id in approved_tuple)
+    feasibility_payload = None
+    if planning_submit_feasibility_current is not None and planning_submit_feasibility_policy is not None:
+        feasibility = evaluate_planning_submit_feasibility(
+            items=approved_items,
+            policy=planning_submit_feasibility_policy,
+            current=planning_submit_feasibility_current,
+            authority_source="planning_submit_feasibility_pre_approved_pending",
+        )
+        feasibility_payload = feasibility.evidence
+        if not feasibility.passed:
+            scope = _review_scope_for_submit_feasibility(feasibility_payload)
+            feasibility_by_id = _feasibility_items_by_pending_id(feasibility_payload)
+            return replace(
+                plan,
+                state=PendingPlanState.REVIEW_REQUIRED,
+                updated_at=approval_expires_at,
+                planning_submit_feasibility=feasibility_payload,
+                approved_item_ids=(),
+                buy_items_status=scope["buy_items_status"],
+                sell_items_status=scope["sell_items_status"],
+                plan_overall_status="REVIEW_REQUIRED",
+                approved_buy_item_ids=(),
+                approved_sell_item_ids=(),
+                review_required_buy_item_ids=scope["review_required_buy_item_ids"],
+                review_required_sell_item_ids=scope["review_required_sell_item_ids"],
+                review_scope=scope["review_scope"],
+                review_scope_source=scope["review_scope_source"],
+                review_scope_reason=scope["review_scope_reason"],
+                sell_continuation_allowed=scope["sell_continuation_allowed"],
+                items=tuple(
+                    _materialize_item_scoped_review_state(
+                        item,
+                        feasibility_by_id=feasibility_by_id,
+                        scope=scope,
+                    )
+                    if item.pending_item_id in approved_tuple
+                    else item
+                    for item in plan.items
+                ),
+            )
     next_state = plan.state
     if approval_status == "APPROVED":
         transition = validate_pending_transition(
@@ -144,6 +192,18 @@ def attach_approval_link(
             approved_order_conditions=approved_order_conditions,
         ),
         approved_item_ids=approved_tuple,
+        planning_submit_feasibility=feasibility_payload or plan.planning_submit_feasibility,
+        buy_items_status=_side_status(plan.items, approved_tuple, "BUY"),
+        sell_items_status=_side_status(plan.items, approved_tuple, "SELL"),
+        plan_overall_status=next_state.value,
+        approved_buy_item_ids=tuple(item.pending_item_id for item in plan.items if item.side.upper() == "BUY" and item.pending_item_id in approved_tuple),
+        approved_sell_item_ids=tuple(item.pending_item_id for item in plan.items if item.side.upper() == "SELL" and item.pending_item_id in approved_tuple),
+        review_required_buy_item_ids=(),
+        review_required_sell_item_ids=(),
+        review_scope="",
+        review_scope_source="",
+        review_scope_reason="",
+        sell_continuation_allowed=False,
         items=tuple(
             replace(item, approved=item.pending_item_id in approved_tuple)
             for item in plan.items
@@ -171,6 +231,80 @@ def _policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
                 "manual_review_threshold": item.manual_review_threshold,
             }
     return {}
+
+
+def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
+    items = tuple(item for item in evidence.get("items") or () if isinstance(item, dict))
+    blocked = tuple(item for item in items if str(item.get("status") or "") != "PASS")
+    blocked_buy_ids = tuple(
+        str(item.get("pending_item_id") or "")
+        for item in blocked
+        if str(item.get("side") or "").upper() == "BUY" and str(item.get("pending_item_id") or "")
+    )
+    blocked_sell_ids = tuple(
+        str(item.get("pending_item_id") or "")
+        for item in blocked
+        if str(item.get("side") or "").upper() == "SELL" and str(item.get("pending_item_id") or "")
+    )
+    unknown_authority = any(
+        str(item.get("violated_policy") or "").endswith("_missing")
+        or not str(item.get("violated_policy") or "")
+        or not str(item.get("violated_policy_source") or "")
+        for item in blocked
+    )
+    buy_item_scoped = bool(blocked_buy_ids) and not blocked_sell_ids and not unknown_authority
+    review_scope = "BUY_ITEM_SCOPED_REVIEW" if buy_item_scoped else "AUTHORITY_UNKNOWN_REVIEW"
+    return {
+        "buy_items_status": "REVIEW_REQUIRED" if blocked_buy_ids else "PASS",
+        "sell_items_status": "REVIEW_REQUIRED" if blocked_sell_ids else "NOT_PRESENT",
+        "review_required_buy_item_ids": blocked_buy_ids,
+        "review_required_sell_item_ids": blocked_sell_ids,
+        "review_scope": review_scope,
+        "review_scope_source": str(evidence.get("contract_id") or "planning_submit_feasibility"),
+        "review_scope_reason": str(evidence.get("reason") or ""),
+        "sell_continuation_allowed": buy_item_scoped,
+    }
+
+
+def _feasibility_items_by_pending_id(evidence: dict) -> dict[str, dict]:
+    return {
+        str(item.get("pending_item_id") or ""): dict(item)
+        for item in evidence.get("items") or ()
+        if isinstance(item, dict) and str(item.get("pending_item_id") or "")
+    }
+
+
+def _materialize_item_scoped_review_state(
+    item: PendingOrderItem,
+    *,
+    feasibility_by_id: dict[str, dict],
+    scope: dict,
+) -> PendingOrderItem:
+    feasibility = feasibility_by_id.get(item.pending_item_id, {})
+    feasibility_status = str(feasibility.get("status") or "")
+    review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    if item.pending_item_id in review_required_ids:
+        review_reason = str(feasibility.get("reason") or scope["review_scope_reason"] or "planning_submit_feasibility_review_required")
+        batch_submit_status = "ITEM_REVIEW_REQUIRED"
+    else:
+        review_reason = "batch_submit_blocked_by_item_scoped_review"
+        batch_submit_status = "BLOCKED_BY_BATCH_REVIEW"
+    return replace(
+        item,
+        approved=False,
+        state="REVIEW_REQUIRED",
+        feasibility_status=feasibility_status,
+        batch_submit_status=batch_submit_status,
+        item_review_reason=review_reason,
+    )
+
+
+def _side_status(items: tuple[PendingOrderItem, ...], approved_item_ids: tuple[str, ...], side: str) -> str:
+    side_items = tuple(item for item in items if item.side.upper() == side)
+    if not side_items:
+        return "NOT_PRESENT"
+    approved = {item_id for item_id in approved_item_ids}
+    return "APPROVED" if all(item.pending_item_id in approved for item in side_items) else "PENDING_APPROVAL"
 
 
 def _planning_lineage_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
@@ -212,6 +346,9 @@ def _safety_context_from_items(items: tuple[PendingOrderItem, ...], *, target_se
                 safety_decision=item.safety_decision,
                 safety_reason=item.safety_reason,
                 safety_business_date=target_session_date,
+                runtime_test_run_id=item.runtime_test_run_id,
+                runtime_test_profile_id=item.runtime_test_profile_id,
+                runtime_test_evidence_root=item.runtime_test_evidence_root,
             )
             if historical_context:
                 return historical_context

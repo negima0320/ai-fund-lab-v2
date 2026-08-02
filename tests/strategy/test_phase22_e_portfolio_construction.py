@@ -201,6 +201,60 @@ def test_phase23_ao_target_weight_authority_equal_weight_and_cap(tmp_path: Path)
     assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
 
 
+def test_phase24_if_target_weight_sum_allows_six_decimal_rounding_tolerance(tmp_path: Path) -> None:
+    policy_path = _write_resolved_portfolio_policy(tmp_path)
+    policy_payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy_payload.update(
+        {
+            "target_position_count": 10,
+            "target_gross_exposure_ratio": 0.79,
+            "target_gross_exposure": 0.79,
+            "cash_reserve_ratio": 0.21,
+            "cash_reserve": 0.21,
+        }
+    )
+    policy_payload["artifact_hash"] = portfolio_policy.portfolio_policy_hash(policy_payload)
+    _write_json(policy_path, policy_payload)
+    candidate_rows = [
+        {
+            "candidate_id": f"candidate-{code}",
+            "code": code,
+            "candidate_order": index,
+            "candidate_score": 1.0 - index / 100,
+            "universe_eligible": True,
+        }
+        for index, code in enumerate(("21340", "59550", "67310", "99840", "37820", "40520"), start=1)
+    ]
+    opportunity_rows = [
+        {
+            "opportunity_id": f"opportunity-{row['code']}",
+            "code": row["code"],
+            "opportunity_rank": index,
+            "expected_edge_score": row["candidate_score"],
+        }
+        for index, row in enumerate(candidate_rows, start=1)
+    ]
+
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=policy_path,
+        position_management_artifact_path=_write_position_management(tmp_path),
+        candidate_summary=_source_summary(tmp_path, "candidate", rows=candidate_rows),
+        opportunity_summary=_source_summary(tmp_path, "opportunity", rows=opportunity_rows),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=[]),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_artifact_summary(policy_path),
+    )
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["resolved_target_member_count"] == 6
+    assert payload["total_target_weight"] == 0.790002
+    assert payload["target_weight_sum_tolerance"] == 0.000003
+    assert "total_target_weight_above_target_gross_exposure" not in payload["reason_codes"]
+
+
 def test_phase23_as_aq_portfolio_policy_artifact_consumption_resolves_target_weight(tmp_path: Path) -> None:
     policy_path = _write_resolved_portfolio_policy(tmp_path)
     payload, _ = build_portfolio_construction_payload(

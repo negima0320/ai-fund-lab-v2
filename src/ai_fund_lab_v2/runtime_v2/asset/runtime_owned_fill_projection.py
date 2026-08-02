@@ -18,6 +18,7 @@ EXECUTION_READONLY_SOURCES = {
     "runtime_v2_execution_readonly",
     "runtime_v2_execution_readonly_simulation",
 }
+POSITION_QUANTITY_EPSILON = 0.000001
 
 
 @dataclass(frozen=True)
@@ -94,10 +95,20 @@ def project_runtime_owned_fills_to_current(
         runtime_owned_symbols=runtime_owned_symbols,
         mode=mode,
     )
-    if quantity_projection["errors"]:
+    cost_projection = _projected_open_costs(
+        canonical_events=canonical_events,
+        runtime_owned_symbols=runtime_owned_symbols,
+    )
+    projection_errors = list(quantity_projection["errors"])
+    if canonical_events:
+        for symbol, quantity in quantity_projection["quantities"].items():
+            cost_quantity = _number((cost_projection.get(symbol) or {}).get("quantity"))
+            if abs(quantity - cost_quantity) > POSITION_QUANTITY_EPSILON:
+                projection_errors.append(f"runtime_owned_quantity_cost_basis_mismatch:{symbol}")
+    if projection_errors:
         return _result(
             status="REVIEW_REQUIRED",
-            reason="runtime owned position projection invalid: " + ",".join(quantity_projection["errors"]),
+            reason="runtime owned position projection invalid: " + ",".join(projection_errors),
             state_path=state_path,
             runtime_owned_symbols=runtime_owned_symbols,
             excluded=tuple(symbol for symbol in latest_positions if symbol not in runtime_owned_symbols),
@@ -109,6 +120,7 @@ def project_runtime_owned_fills_to_current(
         _projected_position_row(
             symbol=symbol,
             quantity=quantity,
+            projected_cost=cost_projection.get(symbol),
             latest_positions=latest_positions,
             business_date=business_date,
         )
@@ -143,6 +155,32 @@ def project_runtime_owned_fills_to_current(
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
     )
+    if projected_cash < -POSITION_QUANTITY_EPSILON:
+        after = {
+            **before,
+            "runtime_owned_projection": {
+                "broker_cash_copied": False,
+                "unrelated_demo_positions_copied": False,
+                "cash_policy": "runtime_evaluation_capital_plus_runtime_owned_execution_cash_effect",
+                "position_policy": "runtime_submit_accepted_and_orderlist_filled_and_ledger_position_matched",
+                "raw_projected_cash": projected_cash,
+            },
+        }
+        return _result(
+            status="REVIEW_REQUIRED",
+            reason=f"runtime owned cash projection negative: {projected_cash}",
+            state_path=state_path,
+            runtime_owned_symbols=runtime_owned_symbols,
+            excluded=tuple(symbol for symbol in latest_positions if symbol not in runtime_owned_symbols),
+            positions=tuple(_public_position(position) for position in positions),
+            before=before,
+            after=after,
+            projected_market_value=market_value,
+            projected_cost_basis=cost_basis,
+            projected_cash=projected_cash,
+            projected_buying_power=projected_cash,
+            projected_total_equity=projected_cash + market_value,
+        )
     realized_pnl = _projected_realized_pnl(
         submit_orders=submit_orders,
         ledger_executions=ledger_executions,
@@ -302,12 +340,18 @@ def _projected_position_row(
     *,
     symbol: str,
     quantity: float,
+    projected_cost: dict[str, float] | None,
     latest_positions: dict[str, dict[str, Any]],
     business_date: str,
 ) -> dict[str, Any]:
     latest = latest_positions.get(symbol) or {}
     latest_quantity = _number(latest.get("quantity"))
-    average_price = _number(latest.get("average_price"))
+    projected_open_cost = _number((projected_cost or {}).get("cost"))
+    average_price = (
+        projected_open_cost / quantity
+        if quantity > POSITION_QUANTITY_EPSILON and projected_open_cost > POSITION_QUANTITY_EPSILON
+        else _number(latest.get("average_price"))
+    )
     market_price = _number(latest.get("market_value")) / latest_quantity if latest_quantity else average_price
     row = dict(latest)
     row["symbol"] = symbol
@@ -317,6 +361,39 @@ def _projected_position_row(
     row["market_value"] = quantity * market_price
     row["as_of"] = row.get("as_of") or row.get("recorded_at") or business_date
     return row
+
+
+def _projected_open_costs(
+    *,
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+    runtime_owned_symbols: tuple[str, ...],
+) -> dict[str, dict[str, float]]:
+    positions: dict[str, dict[str, float]] = {
+        symbol: {"quantity": 0.0, "cost": 0.0}
+        for symbol in runtime_owned_symbols
+    }
+    rows = sorted(
+        _runtime_owned_canonical_events(canonical_events, runtime_owned_symbols=runtime_owned_symbols),
+        key=lambda event: (event.executed_at, event.canonical_dedup_key),
+    )
+    for row in rows:
+        symbol = row.symbol
+        state = positions.setdefault(symbol, {"quantity": 0.0, "cost": 0.0})
+        quantity = row.quantity
+        price = row.price
+        side = row.side.upper()
+        if side == "BUY":
+            state["quantity"] += quantity
+            state["cost"] += quantity * price
+        elif side == "SELL" and quantity > 0:
+            average_cost = state["cost"] / state["quantity"] if state["quantity"] > 0 else 0.0
+            state["quantity"] = max(state["quantity"] - quantity, 0.0)
+            if state["quantity"] <= POSITION_QUANTITY_EPSILON:
+                state["quantity"] = 0.0
+                state["cost"] = 0.0
+            else:
+                state["cost"] = max(state["cost"] - average_cost * quantity, 0.0)
+    return positions
 
 
 def _projected_cash(
@@ -329,11 +406,11 @@ def _projected_cash(
 ) -> float:
     execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
     if not execution_rows:
-        return max(starting_cash - cost_basis, 0.0)
+        return starting_cash - cost_basis
     resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
     canonical_events = _runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols)
     if not canonical_events:
-        return max(starting_cash - cost_basis, 0.0)
+        return starting_cash - cost_basis
     cash = starting_cash
     for event in canonical_events:
         amount = event.gross_notional
@@ -342,7 +419,7 @@ def _projected_cash(
             cash -= amount
         elif side == "SELL":
             cash += amount
-    return max(cash, 0.0)
+    return cash
 
 
 def _projected_realized_pnl(
@@ -393,18 +470,21 @@ def _state_payload_with_metadata(
     *,
     realized_pnl: float = 0.0,
 ) -> dict[str, Any]:
+    public_positions = [_public_position(position) for position in state.positions or ()]
+    unrealized_pnl = sum(_number(position.get("unrealized_pnl")) for position in public_positions)
     payload = {
         "schema_version": state.schema_version,
         "asset_state_id": state.asset_state_id,
         "environment": state.environment,
         "source": state.source,
         "as_of": state.as_of,
-        "positions": [_public_position(position) for position in state.positions or ()],
+        "positions": public_positions,
         "cash": state.cash,
         "buying_power": state.buying_power,
         "market_value": state.market_value,
         "total_equity": state.total_equity,
         "realized_pnl": realized_pnl,
+        "new_unrealized_pnl": unrealized_pnl,
         "review_required": state.review_required,
         "production_equivalent": state.production_equivalent,
         "acceptance_only": bool(before.get("acceptance_only", False)) or not state.production_equivalent,
@@ -478,6 +558,11 @@ def _result(
     positions: tuple[dict[str, Any], ...],
     before: dict[str, Any],
     after: dict[str, Any],
+    projected_market_value: float = 0.0,
+    projected_cost_basis: float = 0.0,
+    projected_cash: float = 0.0,
+    projected_buying_power: float = 0.0,
+    projected_total_equity: float = 0.0,
 ) -> RuntimeOwnedFillProjectionResult:
     return RuntimeOwnedFillProjectionResult(
         status=status,
@@ -486,11 +571,11 @@ def _result(
         runtime_owned_symbols=runtime_owned_symbols,
         excluded_broker_position_symbols=excluded,
         projected_positions=positions,
-        projected_market_value=0.0,
-        projected_cost_basis=0.0,
-        projected_cash=0.0,
-        projected_buying_power=0.0,
-        projected_total_equity=0.0,
+        projected_market_value=projected_market_value,
+        projected_cost_basis=projected_cost_basis,
+        projected_cash=projected_cash,
+        projected_buying_power=projected_buying_power,
+        projected_total_equity=projected_total_equity,
         current_sot_before=before,
         current_sot_after=after,
         broker_cash_copied=False,

@@ -167,6 +167,35 @@ def test_phase23_bf_opportunity_path_resolves_as_optional_input(tmp_path: Path) 
     summary = _ai_output_summary(path, business_date="2026-07-06")
 
     assert _optional_opportunity_artifact_path(summary, business_date="2026-07-06") == path
+    assert summary["summary"]["opportunity_capacity_count"] == 1
+    assert summary["summary"]["buy_eligible_opportunity_count"] == 1
+    assert summary["summary"]["buy_eligibility_policy_version"] == "runtime_v2_opportunity_buy_eligibility_v1"
+
+
+def test_phase24_d_opportunity_summary_counts_buy_eligible_only_from_canonical_resolver(tmp_path: Path) -> None:
+    path = tmp_path / "runtime_state" / "buy_ai" / "2026-07-06" / "opportunity_rankings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_v2_opportunity_rankings_v1",
+                "business_date": "2026-07-06",
+                "feature_date": "2026-07-06",
+                "rankings": [
+                    {"symbol": "7203", "rank": 1, "expected_edge_score": 0.7, "no_buy_reason": ""},
+                    {"symbol": "6758", "rank": 2, "expected_edge_score": -0.1, "no_buy_reason": "non_positive_expected_edge_score"},
+                    {"symbol": "9432", "rank": 3, "expected_edge_score": 0.2, "no_buy_reason": "high_downside_risk_score"},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _ai_output_summary(path, business_date="2026-07-06")
+
+    assert summary["summary"]["opportunity_capacity_count"] == 3
+    assert summary["summary"]["buy_eligible_opportunity_count"] == 1
 
 
 def test_phase23_bf_opportunity_path_absent_returns_none_without_keyerror(tmp_path: Path) -> None:

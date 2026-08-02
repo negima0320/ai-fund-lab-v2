@@ -154,6 +154,73 @@ def test_phase23_bq_strategy_authority_accepts_carry_forward_current_position_no
     assert len(pending.plan.items) == 0
 
 
+def test_phase24_ij_unscoped_empty_review_does_not_commit_current_pending(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    strategy_dir = tmp_path / "strategy"
+    strategy_dir.mkdir(parents=True)
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp",
+        pm_actions={"6098": "HOLD"},
+        pc_members={"6098": ("ADD_CANDIDATE", False)},
+        current_codes=(),
+        position_sizing_positions={
+            "6098": _position_sizing_row(
+                target_notional=0.0,
+                target_quantity=0,
+                quantity_delta=0,
+                quantity_status="RESOLVED_ZERO_DELTA",
+            )
+        },
+    )
+    runtime_payload = json.loads(Path(runtime_plan.artifact_path).read_text(encoding="utf-8"))
+    for plan in runtime_payload["plans"]:
+        if str(plan.get("security_code") or "") == "6098":
+            plan["planning_intent"] = "BUY_NEW"
+            plan["order_side_intent"] = "BUY"
+            plan["planned_quantity"] = 0
+            plan["quantity_status"] = "RESOLVED_ZERO_DELTA"
+    _write_json(strategy_dir / "runtime_planning.json", runtime_payload)
+    _write_position_sizing(
+        strategy_dir / "position_sizing.json",
+        symbol="6098",
+        target_notional=0.0,
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    prior_pending = {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "pending_plan_id": "prior-authoritative-pending",
+        "state": "EMPTY",
+        "status": "EMPTY",
+        "active_pending": False,
+        "environment": "historical",
+        "target_session_date": BUSINESS_DATE,
+        "items": [],
+    }
+    _write_json(pending_path, prior_pending)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context={"broker_write": False},
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "strategy_planning_authority_unresolved"
+    assert result.pending_item_count == 0
+    assert result.pending_commit_status == "NOT_COMMITTED_REVIEW_REQUIRED_EMPTY_UNSCOPED"
+    assert result.pending_authority_eligibility == "AUTHORITY_INELIGIBLE"
+    assert result.pending_retry_eligibility == "RETRY_INPUT_INELIGIBLE"
+    assert result.atomic_commit_decision == "SKIP_CURRENT_PENDING_COMMIT"
+    assert json.loads(pending_path.read_text(encoding="utf-8")) == prior_pending
+    order_plan = json.loads((runtime_root / "runtime_state" / "strategy_planning" / BUSINESS_DATE / "order_plan.json").read_text(encoding="utf-8"))
+    approval = json.loads((runtime_root / "runtime_state" / "strategy_planning" / BUSINESS_DATE / "approval_artifact.json").read_text(encoding="utf-8"))
+    assert order_plan["planning_consumer_eligibility"] == "REVIEW_REQUIRED"
+    assert approval["reason"] == "strategy_planning_authority_unresolved"
+
+
 def test_phase23_az_strategy_authority_canonical_path_materializes_pending_safety(tmp_path: Path) -> None:
     runtime_root = _runtime_root_for_data_readiness(tmp_path)
     strategy_dir = tmp_path / "strategy"
@@ -177,7 +244,7 @@ def test_phase23_az_strategy_authority_canonical_path_materializes_pending_safet
         business_date=BUSINESS_DATE,
         mode="historical",
         strategy_dir=strategy_dir,
-        price_by_symbol={symbol: 1_000.0 for symbol in symbols},
+        price_by_symbol={symbol: 900.0 for symbol in symbols},
         environment_capability_context=_historical_context(tmp_path),
         safety_authority_payload=_historical_safety_payload(tmp_path),
     )
@@ -218,30 +285,36 @@ def test_phase23_az_strategy_authority_canonical_path_materializes_pending_safet
 
 def test_phase23_bb_planning_lineage_and_submit_policy_authority_are_separated(tmp_path: Path) -> None:
     runtime_root = _runtime_root_for_data_readiness(tmp_path)
+    _write_current_cash(runtime_root, cash=2_000_000)
     strategy_dir = tmp_path / "strategy"
     strategy_dir.mkdir(parents=True)
-    policy_path = _write_capital_policy(tmp_path / "capital_deployment_policy.json")
+    policy_path = _write_capital_policy(
+        tmp_path / "capital_deployment_policy.json",
+        evaluation_capital=2_000_000,
+        max_exposure=2_000_000,
+    )
     policy = load_capital_deployment_policy(policy_path)
     symbols = ("31330", "43780", "45640", "45960", "45970", "66340", "67400", "89180", "94320")
+    target_notional = 50_000.0
     runtime_plan = produce_runtime_planning_fixture(
         tmp_path / "rp",
         pm_actions={symbol: "HOLD" for symbol in symbols},
         pc_members={symbol: ("ADD_CANDIDATE", False) for symbol in symbols},
         current_codes=(),
         position_sizing_positions={
-            symbol: _position_sizing_row(target_notional=120_000.0, target_quantity=100, quantity_delta=100)
+            symbol: _position_sizing_row(target_notional=target_notional, target_quantity=100, quantity_delta=100)
             for symbol in symbols
         },
     )
     Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
-    _write_position_sizing_many(strategy_dir / "position_sizing.json", symbols=symbols, target_notional=120_000.0)
+    _write_position_sizing_many(strategy_dir / "position_sizing.json", symbols=symbols, target_notional=target_notional)
 
     result = activate_strategy_planning_authority(
         runtime_root=runtime_root,
         business_date=BUSINESS_DATE,
         mode="historical",
         strategy_dir=strategy_dir,
-        price_by_symbol={symbol: 1_000.0 for symbol in symbols},
+        price_by_symbol={symbol: 500.0 for symbol in symbols},
         environment_capability_context=_historical_context(tmp_path),
         safety_authority_payload=_historical_safety_payload(tmp_path),
         submit_policy_authority_payload=_submit_policy_payload(policy),
@@ -283,11 +356,17 @@ def test_phase23_bb_planning_lineage_and_submit_policy_authority_are_separated(t
 
 def test_phase23_bd_opportunity_authority_survives_pending_item_roundtrip_and_submit_guard(tmp_path: Path) -> None:
     runtime_root = _runtime_root_for_data_readiness(tmp_path)
+    _write_current_cash(runtime_root, cash=2_000_000)
     strategy_dir = tmp_path / "strategy"
     strategy_dir.mkdir(parents=True)
-    policy_path = _write_capital_policy(tmp_path / "capital_deployment_policy.json")
+    policy_path = _write_capital_policy(
+        tmp_path / "capital_deployment_policy.json",
+        evaluation_capital=2_000_000,
+        max_exposure=2_000_000,
+    )
     policy = load_capital_deployment_policy(policy_path)
     symbols = ("31330", "43780", "45640", "45960", "45970", "66340", "67400", "89180", "94320")
+    target_notional = 50_000.0
     opportunity_path = _write_opportunity_rankings(
         runtime_root / "runtime_state" / "buy_ai" / BUSINESS_DATE / "opportunity_rankings.json",
         symbols=symbols,
@@ -298,7 +377,7 @@ def test_phase23_bd_opportunity_authority_survives_pending_item_roundtrip_and_su
         pc_members={symbol: ("ADD_CANDIDATE", False) for symbol in symbols},
         current_codes=(),
         position_sizing_positions={
-            symbol: _position_sizing_row(target_notional=120_000.0, target_quantity=100, quantity_delta=100)
+            symbol: _position_sizing_row(target_notional=target_notional, target_quantity=100, quantity_delta=100)
             for symbol in symbols
         },
         opportunity_artifact_path=opportunity_path,
@@ -306,14 +385,14 @@ def test_phase23_bd_opportunity_authority_survives_pending_item_roundtrip_and_su
     runtime_payload = json.loads(Path(runtime_plan.artifact_path).read_text(encoding="utf-8"))
     buy_plans = [plan for plan in runtime_payload["plans"] if plan["order_side_intent"] == "BUY"]
     Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
-    _write_position_sizing_many(strategy_dir / "position_sizing.json", symbols=symbols, target_notional=120_000.0)
+    _write_position_sizing_many(strategy_dir / "position_sizing.json", symbols=symbols, target_notional=target_notional)
 
     result = activate_strategy_planning_authority(
         runtime_root=runtime_root,
         business_date=BUSINESS_DATE,
         mode="demo",
         strategy_dir=strategy_dir,
-        price_by_symbol={symbol: 1_000.0 for symbol in symbols},
+        price_by_symbol={symbol: 500.0 for symbol in symbols},
         environment_capability_context={"broker_write": False},
         safety_authority_payload=_demo_safety_payload(),
         submit_policy_authority_payload=_submit_policy_payload(policy),
@@ -336,10 +415,22 @@ def test_phase23_bd_opportunity_authority_survives_pending_item_roundtrip_and_su
     assert len(buy_plans) == 9
     assert all(plan.get("opportunity_authority", {}).get("opportunity_row_id") for plan in buy_plans)
     assert result.status == "PASS"
+    buy_lineage = [item for item in result.lineage["items"] if item["pending_item_generated"]]
+    assert len(buy_lineage) == 9
+    assert all(item["opportunity_buy_rank"] for item in buy_lineage)
+    assert all(item["portfolio_input_opportunity_rank"] == item["opportunity_buy_rank"] for item in buy_lineage)
+    assert all(item["position_sizing_opportunity_buy_rank"] == item["opportunity_buy_rank"] for item in buy_lineage)
+    assert all(item["rank_authority_status"] == "PASS" for item in buy_lineage)
+    assert all(item["rank_authority"] == "OPPORTUNITY_BUY_RANK_AUTHORITY" for item in buy_lineage)
+    assert all(item["opportunity_artifact_path"] == str(opportunity_path) for item in buy_lineage)
+    assert all(item["opportunity_artifact_hash"] for item in buy_lineage)
+    assert all(item["opportunity_row_id"] for item in buy_lineage)
+    assert all(item["opportunity_row_authority_hash"] for item in buy_lineage)
     assert pending.plan is not None
     assert len(pending.plan.items) == 9
     assert raw_pending["items"][0]["listed_info"]["opportunity_artifact_path"] == str(opportunity_path)
     assert raw_pending["items"][0]["listed_info"]["opportunity_row_id"]
+    assert raw_pending["items"][0]["listed_info"]["opportunity_buy_rank"]
     assert raw_pending["items"][0]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
     assert pending.plan.items[0].listed_info is not None
     assert pending.plan.items[0].listed_info["opportunity_buy_eligibility"] == "BUY_ELIGIBLE"
@@ -583,11 +674,10 @@ def test_phase23_i_missing_price_does_not_fallback_to_legacy_or_empty_pass(tmp_p
     assert result.no_action is False
     assert result.legacy_planning_authority_used is False
     assert "strategy_runtime_planning_artifact_invalid" in result.reason_codes
+    assert result.pending_commit_status == "NOT_COMMITTED_REVIEW_REQUIRED_EMPTY_UNSCOPED"
+    assert result.pending_authority_eligibility == "AUTHORITY_INELIGIBLE"
     pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="historical")
-    assert pending.exists and pending.valid
-    assert pending.plan is not None
-    assert pending.plan.state.value == "REVIEW_REQUIRED"
-    assert pending.plan.items == ()
+    assert not pending.exists
 
 
 def test_phase23_i_valid_no_action_remains_empty_pending_without_legacy_fallback(tmp_path: Path) -> None:
@@ -649,9 +739,10 @@ def test_phase23_ar_invalid_planned_quantity_fails_closed_without_pending_materi
 
     assert result.status == "REVIEW_REQUIRED"
     assert "strategy_runtime_planning_artifact_invalid" in result.reason_codes
+    assert result.pending_commit_status == "NOT_COMMITTED_REVIEW_REQUIRED_EMPTY_UNSCOPED"
+    assert result.pending_authority_eligibility == "AUTHORITY_INELIGIBLE"
     pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="historical")
-    assert pending.plan is not None
-    assert pending.plan.items == ()
+    assert not pending.exists
 
 
 def test_phase23_r_strategy_shadow_summary_marks_called_consumer(tmp_path: Path) -> None:
@@ -845,6 +936,15 @@ def _runtime_root_for_data_readiness(tmp_path: Path) -> Path:
     return root
 
 
+def _write_current_cash(runtime_root: Path, *, cash: float) -> None:
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["cash"] = cash
+    payload["buying_power"] = cash
+    payload["total_equity"] = cash + float(payload.get("market_value") or 0)
+    _write_json(state_path, payload)
+
+
 def _historical_context(tmp_path: Path) -> dict:
     return {
         "runtime_mode": "historical",
@@ -949,16 +1049,21 @@ def _write_opportunity_rankings(path: Path, *, symbols: tuple[str, ...], no_buy_
     return path
 
 
-def _write_capital_policy(path: Path) -> Path:
+def _write_capital_policy(
+    path: Path,
+    *,
+    evaluation_capital: float = 1_000_000,
+    max_exposure: float = 850_000,
+) -> Path:
     _write_json(
         path,
         {
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
-            "evaluation_capital": 1_000_000,
+            "evaluation_capital": evaluation_capital,
             "target_investment_ratio": 0.85,
             "cash_buffer": 0.05,
-            "max_exposure": 850_000,
+            "max_exposure": max_exposure,
             "max_position_weight": 0.2,
             "max_positions": 10,
             "min_order_amount": 0,

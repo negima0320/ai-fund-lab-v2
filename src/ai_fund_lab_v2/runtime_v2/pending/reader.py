@@ -261,6 +261,9 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 estimated_amount=float(item["estimated_amount"]),
                 approved=bool(item["approved"]),
                 state=str(item["state"]),
+                feasibility_status=str(item.get("feasibility_status") or ""),
+                batch_submit_status=str(item.get("batch_submit_status") or ""),
+                item_review_reason=str(item.get("item_review_reason") or ""),
                 listed_info=dict(item["listed_info"]) if item.get("listed_info") is not None else None,
                 price_source=str(item.get("price_source") or ""),
                 price_as_of=str(item.get("price_as_of") or ""),
@@ -353,6 +356,22 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
         safety_context=dict(payload["safety_context"]) if payload.get("safety_context") else None,
         safety_decision_id=str(payload.get("safety_decision_id") or ""),
         safety_policy_version=str(payload.get("safety_policy_version") or ""),
+        planning_submit_feasibility=(
+            dict(payload["planning_submit_feasibility"])
+            if isinstance(payload.get("planning_submit_feasibility"), Mapping)
+            else None
+        ),
+        buy_items_status=str(payload.get("buy_items_status") or ""),
+        sell_items_status=str(payload.get("sell_items_status") or ""),
+        plan_overall_status=str(payload.get("plan_overall_status") or ""),
+        approved_buy_item_ids=tuple(payload.get("approved_buy_item_ids") or ()),
+        approved_sell_item_ids=tuple(payload.get("approved_sell_item_ids") or ()),
+        review_required_buy_item_ids=tuple(payload.get("review_required_buy_item_ids") or ()),
+        review_required_sell_item_ids=tuple(payload.get("review_required_sell_item_ids") or ()),
+        review_scope=str(payload.get("review_scope") or ""),
+        review_scope_source=str(payload.get("review_scope_source") or ""),
+        review_scope_reason=str(payload.get("review_scope_reason") or ""),
+        sell_continuation_allowed=bool(payload.get("sell_continuation_allowed")),
     )
 
 

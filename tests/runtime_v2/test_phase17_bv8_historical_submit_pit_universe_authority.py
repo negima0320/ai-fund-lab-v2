@@ -100,6 +100,55 @@ def test_phase17_bv8_corporate_action_guard_still_halts_target_symbol(tmp_path: 
     assert result.status == "HALT"
     assert result.reason == "corporate action guard failed"
     assert result.response_classification["corporate_action_status"] == "IMPACT_DETECTED"
+    assert result.response_classification["corporate_action_artifact_path"] == str(adapter.raw_ohlcv_path)
+    assert result.response_classification["corporate_action_adjustment_factor"] == 0.5
+    assert result.response_classification["corporate_action_type"] == "UNKNOWN_ADJFACTOR_IMPACT"
+    assert result.response_classification["corporate_action_effective_date"] == BUSINESS_DATE
+    assert result.response_classification["corporate_action_impact_detected_condition"] == "target_date_target_symbol_adjfactor_not_1"
+    assert result.response_classification["corporate_action_rows"][0]["Code"] == "33500"
+    assert result.response_classification["corporate_action_adjustment_authority_status"] == "REVIEW_REQUIRED"
+    assert "corporate_action_authority_missing" in result.response_classification["reason_codes"]
+
+
+def test_phase24_il_corporate_action_adjustment_authority_can_pass_resolved_sell(tmp_path: Path) -> None:
+    adapter, _ = _adapter(tmp_path, symbols=("33500",), target_corporate_action=True)
+    _write_current_state(Path(adapter.runtime_root), symbol="33500", quantity=200)
+    _write_adjustment_authority(
+        Path(adapter.runtime_root),
+        raw_ohlcv_path=Path(adapter.raw_ohlcv_path),
+        symbol="33500",
+        pre_quantity=100,
+        post_quantity=200,
+        factor=0.5,
+    )
+
+    result = adapter.preflight(_command("33500", side="SELL", quantity=200))
+
+    assert result.status == "DRY_RUN_READY"
+    authority = result.response_classification["corporate_action_adjustment_authority"]
+    assert authority["corporate_action_status"] == "IMPACT_DETECTED"
+    assert authority["corporate_action_adjustment_authority_status"] == "PASS"
+    assert authority["quantity_reconciliation_status"] == "PASS"
+    assert authority["future_data_used"] is False
+
+
+def test_phase24_il_corporate_action_adjustment_authority_blocks_stale_pending_quantity(tmp_path: Path) -> None:
+    adapter, _ = _adapter(tmp_path, symbols=("33500",), target_corporate_action=True)
+    _write_current_state(Path(adapter.runtime_root), symbol="33500", quantity=200)
+    _write_adjustment_authority(
+        Path(adapter.runtime_root),
+        raw_ohlcv_path=Path(adapter.raw_ohlcv_path),
+        symbol="33500",
+        pre_quantity=100,
+        post_quantity=200,
+        factor=0.5,
+    )
+
+    result = adapter.preflight(_command("33500", side="SELL", quantity=300))
+
+    assert result.status == "HALT"
+    assert result.response_classification["corporate_action_adjustment_authority_status"] == "BLOCK"
+    assert "corporate_action_submit_quantity_exceeds_adjusted_quantity" in result.response_classification["reason_codes"]
 
 
 def test_phase20_bu_corporate_action_authority_missing_fails_closed(tmp_path: Path) -> None:
@@ -167,6 +216,7 @@ def _adapter(
         ),
         encoding="utf-8",
     )
+    _write_logical_input_manifest(asof_path=asof_path, ohlcv_path=ohlcv_path)
     return (
         HistoricalSubmitAdapter(
             runtime_root=tmp_path / ".runtime",
@@ -188,6 +238,8 @@ def _command(
     environment: str = "historical",
     listed_info_code: str | None = None,
     current_listed: bool = True,
+    side: str = "BUY",
+    quantity: float = 100.0,
 ) -> RuntimeV2SubmitCommand:
     return RuntimeV2SubmitCommand(
         command_id=f"command-{symbol}",
@@ -196,8 +248,8 @@ def _command(
         pending_item_id=f"item-{symbol}",
         approval_hash="approval-hash",
         symbol=symbol,
-        side="BUY",
-        quantity=100.0,
+        side=side,
+        quantity=quantity,
         order_type="MARKET",
         price_type="MARKET",
         limit_price=0.0,
@@ -210,3 +262,91 @@ def _command(
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_logical_input_manifest(*, asof_path: Path, ohlcv_path: Path) -> None:
+    manifest_path = asof_path.parent / "inputs" / "historical_asof" / BUSINESS_DATE / "logical_input_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "business_date": BUSINESS_DATE,
+                "feature_date": BUSINESS_DATE,
+                "as_of_date": BUSINESS_DATE,
+                "materialization_id": f"test-historical-asof:{BUSINESS_DATE}",
+                "logical_paths": {
+                    "normalized_ohlcv": str(ohlcv_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_current_state(runtime_root: Path, *, symbol: str, quantity: float) -> None:
+    path = runtime_root / "persistent_ledger" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "positions": [
+                    {
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "source": "runtime_v2_runtime_owned_fill_projection",
+                        "as_of": BUSINESS_DATE,
+                    }
+                ]
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_adjustment_authority(
+    runtime_root: Path,
+    *,
+    raw_ohlcv_path: Path,
+    symbol: str,
+    pre_quantity: float,
+    post_quantity: float,
+    factor: float,
+) -> None:
+    path = runtime_root / "runtime_state" / "corporate_action_adjustments" / BUSINESS_DATE / f"{symbol}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_v2_corporate_action_adjustment_authority_v1",
+                "business_date": BUSINESS_DATE,
+                "symbol": symbol,
+                "event_status": "PASS",
+                "event_type": "RESOLVED_QUANTITY_ADJUSTMENT",
+                "event_type_authority": "fixture_pit_corporate_action_event",
+                "effective_date": BUSINESS_DATE,
+                "source": "jquants_raw_equities_bars_daily_adjfactor",
+                "source_artifact_path": str(raw_ohlcv_path),
+                "source_artifact_hash": _sha(raw_ohlcv_path),
+                "pit_validation_status": "PASS",
+                "future_data_used": False,
+                "adjustment_factor": factor,
+                "price_adjustment_required": True,
+                "quantity_adjustment_required": True,
+                "pre_adjustment_quantity": pre_quantity,
+                "post_adjustment_quantity": post_quantity,
+                "pre_adjustment_price": 1000.0,
+                "post_adjustment_price": 500.0,
+                "ledger_adjustment_status": "PASS",
+                "current_adjustment_status": "PASS",
+                "pending_adjustment_status": "PASS",
+                "already_applied_status": "CONFIRMED",
+                "double_adjustment_detected": False,
+                "lineage": {"source": "phase24_il_fixture"},
+                "reason_codes": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )

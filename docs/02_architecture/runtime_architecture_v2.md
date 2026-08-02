@@ -1406,6 +1406,161 @@ SELL liquidation は、以下で制御する。
 - Current quantity
 - Broker available quantity
 - Broker issue code normalization
+
+#### Phase24-HT Planning Submit Feasibility Preflight
+
+Phase24-HT adds a Planning-side deterministic preflight before Pending can become `APPROVED`.
+
+Lifecycle:
+
+```text
+Planning
+  -> Planning Submit Feasibility Preflight
+  -> Pending
+  -> Submit Guard
+  -> Broker boundary
+```
+
+The preflight uses the same canonical Runtime authorities as Submit Guard for deterministic BUY feasibility:
+
+```text
+CapitalDeploymentPolicy
+Runtime Current / Persistent Ledger
+Safety decision
+Pending duplicate / reservation evidence
+```
+
+The canonical hard exposure authority remains:
+
+```text
+current_exposure = sum(Runtime Current positions[].market_value)
+remaining_exposure = active CapitalDeploymentPolicy.max_exposure - current_exposure
+BUY feasible = current_exposure + planned BUY estimated_amount <= active CapitalDeploymentPolicy.max_exposure
+```
+
+Phase24-ID extends this from item-only feasibility to approved Pending-batch
+feasibility.  Planning Submit Feasibility and Submit Guard must evaluate the
+approved Pending item set as one ordered feasibility set before the
+broker/adapter boundary.  BUY items reserve cash, buying_power, exposure, and
+a new position slot when the symbol is not already held.  Later BUY items must
+see the reserved state left by earlier BUY items in the same Pending plan.
+SELL items remain exposure-reducing liquidation actions, but same-day SELL
+proceeds or exposure reductions are not pre-credited to BUY feasibility unless
+a later explicit contract approves that behavior.
+
+Failure behavior:
+
+```text
+aggregate cash / buying_power / exposure / max_positions violation
+  -> REVIEW_REQUIRED before APPROVED Pending or before Submit adapter boundary
+  -> no broker submit attempt for the invalid batch
+  -> Submit Guard remains the final hard guard and revalidates independently
+```
+
+Runtime-owned fill projection must not clamp an invalid negative cash result
+into PASS.  If replayed fills produce cash or buying_power below zero under
+the cash authority, the projection is REVIEW_REQUIRED and must materialize the
+raw projected value for reconciliation.
+
+Planning must not advance an order to `APPROVED Pending` when deterministic Submit feasibility is known to fail. The failed item remains non-submittable and the Pending lifecycle becomes `REVIEW_REQUIRED`.
+
+Submit Guard remains the final hard guard and repeats all checks. Planning preflight evidence is advisory proof for Pending approval and never bypasses Submit Guard.
+
+#### Phase24-HV BUY Review / SELL Continuation Scope
+
+Phase24-HV separates item-scoped BUY review from independent SELL continuation.
+
+`REVIEW_REQUIRED` must be classified with a structured review scope:
+
+```text
+BUY_ITEM_SCOPED_REVIEW:
+  A BUY item is non-submittable, but the reason does not invalidate
+  independent Position Management, SELL Planning, or SELL Submit authority.
+
+PORTFOLIO_SCOPED_REVIEW:
+  Portfolio-wide risk, construction, cash, exposure, or authority conflict
+  may invalidate BUY and SELL continuation.
+
+GLOBAL_SAFETY_REVIEW:
+  Safety, broker write, runtime environment, emergency stop, or global
+  operation authority requires fail-closed behavior for BUY and SELL.
+
+AUTHORITY_UNKNOWN_REVIEW:
+  Missing, corrupt, ambiguous, stale, or mismatched authority requires
+  fail-closed behavior until reviewed.
+```
+
+Pending must expose item-side status separately from the legacy lifecycle state:
+
+```text
+buy_items_status
+sell_items_status
+plan_overall_status
+approved_buy_item_ids
+approved_sell_item_ids
+review_required_buy_item_ids
+review_required_sell_item_ids
+review_scope
+review_scope_source
+review_scope_reason
+sell_continuation_allowed
+```
+
+Legacy `state=REVIEW_REQUIRED` remains valid, but consumers must not assume it means every side is globally blocked. A BUY item with `BUY_ITEM_SCOPED_REVIEW` must never be submitted, must not be promoted back to `APPROVED`, and must not be silently removed from evidence.
+
+Position Management / SELL Planning may continue only when all of the following are true:
+
+```text
+review_scope = BUY_ITEM_SCOPED_REVIEW
+approved BUY ids are empty for blocked BUY items
+same-business-date Historical Safety authority is valid or resolvable
+Current / Persistent Ledger position authority is READY
+PM authority is valid
+SELL Planning inputs are complete
+no portfolio-wide, global safety, or authority-unknown blocker exists
+the BUY review reason does not invalidate SELL risk handling
+```
+
+Historical Daily Neutral Safety Authority may be used for SELL continuation only when Safety itself is not in review, the Pending review is structurally classified as `BUY_ITEM_SCOPED_REVIEW`, and SELL has independent valid authority. Missing Safety, business-date mismatch, policy mismatch, corrupt Pending, ambiguous review scope, portfolio-wide review, global safety review, or unknown authority remain fail-closed.
+
+Submit remains item-boundary hard validation:
+
+```text
+BUY REVIEW_REQUIRED -> not submitted
+SELL APPROVED -> Submit Guard revalidates -> submitted only if final guard PASS
+```
+
+Failure behavior:
+
+```text
+PASS:
+  Pending may become APPROVED when approval evidence is otherwise valid.
+
+REVIEW_REQUIRED:
+  Pending must not become APPROVED.
+  Evidence must include violated policy, source, version, current exposure,
+  remaining exposure, planned amount, and reason.
+
+HALT:
+  Reserved for missing or structurally invalid canonical authority after its
+  expected materialization point, or for a Safety decision requiring halt.
+```
+
+Mode behavior:
+
+```text
+Historical:
+  Uses historical Runtime Current / Persistent Ledger and historical Safety
+  authority; no historical-only policy branch.
+
+Demo:
+  Uses demo Runtime Current / Persistent Ledger and demo Safety/Broker
+  read-only evidence where applicable.
+
+Production:
+  Uses production Runtime Current / Persistent Ledger, production Safety, and
+  broker boundary evidence where applicable.
+```
 - Safety / Operation Guard
 - explicit SELL liquidation policy
 
@@ -2452,6 +2607,24 @@ Historical post-run context では、closed run evidence、final completed busin
 
 `system-status` の Evidence 書き込みは `reports/runtime_tests/system_status/<run_id>/` に限定する。Current、Pending、Ledger、PM、Safety、Accepted Generation pointer、authority history、Runtime transition history、Broker state を変更してはならない。
 
+## Phase24-HY Opportunity Rank Consumer Contract
+
+Runtime Planning receives opportunity-backed Strategy lineage from Portfolio Construction and Position Sizing. The canonical opportunity rank owner is the Runtime BUY AI Opportunity Ranking Producer, with `opportunity_buy_rank` semantics materialized as `buy_rank` in `.runtime/runtime_state/buy_ai/<business_date>/opportunity_rankings.json`.
+
+The Strategy adapter must map opportunity rows as follows:
+
+```text
+opportunity_rankings.json row
+  buy_rank / opportunity_buy_rank
+    -> opportunity_buy_rank
+    -> Portfolio Construction input_opportunity_rank
+    -> Position Sizing opportunity_buy_rank
+    -> Runtime Planning opportunity_buy_rank
+    -> Pending lineage when an item is generated
+```
+
+For opportunity rows, Runtime consumers must not substitute `candidate_rank`, candidate model rank, adapter index, artifact array order, or recomputed rank. Missing, invalid, or conflicting opportunity rank authority is `REVIEW_REQUIRED` and row-consumer rejection. This is a lineage and consumer alignment repair only; it does not change Opportunity Ranking production, eligibility, Portfolio Policy, Position Sizing policy, PM, Submit Guard, max exposure, cash buffer, or order quantities.
+
 Runtime Architecture v2 の設計および Phase13 design-only 作業では、以下を禁止する。
 
 - 実装変更
@@ -2499,3 +2672,18 @@ Runtime 実装フェーズに進む場合でも、以下は禁止する。
 - `tests pass`、manifest 生成、Broker Accepted、Report 生成のいずれか単独を Runtime v2 Acceptance として扱う。
 - `POST_SEND_UNKNOWN` を自動再送で解決する。
 - raw request、raw response、secret、session、URL、口座識別子を保存する。
+
+## Phase24-IL Corporate Action Adjustment Authority
+
+Corporate Action Adjustment Authority is the Runtime v2 contract that proves an impacted symbol is safe to submit after a quantity/price adjustment event. It is a Production/Demo/Historical common authority and is not a Historical-only bypass.
+
+Submit and historical simulated submit must keep the Corporate Action Guard fail-closed. `AdjFactor != 1` or any equivalent impact signal is not sufficient to pass. An impacted item may pass only when a Runtime-owned adjustment authority proves:
+
+- event type is resolved by PIT authority and is not inferred from `AdjFactor` alone
+- effective date and source artifact hash match the submit business date input
+- future data was not used
+- ledger, current, pending, and submit quantities are on the same adjusted basis
+- SELL submit quantity is positive and does not exceed adjusted Runtime-owned or broker-available quantity
+- the same event has not been applied twice across resume/retry
+
+Missing, unresolved, stale, mixed pre/post adjustment quantity, source hash mismatch, future snapshot use, or double-adjustment risk is fail-closed as `REVIEW_REQUIRED` or `BLOCK` before broker boundary. Submit Guard thresholds, Strategy, PM, Position Sizing, Capital Deployment policy, and order quantities are not changed by this authority.

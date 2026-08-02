@@ -12,7 +12,7 @@ import traceback
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ai_fund_lab_v2.operations.market_calendar import resolve_operation_date
 from ai_fund_lab_v2.runtime_v2.orchestrator.models import RuntimeRunRequest
@@ -2103,6 +2103,7 @@ def _write_morning_manifest_evidence(
         },
     )
     pending_path = str((planning or {}).get("pending_path") or "")
+    planning_lineage_items = list(((planning or {}).get("lineage") or {}).get("items") or [])
     _write_json_file(
         evidence_dir / "pending_generation_evidence.json",
         {
@@ -2111,6 +2112,11 @@ def _write_morning_manifest_evidence(
             "pending_path": pending_path,
             "pending_path_written": bool(pending_path and Path(pending_path).is_file()),
             "pending_plan_id": (planning or {}).get("pending_plan_id") or "",
+            "rank_authority_lineage": [
+                _pending_rank_authority_lineage_item(item)
+                for item in planning_lineage_items
+                if isinstance(item, dict) and item.get("pending_item_generated") is True
+            ],
         },
     )
     prohibited = dict(manifest.get("prohibited_actions") or {})
@@ -2138,6 +2144,26 @@ def _write_morning_manifest_evidence(
             "prohibited_actions": prohibited,
         },
     )
+
+
+def _pending_rank_authority_lineage_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "planning_id": str(item.get("planning_id") or ""),
+        "security_code": str(item.get("security_code") or ""),
+        "planning_intent": str(item.get("planning_intent") or ""),
+        "order_side_intent": str(item.get("order_side_intent") or ""),
+        "opportunity_buy_rank": _int_or_none(item.get("opportunity_buy_rank")),
+        "portfolio_input_opportunity_rank": _int_or_none(item.get("portfolio_input_opportunity_rank")),
+        "position_sizing_opportunity_buy_rank": _int_or_none(item.get("position_sizing_opportunity_buy_rank")),
+        "rank_authority_status": str(item.get("rank_authority_status") or ""),
+        "rank_authority": str(item.get("rank_authority") or ""),
+        "rank_authority_field": str(item.get("rank_authority_field") or ""),
+        "rank_authority_reason": str(item.get("rank_authority_reason") or ""),
+        "opportunity_row_id": str(item.get("opportunity_row_id") or ""),
+        "opportunity_row_authority_hash": str(item.get("opportunity_row_authority_hash") or ""),
+        "opportunity_artifact_path": str(item.get("opportunity_artifact_path") or ""),
+        "opportunity_artifact_hash": str(item.get("opportunity_artifact_hash") or ""),
+    }
 
 
 def _write_sell_planning_manifest_evidence(
@@ -2699,6 +2725,15 @@ def _final_reason(*, errors: list[str], warnings: list[str]) -> str:
     if warnings:
         return warnings[0]
     return ""
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _previous_calendar_day(value: str) -> str:

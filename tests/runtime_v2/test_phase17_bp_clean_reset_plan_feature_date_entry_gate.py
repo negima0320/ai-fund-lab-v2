@@ -94,6 +94,82 @@ def test_phase17_bp_run_time_contract_mismatch_remains_fail_closed(tmp_path: Pat
     assert payload["cli_feature_date_authority_status"] == "MISMATCH"
 
 
+def test_phase24_ig_resume_uses_run_scoped_feature_contract_for_completed_day(tmp_path: Path) -> None:
+    runner = _load_runner()
+    runtime_root = _make_clean_runtime_root(tmp_path)
+    profile = _historical_profile()
+    plan = runner.build_plan(
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports",
+        business_days=3,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="phase24-ig-resume",
+    )
+    run_dir = tmp_path / "reports" / "runtime_tests" / "runs" / "phase24-ig-resume"
+    _write_run_scoped_feature_contract(run_dir, "2026-07-06")
+    _write_run_scoped_feature_contract(run_dir, "2026-07-07")
+    run_state = {
+        "completed_business_days": ["2026-07-06"],
+        "halted_at": {"business_date": "2026-07-07", "job": "morning"},
+        "next_job": "2026-07-07:morning",
+    }
+
+    runner.validate_plan_entry_gate(plan, run_dir=run_dir, run_state=run_state, resume=True)
+
+
+def test_phase24_ig_resume_fails_completed_day_missing_run_scoped_contract(tmp_path: Path) -> None:
+    runner = _load_runner()
+    runtime_root = _make_clean_runtime_root(tmp_path)
+    profile = _historical_profile()
+    plan = runner.build_plan(
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports",
+        business_days=2,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="phase24-ig-missing",
+    )
+    run_dir = tmp_path / "reports" / "runtime_tests" / "runs" / "phase24-ig-missing"
+    run_state = {"completed_business_days": ["2026-07-06"], "next_job": "2026-07-07:morning"}
+
+    with pytest.raises(runner.RuntimeTestError) as exc:
+        runner.validate_plan_entry_gate(plan, run_dir=run_dir, run_state=run_state, resume=True)
+
+    assert exc.value.status == "PRECONDITION_FAILURE"
+    assert "run_scoped_contract_authority_present" in str(exc.value)
+
+
+def test_phase24_ig_resume_allows_future_plan_expectation_without_materialized_contract(tmp_path: Path) -> None:
+    runner = _load_runner()
+    runtime_root = _make_clean_runtime_root(tmp_path)
+    profile = _historical_profile()
+    plan = runner.build_plan(
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports",
+        business_days=3,
+        start_date="2026-07-06",
+        date_from=None,
+        date_to=None,
+        run_id="phase24-ig-future",
+    )
+    run_dir = tmp_path / "reports" / "runtime_tests" / "runs" / "phase24-ig-future"
+    _write_run_scoped_feature_contract(run_dir, "2026-07-06")
+    _write_run_scoped_feature_contract(run_dir, "2026-07-07")
+    run_state = {
+        "completed_business_days": ["2026-07-06"],
+        "halted_at": {"business_date": "2026-07-07", "job": "morning"},
+        "next_job": "2026-07-07:morning",
+    }
+
+    runner.validate_plan_entry_gate(plan, run_dir=run_dir, run_state=run_state, resume=True)
+
+
 def _load_runner():
     spec = importlib.util.spec_from_file_location("runtime_test_script_phase17_bp", SCRIPT_PATH)
     assert spec is not None
@@ -138,6 +214,23 @@ def _write_feature_date_contract(
             "missing_feature_artifacts": [],
             "requested_missing_feature_artifacts": [],
             "contract_artifact_path": str(path),
+        },
+    )
+
+
+def _write_run_scoped_feature_contract(run_dir: Path, business_date: str) -> None:
+    _write_json(
+        run_dir / "daily" / business_date / "data_readiness" / "data_readiness.json",
+        {
+            "business_date": business_date,
+            "feature_date_contract": {
+                "status": "PASS",
+                "requested_feature_date": business_date,
+                "selected_feature_date": business_date,
+                "contract_artifact_path": f".runtime/operations/feature_date_contract/{business_date}.json",
+                "contract_source": "materialized_feature_date_contract",
+                "feature_date_authority_source": "normal_feature_date_contract",
+            },
         },
     )
 

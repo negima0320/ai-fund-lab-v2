@@ -10,7 +10,10 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import (
     CANDIDATE_REQUIRED_COLUMNS,
     OPPORTUNITY_REQUIRED_COLUMNS,
 )
-from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import run_sell_planning_pending_pipeline
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
+from ai_fund_lab_v2.runtime_v2.pending.promotion import attach_approval_link, promote_order_plan_to_pending
+from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision, run_sell_planning_pending_pipeline
 from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision
 
 
@@ -89,6 +92,182 @@ def test_phase17_ag_sell_no_signal_pending_is_empty_terminal_with_historical_aut
     assert safety_context["runtime_test_run_id"] == RUN_ID
     assert safety_context["runtime_test_profile_id"] == PROFILE_ID
     assert safety_context["runtime_test_evidence_root"] == str(_evidence_root(tmp_path))
+
+
+def test_phase24_e3_sell_only_pending_item_binds_historical_safety_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="66590", quantity=100, reason="exit signal"),),
+        safety_decision=_historical_allow_safety_decision(),
+        environment_capability_context=_historical_context(tmp_path),
+    )
+    pending = _read_json(Path(result.pending_path))
+    item = pending["items"][0]
+
+    assert result.status == "PASS"
+    assert item["side"] == "SELL"
+    assert item["safety_authority"] == "historical_initial_no_external_effect"
+    assert item["safety_business_date"] == BUSINESS_DATE
+    assert item["temporal_authority_business_date"] == BUSINESS_DATE
+    assert item["safety_decision_id"] == f"historical-neutral-safety:{BUSINESS_DATE}"
+    assert item["runtime_test_run_id"] == RUN_ID
+    assert item["runtime_test_profile_id"] == PROFILE_ID
+    assert item["runtime_test_evidence_root"] == str(_evidence_root(tmp_path))
+    assert item["price_as_of"] == PREVIOUS_TRADING_DATE
+
+
+def test_phase24_e3_composite_buy_sell_pending_items_share_historical_safety_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    _write_existing_historical_buy_pending(root, tmp_path)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="66590", quantity=100, reason="exit signal"),),
+        safety_decision=_historical_allow_safety_decision(),
+        environment_capability_context=_historical_context(tmp_path),
+    )
+    pending = _read_json(Path(result.pending_path))
+    items = {item["side"]: item for item in pending["items"]}
+    top = pending["safety_context"]
+
+    assert result.composite_pending is True
+    assert sorted(items) == ["BUY", "SELL"]
+    for item in items.values():
+        assert item["safety_authority"] == top["safety_authority"]
+        assert item["safety_business_date"] == top["safety_business_date"] == BUSINESS_DATE
+        assert item["safety_decision_id"] == top["safety_decision_id"]
+        assert item["safety_policy_version"] == top["safety_policy_version"]
+        assert item["safety_source"] == top["safety_source"]
+        assert item["runtime_test_run_id"] == RUN_ID
+        assert item["runtime_test_profile_id"] == PROFILE_ID
+        assert item["runtime_test_evidence_root"] == str(_evidence_root(tmp_path))
+    assert top["runtime_test_run_id"] == RUN_ID
+    assert top["runtime_test_profile_id"] == PROFILE_ID
+    assert top["runtime_test_evidence_root"] == str(_evidence_root(tmp_path))
+    assert items["SELL"]["price_as_of"] == PREVIOUS_TRADING_DATE
+
+
+def test_phase24_e5_composite_historical_pending_resolves_data_readiness_safety_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, valuation_as_of=BUSINESS_DATE)
+    _write_existing_historical_buy_pending(root, tmp_path)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="66590", quantity=100, reason="exit signal"),),
+        safety_decision=_historical_allow_safety_decision(),
+        environment_capability_context=_historical_context(tmp_path),
+    )
+    _write_pending_policy_hash(Path(result.pending_path))
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="submit",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+    pending_authority = result.payload["components"]["pending"]["historical_pending_safety_authority"]
+    safety = result.payload["components"]["safety"]
+
+    assert result.status == "READY"
+    assert pending_authority["status"] == "READY"
+    assert pending_authority["authority"] == "historical_initial_no_external_effect"
+    assert pending_authority["mismatched_fields"] == []
+    assert safety["status"] == "READY"
+    assert safety["historical_safety_temporal_authority"] == "historical_initial_no_external_effect"
+    assert safety["safety_authority_business_date"] == BUSINESS_DATE
+    assert safety["historical_neutral_authority_generated_or_resolved"] is True
+    assert "pending_safety_evidence_missing" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase24_e5_item_lineage_missing_remains_review_required(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, valuation_as_of=BUSINESS_DATE)
+    _write_existing_historical_buy_pending(root, tmp_path)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="66590", quantity=100, reason="exit signal"),),
+        safety_decision=_historical_allow_safety_decision(),
+        environment_capability_context=_historical_context(tmp_path),
+    )
+    pending_path = Path(result.pending_path)
+    _write_pending_policy_hash(pending_path)
+    pending = _read_json(pending_path)
+    pending["items"][1]["runtime_test_run_id"] = ""
+    _write_json(pending_path, pending)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="submit",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_safety_evidence_missing" in result.payload["review_reasons"]
+    assert "items[1].runtime_test_run_id" in result.payload["components"]["pending"][
+        "historical_pending_safety_authority"
+    ]["mismatched_fields"]
+
+
+def test_phase24_e5_top_level_item_run_id_mismatch_remains_review_required(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, valuation_as_of=BUSINESS_DATE)
+    _write_existing_historical_buy_pending(root, tmp_path)
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="66590", quantity=100, reason="exit signal"),),
+        safety_decision=_historical_allow_safety_decision(),
+        environment_capability_context=_historical_context(tmp_path),
+    )
+    pending_path = Path(result.pending_path)
+    _write_pending_policy_hash(pending_path)
+    pending = _read_json(pending_path)
+    pending["safety_context"]["runtime_test_run_id"] = "wrong-run"
+    _write_json(pending_path, pending)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="submit",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_safety_evidence_missing" in result.payload["review_reasons"]
+    assert "safety_context.runtime_test_run_id" in result.payload["components"]["pending"][
+        "historical_pending_safety_authority"
+    ]["mismatched_fields"]
 
 
 def test_phase17_ag_production_no_signal_pending_is_terminal_without_test_identity(tmp_path: Path) -> None:
@@ -549,6 +728,80 @@ def _historical_context(tmp_path: Path) -> dict:
         "runtime_test_profile_id": PROFILE_ID,
         "runtime_test_evidence_root": str(_evidence_root(tmp_path)),
     }
+
+
+def _write_existing_historical_buy_pending(root: Path, tmp_path: Path) -> None:
+    order_plan_path = root / "runtime_state" / "strategy_planning" / BUSINESS_DATE / "order_plan.json"
+    _write_json(
+        order_plan_path,
+        {
+            "order_plan_id": "order-plan-existing-buy",
+            "business_date": BUSINESS_DATE,
+            "target_session_date": BUSINESS_DATE,
+            "status": "PASS",
+            "items": [],
+        },
+    )
+    safety_context = _historical_safety_context(tmp_path)
+    item = PendingOrderItem(
+        pending_item_id="opi-buy-existing",
+        symbol="23880",
+        side="BUY",
+        quantity=100,
+        order_type="MARKET",
+        estimated_price=100.0,
+        estimated_amount=10000.0,
+        approved=True,
+        state="READY",
+        safety_authority="historical_initial_no_external_effect",
+        safety_business_date=BUSINESS_DATE,
+        safety_decision="NEUTRAL",
+        safety_decision_id=f"historical-neutral-safety:{BUSINESS_DATE}",
+        safety_policy_version="historical_replay_neutral_safety_v1",
+        safety_reason="historical_neutral_no_event_safety_ready",
+        safety_source="data_readiness_historical_temporal_authority",
+        temporal_authority_business_date=BUSINESS_DATE,
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        runtime_test_evidence_root=str(_evidence_root(tmp_path)),
+    )
+    pending = promote_order_plan_to_pending(
+        order_plan_id="order-plan-existing-buy",
+        source_order_plan_path=str(order_plan_path),
+        source_order_plan_hash="sha256:existing-buy",
+        environment="historical",
+        plan_created_date=BUSINESS_DATE,
+        intended_submit_date=BUSINESS_DATE,
+        target_session_date=BUSINESS_DATE,
+        items=(item,),
+        planning_lineage_context={"planning_authority_version": "fixture", "planning_authority_source": "fixture"},
+    )
+    pending = attach_approval_link(
+        pending,
+        approval_path=str(root / "runtime_state" / "strategy_planning" / BUSINESS_DATE / "approval_artifact.json"),
+        approval_hash="sha256:approval",
+        approval_status="APPROVED",
+        approved_item_ids=(item.pending_item_id,),
+        approval_expires_at=f"{BUSINESS_DATE}T15:00:00+09:00",
+    )
+    pending = pending.__class__(
+        **{
+            **pending.__dict__,
+            "safety_context": safety_context,
+            "safety_decision_id": f"historical-neutral-safety:{BUSINESS_DATE}",
+            "safety_policy_version": "historical_replay_neutral_safety_v1",
+        }
+    )
+    write_pending_order_plan(root / "pending_order_plan" / "pending_order_plan.json", pending)
+
+
+def _write_pending_policy_hash(path: Path) -> None:
+    pending = _read_json(path)
+    pending["pending_policy_hash"] = "sha256:e5-fixture-pending-policy"
+    approval = dict(pending.get("approval") or {})
+    approval["pending_policy_hash"] = "sha256:e5-fixture-pending-policy"
+    pending["approval"] = approval
+    _write_json(path, pending)
 
 
 def _evidence_root(tmp_path: Path) -> Path:

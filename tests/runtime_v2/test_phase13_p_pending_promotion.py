@@ -103,6 +103,9 @@ def test_promotion_materializes_temporal_safety_authority_from_items():
             "safety_source": "data_readiness_historical_temporal_authority",
             "safety_decision": "NEUTRAL",
             "safety_reason": "historical_neutral_no_event_safety_ready",
+            "runtime_test_run_id": "runtime-test-historical-smoke-fixture",
+            "runtime_test_profile_id": "historical-smoke",
+            "runtime_test_evidence_root": "reports/runtime_tests/runs/runtime-test-historical-smoke-fixture",
         }
     )
 
@@ -123,3 +126,9 @@ def test_promotion_materializes_temporal_safety_authority_from_items():
     assert plan.safety_context["safety_authority"] == "historical_initial_no_external_effect"
     assert plan.safety_context["safety_decision"] == "NEUTRAL"
     assert plan.safety_context["safety_decision_id"] == "historical-neutral-safety:2026-07-08"
+    assert plan.safety_context["runtime_test_run_id"] == "runtime-test-historical-smoke-fixture"
+    assert plan.safety_context["runtime_test_profile_id"] == "historical-smoke"
+    assert (
+        plan.safety_context["runtime_test_evidence_root"]
+        == "reports/runtime_tests/runs/runtime-test-historical-smoke-fixture"
+    )

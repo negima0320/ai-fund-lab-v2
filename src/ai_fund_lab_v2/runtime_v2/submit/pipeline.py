@@ -16,12 +16,17 @@ from ai_fund_lab_v2.broker.issue_code_normalizer import (
 )
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
+from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
+    evaluate_corporate_action_adjustment_authority,
+    materialize_corporate_action_adjustment_authority,
+)
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import validate_materialized_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
@@ -42,6 +47,12 @@ from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     reject_mode_rooted_runtime_root,
 )
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
+    RuntimeCurrentExposure,
+    evaluate_buy_item_submit_feasibility,
+    evaluate_planning_submit_feasibility,
+    load_runtime_current_exposure,
+)
 from ai_fund_lab_v2.runtime_v2.submit.models import (
     RuntimeV2SubmitCommand,
     RuntimeV2SubmitResult,
@@ -333,6 +344,131 @@ def run_submit_pipeline(
     )
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
+    approved_items = tuple(
+        item
+        for approved_item_id in pending.approved_item_ids
+        for item in pending.items
+        if item.pending_item_id == approved_item_id
+    )
+    aggregate_feasibility = evaluate_planning_submit_feasibility(
+        items=approved_items,
+        policy=policy,
+        current=RuntimeCurrentExposure(
+            cash=current_state["cash"],
+            buying_power=current_state["buying_power"],
+            current_exposure=float(current_state["current_exposure"]),
+            positions=dict(current_state["positions"]),
+            current_position_source=str(current_state["current_position_source"]),
+        ),
+        authority_source="submit_guard_aggregate_batch_feasibility",
+    )
+    aggregate_by_item_id = {
+        str(item.get("pending_item_id") or ""): item
+        for item in aggregate_feasibility.evidence.get("items") or ()
+        if isinstance(item, dict)
+    }
+    if not aggregate_feasibility.passed:
+        for item in approved_items:
+            sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
+            broker_available_evidence = (
+                _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
+                if item.side == "SELL" and mode != "historical"
+                else _historical_available_quantity_evidence(
+                    runtime_root=runtime_root_path,
+                    item=item,
+                    current_quantity=sell_position_quantity,
+                )
+                if item.side == "SELL"
+                else BrokerAvailableQuantityEvidence(checked=False, source="")
+            )
+            corporate_action_event_evidence = _materialize_corporate_action_authority_for_item(
+                runtime_root=runtime_root_path,
+                business_date=business_date,
+                mode=mode,
+                adapter=submit_adapter,
+                item=item,
+                current_quantity=sell_position_quantity,
+                broker_available_quantity=broker_available_evidence.quantity,
+            )
+            guard_evidence = _submit_guard_item_evidence(
+                item=item,
+                runtime_root=runtime_root_path,
+                business_date=business_date,
+                mode=mode,
+                policy=policy,
+                current_state=current_state,
+                broker_position_quantity=sell_position_quantity,
+                broker_available_quantity=broker_available_evidence.quantity,
+                broker_available_quantity_evidence=broker_available_evidence,
+                safety_decision=runtime_safety_decision,
+                feasibility_evidence=aggregate_by_item_id.get(item.pending_item_id),
+                corporate_action_event_evidence=corporate_action_event_evidence,
+            )
+            if str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("status") or "") != "PASS":
+                guard_evidence = _blocked_guard_evidence(
+                    evidence=guard_evidence,
+                    reason=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("reason") or aggregate_feasibility.reason),
+                    violated_policy=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("violated_policy") or "aggregate_submit_feasibility"),
+                    violated_policy_source=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("violated_policy_source") or "submit_guard_aggregate_batch_feasibility"),
+                    should_have_been_blocked_at_planning=True,
+                )
+            guard_evidence["aggregate_submit_feasibility"] = aggregate_feasibility.evidence
+            item_results.append(
+                SubmitItemResult(
+                    pending_item_id=item.pending_item_id,
+                    symbol=item.symbol,
+                    side=item.side,
+                    quantity=item.quantity,
+                    preflight_status="BLOCKED",
+                    submit_status="NOT_SUBMITTED",
+                    submitted=False,
+                    accepted=False,
+                    rejected=False,
+                    unknown=False,
+                    blocked=True,
+                    review_required=True,
+                    broker_order_id_hash="",
+                    ledger_order_record_id="",
+                    reason=str(guard_evidence["guard_reason"]),
+                    issue_code_normalization={},
+                    response_classification={},
+                    configuration_diagnostic={},
+                    next_action="",
+                    guard_evidence=guard_evidence,
+                )
+            )
+        status = "REVIEW_REQUIRED"
+        reason = "submit aggregate feasibility failed before broker boundary"
+        return SubmitPipelineResult(
+            status=status,
+            reason=reason,
+            pending_plan_id=pending.pending_plan_id,
+            pending_path=str(pending_read.path),
+            orders_ledger_path=str(runtime_root_path / "persistent_ledger" / "orders.jsonl"),
+            demo_submit_executed=False,
+            submitted_count=0,
+            accepted_count=0,
+            rejected_count=0,
+            unknown_count=0,
+            blocked_count=len(item_results),
+            pending_consumed=False,
+            submitted_order_ids=(),
+            ledger_order_record_ids=(),
+            submitted_symbols=(),
+            item_results=tuple(item_results),
+            pending_read_valid=pending_read.valid,
+            pending_classification=pending_read.classification,
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=True,
+            pending_item_count=len(pending.items),
+            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+            submit_action="NO_SUBMIT_ATTEMPTED",
+            review_required=True,
+            halt_required=False,
+            submit_guard_policy=_submit_guard_policy_manifest(policy),
+            submit_policy_consistency=policy_consistency,
+            submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
+        )
 
     for approved_item_id in pending.approved_item_ids:
         item = next(item for item in pending.items if item.pending_item_id == approved_item_id)
@@ -348,6 +484,15 @@ def run_submit_pipeline(
             if item.side == "SELL"
             else BrokerAvailableQuantityEvidence(checked=False, source="")
         )
+        corporate_action_event_evidence = _materialize_corporate_action_authority_for_item(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            mode=mode,
+            adapter=submit_adapter,
+            item=item,
+            current_quantity=sell_position_quantity,
+            broker_available_quantity=broker_available_evidence.quantity,
+        )
         guard_evidence = _submit_guard_item_evidence(
             item=item,
             runtime_root=runtime_root_path,
@@ -359,6 +504,8 @@ def run_submit_pipeline(
             broker_available_quantity=broker_available_evidence.quantity,
             broker_available_quantity_evidence=broker_available_evidence,
             safety_decision=runtime_safety_decision,
+            feasibility_evidence=aggregate_by_item_id.get(item.pending_item_id),
+            corporate_action_event_evidence=corporate_action_event_evidence,
         )
         if guard_evidence["guard_decision"] == "BLOCKED":
             item_results.append(
@@ -641,13 +788,14 @@ def _validate_empty_pending_payload(
     if approved_item_ids not in (None, []) and approved_item_ids != ():
         return "pending EMPTY classification approved item ids must be empty"
     authority = payload.get("no_order_authority")
-    if isinstance(authority, Mapping):
-        if str(authority.get("status") or "") != "NO_ORDER_AUTHORIZED":
-            return "pending EMPTY no_order_authority status mismatch"
-        if str(authority.get("business_date") or "") != business_date:
-            return "pending EMPTY no_order_authority business_date mismatch"
-        return ""
-    return "pending EMPTY no_order_authority missing"
+    if not isinstance(authority, Mapping):
+        return "pending EMPTY no_order_authority missing"
+    return validate_materialized_no_order_authority(
+        payload,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        environment=environment,
+    )
 
 
 def _authorized_no_order_result(
@@ -1166,34 +1314,7 @@ def _current_position_quantities(path: Path) -> dict[str, float]:
 
 
 def _current_state_summary(path: Path) -> dict[str, Any]:
-    empty = {
-        "cash": None,
-        "buying_power": None,
-        "current_exposure": 0.0,
-        "positions": {},
-        "current_position_source": str(path),
-    }
-    if not path.exists():
-        return empty
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return empty
-    positions: dict[str, float] = {}
-    exposure = 0.0
-    for position in payload.get("positions") or ():
-        symbol = str(position.get("symbol") or position.get("issue_code") or "").strip()
-        if not symbol:
-            continue
-        positions[symbol] = positions.get(symbol, 0.0) + _float(position.get("quantity"))
-        exposure += _float(position.get("market_value"))
-    return {
-        "cash": _optional_float(payload.get("cash")),
-        "buying_power": _optional_float(payload.get("buying_power")),
-        "current_exposure": exposure,
-        "positions": positions,
-        "current_position_source": str(path),
-    }
+    return load_runtime_current_exposure(path).to_payload()
 
 
 def _load_broker_available_quantity_snapshot(runtime_root: Path) -> dict[str, Any]:
@@ -1528,6 +1649,8 @@ def _submit_guard_item_evidence(
     broker_available_quantity: float | None,
     broker_available_quantity_evidence: BrokerAvailableQuantityEvidence,
     safety_decision: RuntimeSafetyDecision,
+    feasibility_evidence: Mapping[str, Any] | None = None,
+    corporate_action_event_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     side = str(item.side).upper()
     estimated_amount = float(item.estimated_amount)
@@ -1593,6 +1716,28 @@ def _submit_guard_item_evidence(
         "should_have_been_blocked_at_planning": False,
         "blocked_at_submit_reason": "",
     }
+    if feasibility_evidence:
+        evidence.update(_submit_feasibility_evidence_fields(feasibility_evidence))
+    corporate_action_authority = evaluate_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=item.symbol,
+        side=side,
+        submit_quantity=float(item.quantity),
+        pending_quantity=float(item.quantity),
+        current_quantity=broker_position_quantity,
+        broker_available_quantity=broker_available_quantity,
+        event_evidence=corporate_action_event_evidence,
+    )
+    evidence.update(_corporate_action_adjustment_evidence_fields(corporate_action_authority))
+    if corporate_action_authority["corporate_action_adjustment_authority_status"] != "PASS":
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason=str(corporate_action_authority["corporate_action_adjustment_authority_reason"]),
+            violated_policy="corporate_action_adjustment_authority",
+            violated_policy_source=str(corporate_action_authority["corporate_action_adjustment_authority_path"]),
+            should_have_been_blocked_at_planning=True,
+        )
     if side == "BUY":
         evidence.update(
             {
@@ -1669,6 +1814,58 @@ def _submit_guard_item_evidence(
         violated_policy="supported_side",
         violated_policy_source="runtime_v2_submit_guard",
     )
+
+
+def _materialize_corporate_action_authority_for_item(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+    adapter: RuntimeV2SubmitAdapter,
+    item: Any,
+    current_quantity: float | None,
+    broker_available_quantity: float | None,
+) -> dict[str, Any] | None:
+    if mode != "historical" or not isinstance(adapter, HistoricalSubmitAdapter):
+        return None
+    event = adapter.corporate_action_event_evidence(symbol=str(item.symbol), business_date=business_date)
+    materialize_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=str(item.symbol),
+        event_evidence=event,
+        current_quantity=current_quantity,
+        broker_available_quantity=broker_available_quantity,
+        pending_quantity=float(item.quantity),
+        submit_quantity=float(item.quantity),
+    )
+    return event
+
+
+def _corporate_action_adjustment_evidence_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "corporate_action_event_status": str(payload.get("corporate_action_event_status") or ""),
+        "corporate_action_event_type": str(payload.get("corporate_action_event_type") or ""),
+        "corporate_action_effective_date": str(payload.get("corporate_action_effective_date") or ""),
+        "corporate_action_adjustment_factor": payload.get("corporate_action_adjustment_factor"),
+        "corporate_action_adjustment_authority_path": str(payload.get("corporate_action_adjustment_authority_path") or ""),
+        "corporate_action_adjustment_authority_hash": str(payload.get("corporate_action_adjustment_authority_hash") or ""),
+        "corporate_action_adjustment_authority_status": str(payload.get("corporate_action_adjustment_authority_status") or ""),
+        "corporate_action_adjustment_authority_reason": str(payload.get("corporate_action_adjustment_authority_reason") or ""),
+        "ledger_quantity_before": payload.get("ledger_quantity_before"),
+        "ledger_quantity_after": payload.get("ledger_quantity_after"),
+        "corporate_action_current_quantity": payload.get("current_quantity"),
+        "corporate_action_broker_available_quantity": payload.get("broker_available_quantity"),
+        "corporate_action_pending_quantity": payload.get("pending_quantity"),
+        "corporate_action_submit_quantity": payload.get("submit_quantity"),
+        "quantity_reconciliation_status": str(payload.get("quantity_reconciliation_status") or ""),
+        "price_reconciliation_status": str(payload.get("price_reconciliation_status") or ""),
+        "already_applied_status": str(payload.get("already_applied_status") or ""),
+        "double_adjustment_detected": bool(payload.get("double_adjustment_detected")),
+        "pit_validation_status": str(payload.get("pit_validation_status") or ""),
+        "future_data_used": bool(payload.get("future_data_used")),
+        "corporate_action_reason_codes": list(payload.get("reason_codes") or []),
+    }
 
 
 def _buy_eligibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1756,34 +1953,51 @@ def _buy_guard_evidence(
     estimated_amount = float(evidence["estimated_amount"])
     evidence["notional_guard_source"] = policy.buy_notional_policy
     evidence["quantity_guard_source"] = "broker_lot_size_and_pending_quantity"
-    max_position_amount = policy.evaluation_capital * policy.max_position_weight
-    violations = []
-    cash = current_state["cash"]
-    buying_power = current_state["buying_power"]
-    if cash is None:
-        violations.append(("cash_missing", "Current cash is missing"))
-    elif estimated_amount > float(cash):
-        violations.append(("cash", "estimated amount exceeds Current cash"))
-    if buying_power is None:
-        violations.append(("buying_power_missing", "Current buying_power is missing"))
-    elif estimated_amount > float(buying_power):
-        violations.append(("buying_power", "estimated amount exceeds buying_power"))
-    if current_state["current_exposure"] + estimated_amount > policy.max_exposure:
-        violations.append(("max_exposure", "estimated amount exceeds remaining max_exposure"))
-    if estimated_amount > max_position_amount:
-        violations.append(("max_position_weight", "estimated amount exceeds max_position_weight"))
-    if policy.max_buy_order_amount is not None and estimated_amount > policy.max_buy_order_amount:
-        violations.append(("max_buy_order_amount", "estimated amount exceeds max_buy_order_amount"))
-    if not violations:
+    feasibility = evaluate_buy_item_submit_feasibility(
+        item=type("SubmitGuardItem", (), {
+            "pending_item_id": evidence["pending_item_id"],
+            "symbol": evidence["symbol"],
+            "estimated_amount": estimated_amount,
+        })(),
+        policy=policy,
+        current=RuntimeCurrentExposure(
+            cash=current_state["cash"],
+            buying_power=current_state["buying_power"],
+            current_exposure=float(current_state["current_exposure"]),
+            positions=dict(current_state["positions"]),
+            current_position_source=str(current_state["current_position_source"]),
+        ),
+        authority_source="submit_guard_buy_feasibility",
+    )
+    if feasibility["status"] == "PASS":
+        evidence.update(_submit_feasibility_evidence_fields(feasibility))
         return evidence
-    policy_name, reason = violations[0]
+    evidence.update(_submit_feasibility_evidence_fields(feasibility))
     return _blocked_guard_evidence(
         evidence=evidence,
-        reason=reason,
-        violated_policy=policy_name,
-        violated_policy_source=policy.policy_source,
+        reason=str(feasibility["reason"]),
+        violated_policy=str(feasibility["violated_policy"]),
+        violated_policy_source=str(feasibility["violated_policy_source"]),
         should_have_been_blocked_at_planning=True,
     )
+
+
+def _submit_feasibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "submit_feasibility_authority_source": str(payload.get("authority_source") or ""),
+        "submit_feasibility_sequence_index": payload.get("sequence_index"),
+        "cash": payload.get("cash"),
+        "buying_power": payload.get("buying_power"),
+        "current_exposure": payload.get("current_exposure"),
+        "remaining_exposure": payload.get("remaining_exposure"),
+        "active_max_positions": payload.get("active_max_positions"),
+        "current_position_count": payload.get("current_position_count"),
+        "creates_new_position": payload.get("creates_new_position"),
+        "post_position_count": payload.get("post_position_count"),
+        "post_buy_cash": payload.get("post_buy_cash"),
+        "post_buy_buying_power": payload.get("post_buy_buying_power"),
+        "post_buy_exposure": payload.get("post_buy_exposure"),
+    }
 
 
 def _sell_guard_evidence(

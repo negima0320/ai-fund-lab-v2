@@ -161,6 +161,101 @@ def test_phase17_x_historical_safety_authority_allows_submit_replay_after_data_r
     )
 
 
+def test_phase24_hv_buy_item_scoped_review_allows_sell_planning_data_readiness(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_buy_item_scoped_review_pending(runtime_root)
+    _write_stale_latest_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "READY"
+    assert result.payload["components"]["pending"]["reason"] == "buy_item_scoped_review_sell_continuation_ready"
+    assert result.payload["components"]["pending"]["review_scope"] == "BUY_ITEM_SCOPED_REVIEW"
+    assert result.payload["components"]["safety"]["status"] == "READY"
+    assert result.payload["components"]["safety"]["safety_authority_type"] == "HISTORICAL_DAILY_NEUTRAL"
+    assert "pending_review_required" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase24_hv_ambiguous_review_pending_remains_fail_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_buy_item_scoped_review_pending(runtime_root, include_scope=False)
+    _write_stale_latest_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase24_hv_business_date_mismatch_remains_fail_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_buy_item_scoped_review_pending(runtime_root, target_session_date="2026-07-05")
+    _write_stale_latest_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+
+
+def test_phase24_hv_global_safety_review_remains_fail_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_buy_item_scoped_review_pending(runtime_root)
+    _write_same_day_review_safety(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+        broker_environment="historical_simulated",
+        runtime_test_evidence_root=_evidence_root(tmp_path),
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        broker_write=False,
+        external_delivery=False,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.payload["components"]["safety"]["reason"] == "GLOBAL_SAFETY_REVIEW"
+    assert "GLOBAL_SAFETY_REVIEW" in result.payload["review_reasons"]
+
+
 def test_phase17_x_submit_job_rechecks_data_readiness_before_submit():
     assert _data_readiness_required_for_job("submit") is True
 
@@ -186,9 +281,9 @@ def test_phase17_x_pending_safety_authority_mismatch_remains_review_required(tmp
     assert result.status == "REVIEW_REQUIRED"
     assert "pending_safety_evidence_missing" in result.payload["review_reasons"]
     assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
-    assert result.payload["components"]["pending"]["historical_pending_safety_authority"]["mismatched_fields"] == [
-        "safety_context.runtime_test_run_id"
-    ]
+    mismatched = result.payload["components"]["pending"]["historical_pending_safety_authority"]["mismatched_fields"]
+    assert "safety_context.runtime_test_run_id" in mismatched
+    assert "items[0].runtime_test_run_id" in mismatched
 
 
 def test_phase23_ax_missing_pending_safety_metadata_remains_review_required(tmp_path):
@@ -464,6 +559,7 @@ def _write_authorized_pending(
                     "estimated_amount": 100000,
                     "approved": True,
                     "state": "APPROVED",
+                    **(safety_context if include_safety_context else {}),
                 }
             ],
         },
@@ -493,6 +589,105 @@ def _write_stale_latest_safety(runtime_root: Path) -> None:
             "artifact_path": str(runtime_root / "runtime_state" / "safety" / "latest_safety_decision.json"),
         },
     )
+
+
+def _write_same_day_review_safety(runtime_root: Path) -> None:
+    _write_json(
+        runtime_root / "runtime_state" / "safety" / "latest_safety_decision.json",
+        {
+            "safety_decision_id": "same-day-global-review",
+            "safety_policy_version": "runtime_safety_v1",
+            "safety_source": "fixture",
+            "business_date": BUSINESS_DATE,
+            "runtime_mode": "historical",
+            "decision": "REVIEW_REQUIRED",
+            "reason": "GLOBAL_SAFETY_REVIEW",
+            "review_required": True,
+            "block_buy": True,
+            "block_sell": True,
+            "block_submit": True,
+            "halt_runtime": False,
+            "emergency_stop": False,
+            "generated_at": BUSINESS_DATE + "T00:00:00Z",
+            "expires_at": "2026-07-07T00:00:00Z",
+            "safety_status": "REVIEW_REQUIRED",
+            "artifact_path": str(runtime_root / "runtime_state" / "safety" / "latest_safety_decision.json"),
+        },
+    )
+
+
+def _write_buy_item_scoped_review_pending(
+    runtime_root: Path,
+    *,
+    include_scope: bool = True,
+    target_session_date: str = BUSINESS_DATE,
+) -> None:
+    payload = {
+        "schema_version": "1",
+        "pending_plan_id": "pending-phase24-hv-buy-review",
+        "state": "REVIEW_REQUIRED",
+        "environment": "historical",
+        "plan_created_date": BUSINESS_DATE,
+        "intended_submit_date": target_session_date,
+        "target_session_date": target_session_date,
+        "pending_policy_hash": "policy-hash",
+        "approval": {
+            "approval_status": "APPROVED",
+            "pending_policy_hash": "policy-hash",
+        },
+        "consume": {"consumed": False},
+        "approved_item_ids": [],
+        "planning_submit_feasibility": {
+            "contract_id": "phase24_ht_planning_submit_feasibility_v1",
+            "status": "REVIEW_REQUIRED",
+            "reason": "estimated amount exceeds remaining max_exposure",
+            "items": [
+                {
+                    "pending_item_id": "buy-review-1",
+                    "symbol": "66590",
+                    "side": "BUY",
+                    "status": "REVIEW_REQUIRED",
+                    "estimated_amount": 166400.0,
+                    "current_exposure": 685510.0,
+                    "max_exposure": 850000.0,
+                    "remaining_exposure": 164490.0,
+                    "post_buy_exposure": 851910.0,
+                    "violated_policy": "max_exposure",
+                    "violated_policy_source": "configs/runtime_v2/capital_deployment.json",
+                }
+            ],
+        },
+        "items": [
+            {
+                "pending_item_id": "buy-review-1",
+                "symbol": "66590",
+                "side": "BUY",
+                "quantity": 1600,
+                "order_type": "MARKET",
+                "estimated_price": 104.0,
+                "estimated_amount": 166400.0,
+                "approved": False,
+                "state": "REVIEW_REQUIRED",
+            }
+        ],
+    }
+    if include_scope:
+        payload.update(
+            {
+                "buy_items_status": "REVIEW_REQUIRED",
+                "sell_items_status": "NOT_PRESENT",
+                "plan_overall_status": "REVIEW_REQUIRED",
+                "approved_buy_item_ids": [],
+                "approved_sell_item_ids": [],
+                "review_required_buy_item_ids": ["buy-review-1"],
+                "review_required_sell_item_ids": [],
+                "review_scope": "BUY_ITEM_SCOPED_REVIEW",
+                "review_scope_source": "phase24_ht_planning_submit_feasibility_v1",
+                "review_scope_reason": "estimated amount exceeds remaining max_exposure",
+                "sell_continuation_allowed": True,
+            }
+        )
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", payload)
 
 
 def _evidence_root(tmp_path: Path) -> Path:

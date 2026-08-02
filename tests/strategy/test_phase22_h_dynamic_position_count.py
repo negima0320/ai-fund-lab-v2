@@ -227,6 +227,151 @@ def test_phase23_ai_no_forced_buy_when_policy_capacity_is_legitimate_zero(tmp_pa
     assert payload["target_position_count_resolution"] == "EXPLICIT_ZERO"
 
 
+def test_phase24_d_exploratory_entry_floor_applies_for_market_weak_buy_eligible_opportunity(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_floor",
+        market={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=50,
+        opportunities=50,
+        buy_eligible_opportunities=6,
+        current=0,
+    ).payload
+
+    assert payload["producer_result_status"] == "PASS"
+    assert payload["calculated_target_position_count"] == 0
+    assert payload["target_position_count"] == 1
+    assert payload["exploratory_entry_floor_applied"] is True
+    assert payload["exploratory_entry_buy_eligible_count"] == 6
+    assert "exploratory_entry_floor_applied" in payload["reason_codes"]
+    assert "market_context_zero_capacity" in payload["reason_codes"]
+    assert payload["strategy_fixed_position_cap_used"] is False
+
+
+def test_phase24_d_exploratory_entry_floor_does_not_apply_without_buy_eligible_opportunity(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_no_buy_eligible",
+        market={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=50,
+        opportunities=50,
+        buy_eligible_opportunities=0,
+        current=0,
+    ).payload
+
+    assert payload["calculated_target_position_count"] == 0
+    assert payload["target_position_count"] == 0
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert "exploratory_entry_unavailable_no_buy_eligible_opportunity" in payload["reason_codes"]
+
+
+def test_phase24_d_exploratory_entry_floor_blocks_severe_risk_off(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_risk_off",
+        market={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "RISK_OFF", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=50,
+        opportunities=50,
+        buy_eligible_opportunities=6,
+        current=0,
+    ).payload
+
+    assert payload["calculated_target_position_count"] == 0
+    assert payload["target_position_count"] == 0
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert payload["exploratory_entry_severe_risk_exclusion"] is True
+    assert "exploratory_entry_blocked_by_severe_risk" in payload["reason_codes"]
+
+
+def test_phase24_d_exploratory_entry_floor_preserves_nonzero_dynamic_count(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_nonzero",
+        market={"trend_regime": "RANGE", "market_breadth": "STRONG", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=50,
+        opportunities=50,
+        buy_eligible_opportunities=6,
+        current=0,
+    ).payload
+
+    assert payload["calculated_target_position_count"] == 3
+    assert payload["target_position_count"] == 3
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert "exploratory_entry_not_required_nonzero_target" in payload["reason_codes"]
+
+
+def test_phase24_d_exploratory_entry_floor_does_not_apply_when_meaningful_capacity_zero(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_no_capacity",
+        market={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=0,
+        opportunities=50,
+        buy_eligible_opportunities=6,
+        current=0,
+    ).payload
+
+    assert payload["meaningful_allocation_position_count"] == 0
+    assert payload["target_position_count"] == 0
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert "exploratory_entry_unavailable_no_meaningful_capacity" in payload["reason_codes"]
+
+
+def test_phase24_d_exploratory_entry_floor_fail_closed_when_opportunity_authority_review_required(tmp_path: Path) -> None:
+    payload, _ = build_dynamic_position_count_payload(
+        business_date="2026-07-15",
+        market_context_summary=_summary(tmp_path, "market_review", summary={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"}),
+        portfolio_policy_summary=_summary(tmp_path, "policy_review", summary={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"}),
+        candidate_summary=_summary(tmp_path, "candidate_review", summary={"available_candidate_count": 50}),
+        opportunity_summary=_summary(tmp_path, "opportunity_review", status="REVIEW_REQUIRED", summary={"available_opportunity_count": 50, "buy_eligible_opportunity_count": 6}),
+        current_portfolio_summary=_summary(tmp_path, "current_review", summary={"current_position_count": 0}),
+        safety_hard_maximum=10,
+        existing_active_max_positions=5,
+        config=_resolved_config(),
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["target_position_count"] is None
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert "exploratory_entry_blocked_by_unresolved_target" in payload["reason_codes"]
+
+
+def test_phase24_d_exploratory_entry_floor_does_not_cap_dynamic_target_above_one(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_no_fixed_max",
+        market={"trend_regime": "BULL", "market_breadth": "STRONG", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "RISK_ON", "entry_posture": "EXPAND", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=8,
+        opportunities=8,
+        buy_eligible_opportunities=8,
+        current=0,
+    ).payload
+
+    assert payload["target_position_count"] == 8
+    assert payload["exploratory_entry_floor_applied"] is False
+    assert payload["strategy_fixed_position_cap_used"] is False
+    assert payload["strategy_maximum_position_count"] is None
+    assert payload["safety_hard_maximum_used_for_target_calculation"] is False
+
+
+def test_phase24_d_exploratory_entry_floor_existing_position_does_not_force_new_buy(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path / "phase24_d_existing_position",
+        market={"trend_regime": "BEAR", "market_breadth": "WEAK", "volatility_regime": "NORMAL", "confidence": 0.98, "uncertainty": "LOW"},
+        policy={"risk_posture": "BALANCED", "entry_posture": "MAINTAIN", "confidence": 0.98, "uncertainty": "LOW"},
+        candidates=50,
+        opportunities=50,
+        buy_eligible_opportunities=6,
+        current=1,
+    ).payload
+
+    assert payload["calculated_target_position_count"] == 0
+    assert payload["target_position_count"] == 1
+    assert payload["exploratory_entry_floor_applied"] is True
+    assert payload["current_position_count"] == 1
+    assert payload["position_count_posture"] == "MAINTAIN"
+
+
 def test_phase23_ai_contradiction_guard_prevents_upstream_positive_from_resolving_zero(tmp_path: Path) -> None:
     payload, _ = build_dynamic_position_count_payload(
         business_date="2026-07-15",
@@ -456,6 +601,7 @@ def _produce(
     policy: dict[str, object] | None = None,
     candidates: int = 8,
     opportunities: int = 8,
+    buy_eligible_opportunities: int | None = None,
     current: int = 2,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -464,7 +610,14 @@ def _produce(
         market_context_summary=_summary(tmp_path, "market", summary=market or _market()),
         portfolio_policy_summary=_summary(tmp_path, "policy", summary=policy or _policy()),
         candidate_summary=_summary(tmp_path, "candidate", summary={"available_candidate_count": candidates}),
-        opportunity_summary=_summary(tmp_path, "opportunity", summary={"available_opportunity_count": opportunities}),
+        opportunity_summary=_summary(
+            tmp_path,
+            "opportunity",
+            summary={
+                "available_opportunity_count": opportunities,
+                "buy_eligible_opportunity_count": opportunities if buy_eligible_opportunities is None else buy_eligible_opportunities,
+            },
+        ),
         current_portfolio_summary=_summary(tmp_path, "current", summary={"current_position_count": current}),
         safety_hard_maximum=10,
         existing_active_max_positions=5,

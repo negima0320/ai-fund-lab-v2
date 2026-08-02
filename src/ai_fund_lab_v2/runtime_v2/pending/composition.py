@@ -13,6 +13,8 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, b
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
+from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import RuntimeCurrentExposure
 
 
 INACTIVE_PENDING_STATES = {
@@ -64,6 +66,8 @@ def compose_with_existing_buy_pending(
     target_session_date: str,
     environment: str,
     reason: str,
+    planning_submit_feasibility_current: RuntimeCurrentExposure | None = None,
+    planning_submit_feasibility_policy: CapitalDeploymentPolicy | None = None,
 ) -> tuple[PendingOrderPlan, Path, Path, dict]:
     if existing_buy_pending is None:
         return pending, Path(pending.source_order_plan.path), Path(pending.approval.approval_path if pending.approval else ""), {
@@ -121,12 +125,22 @@ def compose_with_existing_buy_pending(
         ),
     )
     approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
-    composed = link_approval_to_pending(pending_plan=composed, approval_artifact=approval)
+    composed = link_approval_to_pending(
+        pending_plan=composed,
+        approval_artifact=approval,
+        planning_submit_feasibility_current=planning_submit_feasibility_current,
+        planning_submit_feasibility_policy=planning_submit_feasibility_policy,
+    )
     evidence = {
         "composition_model": "COMPOSITE_PENDING_PLAN",
-        "composition_status": "PASS",
+        "composition_status": "PASS" if composed.state == PendingPlanState.APPROVED else composed.state.value,
         "preserved_existing_buy_pending": True,
         "composite_pending": True,
+        "planning_submit_feasibility_status": (
+            (composed.planning_submit_feasibility or {}).get("status")
+            if composed.planning_submit_feasibility
+            else ""
+        ),
         "source_buy_pending_plan_id": existing_buy_pending.pending_plan_id,
         "source_sell_pending_plan_id": pending.pending_plan_id,
         "composed_buy_item_count": sum(1 for item in composed.items if item.side.upper() == "BUY"),

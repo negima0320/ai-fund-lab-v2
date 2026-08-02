@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accepted_generation
+from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.safety.portfolio_limits import load_portfolio_safety_limits
 from ai_fund_lab_v2.strategy import corporate_event
 from ai_fund_lab_v2.strategy import input_materialization
@@ -17,6 +18,7 @@ from ai_fund_lab_v2.strategy import position_sizing
 from ai_fund_lab_v2.strategy import runtime_planning
 from ai_fund_lab_v2.strategy import source_manifest
 from ai_fund_lab_v2.strategy.observability import produce_strategy_decision_trace
+from ai_fund_lab_v2.strategy.target_weight_precision import target_weight_sum_tolerance
 
 
 STRATEGY_SHADOW_MANIFEST_SCHEMA_VERSION = "strategy_shadow_input_manifest.v1"
@@ -478,7 +480,18 @@ def validate_run_strategy_shadow(*, run_dir: Path, business_date: str | None = N
                 "portfolio_policy_cash_reserve_authority": "PASS" if "cash_reserve_ratio" in pp else "BLOCK",
                 "fixed_cap_non_use": "PASS" if pp.get("dynamic_position_count_artifact_policy") == "REMOVE" and pp.get("dynamic_cash_exposure_artifact_policy") == "REMOVE" else "BLOCK",
                 "legacy_authority_isolation": "PASS" if pp.get("legacy_authority_active") is False else "REVIEW_REQUIRED",
-                "target_weight_sum": "PASS" if _float(sizing.get("total_target_weight")) <= _float(sizing.get("target_gross_exposure_ratio")) + 0.000001 else "BLOCK",
+                "target_weight_sum": "PASS"
+                if _float(sizing.get("total_target_weight"))
+                <= _float(sizing.get("target_gross_exposure_ratio"))
+                + target_weight_sum_tolerance(
+                    sum(
+                        1
+                        for position in sizing.get("positions") or []
+                        if isinstance(position, dict)
+                        and str(position.get("sizing_status") or "") in {"SIZED", "CAPPED"}
+                    )
+                )
+                else "BLOCK",
                 "feature_date_authority_present": "PASS" if isinstance(input_manifest.get("feature_date_authority"), dict) else "REVIEW_REQUIRED",
             }
         day_status = "PASS" if not missing and all(value == "PASS" for value in checks.values()) else "REVIEW_REQUIRED"
@@ -739,6 +752,23 @@ def _ai_output_summary(path: Path, *, business_date: str) -> dict[str, Any]:
     for row in adapted_rows:
         reason = str(row.get("rejection_reason") or "ACCEPTED")
         rejection_distribution[reason] = rejection_distribution.get(reason, 0) + 1
+    buy_eligible_opportunity_count = (
+        sum(
+            1
+            for row in rows
+            if isinstance(row, Mapping)
+            and evaluate_opportunity_buy_eligibility(
+                symbol=str(row.get("security_code") or row.get("code") or row.get("symbol") or row.get("LocalCode") or ""),
+                business_date=business_date,
+                feature_date=str(row.get("feature_date") or payload_feature_date),
+                opportunity_artifact_path=path,
+                opportunity_payload=payload if isinstance(payload, Mapping) else {},
+                opportunity_row=row,
+            ).eligible
+        )
+        if kind == "opportunity"
+        else None
+    )
     return {
         "status": "PASS" if path.is_file() else "MISSING",
         "business_date": payload_business_date,
@@ -756,7 +786,11 @@ def _ai_output_summary(path: Path, *, business_date: str) -> dict[str, Any]:
             **(
                 {"candidate_capacity_count": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE")}
                 if kind == "candidate"
-                else {"opportunity_capacity_count": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE")}
+                else {
+                    "opportunity_capacity_count": sum(1 for row in adapted_rows if row.get("eligibility_status") == "ELIGIBLE"),
+                    "buy_eligible_opportunity_count": buy_eligible_opportunity_count,
+                    "buy_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+                }
                 if kind == "opportunity"
                 else {}
             ),
@@ -804,7 +838,18 @@ def _candidate_downstream_rows(
         row_feature_date = str(row.get("feature_date") or source_row_date)
         eligible, rejection_reason = _candidate_downstream_eligibility(row, code=code, business_date=business_date, source_row_date=source_row_date)
         score = row.get("candidate_score", row.get("opportunity_score", row.get("expected_edge_score", row.get("score"))))
-        rank = row.get("candidate_rank", row.get("buy_rank", row.get("rank", index)))
+        source_row_hash = hashlib.sha256(json.dumps(row, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        rank_authority = _downstream_rank_authority(
+            row,
+            kind=kind,
+            path=path,
+            source_hash=source_hash,
+            source_row_hash=source_row_hash,
+        )
+        rank = rank_authority["rank"]
+        if rank_authority["status"] != "PASS":
+            eligible = False
+            rejection_reason = str(rank_authority["reason"])
         identity = {
             "kind": kind,
             "business_date": business_date,
@@ -825,7 +870,19 @@ def _candidate_downstream_rows(
                 "candidate_id": str(row.get("candidate_id") or (f"candidate-{business_date}-{code}-{row_id}" if kind == "candidate" else "")),
                 "opportunity_id": str(row.get("opportunity_id") or (f"opportunity-{business_date}-{code}-{row_id}" if kind == "opportunity" else "")),
                 "candidate_order": _int_or_default(row.get("candidate_order", row.get("candidate_rank", rank)), index),
-                "rank": _int_or_default(rank, index),
+                "rank": rank if kind == "opportunity" else _int_or_default(rank, index),
+                "adapter_sort_rank": _int_or_default(rank, index),
+                "candidate_rank_authority": "candidate_rank" if kind == "candidate" else "",
+                "opportunity_buy_rank": rank if kind == "opportunity" and rank_authority["status"] == "PASS" else None,
+                "canonical_opportunity_buy_rank": rank if kind == "opportunity" and rank_authority["status"] == "PASS" else None,
+                "rank_authority_status": rank_authority["status"],
+                "rank_authority": rank_authority["authority"],
+                "rank_authority_field": rank_authority["field"],
+                "rank_authority_reason": rank_authority["reason"],
+                "rank_authority_source_path": str(path),
+                "rank_authority_source_hash": source_hash,
+                "rank_authority_row_id": row_id,
+                "rank_authority_row_hash": source_row_hash,
                 "score": _float(row.get("score", score), default=0.0),
                 "candidate_score": _float(row.get("candidate_score", score), default=0.0) if kind == "candidate" else row.get("candidate_score"),
                 "expected_edge_score": _float(row.get("expected_edge_score", score), default=0.0) if kind == "opportunity" else row.get("expected_edge_score", score),
@@ -839,10 +896,11 @@ def _candidate_downstream_rows(
                 "feature_contract_hash": feature_contract_hash,
                 "technical_features_join_key": {"code": code, "target_date": source_row_date},
                 "source_ref": str(path),
+                "source_artifact_path": str(path),
                 "source_hash": source_hash,
                 "artifact_hash": source_hash,
                 "source_artifact_hash": source_hash,
-                "source_row_hash": hashlib.sha256(json.dumps(row, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
+                "source_row_hash": source_row_hash,
                 "adapter_contract_version": "runtime_buy_ai_candidate_downstream_adapter.v1" if kind == "candidate" else "runtime_buy_ai_opportunity_downstream_adapter.v1",
                 "decision_resolution": "RESOLVED" if eligible else "UNRESOLVED",
                 "latest_fallback_used": False,
@@ -850,6 +908,78 @@ def _candidate_downstream_rows(
             }
         )
     return adapted
+
+
+def _downstream_rank_authority(
+    row: Mapping[str, Any],
+    *,
+    kind: str,
+    path: Path,
+    source_hash: str,
+    source_row_hash: str,
+) -> dict[str, Any]:
+    if kind == "opportunity":
+        raw = row.get("opportunity_buy_rank")
+        field = "opportunity_buy_rank"
+        if raw in (None, ""):
+            raw = row.get("buy_rank")
+            field = "buy_rank"
+        rank = _int_or_none(raw)
+        if rank is None:
+            return {
+                "status": "REVIEW_REQUIRED",
+                "rank": None,
+                "authority": "OPPORTUNITY_BUY_RANK_AUTHORITY",
+                "field": field,
+                "reason": "opportunity_rank_authority_missing_or_invalid",
+                "source_path": str(path),
+                "source_hash": source_hash,
+                "row_hash": source_row_hash,
+            }
+        conflicts: list[str] = []
+        for alias in ("buy_rank", "opportunity_buy_rank", "opportunity_rank", "rank"):
+            if alias == field or alias not in row or row.get(alias) in (None, ""):
+                continue
+            alias_rank = _int_or_none(row.get(alias))
+            if alias_rank is None or alias_rank != rank:
+                conflicts.append(alias)
+        if conflicts:
+            return {
+                "status": "REVIEW_REQUIRED",
+                "rank": None,
+                "authority": "OPPORTUNITY_BUY_RANK_AUTHORITY",
+                "field": field,
+                "reason": "opportunity_rank_authority_conflict:" + ",".join(sorted(conflicts)),
+                "source_path": str(path),
+                "source_hash": source_hash,
+                "row_hash": source_row_hash,
+            }
+        return {
+            "status": "PASS",
+            "rank": rank,
+            "authority": "OPPORTUNITY_BUY_RANK_AUTHORITY",
+            "field": field,
+            "reason": "",
+            "source_path": str(path),
+            "source_hash": source_hash,
+            "row_hash": source_row_hash,
+        }
+    raw = row.get("candidate_rank")
+    field = "candidate_rank"
+    if raw in (None, ""):
+        raw = row.get("candidate_order", row.get("rank"))
+        field = "candidate_rank_fallback"
+    rank = _int_or_none(raw)
+    return {
+        "status": "PASS" if rank is not None else "REVIEW_REQUIRED",
+        "rank": rank,
+        "authority": "CANDIDATE_RANK_AUTHORITY",
+        "field": field,
+        "reason": "" if rank is not None else "candidate_rank_authority_missing_or_invalid",
+        "source_path": str(path),
+        "source_hash": source_hash,
+        "row_hash": source_row_hash,
+    }
 
 
 def _candidate_downstream_eligibility(row: Mapping[str, Any], *, code: str, business_date: str, source_row_date: str) -> tuple[bool, str]:
@@ -863,6 +993,15 @@ def _candidate_downstream_eligibility(row: Mapping[str, Any], *, code: str, busi
     if excluded:
         return False, excluded
     return True, ""
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _row_reason_codes(row: Mapping[str, Any], *, rejection_reason: str) -> list[str]:

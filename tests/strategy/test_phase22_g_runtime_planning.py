@@ -515,6 +515,99 @@ def test_phase23_ar_runtime_planning_is_pure_mapper_for_same_sizing_output(tmp_p
     assert [(p["planning_intent"], p["planned_quantity"]) for p in first["plans"]] == [(p["planning_intent"], p["planned_quantity"]) for p in second["plans"]]
 
 
+def test_phase24_if_upstream_block_does_not_report_independent_quantity_authority_failures(tmp_path: Path) -> None:
+    pc_members = {
+        "21340": ("ADD_CANDIDATE", False),
+        "37820": ("ADD_CANDIDATE", False),
+    }
+    pc_path = _write_portfolio_construction(tmp_path, pc_members)
+    pc_payload = json.loads(pc_path.read_text(encoding="utf-8"))
+    pc_payload.update(
+        {
+            "source_authority_status": "AUTHORITY_CONFLICT",
+            "producer_result_status": "BLOCK",
+            "validation_status": "BLOCK",
+            "producer_calculation_completed": False,
+            "downstream_calculation_eligibility": "CALCULATION_NOT_ALLOWED",
+            "decision_resolution": "UNRESOLVED",
+            "reason_codes": ["total_target_weight_above_target_gross_exposure"],
+        }
+    )
+    pc_payload["artifact_hash"] = portfolio_construction.portfolio_construction_hash(pc_payload)
+    _write_json(pc_path, pc_payload)
+    ps_path = _write_position_sizing(
+        tmp_path,
+        {
+            "21340": {"sizing_status": "UPSTREAM_REVIEW_REQUIRED"},
+            "37820": {"sizing_status": "UPSTREAM_REVIEW_REQUIRED"},
+        },
+    )
+
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=pc_path,
+        capital_deployment_artifact_path=_write_capital_deployment(tmp_path / "cd", pm_actions={}, current_codes=(), pc_members=pc_members),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(tmp_path, "position"),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_artifact_path=ps_path,
+        opportunity_artifact_path=None,
+    )
+
+    assert payload["producer_result_status"] == "BLOCK"
+    assert "upstream_block:SOURCE_BLOCKED" in payload["reason_codes"]
+    assert not any(reason.startswith("review_required_quantity_authority:") for reason in payload["reason_codes"])
+    assert all(
+        "quantity_not_produced_due_to_upstream_block" in plan["reason_codes"]
+        for plan in payload["plans"]
+        if plan["security_code"] in {"21340", "37820"}
+    )
+
+
+def test_phase24_ii_position_sizing_block_does_not_report_independent_quantity_authority_failures(tmp_path: Path) -> None:
+    pc_members = {
+        "21340": ("ADD_CANDIDATE", False),
+        "37820": ("ADD_CANDIDATE", False),
+    }
+    ps_path = _write_position_sizing(tmp_path, {})
+    ps_payload = json.loads(ps_path.read_text(encoding="utf-8"))
+    ps_payload.update(
+        {
+            "producer_result_status": "BLOCK",
+            "positions": [],
+            "reason_codes": ["aggregate_target_weight_above_exposure_cap"],
+        }
+    )
+    _write_json(ps_path, ps_payload)
+
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(tmp_path, pc_members),
+        capital_deployment_artifact_path=_write_capital_deployment(tmp_path / "cd", pm_actions={}, current_codes=(), pc_members=pc_members),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(tmp_path, "position"),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_artifact_path=ps_path,
+        opportunity_artifact_path=None,
+    )
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert not any(reason.startswith("review_required_quantity_authority:") for reason in payload["reason_codes"])
+    assert all(
+        "quantity_not_produced_due_to_upstream_block" in plan["reason_codes"]
+        for plan in payload["plans"]
+        if plan["security_code"] in {"21340", "37820"}
+    )
+
+
 def test_phase22_g_upstream_review_not_eligible_and_block_propagate(tmp_path: Path) -> None:
     result = _produce(tmp_path)
     assert result.payload["producer_result_status"] == "PASS"

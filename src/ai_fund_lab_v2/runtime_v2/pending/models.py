@@ -80,6 +80,9 @@ class PendingOrderItem:
     estimated_amount: float
     approved: bool
     state: str
+    feasibility_status: str = ""
+    batch_submit_status: str = ""
+    item_review_reason: str = ""
     listed_info: dict[str, Any] | None = None
     price_source: str = ""
     price_as_of: str = ""
@@ -167,6 +170,18 @@ class PendingOrderPlan:
     safety_context: dict[str, Any] | None = None
     safety_decision_id: str = ""
     safety_policy_version: str = ""
+    planning_submit_feasibility: dict[str, Any] | None = None
+    buy_items_status: str = ""
+    sell_items_status: str = ""
+    plan_overall_status: str = ""
+    approved_buy_item_ids: tuple[str, ...] = ()
+    approved_sell_item_ids: tuple[str, ...] = ()
+    review_required_buy_item_ids: tuple[str, ...] = ()
+    review_required_sell_item_ids: tuple[str, ...] = ()
+    review_scope: str = ""
+    review_scope_source: str = ""
+    review_scope_reason: str = ""
+    sell_continuation_allowed: bool = False
 
 
 @dataclass(frozen=True)

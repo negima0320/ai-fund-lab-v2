@@ -54,6 +54,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     safety_allows_action,
     safety_manifest_fields,
 )
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
 from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity
 
 
@@ -770,7 +771,14 @@ def run_morning_ai_planning_pending_pipeline(
             ),
         )
         approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
-        pending = link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
+        pending = link_approval_to_pending(
+            pending_plan=pending,
+            approval_artifact=approval,
+            planning_submit_feasibility_current=load_runtime_current_exposure(
+                runtime_root_path / "persistent_ledger" / "state.json"
+            ),
+            planning_submit_feasibility_policy=policy,
+        )
     else:
         approval_path.write_text(
             _json_dumps(

@@ -23,13 +23,17 @@ from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
 )
 from ai_fund_lab_v2.strategy import position_management
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
+from ai_fund_lab_v2.strategy.target_weight_precision import (
+    TARGET_WEIGHT_ABSOLUTE_TOLERANCE,
+    TARGET_WEIGHT_DECIMALS,
+    target_weight_sum_tolerance,
+)
 
 
 SCHEMA_VERSION = "portfolio_construction.v1"
 PRODUCER_VERSION = "phase22_e_portfolio_construction_producer.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
-
 MEMBERSHIP_INTENTS = {"RETAIN", "ADD_CANDIDATE", "REDUCE_CANDIDATE", "REMOVE_CANDIDATE", "EXCLUDE", "UNRESOLVED"}
 WEIGHT_INTENTS = {"INCREASE", "MAINTAIN", "DECREASE", "REMOVE", "AVOID", "UNRESOLVED"}
 SOURCE_AUTHORITY_STATUSES = {"VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTHORITY_CONFLICT"}
@@ -351,6 +355,7 @@ def build_portfolio_construction_payload(
         "resolved_target_member_count": weight_contract["resolved_target_member_count"],
         "single_name_weight_cap": weight_contract["single_name_weight_cap"],
         "total_target_weight": weight_contract["total_target_weight"],
+        "target_weight_sum_tolerance": weight_contract["target_weight_sum_tolerance"],
         "membership_intent_taxonomy": sorted(MEMBERSHIP_INTENTS),
         "weight_intent_taxonomy": sorted(WEIGHT_INTENTS),
         "position_count_policy_reference": str((policy_result.get("artifact_path") or portfolio_policy_artifact_path or "")),
@@ -812,7 +817,8 @@ def _member(
         "position_management_reference": str((pm or {}).get("position_id") or (pm or {}).get("source_pm_decision_ref") or ""),
         "portfolio_policy_reference": "",
         "input_candidate_order": _candidate_order(candidate or {}),
-        "input_opportunity_rank": _rank(opportunity or {}),
+        "input_opportunity_rank": _canonical_opportunity_rank(opportunity or {}),
+        **_opportunity_rank_authority_payload(opportunity or {}),
         "input_score": _score(opportunity or candidate or {}),
         **_score_authority_payload(business_date=business_date, candidate=candidate, opportunity=opportunity),
         "pm_action": str((pm or {}).get("action") or ""),
@@ -868,7 +874,7 @@ def _resolve_target_weight_contract(
         zero_reason = ""
         review_reason = ""
         reason = "target_weight_resolved"
-        weight = round(base_weight, 6) if selected else 0.0
+        weight = round(base_weight, TARGET_WEIGHT_DECIMALS) if selected else 0.0
         if status != "PASS":
             zero_reason = "unresolved_authority"
             review_reason = "target_weight_authority_unresolved"
@@ -919,7 +925,7 @@ def _resolve_target_weight_contract(
             "status": "PASS" if status == "PASS" else "REVIEW_REQUIRED",
             "reason": reason,
             "resolved_weight": weight,
-            "base_weight": round(base_weight, 6),
+            "base_weight": round(base_weight, TARGET_WEIGHT_DECIMALS),
             "adjustments": [],
             "cap_applied": cap_applied,
             "normalization_applied": False,
@@ -938,7 +944,8 @@ def _resolve_target_weight_contract(
         }
         weighted.append(updated)
         total_weight += weight
-    if target_gross_exposure is not None and total_weight > float(target_gross_exposure) + 0.000001:
+    target_weight_sum_tolerance = _target_weight_sum_tolerance(effective_count)
+    if target_gross_exposure is not None and total_weight > float(target_gross_exposure) + target_weight_sum_tolerance:
         status = "BLOCK"
         reason_codes.append("total_target_weight_above_target_gross_exposure")
     return {
@@ -950,8 +957,13 @@ def _resolve_target_weight_contract(
         "resolved_target_member_count": effective_count,
         "single_name_weight_cap": single_name_cap,
         "total_target_weight": round(total_weight, 6),
+        "target_weight_sum_tolerance": target_weight_sum_tolerance,
         "portfolio_policy_allocation_authority": policy_authority,
     }
+
+
+def _target_weight_sum_tolerance(selected_member_count: int) -> float:
+    return target_weight_sum_tolerance(selected_member_count)
 
 
 def resolve_portfolio_policy_allocation_authority(
@@ -1184,11 +1196,60 @@ def _code(row: Mapping[str, Any] | None) -> str:
 
 
 def _rank(row: Mapping[str, Any]) -> int:
-    value = row.get("rank", row.get("opportunity_rank", 999999))
+    value = row.get("canonical_opportunity_buy_rank", row.get("opportunity_buy_rank", row.get("buy_rank", row.get("rank", row.get("opportunity_rank", 999999)))))
     try:
         return int(value)
     except (TypeError, ValueError):
         return 999999
+
+
+def _canonical_opportunity_rank(row: Mapping[str, Any]) -> int | None:
+    if not row:
+        return None
+    value = row.get("canonical_opportunity_buy_rank", row.get("opportunity_buy_rank", row.get("buy_rank")))
+    if value in (None, "") and not row.get("rank_authority_status"):
+        value = row.get("opportunity_rank", row.get("rank"))
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opportunity_rank_authority_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    if not row:
+        return {
+            "input_opportunity_rank_authority": "",
+            "input_opportunity_rank_source_path": "",
+            "input_opportunity_rank_source_hash": "",
+            "input_opportunity_row_id": "",
+            "input_opportunity_row_authority_hash": "",
+        }
+    rank = _canonical_opportunity_rank(row)
+    source_path = str(row.get("rank_authority_source_path") or row.get("source_artifact_path") or row.get("source_ref") or "")
+    source_hash = str(row.get("rank_authority_source_hash") or row.get("source_artifact_hash") or row.get("artifact_hash") or row.get("source_hash") or "")
+    row_id = str(row.get("rank_authority_row_id") or row.get("opportunity_id") or row.get("row_id") or "")
+    row_hash = str(row.get("rank_authority_row_hash") or row.get("row_authority_hash") or row.get("source_row_hash") or "")
+    status = str(row.get("rank_authority_status") or ("PASS" if rank is not None else "REVIEW_REQUIRED"))
+    authority = str(row.get("rank_authority") or "OPPORTUNITY_BUY_RANK_AUTHORITY")
+    reason = str(row.get("rank_authority_reason") or ("" if rank is not None else "opportunity_rank_authority_missing_or_invalid"))
+    return {
+        "opportunity_buy_rank": rank,
+        "opportunity_row_id": row_id,
+        "opportunity_row_authority_hash": row_hash,
+        "opportunity_artifact_path": source_path,
+        "opportunity_artifact_hash": source_hash,
+        "input_opportunity_rank_authority": authority if rank is not None and status == "PASS" else "",
+        "input_opportunity_rank_source_path": source_path,
+        "input_opportunity_rank_source_hash": source_hash,
+        "input_opportunity_row_id": row_id,
+        "input_opportunity_row_authority_hash": row_hash,
+        "rank_authority_status": status,
+        "rank_authority": authority,
+        "rank_authority_field": str(row.get("rank_authority_field") or "buy_rank"),
+        "rank_authority_reason": reason,
+    }
 
 
 def _candidate_order(row: Mapping[str, Any]) -> int:

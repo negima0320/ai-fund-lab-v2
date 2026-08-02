@@ -5725,3 +5725,533 @@ docs/phase_reports/phase23_final_summary_and_phase24_handoff.md
 docs/phase_reports/phase23_to_phase24_chatgpt_handoff.md
 reports/phase_reports/phase23_final_summary_and_phase24_handoff.json
 ```
+
+## 2026-07-31 Phase24-G Performance Reconciliation, PM Profit Retention, and Re-entry Control Design Contract
+
+Phase24-G judgment:
+
+```text
+PHASE24_G_REVIEW_REQUIRED_PERFORMANCE_ACCOUNTING_GAP
+```
+
+Performance reconciliation result:
+
+```text
+PERFORMANCE_RECONCILIATION_REVIEW_REQUIRED_ACCOUNTING_CONTRACT_GAP
+
+51,960 yen difference explained:
+final_equity - initial_equity reconciles to -64,220 yen.
+reported realized_pnl + unrealized_pnl reconciles to -116,180 yen because
+open-position PnL cost basis uses 711,030 yen while execution-basis open
+notional is 659,070 yen.
+
+Final cash + final market value reconciles:
+282,130 + 653,650 = 935,780
+```
+
+Design freeze status:
+
+```text
+PM Observability Contract:
+FROZEN_FOR_REVIEW
+
+Profit Retention Decision Contract:
+FROZEN_FOR_REVIEW
+
+Re-entry Control Contract:
+FROZEN_FOR_REVIEW
+
+Implementation Gate:
+BLOCKED_UNTIL_PERFORMANCE_ACCOUNTING_COST_BASIS_GAP_REVIEW_OR_REPAIR
+```
+
+Next implementation gate:
+
+```text
+Phase24-H Performance Accounting Cost Basis Authority Repair / Review Gate
+```
+
+Ownership:
+
+```text
+Long-running test ownership:
+USER
+
+Implementation ownership:
+CODEX
+
+Project coordination:
+CHATGPT
+```
+
+Artifacts:
+
+```text
+docs/phase_reports/phase24_g_performance_reconciliation_pm_profit_retention_and_reentry_control_design_contract.md
+reports/phase_reports/phase24_g_performance_reconciliation_pm_profit_retention_and_reentry_control_design_contract.json
+reports/phase24_g_performance_reconciliation_pm_profit_retention_and_reentry_control_design_contract/
+```
+
+## 2026-07-31 Phase24-H Performance Accounting Cost Basis Authority Repair
+
+Phase24-H judgment:
+
+```text
+PHASE24_H_COST_BASIS_AUTHORITY_REPAIRED_SHORT_VALIDATION_PASS_RUNTIME_RERUN_REQUIRED
+```
+
+Root cause:
+
+```text
+SUMMARY_CONSUMES_NON_CANONICAL_COST_BASIS
+
+Runtime-owned fill projection reconstructed quantity, cash, and realized
+PnL from canonical execution-equivalent events, but open position
+average_price could be copied from the latest broker/current position
+snapshot. In same-symbol close and re-entry sequences, that snapshot could
+retain previous campaign basis and cause unrealized PnL drift.
+```
+
+Canonical cost basis owner:
+
+```text
+Runtime-owned fill projection over canonical execution-equivalent events
+using moving-average inventory accounting.
+```
+
+Repair scope:
+
+```text
+Open Position Cost Basis Authority only.
+
+No PM, Strategy, Opportunity Ranking, Portfolio Construction, Capital
+Deployment, Position Sizing, Exit Timing, Re-entry policy, threshold,
+cash ratio, source, or historical artifact changes.
+```
+
+Short validation:
+
+```text
+Phase24-H regression tests = PASS
+Related runtime-owned projection/performance authority regressions = PASS
+Static post-repair reconciliation = PASS
+20BD Runtime rerun = NOT RUN / USER OWNED
+```
+
+Static reconciliation:
+
+```text
+canonical_open_cost_basis = 659,070
+expected_open_unrealized_pnl = -5,420
+closed_realized_pnl = -58,800
+realized_plus_unrealized = -64,220
+final_equity - initial_equity = -64,220
+difference = 0
+```
+
+Next gate:
+
+```text
+Phase24-HR Operator 20BD Runtime Revalidation and Accounting Acceptance Gate
+```
+
+Artifacts:
+
+```text
+docs/phase_reports/phase24_h_performance_accounting_cost_basis_authority_repair.md
+reports/phase_reports/phase24_h_performance_accounting_cost_basis_authority_repair.json
+reports/phase24_h_performance_accounting_cost_basis_authority_repair/
+```
+
+## 2026-07-31 Phase24-HR Capital Deployment vs Submit Guard Exposure Authority Audit
+
+Phase24-HR judgment:
+
+```text
+PHASE24_HR_EXPECTED_VALID_EXPOSURE_BLOCK_UPSTREAM_PLANNING_REVIEW_REQUIRED_WITH_PARTIAL_SUBMIT_CONTRACT_GAP
+```
+
+20BD rerun identity:
+
+```text
+run_id = runtime-test-historical-extended-smoke-20260731T052507224758Z
+profile = historical-extended-smoke
+halt_business_date = 2022-07-25
+halt_job = submit
+submit_exit_code = 20
+fresh_run_status = HALT
+completed_business_days = 15 / 20
+```
+
+HALT reason:
+
+```text
+estimated amount exceeds remaining max_exposure
+```
+
+Exposure root cause:
+
+```text
+The BUY block is an expected valid Submit Guard block.
+
+current_exposure = 685,510
+max_exposure = 850,000
+remaining_max_exposure = 164,490
+BUY 66590 estimated_amount = 166,400
+overage = 1,910
+
+Primary system gap:
+PARTIAL_SUBMIT_CONTRACT_GAP
+
+Secondary classification:
+EXPECTED_VALID_GUARD_BLOCK
+```
+
+Repair status:
+
+```text
+No code/config repair performed in Phase24-HR.
+max_exposure unchanged.
+BUY quantity unchanged.
+Strategy / PM / Ranking / Position Sizing unchanged.
+Historical-only branch added = NO.
+```
+
+Phase24-H accounting status:
+
+```text
+Phase24-H cost basis repair preserved.
+Phase24-H regression = PASS.
+The Phase24-H cost basis authority did not cause the exposure HALT.
+Exposure used positions[].market_value, not cost_basis or average_price.
+```
+
+Next Runtime gate:
+
+```text
+Do not rerun the same 20BD Runtime gate until upstream Planning exposure
+preflight and partial submit lifecycle semantics are reviewed.
+```
+
+Recommended next task:
+
+```text
+Phase24-HS Upstream Planning Exposure Preflight and Partial Submit Lifecycle Contract Review
+```
+
+Artifacts:
+
+```text
+docs/phase_reports/phase24_hr_capital_deployment_submit_guard_exposure_authority_audit.md
+reports/phase_reports/phase24_hr_capital_deployment_submit_guard_exposure_authority_audit.json
+reports/phase24_hr_capital_deployment_submit_guard_exposure_authority_audit/
+```
+
+## 2026-07-31 Phase24-HT Planning Submit Feasibility Implementation
+
+Phase24-HT status:
+
+```text
+Design Updated
+Architecture Updated
+Contract Updated
+Implementation Planned
+Regression Required
+Operator Runtime Required
+```
+
+Design update:
+
+```text
+Planning Submit Feasibility Preflight is added between Planning and
+APPROVED Pending. Planning must not advance a deterministic Submit-blocked
+BUY into APPROVED Pending.
+```
+
+Architecture update:
+
+```text
+runtime_architecture_v2.md updated
+autonomous_ai_operations_architecture.md updated
+strategy_architecture_v1.md updated
+```
+
+Contract update:
+
+```text
+docs/phase_reports/phase24_ht_planning_submit_feasibility_contract.md
+```
+
+Implementation:
+
+```text
+Use canonical Submit exposure authority from active CapitalDeploymentPolicy
+and Runtime Current / Persistent Ledger.
+Submit Guard remains final hard guard and must not be weakened.
+```
+
+Regression:
+
+```text
+Planning Exposure PASS -> Pending APPROVED
+Planning Exposure FAIL -> Pending REVIEW_REQUIRED
+Planning PASS -> Submit Guard PASS
+Planning REVIEW_REQUIRED -> Submit Guard still validates if invoked
+Phase24-H Accounting Regression
+Phase24-HR Exposure Regression
+Existing Regression
+```
+
+Operator Runtime:
+
+```text
+Required after short validation.
+Codex must not execute 20BD Runtime in this task.
+```
+
+## 2026-07-31 Phase24-HV BUY REVIEW_REQUIRED Pending vs SELL Planning Continuation
+
+Phase24-HV status:
+
+```text
+Architecture Updated
+Contract Updated
+Implementation Planned
+Regression Required
+Operator Runtime Required
+```
+
+Design update:
+
+```text
+BUY item-scoped REVIEW_REQUIRED prohibits BUY submission but must not
+automatically invalidate independent Position Management, SELL Planning,
+or approved SELL submission when valid SELL authority and Safety authority
+are present.
+```
+
+Contract update:
+
+```text
+docs/phase_reports/phase24_hv_buy_review_sell_continuation_contract.md
+```
+
+Implementation:
+
+```text
+Pending review scope materialization
+Historical Safety readiness resolution for BUY_ITEM_SCOPED_REVIEW
+Data Readiness consumer behavior
+Position Management / SELL Planning entry gate continuity
+Schema-compatible evidence additions
+```
+
+Regression:
+
+```text
+BUY item scoped review + valid SELL
+BUY review must not become approved
+Global Safety review fail-closed
+Missing Safety authority fail-closed
+Business date mismatch fail-closed
+Ambiguous Pending fail-closed
+Normal APPROVED flow
+Authorized NO_ORDER flow
+Phase24-HT regression
+Phase24-H accounting regression
+```
+
+Operator Runtime:
+
+```text
+Required after short validation.
+Codex must not execute long Runtime in this task.
+```
+
+## 2026-08-01 Phase24-HY Ranking Consumer Alignment and Portfolio Construction Rank Authority Repair
+
+Phase24-HY status:
+
+```text
+Design Updated
+Architecture Updated
+Contract Updated
+Implementation
+Regression
+Operator Runtime Required
+```
+
+Contract update:
+
+```text
+docs/phase_reports/phase24_hy_ranking_consumer_alignment_and_rank_authority_contract.md
+```
+
+Implementation scope:
+
+```text
+Strategy adapter Opportunity Rank Authority mapping
+Portfolio Construction rank evidence materialization
+Downstream rank lineage propagation
+Strategy Decision Trace rank semantics separation
+Planning evidence consistency
+```
+
+Operator Runtime:
+
+```text
+Required after short validation.
+Codex must not execute Runtime fresh run or resume in this task.
+```
+
+## 2026-08-02 Phase24-ID Execution Post-Fill Reconciliation and Aggregate Portfolio Constraint Repair
+
+Phase24-ID confirmed that the 2023-02-14 historical execution REVIEW_REQUIRED
+was caused by aggregate Pending BUY feasibility gaps and negative cash
+projection clamping:
+
+```text
+Run:
+runtime-test-historical-extended-smoke-20260801T195620733988Z
+
+Direct halt:
+execution REVIEW_REQUIRED, reconciliation findings=2
+
+Exact findings:
+CASH_MISMATCH
+BUYING_POWER_MISMATCH
+```
+
+Contract update:
+
+```text
+Planning Submit Feasibility
+Submit Guard
+Execution Projection
+```
+
+now require aggregate/sequential BUY reservation for cash, buying_power,
+exposure, and active max_positions.  Runtime-owned fill projection must fail
+closed on negative projected cash instead of clamping to zero and passing.
+
+No Strategy, Ranking, PM, Position Sizing policy, Capital Deployment
+parameter, max_exposure, max_positions, cash buffer, or Submit Guard threshold
+change was made.
+
+## 2026-08-02 Phase24-IL Corporate Action Adjustment Authority and Current/Pending Quantity Reconciliation
+
+Phase24-IL formalized and implemented the Runtime common Corporate Action
+Adjustment Authority for Submit safety.
+
+Status:
+
+```text
+Audit Complete
+Architecture Updated
+Contract Updated
+Implementation
+Short Regression PASS
+Operator Resume Required
+```
+
+Contract update:
+
+```text
+Corporate Action Guard
+Submit Guard
+Historical Submit Adapter
+Runtime-owned Ledger / Current / Pending quantity lineage
+Resume idempotency
+```
+
+The authority does not infer event type from `AdjFactor` alone and does not
+weaken the Corporate Action Guard.  Impacted orders can pass only when PIT
+event resolution, source hash binding, ledger/current/pending quantity
+reconciliation, and double-adjustment prevention are proven.
+
+No Strategy, Ranking, Eligibility, PM decision logic, Position Sizing policy,
+Capital Deployment parameter, Submit Guard threshold, max exposure, cash
+reserve, or target exposure change was made.  Long Historical Runtime Test was
+not executed by Codex.
+
+## 2026-08-03 Phase24-IO Phase24 Final Closure and Phase25 Formal Handoff
+
+Phase24 final status:
+
+```text
+CLOSED_WITH_DOCUMENTED_NON_BLOCKING_GAPS
+```
+
+Primary Judgment:
+
+```text
+PHASE24_IO_PHASE24_CLOSED_PHASE25_PERFORMANCE_EVALUATION_READY_WITH_ENTRY_GATES
+```
+
+Final judgments:
+
+```text
+Runtime Stability: PASS_WITH_DOCUMENTED_GAPS
+Runtime Recovery: PASS_FOR_VALIDATED_SCENARIOS
+Strategy Runtime Integration: PASS_FOR_VALIDATED_10BD_SCOPE
+Long Historical Completion: NOT_YET_PROVEN
+Performance Evaluation: DEFERRED_TO_PHASE25
+Production Readiness: NOT_APPROVED
+```
+
+Runtime record:
+
+```text
+2023 run:
+runtime-test-historical-extended-smoke-20260801T223117629647Z
+Status: ABANDONED
+Completed business days: 186 / 245
+Reached: 2023-10-04 submit
+Stop classification: Corporate Action manual review
+One-year completion: NO
+
+2024 run:
+runtime-test-historical-extended-smoke-20260802T113114833349Z
+Status: COMPLETED
+Final Judgment: PASS
+Completed business days: 10
+Period: 2024-01-04 to 2024-01-18
+Final Equity: 1,067,660
+Return: +67,660
+Return Rate: +6.766%
+Lifecycle Consistency: PASS
+Review / Block findings: 0
+One-year completion: NO
+```
+
+Phase25 entry:
+
+```text
+READY_WITH_ENTRY_GATES
+```
+
+Phase25 formal name:
+
+```text
+Phase25 - Performance Evaluation, Attribution and Strategy Improvement
+```
+
+Phase25 first task:
+
+```text
+Phase25-A - Baseline Metrics, Benchmark and Capital Efficiency Entry Gate
+```
+
+Phase25-A must not change Strategy. It must first fix Metrics, Benchmark,
+Capital Efficiency, and Experiment Contracts.
+
+User Target Annual Return remains:
+
+```text
++50%
+```
+
+This is a target, not a guarantee or achieved result. 10BD returns must not be
+annualized for acceptance. Safety Guard, Submit Guard, Corporate Action Guard,
+PIT, Production-common Runtime Contract, and prohibited-learning-input rules
+remain binding.

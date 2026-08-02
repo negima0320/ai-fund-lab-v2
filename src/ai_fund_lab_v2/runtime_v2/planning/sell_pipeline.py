@@ -16,6 +16,7 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, b
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.composition import compose_with_existing_buy_pending, read_active_buy_pending
+from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import materialize_empty_pending_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
     HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
@@ -33,6 +34,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     safety_allows_action,
     safety_manifest_fields,
 )
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
 from ai_fund_lab_v2.runtime_v2.symbol_identity import same_symbol_identity
 
 
@@ -353,6 +355,7 @@ def run_sell_planning_pending_pipeline(
                 current_exposure=current_exposure,
                 add_result=add_result,
                 existing_buy_pending=existing_buy_pending,
+                capital_deployment_policy=capital_deployment_policy,
                 submit_policy_context=canonical_submit_policy_context,
                 safety_decision=runtime_safety_decision,
             )
@@ -520,7 +523,14 @@ def run_sell_planning_pending_pipeline(
             ),
         )
         approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
-        pending = link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
+        pending = link_approval_to_pending(
+            pending_plan=pending,
+            approval_artifact=approval,
+            planning_submit_feasibility_current=load_runtime_current_exposure(
+                runtime_root_path / "persistent_ledger" / "state.json"
+            ),
+            planning_submit_feasibility_policy=capital_deployment_policy,
+        )
     else:
         approval_path.write_text(
             _json_dumps({"status": "NO_SIGNAL", "reason": "no pending SELL items after planning"}),
@@ -535,6 +545,10 @@ def run_sell_planning_pending_pipeline(
         target_session_date=target_session_date,
         environment=mode,
         reason="SELL Planning composed with active BUY Pending",
+        planning_submit_feasibility_current=load_runtime_current_exposure(
+            runtime_root_path / "persistent_ledger" / "state.json"
+        ),
+        planning_submit_feasibility_policy=capital_deployment_policy,
     )
     pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
@@ -673,6 +687,18 @@ def _write_no_signal_pending(
         pending_payload["pending_composition_status"] = existing_buy_pending_reason or "NOT_REQUIRED"
         if add_result is not None:
             pending_payload["pm_add_consumer"] = add_result.to_evidence()
+        pending_payload = materialize_empty_pending_no_order_authority(
+            pending_payload,
+            runtime_root=runtime_root,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=environment,
+            authority_reason="empty_pending_no_executable_order_items",
+            sell_order_plan_path=order_plan_path,
+            sell_approval_path=approval_path,
+            sell_reason=reason,
+            add_evidence=add_result.to_evidence() if add_result is not None else None,
+        )
         pending_path.write_text(_json_dumps(pending_payload), encoding="utf-8")
     return SellPlanningPipelineResult(
         status=status,
@@ -710,6 +736,7 @@ def _write_add_pending(
     current_exposure: float,
     add_result: AddConsumerResult,
     existing_buy_pending,
+    capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     submit_policy_context: Mapping[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
 ) -> SellPlanningPipelineResult:
@@ -772,7 +799,14 @@ def _write_add_pending(
         ),
     )
     approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
-    pending = link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
+    pending = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=approval,
+        planning_submit_feasibility_current=load_runtime_current_exposure(
+            runtime_root / "persistent_ledger" / "state.json"
+        ),
+        planning_submit_feasibility_policy=capital_deployment_policy,
+    )
     pending, order_plan_path, approval_path, composition_evidence = compose_with_existing_buy_pending(
         existing_buy_pending=existing_buy_pending,
         pending=pending,
@@ -781,6 +815,10 @@ def _write_add_pending(
         target_session_date=target_session_date,
         environment=environment,
         reason="PM ADD Pending composed with active BUY Pending",
+        planning_submit_feasibility_current=load_runtime_current_exposure(
+            runtime_root / "persistent_ledger" / "state.json"
+        ),
+        planning_submit_feasibility_policy=capital_deployment_policy,
     )
     pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
@@ -839,6 +877,26 @@ def _attach_historical_safety_authority(
         safety_context=safety_context,
         safety_decision_id=safety_context["safety_decision_id"],
         safety_policy_version=safety_context["safety_policy_version"],
+        items=tuple(_pending_item_with_safety_context(item=item, safety_context=safety_context) for item in pending.items),
+    )
+
+
+def _pending_item_with_safety_context(*, item: PendingOrderItem, safety_context: Mapping[str, Any]) -> PendingOrderItem:
+    return replace(
+        item,
+        safety_authority=str(safety_context.get("safety_authority") or item.safety_authority),
+        safety_business_date=str(safety_context.get("safety_business_date") or item.safety_business_date),
+        safety_decision=str(safety_context.get("safety_decision") or item.safety_decision),
+        safety_decision_id=str(safety_context.get("safety_decision_id") or item.safety_decision_id),
+        safety_policy_version=str(safety_context.get("safety_policy_version") or item.safety_policy_version),
+        safety_reason=str(safety_context.get("safety_reason") or item.safety_reason),
+        safety_source=str(safety_context.get("safety_source") or item.safety_source),
+        temporal_authority_business_date=str(
+            safety_context.get("temporal_authority_business_date") or item.temporal_authority_business_date
+        ),
+        runtime_test_evidence_root=str(safety_context.get("runtime_test_evidence_root") or item.runtime_test_evidence_root),
+        runtime_test_profile_id=str(safety_context.get("runtime_test_profile_id") or item.runtime_test_profile_id),
+        runtime_test_run_id=str(safety_context.get("runtime_test_run_id") or item.runtime_test_run_id),
     )
 
 

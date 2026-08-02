@@ -278,7 +278,7 @@ def build_runtime_planning_payload(
     if any(reason.startswith(("planning_conflict_block", "missing_current_position_for_sell", "add_without_current_position")) for reason in mapping_reasons):
         producer_status = "BLOCK"
         source_status = "AUTHORITY_CONFLICT"
-    elif any(reason.startswith(("planning_conflict_review", "unresolved_mapping", "review_required_", "existing_pending_conflict")) for reason in mapping_reasons) and producer_status != "BLOCK":
+    elif any(reason.startswith(("planning_conflict_review", "unresolved_mapping", "review_required_", "existing_pending_conflict", "upstream_block_propagation")) for reason in mapping_reasons) and producer_status != "BLOCK":
         producer_status = "REVIEW_REQUIRED"
 
     feature_date = min(
@@ -711,8 +711,14 @@ def _build_plans(
     current_codes = set(current_position_authorities)
     pending_codes = {str(row.get("security_code") or row.get("symbol") or "") for row in pending_rows}
     codes = sorted((set(pc_members) | set(pm_positions) | set(sizing_positions) | current_codes) - {""})
+    upstream_blocked = (
+        str(pc_payload.get("producer_result_status") or "") == "BLOCK"
+        or str(ps_payload.get("producer_result_status") or "") == "BLOCK"
+    )
     plans: list[dict[str, Any]] = []
     reasons: list[str] = []
+    if upstream_blocked:
+        reasons.append("upstream_block_propagation:position_sizing_or_portfolio_construction")
     seen_intents: dict[str, set[str]] = {}
     for code in codes:
         pc_member = pc_members.get(code, {})
@@ -725,7 +731,11 @@ def _build_plans(
         reasons.extend(intent_reasons)
         if intent == "NO_ACTION" and str(pc_member.get("membership_intent") or "") == "EXCLUDE":
             continue
-        quantity_status, planned_quantity, quantity_delta, no_order_reason, quantity_reasons = _resolve_quantity_status(intent=intent, sizing=sizing)
+        quantity_status, planned_quantity, quantity_delta, no_order_reason, quantity_reasons = _resolve_quantity_status(
+            intent=intent,
+            sizing=sizing,
+            upstream_blocked=upstream_blocked,
+        )
         plan_reasons = list(dict.fromkeys([*intent_reasons, *quantity_reasons]))
         opportunity_no_buy_reason = str((opportunity_authority or {}).get("opportunity_no_buy_reason") or "").strip()
         if intent in {"BUY_NEW", "BUY_ADD"} and opportunity_no_buy_reason_blocks_buy(opportunity_no_buy_reason):
@@ -740,7 +750,7 @@ def _build_plans(
         side = "BUY" if intent in {"BUY_NEW", "BUY_ADD"} else ("SELL" if intent in {"SELL_REDUCE", "SELL_EXIT"} else ("NONE" if intent in {"NO_ACTION", "NO_ORDER"} else "UNRESOLVED"))
         quantity_required = intent in {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT"}
         pending_eligibility = "CANDIDATE_ONLY" if quantity_required else ("NOT_REQUIRED" if intent in {"NO_ACTION", "NO_ORDER"} else "REVIEW_REQUIRED")
-        if quantity_status.startswith("REVIEW_REQUIRED"):
+        if quantity_status.startswith("REVIEW_REQUIRED") and "quantity_not_produced_due_to_upstream_block" not in quantity_reasons:
             reasons.append(f"review_required_quantity_authority:{code}:{quantity_status}")
         if intent == "BUY_ADD" and code not in current_codes:
             plan_reasons.append("add_without_current_position")
@@ -784,6 +794,23 @@ def _build_plans(
             "confidence": float(pm_position.get("confidence") or pc_member.get("confidence") or 0.0),
             "uncertainty": str(pm_position.get("uncertainty") or pc_member.get("uncertainty") or "UPSTREAM_REVIEW_REQUIRED"),
             "reason_codes": sorted(set(plan_reasons)),
+            "opportunity_buy_rank": _int_or_none(
+                sizing.get("opportunity_buy_rank")
+                if sizing.get("opportunity_buy_rank") not in (None, "")
+                else pc_member.get("opportunity_buy_rank", pc_member.get("input_opportunity_rank"))
+            ),
+            "portfolio_input_opportunity_rank": _int_or_none(pc_member.get("input_opportunity_rank")),
+            "position_sizing_opportunity_buy_rank": _int_or_none(sizing.get("opportunity_buy_rank")),
+            "rank_authority_status": str(sizing.get("rank_authority_status") or pc_member.get("rank_authority_status") or ""),
+            "rank_authority": str(sizing.get("rank_authority") or pc_member.get("rank_authority") or pc_member.get("input_opportunity_rank_authority") or ""),
+            "rank_authority_field": str(sizing.get("rank_authority_field") or pc_member.get("rank_authority_field") or ""),
+            "rank_authority_reason": str(sizing.get("rank_authority_reason") or pc_member.get("rank_authority_reason") or ""),
+            "opportunity_row_id": str(sizing.get("opportunity_row_id") or pc_member.get("opportunity_row_id") or pc_member.get("input_opportunity_row_id") or ""),
+            "opportunity_row_authority_hash": str(
+                sizing.get("opportunity_row_authority_hash") or pc_member.get("opportunity_row_authority_hash") or pc_member.get("input_opportunity_row_authority_hash") or ""
+            ),
+            "opportunity_artifact_path": str(sizing.get("opportunity_artifact_path") or pc_member.get("opportunity_artifact_path") or pc_member.get("input_opportunity_rank_source_path") or ""),
+            "opportunity_artifact_hash": str(sizing.get("opportunity_artifact_hash") or pc_member.get("opportunity_artifact_hash") or pc_member.get("input_opportunity_rank_source_hash") or ""),
         }
         if quantity_required:
             plan.update(_price_authority_fields(sizing))
@@ -984,10 +1011,17 @@ def _is_runtime_owned_position_source(source: str) -> bool:
     } or source.startswith("runtime_owned_") or source.startswith("runtime_v2_runtime_owned_")
 
 
-def _resolve_quantity_status(*, intent: str, sizing: Mapping[str, Any]) -> tuple[str, int, int | None, str, list[str]]:
+def _resolve_quantity_status(
+    *,
+    intent: str,
+    sizing: Mapping[str, Any],
+    upstream_blocked: bool = False,
+) -> tuple[str, int, int | None, str, list[str]]:
     if intent not in {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT"}:
         return "NOT_REQUIRED", 0, _int_or_none(sizing.get("quantity_delta_candidate")) if sizing else None, "no_action_strategy_intent", []
     if not sizing:
+        if upstream_blocked:
+            return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, None, "", ["quantity_not_produced_due_to_upstream_block"]
         return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, None, "", ["position_sizing_authority_missing"]
     quantity_status = str(sizing.get("quantity_status") or "")
     target_quantity = _int_or_none(sizing.get("target_quantity_candidate"))
@@ -1007,6 +1041,8 @@ def _resolve_quantity_status(*, intent: str, sizing: Mapping[str, Any]) -> tuple
         return "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY", 0, quantity_delta, "NO_ORDER_MINIMUM_NOTIONAL_UNMET", ["no_order_below_minimum_tradable_quantity"]
     if sizing_status in {"SIZED", "CAPPED"}:
         return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", ["canonical_quantity_candidate_missing"]
+    if upstream_blocked and sizing_status == "UPSTREAM_REVIEW_REQUIRED":
+        return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", ["quantity_not_produced_due_to_upstream_block"]
     return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", [f"position_sizing_status_unresolved:{quantity_status or sizing_status or 'missing'}"]
 
 
@@ -1215,7 +1251,7 @@ def _opportunity_rows_by_symbol(
         row_feature_date = str(row.get("feature_date") or row.get("target_date") or artifact_feature_date or business_date)
         if row_business_date != business_date or row_feature_date > business_date:
             continue
-        buy_rank = _int_or_none(row.get("buy_rank") if row.get("buy_rank") not in (None, "") else row.get("rank"))
+        buy_rank = _int_or_none(row.get("opportunity_buy_rank") if row.get("opportunity_buy_rank") not in (None, "") else row.get("buy_rank"))
         row_identity = _opportunity_row_id(row=row, business_date=business_date, symbol=symbol, index=index)
         rows[symbol] = {
             "schema_version": "phase23_bd_opportunity_item_authority.v1",

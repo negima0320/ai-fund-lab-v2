@@ -974,6 +974,99 @@ Runtime State Safety inspection is timing-aware. If the expected target-date Saf
 
 Phase19-BC extends this timing-aware rule to target-date Runtime Features, Candidate/Opportunity Inference, AI Lifecycle Gate, Runtime Baseline/Freshness decisions, BUY/SELL Planning, Approval, Submit, Execution, Reporting, and Notification. Missing artifacts are normal before their expected generation stage and must be reported as `NOT_YET_APPLICABLE`; after the relevant stage has completed, the same missing artifact is `BLOCK`. Candidate/Opportunity model authority, artifact hashes, scaler/calibration resolution, and read-only loader validation are separate from target-date inference output existence.
 
+### AE-8.4 Planning Submit Feasibility Authority
+
+Planning Submit Feasibility is a Runtime control authority, not an AI or Strategy decision.
+
+Authority Matrix:
+
+| Field | Contract |
+|---|---|
+| Canonical Owner | Runtime Planning / Pending approval preflight for deterministic feasibility; Submit Guard remains final hard guard |
+| Producer | Planning Submit Feasibility preflight using active CapitalDeploymentPolicy, Runtime Current / Persistent Ledger, Safety, and Pending duplicate evidence |
+| Consumer | Pending approval link, Operator reports, Submit Guard observability |
+| Failure Behavior | Fail closed; deterministic infeasible BUY must not become APPROVED Pending |
+| REVIEW_REQUIRED | Feasibility fails, canonical current/policy value is unavailable, or approval would create a deterministic Submit block |
+| HALT | Safety halt or structurally invalid required authority after expected materialization |
+| Historical | Uses historical Runtime Current / Persistent Ledger and historical Safety authority without historical-only policy |
+| Demo | Uses demo Runtime Current / Persistent Ledger and demo Safety/Broker read-only evidence |
+| Production | Uses production Runtime Current / Persistent Ledger, production Safety, and broker boundary evidence |
+
+Planning Submit Feasibility must not change Strategy output, PM output, Opportunity Ranking, Position Sizing, BUY quantity, max exposure, target exposure, cash reserve, or Submit Guard thresholds.
+
+Submit Guard must continue to revalidate every item before the broker boundary. Planning preflight evidence is not a substitute for Submit Guard.
+
+Phase24-ID extends the authority from item-only checks to aggregate
+Pending-batch reservation.  The canonical owner remains Runtime Submit
+Feasibility using active CapitalDeploymentPolicy and Runtime Current.  The
+producer must reserve same-batch BUY cash, buying_power, exposure, and
+position slots sequentially before APPROVED Pending and again before Submit
+adapter boundary.  Consumers are Pending approval linkage, Submit Guard,
+Execution Reconciliation, and operator reports.
+
+| Condition | Behavior |
+|---|---|
+| Aggregate BUY cash / buying_power breach | REVIEW_REQUIRED; no broker boundary crossing for the invalid batch |
+| Aggregate BUY max_exposure breach | REVIEW_REQUIRED; no broker boundary crossing for the invalid batch |
+| Aggregate BUY active max_positions breach | REVIEW_REQUIRED; no broker boundary crossing for the invalid batch |
+| Negative post-fill runtime-owned cash projection | REVIEW_REQUIRED; raw negative cash materialized; no PASS clamp |
+
+Historical, Demo, and Production share the same contract.  Historical replay
+may simulate fills, but it must not hide impossible cash or position-count
+states by clamping or by treating aggregate constraints as item-scoped only.
+
+### AE-8.4-HY Opportunity Rank Consumer Authority
+
+Opportunity Rank Consumer Authority is a Strategy/Runtime lineage authority that binds Portfolio Construction and downstream Runtime Planning to the canonical BUY opportunity rank produced by Runtime BUY AI.
+
+Authority Matrix:
+
+| Field | Contract |
+|---|---|
+| Canonical Owner | Runtime BUY AI Opportunity Ranking Producer |
+| Canonical Field | `opportunity_buy_rank` semantic, materialized as artifact field `buy_rank` |
+| Source Artifact | `.runtime/runtime_state/buy_ai/<business_date>/opportunity_rankings.json` |
+| Sort Contract | `expected_edge_score DESC`, then `code ASC` |
+| Producer | Runtime v2 BUY AI Producer |
+| Consumer | Strategy adapter, Portfolio Construction, Position Sizing lineage, Runtime Planning lineage, Pending lineage |
+| Failure Behavior | Fail closed for opportunity rows; no fallback to `candidate_rank`, array index, recomputed rank, or candidate model rank |
+| REVIEW_REQUIRED | Missing/invalid/conflicting opportunity rank authority or consumer mismatch |
+| HALT | Structural authority corruption that invalidates Runtime safety or business-date isolation |
+| Historical | Same artifact and field contract; no historical-only branch |
+| Demo | Same artifact and field contract; no demo-only branch |
+| Production | Same artifact and field contract; Submit Guard remains separate final hard guard |
+
+Portfolio Construction artifacts must expose `input_opportunity_rank`, `input_opportunity_rank_authority`, `input_opportunity_rank_source_path`, `input_opportunity_rank_source_hash`, `input_opportunity_row_id`, and `input_opportunity_row_authority_hash` for selected opportunity-backed rows. Position Sizing, Runtime Planning, and Pending evidence must propagate `opportunity_buy_rank`, `opportunity_row_id`, `opportunity_row_authority_hash`, `opportunity_artifact_path`, and `opportunity_artifact_hash` when a selected row originates from the opportunity artifact.
+
+### AE-8.5 BUY Review / SELL Continuation Authority
+
+BUY Review / SELL Continuation is a Runtime lifecycle authority that prevents a non-submittable BUY item from blocking unrelated SELL review and execution paths when independent SELL authority is valid.
+
+Authority Matrix:
+
+| Field | Contract |
+|---|---|
+| Canonical Owner | Pending lifecycle + Data Readiness entry gate |
+| Producer | Pending approval linkage, Planning Submit Feasibility, Historical Safety resolver |
+| Consumer | Data Readiness, Position Management, SELL Planning, Submit observability |
+| Failure Behavior | Fail closed unless structured review scope is known and BUY-item scoped |
+| REVIEW_REQUIRED | BUY item remains non-submittable; SELL may continue only with independent valid authority |
+| HALT | Global Safety, corrupt authority, business-date mismatch, or unknown authority that affects runtime safety |
+| Historical | Historical Daily Neutral Safety may be used only for BUY_ITEM_SCOPED_REVIEW with same-date valid Runtime Test authority |
+| Demo | Same scope contract; no demo-only bypass |
+| Production | Same scope contract; broker boundary and Submit Guard remain final |
+
+Review scope must be structured, not inferred only from a free-form reason string:
+
+```text
+BUY_ITEM_SCOPED_REVIEW
+PORTFOLIO_SCOPED_REVIEW
+GLOBAL_SAFETY_REVIEW
+AUTHORITY_UNKNOWN_REVIEW
+```
+
+`BUY_ITEM_SCOPED_REVIEW` prohibits BUY submission but does not automatically invalidate Position Management, SELL Planning, or approved SELL submission. Portfolio-wide, global safety, and authority-unknown reviews remain fail-closed.
+
 Phase19-BD requires `system-status` to report operational truth by environment. A Historical isolated pre-run PASS is not Production readiness. Demo current-data readiness, Production current-data readiness, Broker connectivity readiness, Broker write readiness, multi-day continuity readiness, and autonomous operation readiness must be separated and shown as `NOT_EVALUATED`, `NOT_PERFORMED`, or `PROHIBITED` unless actually verified. Broker `NOT_PERFORMED` must not be displayed as connectivity PASS.
 
 Phase19-BE requires `system-status` to close complete AI input lineage in both human and JSON outputs. Candidate and Opportunity must expose their training dataset revision, dataset artifact / manifest path, source authority, source earliest/latest date, source row/symbol/schema/content hash, split window statistics for Training, Calibration, Validation, Test, and Recent Holdout, recent holdout non-use, and calibration / validation independence. Runtime input lineage is a planned pre-run contract until the target-date Runtime route materializes features and inference, and empty placeholders are prohibited.
@@ -985,6 +1078,27 @@ Phase19-BG requires `system-status` to prevent operational status ambiguity. Ins
 Phase19-BW requires `system-status` to separate Runtime execution truth from AI Model Health review. A statistical Model Health `REVIEW_REQUIRED` finding must expose trigger/metric/threshold/policy/observed values and BUY/SELL/Runtime impact, but it must not turn completed Runtime execution into `REVIEW_REQUIRED` when Runtime consumers and BUY/SELL action impacts are PASS/NONE. Historical post-run inspection uses closed-run evidence, final completed business date, and target-date exact-match artifacts as authority; missing non-retained transient artifacts after a successful run are not data sufficiency blockers. Future-dated fixture artifacts, including 2099 fixture directories, must be excluded from Runtime freshness resolution and must never be selected by latest-dir, mtime, max-date, or fallback logic.
 
 `system-status` is observability, not authority. It cannot declare Production Ready, BUY Ready, or autonomous operation complete.
+
+### AE-8.4-IL Corporate Action Adjustment Authority
+
+Corporate Action Adjustment Authority binds PIT corporate action evidence to Runtime-owned Ledger, Current, Pending, and Submit quantities.
+
+Authority Matrix:
+
+| Field | Contract |
+|---|---|
+| Canonical Owner | Runtime Corporate Action Adjustment Authority |
+| Producer | Runtime submit boundary / corporate action resolver using J-Quants PIT source and Runtime-owned ledger/current/pending lineage |
+| Consumer | Submit Guard, HistoricalSubmitAdapter, operator reports, resume/retry idempotency checks |
+| Failure Behavior | Fail closed; impacted orders do not cross broker/simulated broker boundary without resolved adjustment authority |
+| REVIEW_REQUIRED | authority missing, event type unresolved, PIT/source hash mismatch, mixed pre/post adjustment basis, adjustment lineage not proven |
+| HALT | structural authority corruption, future data usage, unusable PIT source where submit safety cannot be established |
+| BLOCK | submit quantity exceeds adjusted owned/available quantity or double-adjustment risk is detected |
+| Historical | Same authority contract using historical PIT data and historical simulated broker quantity; no bypass |
+| Demo | Same authority contract using demo Runtime Current and broker read-only quantity |
+| Production | Same authority contract using production Runtime Current and broker read-only quantity; Submit Guard remains final hard guard |
+
+`AdjFactor` is an impact signal, not an event-type authority. Unknown corporate action type remains fail-closed until an accepted PIT authority resolves the event and proves idempotent ledger/current/pending adjustment lineage.
 
 ### AE-9 Phase19 Entry Boundary
 

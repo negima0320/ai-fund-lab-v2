@@ -448,7 +448,17 @@ def _per_symbol_attribution(payloads: Mapping[str, Mapping[str, Any]]) -> list[d
     for row in _rows(payloads.get("portfolio_construction", {}), "portfolio_members", "positions"):
         code = _code(row)
         if code:
-            by_symbol[code].update({"security_code": code, "portfolio_membership_intent": row.get("membership_intent"), "candidate_rank": row.get("input_candidate_order"), "opportunity_rank": row.get("input_opportunity_rank"), "opportunity_score": row.get("input_score"), "portfolio_reason_codes": row.get("reason_codes") or []})
+            by_symbol[code].update({
+                "security_code": code,
+                "portfolio_membership_intent": row.get("membership_intent"),
+                "candidate_rank": row.get("input_candidate_order"),
+                "opportunity_buy_rank": row.get("opportunity_buy_rank", row.get("input_opportunity_rank")),
+                "opportunity_rank": row.get("input_opportunity_rank"),
+                "opportunity_rank_authority": row.get("input_opportunity_rank_authority"),
+                "rank_authority_status": row.get("rank_authority_status"),
+                "opportunity_score": row.get("input_score"),
+                "portfolio_reason_codes": row.get("reason_codes") or [],
+            })
     for row in _rows(payloads.get("position_sizing", {}), "positions"):
         code = _code(row)
         if code:
@@ -460,7 +470,14 @@ def _per_symbol_attribution(payloads: Mapping[str, Mapping[str, Any]]) -> list[d
     for row in _rows(payloads.get("runtime_planning", {}), "planning_intents", "plans", "runtime_plans"):
         code = _code(row)
         if code:
-            by_symbol[code].update({"security_code": code, "runtime_planning_intent": row.get("planning_intent"), "order_side_intent": row.get("order_side_intent"), "runtime_reason_codes": row.get("reason_codes") or []})
+            by_symbol[code].update({
+                "security_code": code,
+                "runtime_planning_intent": row.get("planning_intent"),
+                "order_side_intent": row.get("order_side_intent"),
+                "runtime_planning_opportunity_buy_rank": row.get("opportunity_buy_rank"),
+                "runtime_planning_rank_authority_status": row.get("rank_authority_status"),
+                "runtime_reason_codes": row.get("reason_codes") or [],
+            })
     rows = []
     for code in sorted(by_symbol):
         item = by_symbol[code]

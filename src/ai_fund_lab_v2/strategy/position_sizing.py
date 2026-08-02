@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ai_fund_lab_v2.strategy.status_contract import numeric_resolution, status_contract_fields
+from ai_fund_lab_v2.strategy.target_weight_precision import (
+    TARGET_WEIGHT_DECIMALS,
+    target_weight_sum_tolerance,
+)
 
 
 SCHEMA_VERSION = "position_sizing.v1"
@@ -381,8 +385,10 @@ def build_position_sizing_payload(
                     review_reason = str(resolution.get("review_reason") or resolution.get("reason") or "target_weight_authority_unavailable")
                     reasons.append(review_reason)
                     reasons.append("target_weight_authority_unavailable")
-        total_target_weight = round(sum(float(item["target_weight"]) for item in positions), 6)
-        if target_exposure is not None and total_target_weight > target_exposure + 0.000001:
+        total_target_weight = round(sum(float(item["target_weight"]) for item in positions), TARGET_WEIGHT_DECIMALS)
+        sized_position_count = sum(1 for item in positions if item["sizing_status"] in {"SIZED", "CAPPED"})
+        aggregate_tolerance = target_weight_sum_tolerance(sized_position_count)
+        if target_exposure is not None and total_target_weight > target_exposure + aggregate_tolerance:
             status = "BLOCK"
             reasons.append("aggregate_target_weight_above_exposure_cap")
         if safety_cap is not None and any(float(item["target_weight"]) > safety_cap + 0.000001 for item in positions):
@@ -443,8 +449,15 @@ def build_position_sizing_payload(
         "positions": positions,
         "positions_sized": sum(1 for item in positions if item["sizing_status"] in {"SIZED", "CAPPED"}),
         "positions_withheld": sum(1 for item in positions if item["sizing_status"] not in {"SIZED", "CAPPED"}),
-        "total_target_weight": round(sum(float(item["target_weight"]) for item in positions), 6),
-        "residual_cash_ratio": round(max(1.0 - sum(float(item["target_weight"]) for item in positions), 0.0), 6),
+        "total_target_weight": round(sum(float(item["target_weight"]) for item in positions), TARGET_WEIGHT_DECIMALS),
+        "target_weight_sum_tolerance": target_weight_sum_tolerance(
+            sum(1 for item in positions if item["sizing_status"] in {"SIZED", "CAPPED"})
+        ),
+        "target_weight_precision": {
+            "rounding_digits": TARGET_WEIGHT_DECIMALS,
+            "tolerance_method": "max_absolute_or_half_rounding_unit_per_sized_position",
+        },
+        "residual_cash_ratio": round(max(1.0 - sum(float(item["target_weight"]) for item in positions), 0.0), TARGET_WEIGHT_DECIMALS),
         "concrete_target_weight_decided": status == "PASS",
         "target_notional_decided": status == "PASS",
         "share_quantity_decided": False,
@@ -487,7 +500,16 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
     )
     target_exposure = None if target_unresolved and payload.get("target_gross_exposure_ratio") is None else _ratio_field(errors, payload, "target_gross_exposure_ratio")
     total = _ratio_field(errors, payload, "total_target_weight")
-    if target_exposure is not None and total is not None and total > target_exposure + 0.000001:
+    positions = payload.get("positions")
+    sized_count = 0
+    if isinstance(positions, list):
+        sized_count = sum(
+            1
+            for position in positions
+            if isinstance(position, dict) and position.get("sizing_status") in {"SIZED", "CAPPED"}
+        )
+    aggregate_tolerance = target_weight_sum_tolerance(sized_count)
+    if target_exposure is not None and total is not None and total > target_exposure + aggregate_tolerance:
         errors.append("aggregate_target_weight_above_exposure_cap")
     safety_cap = _optional_ratio_field(errors, payload, "safety_maximum_position_weight")
     _optional_ratio_field(errors, payload, "effective_maximum_position_weight")
@@ -506,7 +528,6 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
         for field in ("dynamic_cash_exposure", "aggregate_exposure_cap"):
             if payload.get(field) is not None:
                 errors.append(f"unresolved_ratio_must_be_null:{field}")
-    positions = payload.get("positions")
     if not isinstance(positions, list):
         errors.append("positions_not_list")
     else:
@@ -728,6 +749,16 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
         "maximum_position_weight": round(max_weight, 6),
         "sizing_priority": _positive_int(row.get("allocation_priority") or row.get("construction_priority"), 999),
         "sizing_status": status,
+        "opportunity_buy_rank": _int_or_none(row.get("opportunity_buy_rank", row.get("input_opportunity_rank"))),
+        "input_opportunity_rank": _int_or_none(row.get("input_opportunity_rank", row.get("opportunity_buy_rank"))),
+        "rank_authority_status": str(row.get("rank_authority_status") or ""),
+        "rank_authority": str(row.get("rank_authority") or row.get("input_opportunity_rank_authority") or ""),
+        "rank_authority_field": str(row.get("rank_authority_field") or ""),
+        "rank_authority_reason": str(row.get("rank_authority_reason") or ""),
+        "opportunity_row_id": str(row.get("opportunity_row_id") or row.get("input_opportunity_row_id") or ""),
+        "opportunity_row_authority_hash": str(row.get("opportunity_row_authority_hash") or row.get("input_opportunity_row_authority_hash") or ""),
+        "opportunity_artifact_path": str(row.get("opportunity_artifact_path") or row.get("input_opportunity_rank_source_path") or ""),
+        "opportunity_artifact_hash": str(row.get("opportunity_artifact_hash") or row.get("input_opportunity_rank_source_hash") or ""),
         "runtime_opportunity_score": runtime_opportunity_resolution.resolved_score,
         "runtime_opportunity_score_authority": runtime_opportunity_resolution.authority,
         "runtime_opportunity_score_resolution": runtime_opportunity_resolution.to_dict(),
@@ -1414,6 +1445,15 @@ def _positive_int(value: Any, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return default
     return int(value)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _text(payload: Mapping[str, Any], field: str) -> str:

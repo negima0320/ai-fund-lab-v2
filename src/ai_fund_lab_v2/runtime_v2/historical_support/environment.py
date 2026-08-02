@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
+    evaluate_corporate_action_adjustment_authority,
+)
 from ai_fund_lab_v2.runtime_v2.historical_support.listed_issues_snapshots import (
     resolve_listed_issues_snapshot,
 )
@@ -201,6 +204,11 @@ class HistoricalSubmitAdapter:
             "raw_ohlcv_path": str(self.raw_ohlcv_path),
         }
 
+    def corporate_action_event_evidence(self, *, symbol: str, business_date: str) -> dict[str, Any]:
+        """Return the PIT corporate action event evidence used by submit preflight."""
+
+        return _corporate_action_evidence(Path(self.raw_ohlcv_path), business_date, symbol)
+
     def _validate_command(self, command: RuntimeV2SubmitCommand) -> dict[str, Any]:
         if not self.business_date:
             return _classification("HALT", "historical business_date missing")
@@ -217,7 +225,13 @@ class HistoricalSubmitAdapter:
         trading_unit = _trading_unit_from_listed_info(command.listed_info)
         if trading_unit is not None and float(command.quantity) % trading_unit != 0:
             return _classification("HALT", "quantity does not satisfy accepted trading unit")
-        price = self._resolve_open_price(command.symbol, command.target_session_date, command.listed_info)
+        price = self._resolve_open_price(
+            command.symbol,
+            command.target_session_date,
+            command.listed_info,
+            side=command.side,
+            quantity=float(command.quantity),
+        )
         if price["status"] != "PASS":
             return price
         return {
@@ -236,6 +250,9 @@ class HistoricalSubmitAdapter:
         symbol: str,
         target_session_date: str,
         listed_info: dict[str, Any] | None,
+        *,
+        side: str,
+        quantity: float,
     ) -> dict[str, Any]:
         ohlcv_path = Path(self.ohlcv_path)
         source_validation = self._validate_normalized_ohlcv_source_identity(ohlcv_path, target_session_date)
@@ -261,12 +278,49 @@ class HistoricalSubmitAdapter:
                 "status": "HALT",
                 "submit_guard_reason": "symbol missing from PIT universe",
             }
-        ca_status = _corporate_action_status(Path(self.raw_ohlcv_path), target_session_date, symbol)
+        ca_evidence = _corporate_action_evidence(Path(self.raw_ohlcv_path), target_session_date, symbol)
+        ca_status = str(ca_evidence.get("corporate_action_status") or "")
         if ca_status != "PASS":
+            current_quantity = _runtime_current_quantity(Path(self.runtime_root), symbol)
+            adjustment_authority = evaluate_corporate_action_adjustment_authority(
+                runtime_root=Path(self.runtime_root),
+                business_date=target_session_date,
+                symbol=symbol,
+                side=side,
+                submit_quantity=quantity,
+                pending_quantity=quantity,
+                current_quantity=current_quantity,
+                broker_available_quantity=current_quantity,
+                event_evidence=ca_evidence,
+            )
+            if adjustment_authority.get("corporate_action_adjustment_authority_status") == "PASS":
+                ca_evidence = {**ca_evidence, **adjustment_authority}
+            else:
+                blocked_evidence = {**ca_evidence, **adjustment_authority}
+                return _classification(
+                    "HALT",
+                    "corporate action guard failed",
+                    **blocked_evidence,
+                    pit_universe_authority=universe,
+                )
+        else:
+            adjustment_authority = evaluate_corporate_action_adjustment_authority(
+                runtime_root=Path(self.runtime_root),
+                business_date=target_session_date,
+                symbol=symbol,
+                side=side,
+                submit_quantity=quantity,
+                pending_quantity=quantity,
+                current_quantity=_runtime_current_quantity(Path(self.runtime_root), symbol),
+                broker_available_quantity=_runtime_current_quantity(Path(self.runtime_root), symbol),
+                event_evidence=ca_evidence,
+            )
+            ca_evidence = {**ca_evidence, **adjustment_authority}
+        if str(ca_evidence.get("corporate_action_adjustment_authority_status") or "PASS") != "PASS":
             return _classification(
                 "HALT",
                 "corporate action guard failed",
-                corporate_action_status=ca_status,
+                **ca_evidence,
                 pit_universe_authority=universe,
             )
         try:
@@ -298,6 +352,7 @@ class HistoricalSubmitAdapter:
             "source_identity": source_validation.get("actual_source_identity", {}),
             "source_identity_validation": source_validation,
             "pit_universe_authority": universe,
+            "corporate_action_adjustment_authority": ca_evidence,
         }
 
     def _submission_evidence_path(self, execution_identity: str) -> Path:
@@ -1097,30 +1152,151 @@ def _normalize_listed_issue_code(value: Any) -> str:
 
 
 def _corporate_action_status(raw_ohlcv_path: Path, business_date: str, symbol: str) -> str:
+    return str(
+        _corporate_action_evidence(
+            raw_ohlcv_path=raw_ohlcv_path,
+            business_date=business_date,
+            symbol=symbol,
+        ).get("corporate_action_status")
+        or "MISSING"
+    )
+
+
+def _corporate_action_evidence(raw_ohlcv_path: Path, business_date: str, symbol: str) -> dict[str, Any]:
+    base = {
+        "corporate_action_guard_version": "historical_submit_adjfactor_guard_v2",
+        "corporate_action_artifact_path": str(raw_ohlcv_path),
+        "corporate_action_source": "jquants_raw_equities_bars_daily_adjfactor",
+        "corporate_action_business_date": business_date,
+        "corporate_action_symbol": str(symbol),
+        "corporate_action_type": "UNKNOWN_ADJFACTOR_IMPACT",
+        "corporate_action_type_authority": "not_available_from_adjfactor_only",
+        "corporate_action_effective_date": business_date,
+        "corporate_action_record_date": "",
+        "corporate_action_adjustment_factor": None,
+        "corporate_action_old_symbol": str(symbol),
+        "corporate_action_new_symbol": str(symbol),
+        "corporate_action_old_quantity": None,
+        "corporate_action_new_quantity": None,
+        "corporate_action_old_price": None,
+        "corporate_action_new_price": None,
+        "corporate_action_listing_continuity_status": "UNKNOWN_FROM_OHLCV_ADJFACTOR",
+        "corporate_action_status": "MISSING",
+        "corporate_action_reason": "raw_ohlcv_missing",
+        "corporate_action_rows": [],
+        "corporate_action_observability_status": "DETAIL_AVAILABLE",
+    }
     if not raw_ohlcv_path.exists():
-        return "MISSING"
+        return base
     try:
         import pandas as pd
 
         frame = pd.read_parquet(raw_ohlcv_path)
     except Exception:
-        return "UNREADABLE"
+        return {
+            **base,
+            "corporate_action_status": "UNREADABLE",
+            "corporate_action_reason": "raw_ohlcv_unreadable",
+        }
     frame = frame.copy()
     frame["Date_s"] = pd.to_datetime(frame["Date"], errors="coerce").dt.strftime("%Y-%m-%d")
     code_column = "Code" if "Code" in frame.columns else "code" if "code" in frame.columns else ""
     if not code_column:
-        return "MISSING_CODE"
+        return {
+            **base,
+            "corporate_action_status": "MISSING_CODE",
+            "corporate_action_reason": "raw_ohlcv_code_column_missing",
+        }
     normalized_symbol = _normalize_listed_issue_code(symbol)
     rows = frame[
         (frame["Date_s"] == business_date)
         & (frame[code_column].map(_normalize_listed_issue_code) == normalized_symbol)
     ]
     if rows.empty:
-        return "MISSING"
+        return {
+            **base,
+            "corporate_action_status": "MISSING",
+            "corporate_action_reason": "target_symbol_raw_ohlcv_row_missing",
+        }
     if "AdjFactor" not in rows.columns:
-        return "MISSING_ADJFACTOR"
+        return {
+            **base,
+            "corporate_action_status": "MISSING_ADJFACTOR",
+            "corporate_action_reason": "target_symbol_adjfactor_missing",
+            "corporate_action_rows": _corporate_action_rows(rows),
+        }
     factors = sorted({float(value) for value in rows["AdjFactor"].dropna().unique()})
-    return "PASS" if factors == [1.0] else "IMPACT_DETECTED"
+    first = rows.iloc[0]
+    factor = factors[0] if len(factors) == 1 else None
+    raw_close = _optional_float(first.get("C"))
+    adjusted_close = _optional_float(first.get("AdjC"))
+    raw_open = _optional_float(first.get("O"))
+    adjusted_open = _optional_float(first.get("AdjO"))
+    status = "PASS" if factors == [1.0] else "IMPACT_DETECTED"
+    return {
+        **base,
+        "corporate_action_status": status,
+        "corporate_action_reason": "adjfactor_is_one"
+        if status == "PASS"
+        else "target_symbol_adjfactor_not_one",
+        "corporate_action_adjustment_factor": factor,
+        "corporate_action_adjustment_factors": factors,
+        "corporate_action_old_price": raw_close if raw_close is not None else raw_open,
+        "corporate_action_new_price": adjusted_close if adjusted_close is not None else adjusted_open,
+        "corporate_action_rows": _corporate_action_rows(rows),
+        "corporate_action_impact_detected_condition": "target_date_target_symbol_adjfactor_not_1",
+    }
+
+
+def _corporate_action_rows(rows: Any) -> list[dict[str, Any]]:
+    fields = ("Date", "Code", "O", "H", "L", "C", "AdjFactor", "AdjO", "AdjH", "AdjL", "AdjC", "AdjVo")
+    payload: list[dict[str, Any]] = []
+    for row in rows.to_dict("records"):
+        payload.append({field: _json_scalar(row.get(field)) for field in fields if field in row})
+    return payload
+
+
+def _runtime_current_quantity(runtime_root: Path, symbol: str) -> float | None:
+    state = _read_json(runtime_root / "persistent_ledger" / "state.json")
+    normalized = _normalize_listed_issue_code(symbol)
+    quantity = 0.0
+    matched = False
+    for position in state.get("positions") or ():
+        if not isinstance(position, dict):
+            continue
+        position_symbol = _normalize_listed_issue_code(position.get("symbol") or position.get("issue_code"))
+        if position_symbol != normalized:
+            continue
+        matched = True
+        quantity += _number(position.get("quantity"))
+    return quantity if matched else None
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_scalar(value: Any) -> Any:
+    if value in (None, ""):
+        return value
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
 
 
 def _trading_unit_from_listed_info(listed_info: dict[str, Any] | None) -> float | None:
