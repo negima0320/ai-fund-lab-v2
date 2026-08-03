@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase25 Daily Evaluation Evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "business_date",
+    "source_revision",
+    "runtime_mode",
+    "run_eligibility_status",
+    "metric_contract_version",
+    "source_artifact_refs",
+    "evidence_status",
+    "capital",
+    "returns",
+    "risk",
+    "activity",
+    "opportunity_utilization",
+    "benchmark",
+    "attribution_inputs",
+    "missing_fields",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "phase25_daily_evaluation_evidence.v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "business_date": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capital": {
+      "type": "object",
+      "required": [
+        "runtime_evaluation_capital",
+        "buying_power",
+        "cash",
+        "market_value",
+        "total_equity",
+        "cash_ratio",
+        "gross_exposure_ratio",
+        "net_exposure_ratio",
+        "position_count",
+        "idle_cash",
+        "target_gross_exposure_ratio",
+        "target_cash_reserve_ratio",
+        "policy_cash_buffer",
+        "pending_reserved_cash",
+        "actual_deployed_notional",
+        "executed_buy_notional",
+        "executed_sell_notional"
+      ]
+    },
+    "opportunity_utilization": {
+      "type": "object",
+      "required": [
+        "generated_opportunity_count",
+        "eligible_opportunity_count",
+        "planned_buy_count",
+        "submitted_buy_count",
+        "executed_buy_count",
+        "reject_reason_counts"
+      ]
+    }
+  }
+}

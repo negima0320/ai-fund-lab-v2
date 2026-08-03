@@ -6255,3 +6255,647 @@ This is a target, not a guarantee or achieved result. 10BD returns must not be
 annualized for acceptance. Safety Guard, Submit Guard, Corporate Action Guard,
 PIT, Production-common Runtime Contract, and prohibited-learning-input rules
 remain binding.
+
+## 2026-08-03 Phase25-B Architecture Conformance Review Pivot and Phase26 Roadmap Definition
+
+Phase25 is formally pivoted.
+
+Previous Phase25 name:
+
+```text
+Phase25 - Performance Evaluation, Attribution and Strategy Improvement
+```
+
+Revised Phase25 name:
+
+```text
+Phase25 - Architecture Conformance Review, Implementation Gap Inventory and Performance Evaluation Foundation
+```
+
+Reason:
+
+```text
+Phase25-A3R confirmed that Position Sizing uses current_total_equity while
+Planning / Submit Feasibility still consume fixed evaluation_capital=1,000,000
+and fixed max_exposure=850,000.
+```
+
+Primary lesson:
+
+```text
+New Architecture artifacts can exist while old Production Runtime consumers
+remain active. Runtime PASS is not automatically Architecture Conformance PASS.
+```
+
+Phase25 revised purpose:
+
+```text
+Architecture
+Contract
+Implementation
+Config
+Schema
+Runtime Consumer
+Evidence
+Test
+Documentation
+Migration
+Closure Gate
+```
+
+must be reviewed across the declared Phase21-24 architecture scope before
+Strategy performance improvement resumes.
+
+Paused until Phase26/Phase27 gates allow:
+
+```text
+Strategy improvement
+Performance tuning
+Capital policy repair implementation
+Legacy deletion implementation
+Long Historical performance acceptance
+Annual +50% judgment
+```
+
+Phase25 completed work reclassification:
+
+| Task | Revised classification |
+|---|---|
+| Phase25-AA | Entry-gate gap discovery |
+| Phase25-A1 | Performance evidence foundation design |
+| Phase25-A2 | Daily evidence observability foundation |
+| Phase25-A3 | Capital trace and authority conflict detection |
+| Phase25-A3R | First Architecture Conformance gap review |
+| Phase25-B | Pivot, roadmap, and audit foundation |
+
+Initial confirmed gaps:
+
+```text
+P25-GAP-CAP-001:
+Dynamic equity sizing coexists with fixed Runtime deployment cap.
+
+P25-GAP-CAP-002:
+runtime_evaluation_capital is misnamed and ambiguous.
+
+P25-GAP-CLS-001:
+Closure gates lacked mandatory old-consumer negative assertions.
+```
+
+### Revised Phase25 Workstreams
+
+```text
+Phase25-B1 Architecture-to-Implementation Conformance Matrix
+Phase25-B2 Legacy Authority and Consumer Inventory
+Phase25-B3 Authority Conflict Inventory
+Phase25-B4 Migration Completion Audit
+Phase25-B5 Closure Gate Failure Review
+Phase25-B6 Observability Gap Inventory
+Phase25-B7 Gap Severity and Phase26 Prioritization
+```
+
+Phase25-B1 declared architecture scope:
+
+```text
+Market Context
+Portfolio Policy
+Position Management
+Portfolio Construction
+Capital Deployment
+Dynamic Position Count
+Dynamic Cash / Exposure
+Position Sizing
+Runtime Planning
+Planning Authority
+Safety Hard Maximum
+Submit Guard
+Current
+Ledger
+Pending
+Resume
+Corporate Action Authority
+Historical Safety
+Accepted Generation
+Performance Observability
+```
+
+Phase25 Exit Gate:
+
+```text
+Architecture components reviewed = 100% of declared scope
+Confirmed Gap Inventory complete
+Suspected gaps separated from confirmed gaps
+Legacy Consumer Inventory complete
+Authority Conflict Inventory complete
+Migration Completion Audit complete
+Closure Gate Failure Review complete
+Observability Gap Inventory complete
+Phase26 Repair Tasks defined
+Repair dependency order defined
+Required regression matrix defined
+Required user-run tests defined
+Roadmap updated
+No Strategy tuning performed
+```
+
+Candidate Phase25 closure judgments:
+
+```text
+PHASE25_ARCHITECTURE_CONFORMANCE_REVIEW_COMPLETE_PHASE26_REPAIR_READY
+PHASE25_ARCHITECTURE_CONFORMANCE_REVIEW_PARTIAL_ADDITIONAL_AUDIT_REQUIRED
+PHASE25_ARCHITECTURE_CONFORMANCE_REVIEW_BLOCKED_BY_EVIDENCE_GAPS
+```
+
+### Phase26 Definition
+
+Phase26 name:
+
+```text
+Phase26 - Production Architecture Repair, Legacy Retirement and Evaluation Readiness Restoration
+```
+
+Phase26 purpose:
+
+```text
+Repair Phase25-confirmed gaps as Production / Demo / Historical common Runtime
+changes, retire old authorities/consumers where approved, strengthen closure
+gates, and restore Performance Evaluation readiness.
+```
+
+Phase26 non-scope:
+
+```text
+Strategy tuning
+Performance optimization for returns
+Guard weakening
+Historical-only Strategy
+Unapproved repair bundling
+Repairs not mapped to confirmed Phase25 Gap IDs
+```
+
+Phase26 Entry Gate:
+
+```text
+Every Phase26 repair maps to confirmed Gap ID
+Design SoT identified
+Current consumer inventory known
+Migration target known
+Regression scope known
+Safety preservation contract known
+Production / Demo / Historical impact known
+Long test owner assigned to user/operator
+No combined unrelated repair bundle
+```
+
+Phase26 Workstreams:
+
+```text
+Phase26-A Capital Authority Repair and Legacy Fixed Capital Retirement
+Phase26-B Legacy Runtime Authority and Consumer Retirement
+Phase26-C Cross-Architecture Conformance Repairs
+Phase26-D Observability and Runtime Authority Materialization
+Phase26-E Negative Assertion and Closure Gate Strengthening
+Phase26-F Performance Evaluation Readiness Revalidation
+Phase26-G User-run Historical Regression
+```
+
+Phase26 Exit Gate:
+
+```text
+All accepted Phase26 repair tasks complete or explicitly deferred
+Old Production/Demo/Historical consumer counts are zero for retired items
+Safety / Submit / Corporate Action Guards not weakened
+Production / Demo / Historical common Runtime preserved
+Performance Evaluation evidence rematerialized for repaired areas
+Regression matrix PASS
+User/operator run gates completed or explicitly deferred
+```
+
+Long Historical Test responsibility:
+
+```text
+User / Operator
+```
+
+### Phase27 Recommendation
+
+Recommended separation:
+
+```text
+Phase26 = Repair / Retirement / Revalidation
+Phase27 = Performance Evaluation, Attribution and Strategy Improvement
+```
+
+Architecture repair and Strategy performance tuning must not be bundled.
+
+### New Closure Negative Assertions
+
+For each replaced or retired item, future Closure Gates must prove:
+
+```text
+Old Production Consumer Count = 0
+Old Demo Consumer Count = 0
+Old Historical Consumer Count = 0
+Old Config Authority Count = 0
+Old Schema Authority Count = 0
+Old Implicit Fallback Count = 0
+Old Runtime Activation Count = 0
+Old Fixture Dependency Count = 0
+Old Test Expectation Count = 0
+Old Documentation Presented as Current = 0
+```
+
+Document exceptions must be explicitly labeled:
+
+```text
+HISTORICAL_REFERENCE_ONLY
+NON_RUNTIME
+NON_AUTHORITY
+```
+
+Phase25-B deliverables:
+
+```text
+docs/phase_reports/phase25_b_architecture_conformance_review_pivot_and_phase26_roadmap_definition.md
+reports/phase_reports/phase25_b_architecture_conformance_review_pivot_and_phase26_roadmap_definition.json
+reports/phase_reports/phase25_architecture_conformance_gap_inventory.json
+reports/phase25_b_architecture_conformance_review_pivot_and_phase26_roadmap_definition/
+```
+
+## 2026-08-03 Phase25-Z Final Closure and Phase26 Handoff
+
+Phase25 final status:
+
+```text
+CLOSED_WITH_CONFIRMED_ARCHITECTURE_AND_MIGRATION_GAPS
+```
+
+Primary Judgment:
+
+```text
+PHASE25_ARCHITECTURE_CONFORMANCE_REVIEW_COMPLETE_PHASE26_EXECUTION_READY
+```
+
+Secondary Judgments:
+
+```text
+PHASE25_CLOSED_WITH_CONFIRMED_ARCHITECTURE_AND_MIGRATION_GAPS
+PHASE26_PRODUCTION_ARCHITECTURE_REPAIR_ENTRY_APPROVED
+PHASE27_PRODUCTION_EQUIVALENT_VALIDATION_PLANNED
+```
+
+Phase25 final name:
+
+```text
+Phase25 - Architecture Conformance Review, Implementation Gap Inventory and Performance Evaluation Foundation
+```
+
+Phase25 pivot:
+
+```text
+Phase25 began as Performance Evaluation, Attribution and Strategy Improvement.
+Phase25 pivoted after Capital Efficiency / Compound Reinvestment analysis
+confirmed old Authority, old Consumer, Authority Conflict, Migration
+incompletion, Closure Gate gaps, and Observability gaps.
+```
+
+Phase25 final scope:
+
+```text
+Phase25 is not a Performance Improvement phase.
+
+Phase25 re-audited the Architecture claimed across Phase21-24 and fixed the
+Phase26 repair targets, dependency order, regression matrix, user test plan,
+and closure contract.
+```
+
+Phase25 did not perform:
+
+```text
+Production Runtime repair
+Strategy change
+Legacy retirement implementation
+Authority unification implementation
+Long Historical Regression
+Performance Improvement
+```
+
+Phase25-B1 through B7 completed:
+
+```text
+B1 Architecture-to-Implementation Conformance Matrix
+B2 Legacy Authority and Consumer Inventory
+B3 Authority Conflict Inventory
+B4 Migration Completion Audit
+B5 Closure Gate Failure Review
+B6 Observability Gap Inventory
+B7 Phase26 Repair Prioritization and Dependency Planning
+```
+
+Final B1 conformance counts:
+
+```text
+CONFORMANT = 0
+CONFORMANT_WITH_NON_BLOCKING_GAPS = 6
+MIGRATION_PARTIAL = 8
+NEW_PATH_EXISTS_OLD_PATH_ACTIVE = 2
+LEGACY_CONSUMER_REMAINS = 2
+AUTHORITY_CONFLICT = 4
+SHADOW_ONLY = 1
+OBSERVABILITY_INSUFFICIENT = 1
+```
+
+Final B2 legacy counts:
+
+```text
+Legacy Candidates = 21
+Confirmed Active Legacy = 9
+Suspected Legacy = 5
+Critical Legacy = 4
+High Legacy = 7
+```
+
+Final B4 migration counts:
+
+```text
+Final Migration Items = 17
+MIGRATION_COMPLETE = 0
+MIGRATION_COMPLETE_WITH_NON_BLOCKING_GAPS = 3
+MIGRATION_PARTIAL = 7
+NEW_PATH_EXISTS_OLD_PATH_ACTIVE = 4
+SHADOW_ONLY = 1
+EVIDENCE_REQUIRED = 2
+REINTRODUCED_CONFIRMED = 0
+```
+
+Important migration conclusion:
+
+```text
+Old paths were not confirmed as reintroduced later.
+Multiple old authorities had not been fully retired.
+```
+
+Final canonical confirmed gap counts:
+
+```text
+Critical = 3
+High = 3
+Medium = 0
+Low = 0
+```
+
+Confirmed Critical:
+
+```text
+P25-GAP-LEG-CAP-001
+P25-GAP-LEG-POS-001
+P25-GAP-LEG-EXP-001
+```
+
+Confirmed High:
+
+```text
+P25-GAP-CAP-001
+P25-GAP-LEG-SCHEMA-001
+P25-GAP-LEG-CAP-002
+```
+
+Evidence-required items:
+
+```text
+Accepted Generation fallback zero across modes
+Temporal latest-path authority classification
+Mode authority deltas
+Other shadow Strategy artifact consumer switches
+```
+
+Final Architecture Confidence:
+
+```text
+CONFIRMED:
+Phase21 Design SoT
+Strategy Artifact Producers
+Safety
+Corporate Action Authority
+
+PARTIAL:
+Portfolio Construction
+Position Management
+Planning Authority
+Pending / Resume
+Submit / Submit Guard
+Current / Ledger / Broker
+Performance Observability
+
+UNPROVEN:
+Market Context Runtime Authority
+Accepted Generation
+Temporal Authority
+
+CONFLICTED:
+Position Sizing
+Runtime Planning
+
+LEGACY_ACTIVE:
+Portfolio Policy
+Capital Deployment
+Dynamic Position Count
+Dynamic Cash / Exposure
+```
+
+Permanent Lessons Learned:
+
+```text
+Producer Complete != Migration Complete
+Artifact Exists != Runtime Consumer Connected
+Runtime PASS != Architecture Conformance PASS
+Design Closure != Migration Closure
+Positive Evidence must be paired with Negative Assertions
+Old Consumer Zero is a hard migration gate
+Old Config / Schema / Fallback Zero are hard migration gates
+FULL_MIGRATION_REGRESSION is required
+Production / Demo / Historical Mode Parity must be proven
+Selected Authority and Binding Constraint must be materialized
+Shadow Metadata must not contradict Runtime activation
+Closure Type must be explicitly declared
+```
+
+Closure Types:
+
+```text
+DESIGN_CLOSURE
+ARTIFACT_FOUNDATION_CLOSURE
+RUNTIME_OPERABILITY_CLOSURE
+MIGRATION_CLOSURE
+ARCHITECTURE_CONFORMANCE_CLOSURE
+PERFORMANCE_EVALUATION_CLOSURE
+```
+
+MIGRATION_COMPLETE now requires:
+
+```text
+Producer PASS
+Artifact PASS
+Schema PASS
+Consumer PASS
+Runtime Evidence PASS
+Old Production Consumer Zero
+Old Demo Consumer Zero
+Old Historical Consumer Zero
+Old Config Authority Zero
+Old Schema Authority Zero
+Old Fallback Zero
+Old Runtime Activation Zero
+Old Fixture / Test Expectation Zero
+Negative Assertion PASS
+FULL_MIGRATION_REGRESSION PASS
+Mode Parity PASS
+Claim-to-Evidence Ledger complete
+```
+
+Phase25 Exit Gate:
+
+```text
+Architecture review scope completed
+Legacy inventory completed
+Authority conflict inventory completed
+Migration audit completed
+Closure failure review completed
+Observability inventory completed
+Gap severity completed
+Phase26 dependency plan completed
+Phase26 repair master plan exists
+Confirmed / Suspected / Evidence Required separated
+Regression matrix completed
+User test plan completed
+Roadmap updated
+No Strategy tuning performed
+No Production behavior changes performed
+```
+
+Phase26 final name:
+
+```text
+Phase26 - Production Architecture Repair, Legacy Retirement and Evaluation Readiness Restoration
+```
+
+Phase26 purpose:
+
+```text
+Repair only Phase25-confirmed gaps as Production / Demo / Historical common
+Runtime work and restore Architecture Conformance and Performance Evaluation
+Readiness.
+```
+
+Phase26 non-scope:
+
+```text
+Strategy tuning
+Performance optimization
+Guard weakening
+Historical-only Strategy
+Unconfirmed gap repair
+Unrelated repair bundling
+```
+
+Phase26 Entry:
+
+```text
+APPROVED
+```
+
+Phase26 Step Plan:
+
+```text
+Step0 Architecture Foundation
+Step1 Authority Repair
+Step2 Legacy Retirement
+Step3 Migration Completion
+Step4 Observability Materialization
+Step5 Regression
+Step6 Performance Readiness
+```
+
+Phase26 Critical Repair Order:
+
+```text
+0. Closure / Negative Assertion Foundation
+1. Capital Authority
+2. Dynamic Position Count
+3. Dynamic Cash / Exposure
+4. Portfolio Policy / Position Sizing
+5. Runtime Planning / Planning Authority
+6. Submit / Submit Guard alignment
+7. Current / Ledger / Broker / Projection
+8. Accepted Generation / Temporal Authority
+9. Observability Materialization
+10. Full Migration Regression
+11. Performance Evaluation Readiness
+```
+
+Phase26 Entry Gate:
+
+```text
+Every repair maps to Confirmed Gap ID
+Canonical Design SoT identified
+Current producers and consumers known
+Migration target known
+Old-path retirement target known
+Safety preservation known
+Mode impact known
+Regression scope known
+Negative assertion known
+Closure label known
+Long Historical Test owner is user/operator
+No unrelated repair bundle
+```
+
+Phase26 Exit Gate:
+
+```text
+Accepted repair tasks complete or explicitly deferred with user approval
+Old consumer/config/schema/fallback zero passes for repaired items
+Safety / Submit / Corporate Action Guards are not weakened
+Production / Demo / Historical common Runtime preserved
+Selected authority and binding constraints materialized
+FULL_MIGRATION_REGRESSION passes
+User/operator gates completed or explicitly deferred
+Phase27 Entry approved
+```
+
+Phase26 User Test Responsibility:
+
+```text
+Codex:
+compile / unit / schema / read-only evidence / short regression
+
+User:
+10BD / 20BD / 60BD / 200BD / 252BD
+```
+
+Phase27 recommended name:
+
+```text
+Phase27 - Production-Equivalent Validation and Repair Effect Evaluation
+```
+
+Phase27 purpose:
+
+```text
+Evaluate the repaired Runtime from Phase26 without Strategy changes.
+Measure repair effects, Architecture Conformance, compound reinvestment,
+Exposure, Cash Ratio, Position Count, Rank Preservation, and Opportunity
+Utilization under production-equivalent Historical validation.
+```
+
+Phase27 does not start Performance Improvement. Strategy Improvement is a
+Phase28-or-later candidate.
+
+Phase25-Z deliverables:
+
+```text
+docs/phase_reports/phase25_final_summary_and_phase26_handoff.md
+docs/phase_reports/phase25_to_phase26_chatgpt_handoff.md
+reports/phase_reports/phase25_final_summary_and_phase26_handoff.json
+reports/phase_reports/phase25_final_architecture_conformance_gap_snapshot.json
+reports/phase25_final_summary_and_phase26_handoff/
+```

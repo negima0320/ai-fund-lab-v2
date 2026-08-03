@@ -56,6 +56,10 @@ from ai_fund_lab_v2.runtime_v2.market_data_acquisition import (
     resume_acquisition,
     run_acquisition,
 )
+from ai_fund_lab_v2.runtime_v2.performance_evaluation import (
+    materialize_capital_efficiency_trace,
+    materialize_daily_evaluation_evidence,
+)
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import reject_mode_rooted_runtime_root
 from ai_fund_lab_v2.strategy.observability import (
     build_strategy_decision_trace,
@@ -218,6 +222,18 @@ def build_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--scope", choices=SUMMARY_SCOPES)
     summarize.add_argument("--write-evidence", action="store_true")
 
+    daily_evidence = subparsers.add_parser("daily-evidence")
+    add_common(daily_evidence)
+    daily_evidence.add_argument("--run-id", required=True)
+    daily_evidence.add_argument("--business-date")
+    daily_evidence.add_argument("--performance-evidence-root", default="reports/performance_evaluations")
+
+    capital_trace = subparsers.add_parser("capital-trace")
+    add_common(capital_trace)
+    capital_trace.add_argument("--run-id", required=True)
+    capital_trace.add_argument("--business-date", required=True)
+    capital_trace.add_argument("--performance-evidence-root", default="reports/performance_evaluations")
+
     ai_status = subparsers.add_parser("ai-status")
     add_common(ai_status)
     ai_status.add_argument("--detailed", action="store_true")
@@ -379,6 +395,10 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return status(profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "summarize":
         return summarize_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "daily-evidence":
+        return daily_evidence_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "capital-trace":
+        return capital_trace_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "ai-status":
         return ai_status_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "system-status":
@@ -904,6 +924,64 @@ def summarize_command(
     else:
         payload["human_summary"] = _format_runtime_test_summary(payload)
     return CommandResult(status_value, exit_code, payload)
+
+
+def daily_evidence_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    del profile, runtime_root
+    result = materialize_daily_evaluation_evidence(
+        run_id=str(args.run_id),
+        runtime_test_evidence_root=evidence_root,
+        performance_evidence_root=Path(str(args.performance_evidence_root)),
+        business_date=str(args.business_date) if getattr(args, "business_date", None) else None,
+    )
+    status = str(result.get("status") or "REVIEW_REQUIRED")
+    exit_code = EXIT_PASS if status == "PASS" else EXIT_PRECONDITION_FAILURE if status == "PRECONDITION_FAILURE" else EXIT_REVIEW_REQUIRED
+    payload = {
+        "schema_version": "runtime_test_daily_evidence_command.v1",
+        "subcommand": "daily-evidence",
+        "status": status,
+        "exit_code": exit_code,
+        "read_only_runtime": True,
+        "strategy_mutation": False,
+        "runtime_mutation": False,
+        "result": result,
+    }
+    return CommandResult(status, exit_code, payload)
+
+
+def capital_trace_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    del profile, runtime_root
+    result = materialize_capital_efficiency_trace(
+        run_id=str(args.run_id),
+        runtime_test_evidence_root=evidence_root,
+        performance_evidence_root=Path(str(args.performance_evidence_root)),
+        business_date=str(args.business_date),
+    )
+    status = str(result.get("status") or "REVIEW_REQUIRED")
+    exit_code = EXIT_PASS if status == "PASS" else EXIT_PRECONDITION_FAILURE if status == "PRECONDITION_FAILURE" else EXIT_REVIEW_REQUIRED
+    payload = {
+        "schema_version": "runtime_test_capital_trace_command.v1",
+        "subcommand": "capital-trace",
+        "status": status,
+        "exit_code": exit_code,
+        "read_only_runtime": True,
+        "strategy_mutation": False,
+        "runtime_mutation": False,
+        "result": result,
+    }
+    return CommandResult(status, exit_code, payload)
 
 
 def _summary_finding(severity: str, reason: str, evidence: dict[str, Any] | None = None) -> dict[str, Any]:

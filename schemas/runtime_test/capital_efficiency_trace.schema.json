@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase25 Capital Efficiency Trace",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "producer",
+    "generated_at",
+    "artifact_fingerprint",
+    "run_id",
+    "business_date",
+    "read_only_runtime",
+    "daily_summary",
+    "capital_authority_trace",
+    "symbol_traces",
+    "opportunity_pipeline",
+    "compound_reinvestment",
+    "authority_conflicts",
+    "missing_fields",
+    "warnings",
+    "source_artifact_refs",
+    "temporal_safety"
+  ],
+  "properties": {
+    "schema_version": { "const": "phase25_capital_efficiency_trace.v1" },
+    "contract_version": { "type": "string" },
+    "producer": { "const": "phase25_capital_efficiency_trace_producer" },
+    "generated_at": { "type": "string" },
+    "artifact_fingerprint": { "type": "string" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "minLength": 1 },
+    "read_only_runtime": { "const": true },
+    "daily_summary": {
+      "type": "object",
+      "required": [
+        "initial_capital",
+        "runtime_evaluation_capital",
+        "current_total_equity",
+        "equity_gain_vs_initial",
+        "target_gross_exposure",
+        "actual_gross_exposure",
+        "unused_exposure_capacity",
+        "policy_cash_buffer",
+        "pending_reserved_cash",
+        "deployable_cash",
+        "idle_cash",
+        "generated_opportunity_count",
+        "eligible_opportunity_count",
+        "sized_opportunity_count",
+        "planned_buy_count",
+        "submitted_buy_count",
+        "executed_buy_count",
+        "total_target_buy_notional",
+        "total_planned_buy_notional",
+        "total_submitted_buy_notional",
+        "total_executed_buy_notional",
+        "compound_reinvestment_status",
+        "compound_reinvestment_reasons"
+      ]
+    },
+    "capital_authority_trace": { "type": "object" },
+    "symbol_traces": { "type": "array", "items": { "type": "object" } },
+    "opportunity_pipeline": { "type": "object" },
+    "compound_reinvestment": {
+      "type": "object",
+      "required": ["status", "sizing_base_layer", "downstream_cap_layer", "actual_deployment_layer", "reasons"]
+    },
+    "authority_conflicts": { "type": "array" },
+    "missing_fields": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "source_artifact_refs": { "type": "array" },
+    "temporal_safety": {
+      "type": "object",
+      "required": ["producer_mode", "runtime_evidence_mutated", "strategy_evidence_mutated", "future_data_policy"]
+    },
+    "schema_validation": { "type": "object" }
+  }
+}
