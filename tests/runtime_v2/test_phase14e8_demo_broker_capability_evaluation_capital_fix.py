@@ -203,6 +203,7 @@ def test_public_report_shows_demo_operation_one_million_and_zero_positions(tmp_p
 def _approval_for(plan):
     from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 
+    item = plan.items[0]
     return ApprovalArtifact(
         approval_id="approval-1",
         approval_request_id="request-1",
@@ -216,6 +217,18 @@ def _approval_for(plan):
         expires_at="2026-07-08T00:00:00Z",
         review_required=False,
         reason="approved",
+        approved_order_conditions={
+            item.pending_item_id: {
+                "order_type": item.order_type,
+                "target_session": plan.target_session_date,
+                "quantity": item.quantity,
+                "side": item.side,
+                "issue_code": item.symbol,
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": item.order_type,
+            }
+        },
     )
 
 

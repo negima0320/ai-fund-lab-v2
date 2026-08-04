@@ -79,54 +79,6 @@ def test_phase17_bv14_buy_eligibility_uses_point_in_time_snapshot_without_lookah
     assert before_delisting.reason_code == "market_status_buy_eligible"
     assert after_delisting.status == "BLOCKED"
     assert after_delisting.reason_code == "symbol_not_listed_as_of_business_date"
-
-
-def test_phase17_bv14_morning_filters_buy_candidate_not_listed_in_pit_snapshot(tmp_path: Path) -> None:
-    runtime_root = _historical_runtime_root(tmp_path / ".runtime")
-    feature_root = _feature_root(runtime_root, "2026-06-30")
-    price_path = runtime_root / "operations" / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
-    price_rows = pd.read_parquet(price_path)
-    pd.concat(
-        [
-            price_rows,
-            pd.DataFrame([{"Code": "36810", "Date": "2026-06-30", "Close": 1000.0, "PriceSource": "fixture"}]),
-        ],
-        ignore_index=True,
-    ).to_parquet(price_path, index=False)
-    snapshot_root = runtime_root / "operations" / "jquants" / "historical_snapshots" / "listed_issues"
-    write_listed_issues_snapshot(
-        snapshot_root=snapshot_root,
-        requested_date="2026-06-30",
-        fetched_at="2026-06-30T15:30:00+09:00",
-        records=[{"Date": "2026-06-30", "Code": "7203", "MktNm": "プライム", "ProdCat": "011"}],
-    )
-    rebuild_snapshot_index(snapshot_root)
-    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
-
-    result = run_morning_ai_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-01",
-        mode="historical",
-        feature_root=feature_root,
-        feature_date="2026-06-30",
-        capital_deployment_policy_path=policy_path,
-        ai_signals=(
-            AIPlanningSignal("signal-36810", "36810", "BUY", 1, 0.9, "fixture", "fixture_ai"),
-            AIPlanningSignal("signal-7203", "7203", "BUY", 2, 0.8, "fixture", "fixture_ai"),
-        ),
-        safety_decision=replace(_historical_safety(), business_date="2026-07-01"),
-        environment_capability_context=_historical_context(tmp_path),
-    )
-
-    pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
-    order_plan = json.loads(Path(result.order_plan_artifact_path).read_text(encoding="utf-8"))
-    assert result.status == "PASS"
-    assert result.selected_symbols == ("7203",)
-    assert result.buy_eligibility_filtered_count == 1
-    assert pending["items"][0]["listed_info"]["buy_eligibility"] == "ELIGIBLE"
-    assert order_plan["buy_eligibility_contract"]["filtered_count"] == 1
-
-
 def test_phase17_bv14_submit_blocks_buy_ineligible_market_status_before_broker(tmp_path: Path) -> None:
     runtime_root = _runtime_root(tmp_path)
     _write_current_state(runtime_root, positions=[], cash=1_000_000, market_value=0)

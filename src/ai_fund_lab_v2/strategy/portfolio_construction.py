@@ -127,6 +127,7 @@ def produce_portfolio_construction_artifact(
     pending_summary: PortfolioConstructionSourceSummary | None,
     policy_config_summary: PortfolioConstructionSourceSummary,
     output_path: Path | str,
+    buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
     as_of: str | None = None,
 ) -> PortfolioConstructionProducerResult:
     payload, evidence = build_portfolio_construction_payload(
@@ -140,6 +141,7 @@ def produce_portfolio_construction_artifact(
         current_portfolio_summary=current_portfolio_summary,
         pending_summary=pending_summary,
         policy_config_summary=policy_config_summary,
+        buy_quality_summary=buy_quality_summary,
         as_of=as_of,
     )
     validate_portfolio_construction_artifact(payload)
@@ -169,6 +171,7 @@ def build_portfolio_construction_payload(
     current_portfolio_summary: PortfolioConstructionSourceSummary,
     pending_summary: PortfolioConstructionSourceSummary | None,
     policy_config_summary: PortfolioConstructionSourceSummary,
+    buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
     as_of: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_iso_date(business_date, field="business_date")
@@ -214,6 +217,7 @@ def build_portfolio_construction_payload(
         "current_portfolio": current_portfolio_summary.to_dict(requested_business_date=business_date),
         "pending": (pending_summary or _empty_summary("pending", business_date)).to_dict(requested_business_date=business_date),
         "policy_config": policy_config_summary.to_dict(requested_business_date=business_date),
+        "buy_quality": (buy_quality_summary or _empty_summary("buy_quality", business_date)).to_dict(requested_business_date=business_date),
     }
     for name, summary in (
         ("candidate", candidate_summary),
@@ -221,6 +225,7 @@ def build_portfolio_construction_payload(
         ("current_portfolio", current_portfolio_summary),
         ("pending", pending_summary or _empty_summary("pending", business_date)),
         ("policy_config", policy_config_summary),
+        ("buy_quality", buy_quality_summary or _empty_summary("buy_quality", business_date)),
     ):
         if not _summary_aligned(summary, business_date=business_date):
             producer_status = "BLOCK"
@@ -239,6 +244,7 @@ def build_portfolio_construction_payload(
         current_rows=current_portfolio_summary.rows,
         pm_rows=_pm_rows(position_management_artifact_path),
     )
+    members = _attach_buy_quality(members, buy_quality_summary)
     reason_codes.extend(reconciliation_reasons)
     weight_contract = _resolve_target_weight_contract(
         business_date=business_date,
@@ -283,6 +289,7 @@ def build_portfolio_construction_payload(
                 current_portfolio_summary.feature_date,
                 (pending_summary.feature_date if pending_summary else business_date),
                 policy_config_summary.feature_date,
+                (buy_quality_summary.feature_date if buy_quality_summary else business_date),
             )
             if value
         ]
@@ -297,6 +304,7 @@ def build_portfolio_construction_payload(
             current_portfolio_summary.feature_date,
             (pending_summary.feature_date if pending_summary else ""),
             policy_config_summary.feature_date,
+            (buy_quality_summary.feature_date if buy_quality_summary else ""),
         )
     )
     if future_leakage_used:
@@ -313,6 +321,7 @@ def build_portfolio_construction_payload(
         {"role": "current_portfolio", "path": current_portfolio_summary.source_ref, "required": True, "status": current_portfolio_summary.status},
         {"role": "pending", "path": (pending_summary.source_ref if pending_summary else ""), "required": False, "status": (pending_summary.status if pending_summary else "PASS")},
         {"role": "policy_config", "path": policy_config_summary.source_ref, "required": True, "status": policy_config_summary.status},
+        {"role": "buy_quality", "path": (buy_quality_summary.source_ref if buy_quality_summary else ""), "required": False, "status": (buy_quality_summary.status if buy_quality_summary else "PASS")},
     ]
     source_hashes = [
         {"role": "candidate", "path": candidate_summary.source_ref, "sha256": _strip_sha256(candidate_summary.source_hash)},
@@ -322,6 +331,11 @@ def build_portfolio_construction_payload(
         *(
             [{"role": "pending", "path": pending_summary.source_ref, "sha256": _strip_sha256(pending_summary.source_hash)}]
             if pending_summary and pending_summary.source_hash
+            else []
+        ),
+        *(
+            [{"role": "buy_quality", "path": buy_quality_summary.source_ref, "sha256": _strip_sha256(buy_quality_summary.source_hash)}]
+            if buy_quality_summary and buy_quality_summary.source_hash
             else []
         ),
     ]
@@ -847,7 +861,7 @@ def _resolve_target_weight_contract(
         source_hashes=source_hashes,
     )
     target_gross_exposure = policy_authority["target_gross_exposure"]
-    target_member_count = policy_authority["target_position_count"]
+    deprecated_target_member_count = policy_authority["target_position_count"]
     single_name_cap = policy_authority["single_name_weight_cap"]
     source_paths = [item["path"] for item in source_hashes if item.get("path")]
     status = policy_authority["status"]
@@ -855,13 +869,13 @@ def _resolve_target_weight_contract(
     method = {
         "method_id": "production_v1_equal_weight_target_allocation",
         "method_version": "phase23_ao_v1",
-        "basis": "target_gross_exposure / resolved_target_member_count with single-name cap",
+        "basis": "target_gross_exposure / eligible_target_member_count with single-name cap",
         "opportunity_score_weight_transform_used": False,
     }
-    selected_candidates = _select_target_members(members, target_member_count if target_member_count is not None else 0)
+    selected_candidates = _select_target_members(members)
     selected_codes = {row["security_code"] for row in selected_candidates}
     effective_count = len(selected_codes)
-    if target_member_count == 0 or target_gross_exposure == 0:
+    if target_gross_exposure == 0:
         effective_count = 0
     base_weight = 0.0
     if status == "PASS" and effective_count > 0:
@@ -875,10 +889,24 @@ def _resolve_target_weight_contract(
         review_reason = ""
         reason = "target_weight_resolved"
         weight = round(base_weight, TARGET_WEIGHT_DECIMALS) if selected else 0.0
+        quality_adjustment = _optional_ratio(row.get("quality_allocation_adjustment"))
+        quality_action = str(row.get("quality_action") or "")
         if status != "PASS":
             zero_reason = "unresolved_authority"
             review_reason = "target_weight_authority_unresolved"
             reason = "target_weight_authority_unresolved"
+        elif quality_action in {"REJECT", "BUY_REJECTED"} and not row.get("current_position"):
+            zero_reason = "buy_quality_rejected"
+            reason = "buy_quality_rejected"
+            weight = 0.0
+        elif quality_action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"} and not row.get("current_position"):
+            zero_reason = "buy_quality_review_required"
+            review_reason = "buy_quality_review_required"
+            reason = "buy_quality_review_required"
+            weight = 0.0
+        elif selected and quality_action == "REDUCED_ALLOCATION_ONLY":
+            adjustment = quality_adjustment if quality_adjustment is not None else 0.0
+            reason = "target_weight_quality_reduction_required_downstream"
         elif row.get("membership_intent") in {"EXCLUDE", "UNRESOLVED"}:
             zero_reason = "opportunity_not_selected"
             reason = "member_not_selected"
@@ -888,9 +916,6 @@ def _resolve_target_weight_contract(
         elif target_gross_exposure == 0:
             zero_reason = "policy_zero_exposure"
             reason = "policy_zero_exposure"
-        elif target_member_count == 0:
-            zero_reason = "no_investable_capacity"
-            reason = "no_investable_capacity"
         elif isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) and float(raw_score) < 0 and not row.get("current_position"):
             zero_reason = "opportunity_not_selected"
             reason = "negative_opportunity_not_selected"
@@ -908,7 +933,8 @@ def _resolve_target_weight_contract(
             "portfolio_policy_decision_id": policy_authority["source_decision_id"],
             "portfolio_policy_artifact_path": policy_authority["source_artifact_path"],
             "portfolio_policy_artifact_hash": policy_authority["source_artifact_hash"],
-            "target_position_count": target_member_count,
+            "target_position_count": deprecated_target_member_count,
+            "target_position_count_decision_authority": "DEPRECATED_METADATA_ONLY",
             "target_gross_exposure": target_gross_exposure,
             "cash_reserve": policy_authority["cash_reserve"],
             "resolved_target_member_count": effective_count,
@@ -932,6 +958,19 @@ def _resolve_target_weight_contract(
             "zero_weight_reason": zero_reason,
             "review_reason": review_reason,
         }
+        if selected and quality_action:
+            resolution["adjustments"] = [
+                {
+                    "authority": "ADAPTIVE_BUY_QUALITY_AUTHORITY",
+                    "quality_action": quality_action,
+                    "quality_decision_id": str(row.get("quality_decision_id") or ""),
+                    "quality_allocation_adjustment": quality_adjustment if quality_adjustment is not None else 0.0,
+                    "pre_quality_base_weight": round(base_weight, TARGET_WEIGHT_DECIMALS),
+                    "post_quality_target_weight": round(weight * (quality_adjustment if quality_adjustment is not None else 0.0), TARGET_WEIGHT_DECIMALS)
+                    if quality_action == "REDUCED_ALLOCATION_ONLY"
+                    else weight,
+                }
+            ]
         if weight == 0 and not zero_reason and status == "PASS":
             resolution["zero_weight_reason"] = "other_explicit_contract_reason"
         updated = {
@@ -987,9 +1026,7 @@ def resolve_portfolio_policy_allocation_authority(
     reason_codes: list[str] = []
     missing: list[str] = []
     invalid: list[str] = []
-    if target_member_count is None:
-        missing.append("target_position_count")
-    elif target_member_count < 0:
+    if target_member_count is not None and target_member_count < 0:
         invalid.append("target_position_count")
     if target_gross_exposure is None:
         missing.append("target_gross_exposure")
@@ -1026,21 +1063,103 @@ def resolve_portfolio_policy_allocation_authority(
     }
 
 
-def _select_target_members(members: list[dict[str, Any]], target_member_count: int) -> list[dict[str, Any]]:
-    if target_member_count <= 0:
-        return []
+def _select_target_members(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in members:
         score = row.get("runtime_opportunity_score")
         negative_new = isinstance(score, (int, float)) and not isinstance(score, bool) and float(score) < 0 and not row.get("current_position")
-        selectable = row.get("membership_intent") == "RETAIN" or (row.get("membership_intent") == "ADD_CANDIDATE" and not negative_new)
+        quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "")
+        quality_blocks_buy = quality_action in {"REJECT", "BUY_REJECTED", "REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"}
+        selectable = row.get("membership_intent") == "RETAIN" or (row.get("membership_intent") == "ADD_CANDIDATE" and not negative_new and not quality_blocks_buy)
         reason_codes = {str(reason) for reason in row.get("reason_codes") or []}
         occupies_buy_slot = row.get("membership_intent") in {"RETAIN", "ADD_CANDIDATE"} or any(reason.startswith("opportunity_no_buy_reason_present:") for reason in reason_codes)
         if occupies_buy_slot:
             candidates.append({**row, "_selection_selectable": selectable})
     ordered = sorted(candidates, key=lambda row: (_positive_int(row.get("construction_priority"), 999999), str(row.get("security_code") or "")))
-    window = ordered[:target_member_count]
-    return [{key: value for key, value in row.items() if key != "_selection_selectable"} for row in window if row.get("_selection_selectable")]
+    return [{key: value for key, value in row.items() if key != "_selection_selectable"} for row in ordered if row.get("_selection_selectable")]
+
+
+def _attach_buy_quality(
+    members: list[dict[str, Any]],
+    buy_quality_summary: PortfolioConstructionSourceSummary | None,
+) -> list[dict[str, Any]]:
+    if buy_quality_summary is None or not buy_quality_summary.rows:
+        return members
+    decisions = {
+        str(row.get("symbol") or row.get("security_code") or "").strip(): dict(row)
+        for row in buy_quality_summary.rows
+        if isinstance(row, Mapping) and str(row.get("symbol") or row.get("security_code") or "").strip()
+    }
+    updated: list[dict[str, Any]] = []
+    for member in members:
+        code = str(member.get("security_code") or member.get("symbol") or "").strip()
+        decision = decisions.get(code)
+        if not decision:
+            updated.append(member)
+            continue
+        action = str(decision.get("quality_action") or "")
+        quality_fields = _buy_quality_fields(decision, buy_quality_summary)
+        reasons = list(member.get("reason_codes") or [])
+        membership_intent = str(member.get("membership_intent") or "")
+        weight_intent = str(member.get("weight_intent") or "")
+        if not member.get("current_position") and action in {"REJECT", "BUY_REJECTED"}:
+            membership_intent = "EXCLUDE"
+            weight_intent = "AVOID"
+            reasons.append("buy_quality_rejected")
+        elif not member.get("current_position") and action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"}:
+            membership_intent = "UNRESOLVED"
+            weight_intent = "UNRESOLVED"
+            reasons.append("buy_quality_review_required")
+        elif not member.get("current_position") and action == "REDUCED_ALLOCATION_ONLY":
+            reasons.append("buy_quality_reduced_allocation_only")
+        elif not member.get("current_position") and action == "FULL_ALLOCATION_ELIGIBLE":
+            reasons.append("buy_quality_full_allocation_eligible")
+        updated.append(
+            {
+                **member,
+                **quality_fields,
+                "membership_intent": membership_intent,
+                "target_membership": membership_intent in {"RETAIN", "ADD_CANDIDATE"},
+                "weight_intent": weight_intent,
+                "membership_reason": ";".join(sorted(set(reasons))),
+                "reason_codes": sorted(set(reasons)),
+            }
+        )
+    return updated
+
+
+def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstructionSourceSummary) -> dict[str, Any]:
+    return {
+        "quality_decision_id": str(decision.get("quality_decision_id") or ""),
+        "quality_score": decision.get("quality_score"),
+        "quality_band": str(decision.get("quality_band") or ""),
+        "quality_action": str(decision.get("quality_action") or ""),
+        "quality_status": str(decision.get("quality_status") or ""),
+        "quality_reason_codes": list(decision.get("quality_reason_codes") or []),
+        "component_scores": dict(decision.get("component_scores") or {}),
+        "component_statuses": dict(decision.get("component_statuses") or {}),
+        "component_weights": dict(decision.get("component_weights") or {}),
+        "quality_policy_version": str(decision.get("policy_version") or ""),
+        "quality_allocation_adjustment": decision.get("quality_allocation_adjustment"),
+        "source_candidate_id": str(decision.get("source_candidate_id") or ""),
+        "source_opportunity_id": str(decision.get("source_opportunity_id") or ""),
+        "buy_quality_artifact_path": summary.source_ref,
+        "buy_quality_artifact_hash": _strip_sha256(summary.source_hash),
+        "buy_quality_authority": {
+            "authority_type": "ADAPTIVE_BUY_QUALITY_AUTHORITY",
+            "producer": "Production Strategy BUY Quality Resolver",
+            "policy_version": str(decision.get("policy_version") or ""),
+            "quality_decision_id": str(decision.get("quality_decision_id") or ""),
+            "quality_action": str(decision.get("quality_action") or ""),
+            "quality_score": decision.get("quality_score"),
+            "source_artifact_path": summary.source_ref,
+            "source_artifact_hash": _strip_sha256(summary.source_hash),
+            "PIT_status": str(decision.get("PIT_status") or ""),
+            "future_information_used": bool(decision.get("future_information_used")),
+            "historical_result_input_used": bool(decision.get("historical_result_input_used")),
+            "paper_ledger_input_used": bool(decision.get("paper_ledger_input_used")),
+        },
+    }
 
 
 def _validate_member(member: Any, *, index: int) -> list[str]:
@@ -1125,7 +1244,12 @@ def _validate_member(member: Any, *, index: int) -> list[str]:
         elif authority.get("output_semantics") != "allocation_quality_score":
             errors.append(f"invalid_allocation_quality_semantics:{index}")
     if "quality_score" in member:
-        errors.append(f"legacy_quality_score_forbidden:{index}")
+        score = member.get("quality_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(float(score)) or not 0 <= float(score) <= 1:
+            errors.append(f"invalid_buy_quality_score:{index}")
+        authority = member.get("buy_quality_authority")
+        if not isinstance(authority, dict) or authority.get("authority_type") != "ADAPTIVE_BUY_QUALITY_AUTHORITY":
+            errors.append(f"legacy_quality_score_forbidden:{index}")
     if "quality_score_authority" in member:
         errors.append(f"legacy_quality_score_authority_forbidden:{index}")
     for field in sorted(FORBIDDEN_CONCRETE_FIELDS & set(member)):

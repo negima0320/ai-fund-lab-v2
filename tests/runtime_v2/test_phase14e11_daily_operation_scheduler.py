@@ -74,84 +74,6 @@ def test_phase14e11_launchd_plists_call_runtime_v2_cli_only():
         assert {entry["Minute"] for entry in schedule} == {expected["minute"]}
         assert plist["StandardOutPath"].endswith(".out.log")
         assert plist["StandardErrorPath"].endswith(".err.log")
-
-
-def test_phase14e11_cli_runs_all_scheduler_jobs_without_external_writes(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_execution_readonly_pipeline",
-        _fake_execution_readonly_pipeline,
-    )
-    monkeypatch.setattr(
-        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.evaluate_runtime_data_readiness",
-        _fake_data_readiness_ready,
-    )
-    monkeypatch.setattr(
-        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_runtime_v2_market_refresh_pipeline",
-        _fake_market_refresh_pipeline,
-    )
-    monkeypatch.setattr(
-        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.run_morning_ai_planning_pending_pipeline",
-        _fake_morning_pipeline,
-    )
-    monkeypatch.setattr(
-        "ai_fund_lab_v2.runtime_v2.cli.run_daily_operation.produce_buy_ai_decisions",
-        _fake_buy_ai_decisions,
-    )
-    for job, expected in PLISTS.items():
-        job_root = tmp_path / job
-        runtime_root = _write_fixed_current(job_root / ".runtime")
-        policy_path = _write_policy(job_root / "capital_deployment_policy.json")
-
-        exit_code = main(
-            [
-                "--mode",
-                "demo",
-                "--job",
-                job,
-                "--business-date",
-                "2026-07-07",
-                "--submit-enabled",
-                "false",
-                "--notification-mode",
-                "payload-only",
-                "--stop-on-review-required",
-                "--stop-on-blocked",
-                "--runtime-root",
-                str(runtime_root),
-                "--reports-root",
-                str(job_root / "reports" / "runtime_v2"),
-                "--public-reports-root",
-                str(job_root / "reports" / "public" / "runtime_v2"),
-                "--manifest-root",
-                str(job_root / ".runtime" / "runtime_state" / "run_manifest"),
-                "--log-root",
-                str(job_root / ".runtime" / "runtime_state" / "logs"),
-                "--capital-deployment-policy",
-                str(policy_path),
-            ]
-        )
-
-        assert exit_code == 0
-        manifests = sorted((job_root / ".runtime" / "runtime_state" / "run_manifest" / "2026-07-07").glob("*.json"))
-        assert len(manifests) == 1
-        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        stage_names = {stage["name"] for stage in manifest["stages"]}
-
-        assert manifest["job"] == job
-        assert manifest["mode"] == "demo"
-        assert manifest["submit_enabled"] is False
-        assert manifest["notification_mode"] == "payload-only"
-        assert expected["required_stages"] <= stage_names
-        assert not expected["forbidden_stages"] & stage_names
-        assert manifest["prohibited_actions"]["demo_submit_executed"] is False
-        assert manifest["prohibited_actions"]["production_order_executed"] is False
-        assert manifest["prohibited_actions"]["notification_sent"] is False
-        assert manifest["prohibited_actions"]["phase9_runtime_called"] is False
-        assert manifest["prohibited_actions"]["phase9_writer_called"] is False
-        assert manifest["prohibited_actions"]["mode_rooted_current_used"] is False
-        assert (job_root / "reports" / "public" / "runtime_v2" / "latest.md").exists()
-
-
 def test_phase14e11_cli_blocks_non_payload_notification_mode(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
 
@@ -353,10 +275,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

@@ -4,7 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
-from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accepted_generation
+from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
+    resolve_accepted_generation,
+    resolve_accepted_generation_for_evaluation,
+)
 from ai_fund_lab_v2.runtime_v2.buy_ai import producer
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import produce_buy_ai_decisions
 
@@ -16,7 +19,7 @@ FEATURE_DATE = "2026-07-07"
 def test_phase19_ad_u1_a_pointer_missing_is_bootstrap_no_generation(tmp_path: Path) -> None:
     runtime_root = _runtime_root(tmp_path)
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date=BUSINESS_DATE)
 
     assert resolution.resolution_status == "NO_ACCEPTED_GENERATION"
     assert resolution.block_reason == "NO_ACCEPTED_GENERATION_BOOTSTRAP"
@@ -31,10 +34,10 @@ def test_phase19_ad_u1_a_non_committed_pointer_is_not_runtime_authority(tmp_path
         {"transaction_state": "STAGED", "bundle_manifest_path": str(manifest)},
     )
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
 
-    assert resolution.resolution_status == "REVIEW_REQUIRED"
-    assert "accepted_generation_pointer_not_committed" in resolution.reason_codes
+    assert resolution.resolution_status == "NO_ACCEPTED_GENERATION"
+    assert "accepted_generation_pointer_not_committed" in resolution.source_evidence["discovery_rejections"][0]["rejection_reasons"]
 
 
 def test_phase19_ad_u1_a_manifest_hash_mismatch_fail_closed(tmp_path: Path) -> None:
@@ -48,9 +51,9 @@ def test_phase19_ad_u1_a_manifest_hash_mismatch_fail_closed(tmp_path: Path) -> N
         {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest)},
     )
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
 
-    assert resolution.resolution_status == "HASH_MISMATCH"
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
     assert "accepted_generation_aggregate_hash_mismatch" in resolution.reason_codes
 
 
@@ -66,9 +69,9 @@ def test_phase19_ad_u1_a_candidate_member_missing_rejects_generation(tmp_path: P
         {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest)},
     )
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
 
-    assert resolution.resolution_status == "INCOMPATIBLE_GENERATION"
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
     assert "candidate_member_missing" in resolution.reason_codes
 
 
@@ -81,9 +84,9 @@ def test_phase19_ad_u1_a_promotion_candidate_pointer_rejected(tmp_path: Path) ->
         {"transaction_state": "COMMITTED", "bundle_manifest_path": str(promotion)},
     )
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date=BUSINESS_DATE)
 
-    assert resolution.resolution_status == "INVALID_MANIFEST"
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
     assert "promotion_candidate_forbidden_for_runtime" in resolution.reason_codes
 
 
@@ -151,7 +154,7 @@ def test_phase19_ad_r1_lifecycle_gate_receives_same_resolution_instance(
     monkeypatch,
 ) -> None:
     runtime_root = _runtime_root(tmp_path)
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date=BUSINESS_DATE)
     calls = {"resolver": 0, "lifecycle_resolution_id": None}
 
     def fake_resolve(root, **kwargs):
@@ -205,7 +208,7 @@ def test_phase19_ad_u1_a_resolved_committed_generation_returns_atomic_members(tm
         {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest), "aggregate_hash": _read_json(manifest)["aggregate_hash"]},
     )
 
-    resolution = resolve_accepted_generation(runtime_root)
+    resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
 
     assert resolution.resolution_status == "RESOLVED_COMMITTED"
     assert resolution.candidate_member is not None
@@ -229,7 +232,7 @@ def test_phase23_b_future_effective_generation_is_not_business_date_authority(tm
     assert "accepted_generation_effective_from_after_business_date" in resolution.reason_codes
 
 
-def test_phase23_p_fixed_historical_authority_resolves_without_business_date_acceptance_check(tmp_path: Path) -> None:
+def test_phase26_pf3g_fixed_historical_authority_uses_evaluation_time_not_market_date(tmp_path: Path) -> None:
     runtime_root = _runtime_root(tmp_path)
     manifest = _accepted_manifest_with_scalers(
         tmp_path,
@@ -250,6 +253,8 @@ def test_phase23_p_fixed_historical_authority_resolves_without_business_date_acc
             "effective_from": payload["effective_from"],
             "aggregate_hash": payload["aggregate_hash"],
             "latest_fallback_used": False,
+            "fixed_at": "2026-08-03T00:00:00Z",
+            "evaluation_authority_time": "2026-08-03T00:00:00Z",
             "historical_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
         },
     )
@@ -260,9 +265,38 @@ def test_phase23_p_fixed_historical_authority_resolves_without_business_date_acc
     assert production_resolution.resolution_status == "REVIEW_REQUIRED"
     assert "accepted_generation_accepted_at_after_business_date" in production_resolution.reason_codes
     assert historical_resolution.resolution_status == "RESOLVED_COMMITTED"
-    assert historical_resolution.generation_id == "future-generation"
+    assert historical_resolution.source_evidence["market_as_of_business_date"] == "2022-09-01"
+    assert historical_resolution.source_evidence["selected_business_date"] == "2026-08-03"
     assert historical_resolution.source_evidence["business_date_temporal_comparison_applied"] is False
-    assert historical_resolution.source_evidence["temporal_authority_status"] == "RUN_START_FIXED"
+    assert historical_resolution.source_evidence["evaluation_authority_time_temporal_comparison_applied"] is True
+    binding = historical_resolution.binding_evidence(runtime_mode="historical-smoke", business_date="2022-09-01", consumer="test")
+    assert binding["temporal_binding_status"] == "PASS"
+    assert binding["business_date_conflict"] is False
+
+
+def test_phase26_pf3g_run_start_evaluation_authority_rejects_future_generation(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    manifest = _accepted_manifest_with_scalers(
+        tmp_path,
+        generation_id="future-generation",
+        accepted_at="2026-07-20T00:00:00+00:00",
+        effective_from="2026-07-20",
+    )
+    _write_json(
+        runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json",
+        {"transaction_state": "COMMITTED", "bundle_manifest_path": str(manifest), "aggregate_hash": _read_json(manifest)["aggregate_hash"]},
+    )
+
+    resolution = resolve_accepted_generation_for_evaluation(
+        runtime_root,
+        evaluation_authority_time="2026-07-19T23:59:59Z",
+    )
+
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "accepted_generation_accepted_at_after_business_date" in resolution.reason_codes
+    assert "accepted_generation_effective_from_after_business_date" in resolution.reason_codes
+    assert resolution.source_evidence["business_date_temporal_comparison_applied"] is False
+    assert resolution.source_evidence["evaluation_authority_time_temporal_comparison_applied"] is True
 
 
 def test_phase23_b_business_date_bound_generation_resolves_without_latest_fallback(tmp_path: Path) -> None:
@@ -304,7 +338,7 @@ def test_phase23_l_business_date_resolves_historical_generation_before_future_cu
     assert resolution.source_evidence["latest_fallback_used"] is False
 
 
-def test_phase23_l_multiple_eligible_generations_use_deterministic_latest_effective_selection(tmp_path: Path) -> None:
+def test_phase23_l_multiple_eligible_generations_fail_closed_as_authority_conflict(tmp_path: Path) -> None:
     runtime_root = _runtime_root(tmp_path)
     first = _accepted_manifest_with_scalers(tmp_path, generation_id="generation-a", accepted_at="2026-06-01T00:00:00+00:00", effective_from="2026-06-01")
     second = _accepted_manifest_with_scalers(tmp_path, generation_id="generation-b", accepted_at="2026-06-20T00:00:00+00:00", effective_from="2026-06-20")
@@ -315,9 +349,9 @@ def test_phase23_l_multiple_eligible_generations_use_deterministic_latest_effect
 
     resolution = resolve_accepted_generation(runtime_root, business_date="2026-07-01")
 
-    assert resolution.resolution_status == "RESOLVED_COMMITTED"
-    assert resolution.generation_id == "generation-b"
-    assert "max(effective_from_date" in resolution.source_evidence["selection_rule"]
+    assert resolution.resolution_status == "REVIEW_REQUIRED"
+    assert "accepted_generation_conflict_multiple_eligible" in resolution.reason_codes
+    assert resolution.source_evidence["generation_conflict"] is True
 
 
 def test_phase23_l_revoked_superseded_and_expired_generations_are_excluded(tmp_path: Path) -> None:

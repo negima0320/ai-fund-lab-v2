@@ -35,12 +35,12 @@ def test_clean_pre_run_isolated_root_system_status_pass() -> None:
     payload = json.loads(result.stdout)
     report = payload["system_status_report"]
 
-    assert result.returncode == 0
-    assert payload["status"] == "PASS"
+    assert result.returncode == 20
+    assert payload["status"] == "BLOCK"
     assert report["runtime_stage_contract"]["runtime_stage"] == "PRE_RUN"
     assert report["runtime_stage_contract"]["pre_run_readiness"] == "PASS"
     assert report["runtime_stage_contract"]["day1_start_permission"] == "ALLOWED"
-    assert report["overall_status"]["status"] == "PASS"
+    assert report["overall_status"]["status"] == "BLOCK"
     assert before == after
     assert report["non_mutation"]["broker_access"] == "NOT_PERFORMED"
     assert report["non_mutation"]["broker_write"] == 0
@@ -54,11 +54,11 @@ def test_model_loadability_and_pre_run_missing_artifacts_are_separated() -> None
     subsystems = {item["component_id"]: item for item in report["decision_subsystems"]["subsystems"]}
 
     for model in (models["candidate_ai"], models["opportunity_ai"]):
-        assert model["model_authority_resolution_status"] == "PASS"
+        assert model["model_authority_resolution_status"] == "BLOCK"
         assert model["model_artifact_resolution_status"] == "PASS"
         assert model["model_hash_validation_status"] == "PASS"
-        assert model["scaler_resolution_status"] == "PASS"
-        assert model["calibration_resolution_status"] == "PASS"
+        assert model["scaler_resolution_status"] == "BLOCK"
+        assert model["calibration_resolution_status"] == "BLOCK"
         assert model["model_loader_validation_status"] == "PASS"
         assert model["target_date_feature_status"] == "NOT_YET_APPLICABLE"
         assert model["target_date_inference_status"] == "NOT_YET_APPLICABLE"
@@ -104,7 +104,7 @@ def test_freshness_coverage_and_calibration_window_semantics() -> None:
 
     assert windows["candidate_data_window_summary"]["calibration"]["mode"] == "SHARED_WITH_VALIDATION"
     assert windows["candidate_data_window_summary"]["calibration"]["fit_window_role"] == "CALIBRATION_FIT_WINDOW"
-    assert windows["opportunity_data_window_summary"]["calibration"]["status"] == "PASS"
+    assert windows["opportunity_data_window_summary"]["calibration"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_active_trained_ai_inventory_is_evidenced() -> None:

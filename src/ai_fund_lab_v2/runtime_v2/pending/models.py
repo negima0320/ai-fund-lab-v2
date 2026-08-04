@@ -49,6 +49,10 @@ class PendingApprovalLink:
     submit_policy_version: str = ""
     submit_policy_source: str = ""
     submit_policy_hash: str = ""
+    accepted_generation_id: str = ""
+    accepted_generation_business_date: str = ""
+    accepted_generation_binding_status: str = ""
+    accepted_generation_binding: dict[str, Any] | None = None
     safety_decision_id: str = ""
     safety_policy_version: str = ""
     approved_order_conditions: dict[str, Any] | None = None
@@ -97,6 +101,10 @@ class PendingOrderItem:
     submit_policy_version: str = ""
     submit_policy_source: str = ""
     submit_policy_hash: str = ""
+    accepted_generation_id: str = ""
+    accepted_generation_business_date: str = ""
+    accepted_generation_binding_status: str = ""
+    accepted_generation_binding: dict[str, Any] | None = None
     evaluation_capital: float | None = None
     target_investment_ratio: float | None = None
     cash_buffer: float | None = None
@@ -167,6 +175,10 @@ class PendingOrderPlan:
     submit_policy_version: str = ""
     submit_policy_source: str = ""
     submit_policy_hash: str = ""
+    accepted_generation_id: str = ""
+    accepted_generation_business_date: str = ""
+    accepted_generation_binding_status: str = ""
+    accepted_generation_binding: dict[str, Any] | None = None
     safety_context: dict[str, Any] | None = None
     safety_decision_id: str = ""
     safety_policy_version: str = ""

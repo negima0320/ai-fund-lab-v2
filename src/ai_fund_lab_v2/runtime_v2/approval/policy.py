@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from typing import Any, Sequence
 
 from ai_fund_lab_v2.runtime_v2.approval.models import (
     ApprovalArtifact,
@@ -11,6 +13,43 @@ from ai_fund_lab_v2.runtime_v2.approval.models import (
     ApprovalStatus,
 )
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan
+
+
+def build_approved_order_conditions(
+    *,
+    pending_items: Sequence[Any],
+    target_session_date: str,
+) -> dict[str, Any]:
+    return {
+        str(item.pending_item_id): build_approved_order_condition(
+            item=item,
+            target_session_date=target_session_date,
+        )
+        for item in pending_items
+    }
+
+
+def build_approved_order_condition(*, item: Any, target_session_date: str) -> dict[str, Any]:
+    order_type = str(getattr(item, "order_type", "") or "").upper()
+    return {
+        "schema_version": "runtime_v2_approved_order_condition.v1",
+        "condition_authority": "strategy_planning_approval_order_conditions",
+        "condition_consumer": "runtime_v2.submit.guards.run_submit_preflight",
+        "pending_item_id": str(getattr(item, "pending_item_id", "") or ""),
+        "side": str(getattr(item, "side", "") or ""),
+        "issue_code": str(getattr(item, "symbol", "") or ""),
+        "order_type": order_type,
+        "quantity": getattr(item, "quantity", 0),
+        "target_session": target_session_date,
+        "price_condition": "MARKET" if order_type == "MARKET" else "LIMIT",
+        "limit_price": None if order_type == "MARKET" else getattr(item, "estimated_price", None),
+        "time_in_force": "DAY",
+        "estimated_amount": getattr(item, "estimated_amount", 0),
+        "estimated_price": getattr(item, "estimated_price", 0),
+        "approval_runtime_path": "Production/Demo/Historical common runtime_v2",
+        "approval_fallback_used": False,
+        "legacy_approval_used": False,
+    }
 
 
 def build_approval_request(
@@ -59,6 +98,7 @@ def build_approval_artifact(
         request.submit_policy_hash,
         request.safety_decision_id,
         request.safety_policy_version,
+        _stable_conditions_hash(decision.approved_order_conditions),
         decision.decided_at,
     )
     return ApprovalArtifact(
@@ -90,9 +130,18 @@ def build_approval_artifact(
         submit_policy_hash=request.submit_policy_hash,
         safety_decision_id=request.safety_decision_id,
         safety_policy_version=request.safety_policy_version,
+        approved_order_conditions=decision.approved_order_conditions,
     )
 
 
 def _hash_id(prefix: str, *parts: str) -> str:
     raw = "|".join(parts).encode("utf-8")
     return prefix + "-" + hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _stable_conditions_hash(conditions: dict | None) -> str:
+    if not conditions:
+        return ""
+    return hashlib.sha256(
+        json.dumps(conditions, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()

@@ -12,7 +12,11 @@ from typing import Any, Mapping
 
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalDecision, ApprovalStatus
-from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, build_approval_request
+from ai_fund_lab_v2.runtime_v2.approval.policy import (
+    build_approval_artifact,
+    build_approval_request,
+    build_approved_order_conditions,
+)
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
@@ -25,7 +29,10 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicyError,
     load_capital_deployment_policy,
 )
-from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import resolve_cash_exposure_authority
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import RuntimeCurrentExposure, load_runtime_current_exposure
+from ai_fund_lab_v2.runtime_v2.position_count_authority import resolve_position_count_authority
+from ai_fund_lab_v2.runtime_v2.position_sizing_authority import resolve_position_sizing_authority
 from ai_fund_lab_v2.strategy.runtime_planning import (
     RuntimePlanningSchemaError,
     validate_runtime_planning_artifact,
@@ -99,6 +106,7 @@ def activate_strategy_planning_authority(
     target_session_date = target_session_date or business_date
     runtime_planning_path = strategy_path / "runtime_planning.json"
     position_sizing_path = strategy_path / "position_sizing.json"
+    input_manifest_path = strategy_path / "input_manifest.json"
     order_plan_path = runtime_root_path / "runtime_state" / "strategy_planning" / business_date / "order_plan.json"
     approval_path = runtime_root_path / "runtime_state" / "strategy_planning" / business_date / "approval_artifact.json"
     pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
@@ -115,7 +123,15 @@ def activate_strategy_planning_authority(
         environment_capability_context=environment_capability_context,
     )
     submit_policy_context = _resolve_submit_policy_context(submit_policy_authority_payload)
+    accepted_generation_binding = _accepted_generation_binding_context(
+        input_manifest_path=input_manifest_path,
+        mode=mode,
+        business_date=business_date,
+    )
     submit_feasibility_policy = _load_submit_feasibility_policy(submit_policy_context)
+    submit_feasibility_current = load_runtime_current_exposure(
+        runtime_root_path / "persistent_ledger" / "state.json"
+    )
     if not runtime_planning_path.is_file():
         return _write_review_pending(
             runtime_root=runtime_root_path,
@@ -189,6 +205,15 @@ def activate_strategy_planning_authority(
             status="BLOCKED",
         )
     position_sizing_payload = _read_json(position_sizing_path) if position_sizing_path.is_file() else {}
+    portfolio_policy_path = strategy_path / "portfolio_policy.json"
+    portfolio_policy_payload = _read_json(portfolio_policy_path) if portfolio_policy_path.is_file() else {}
+    strategy_authority_context = _strategy_authority_context(
+        strategy_path=strategy_path,
+        position_sizing_path=position_sizing_path,
+        position_sizing_payload=position_sizing_payload,
+        portfolio_policy_path=portfolio_policy_path,
+        portfolio_policy_payload=portfolio_policy_payload,
+    )
     sizing_by_symbol = {
         str(item.get("security_code") or ""): item
         for item in position_sizing_payload.get("positions", []) or []
@@ -204,6 +229,12 @@ def activate_strategy_planning_authority(
             plan=plan,
             sizing=sizing_by_symbol.get(str(plan.get("security_code") or "")) or {},
             business_date=business_date,
+            mode=mode,
+            runtime_root=runtime_root_path,
+            submit_feasibility_policy=submit_feasibility_policy,
+            submit_feasibility_current=submit_feasibility_current,
+            runtime_planning_path=runtime_planning_path,
+            strategy_authority_context=strategy_authority_context,
         )
         item_lineage.append(
             {
@@ -218,6 +249,10 @@ def activate_strategy_planning_authority(
             }
         )
         if item is not None:
+            item = _pending_item_with_accepted_generation_binding(
+                item=item,
+                accepted_generation_binding=accepted_generation_binding,
+            )
             item = _pending_item_with_submit_policy_context(item=item, submit_policy_context=submit_policy_context)
             item = _pending_item_with_safety_context(item=item, safety_context=safety_context)
             pending_items.append(item)
@@ -233,11 +268,23 @@ def activate_strategy_planning_authority(
         "target_session_date": target_session_date,
         "status": "CREATED" if pending_items else result_status,
         "planning_authority": "phase22_strategy_runtime_planning",
+        "planning_source": str(runtime_planning_path),
+        "planning_authority_winner": "strategy_runtime_planning",
+        "planning_consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
+        "planning_fallback_used": False,
+        "legacy_planning_used": False,
+        "buy_planning_status": _side_planning_status(item_lineage, side="BUY"),
+        "sell_planning_status": _side_planning_status(item_lineage, side="SELL"),
+        "buy_sell_independence_preserved": True,
         "strategy_artifact_path": str(runtime_planning_path),
         "strategy_artifact_hash": _file_hash(runtime_planning_path),
         "position_sizing_artifact_path": str(position_sizing_path),
         "position_sizing_artifact_hash": _file_hash(position_sizing_path),
         "items": [_pending_item_payload(item) for item in pending_items],
+        "accepted_generation_binding": accepted_generation_binding,
+        "accepted_generation_id": str(accepted_generation_binding.get("accepted_generation_id") or ""),
+        "accepted_generation_business_date": str(accepted_generation_binding.get("accepted_generation_business_date") or ""),
+        "accepted_generation_binding_status": str(accepted_generation_binding.get("generation_binding_status") or ""),
         "safety_context": safety_context,
         "strategy_item_lineage": item_lineage,
         "strategy_artifact_eligibility": _strategy_artifact_eligibility(runtime_planning_payload),
@@ -266,6 +313,13 @@ def activate_strategy_planning_authority(
         planning_lineage_context=_planning_lineage_context(order_plan_payload=order_plan_payload),
         submit_policy_context=submit_policy_context,
     )
+    pending = replace(
+        pending,
+        accepted_generation_binding=accepted_generation_binding or None,
+        accepted_generation_id=str(accepted_generation_binding.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(accepted_generation_binding.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(accepted_generation_binding.get("generation_binding_status") or ""),
+    )
     if safety_context:
         pending = replace(
             pending,
@@ -292,6 +346,10 @@ def activate_strategy_planning_authority(
                 reason="phase23_i_strategy_planning_authority_auto_approval_for_runtime_test_submit_decision",
                 operator="runtime_v2_strategy_planning_authority",
                 decided_at=f"{business_date}T08:45:00+09:00",
+                approved_order_conditions=build_approved_order_conditions(
+                    pending_items=pending_items,
+                    target_session_date=target_session_date,
+                ),
             ),
         )
         _write_json(approval_path, _jsonable(approval))
@@ -369,6 +427,12 @@ def _pending_item_from_strategy_plan(
     plan: Mapping[str, Any],
     sizing: Mapping[str, Any],
     business_date: str,
+    mode: str,
+    runtime_root: Path,
+    submit_feasibility_policy: Any | None,
+    submit_feasibility_current: RuntimeCurrentExposure,
+    runtime_planning_path: Path,
+    strategy_authority_context: Mapping[str, Any] | None = None,
 ) -> tuple[PendingOrderItem | None, str]:
     symbol = str(plan.get("security_code") or "")
     intent = str(plan.get("planning_intent") or "")
@@ -386,6 +450,23 @@ def _pending_item_from_strategy_plan(
     if price_resolution["status"] != "PASS":
         return None, f"{price_resolution['reason']}:{symbol}"
     price = float(price_resolution["resolved_price"])
+    quantity_contract = _planning_quantity_contract(
+        plan=plan,
+        sizing=sizing,
+        symbol=symbol,
+        side=side,
+        intent=intent,
+        planned_quantity=planned_quantity,
+        price=price,
+        price_resolution=price_resolution,
+        business_date=business_date,
+        mode=mode,
+        runtime_root=runtime_root,
+        submit_feasibility_policy=submit_feasibility_policy,
+        submit_feasibility_current=submit_feasibility_current,
+        runtime_planning_path=runtime_planning_path,
+        strategy_authority_context=strategy_authority_context,
+    )
     pending_item_id = "strategy-" + hashlib.sha256(
         f"{business_date}|{symbol}|{intent}|{side}|{plan.get('planning_id')}".encode("utf-8")
     ).hexdigest()[:20]
@@ -403,6 +484,7 @@ def _pending_item_from_strategy_plan(
             symbol=symbol,
             business_date=business_date,
             opportunity_authority=plan.get("opportunity_authority") if isinstance(plan.get("opportunity_authority"), Mapping) else {},
+            plan=plan,
         ),
         price_source="jquants_raw_normalized_daily_quotes_close",
         price_as_of=str(price_resolution.get("price_date") or business_date),
@@ -415,24 +497,7 @@ def _pending_item_from_strategy_plan(
         planning_authority_hash=str(plan.get("planning_hash") or ""),
         buy_notional_policy="phase22_position_sizing_incremental_notional",
         sizing_policy_reason="derived_from_phase22_position_sizing_target_notional",
-        quantity_contract={
-            "quantity_authority": "phase23_i_strategy_planning_authority_consumer",
-            "source_planning_id": str(plan.get("planning_id") or ""),
-            "source_position_sizing_reference": str(sizing.get("position_reference") or ""),
-            "planned_quantity": planned_quantity,
-            "target_quantity_candidate": plan.get("target_quantity_candidate"),
-            "quantity_delta_candidate": plan.get("quantity_delta_candidate"),
-            "quantity_status": plan.get("quantity_status"),
-            "target_notional": sizing.get("target_notional"),
-            "incremental_buy_notional": sizing.get("incremental_buy_notional"),
-            "lot_rounding": "already_applied_by_position_sizing",
-            "price_authority": "phase23_bo_executable_plan_price_authority",
-            "reference_price": price,
-            "reference_price_authority": dict(plan.get("reference_price_authority") or {}),
-            "reference_price_resolution": dict(plan.get("reference_price_resolution") or {}),
-            "reference_price_type": str(plan.get("reference_price_type") or ""),
-            "reference_price_date": str(plan.get("reference_price_date") or ""),
-        },
+        quantity_contract=quantity_contract,
         source_decision_type=intent,
         source_pm_decision_id=str(plan.get("pm_position_reference") or ""),
         source_pm_business_date=business_date,
@@ -441,6 +506,7 @@ def _pending_item_from_strategy_plan(
         capital_allocation_status="APPROVED",
         capital_allocation_reason="phase22_strategy_position_sizing_consumed",
     ), "pending_item_generated"
+
 
 
 def _rank_authority_lineage_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -474,6 +540,330 @@ def _rank_authority_lineage_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]
         "opportunity_artifact_path": source_path,
         "opportunity_artifact_hash": source_hash,
     }
+
+
+def _planning_quantity_contract(
+    *,
+    plan: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+    symbol: str,
+    side: str,
+    intent: str,
+    planned_quantity: int,
+    price: float,
+    price_resolution: Mapping[str, Any],
+    business_date: str,
+    mode: str,
+    runtime_root: Path,
+    submit_feasibility_policy: Any | None,
+    submit_feasibility_current: RuntimeCurrentExposure,
+    runtime_planning_path: Path,
+    strategy_authority_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected_dynamic_position_count = None
+    position_count_fields: dict[str, Any] = {}
+    cash_exposure_fields: dict[str, Any] = {}
+    position_sizing_fields: dict[str, Any] = {}
+    authority_context = strategy_authority_context if isinstance(strategy_authority_context, Mapping) else {}
+    position_count_context = authority_context.get("position_count_authority")
+    if not isinstance(position_count_context, Mapping):
+        position_count_context = None
+    elif _first_int(
+        position_count_context.get("selected_dynamic_position_count"),
+        position_count_context.get("target_position_count"),
+        position_count_context.get("actual_target_position_count"),
+        position_count_context.get("dynamic_position_count"),
+    ) is None:
+        position_count_context = None
+    cash_exposure_context = authority_context.get("cash_exposure_authority")
+    if not isinstance(cash_exposure_context, Mapping):
+        cash_exposure_context = None
+    elif _first_float(
+        cash_exposure_context.get("selected_dynamic_cash_ratio"),
+        cash_exposure_context.get("target_cash_ratio"),
+    ) is None or _first_float(
+        cash_exposure_context.get("selected_dynamic_exposure_ratio"),
+        cash_exposure_context.get("target_gross_exposure_ratio"),
+    ) is None:
+        cash_exposure_context = None
+    position_sizing_context = _position_sizing_authority_context_for_symbol(
+        authority_context=authority_context,
+        sizing=sizing,
+        symbol=symbol,
+    )
+    if submit_feasibility_policy is not None:
+        position_count_authority = resolve_position_count_authority(
+            runtime_root=None if position_count_context is not None else runtime_root,
+            business_date=business_date,
+            runtime_mode=mode,
+            current_position_count=len(submit_feasibility_current.positions),
+            configured_legacy_max_positions=submit_feasibility_policy.max_positions,
+            policy_context=position_count_context,
+            consumer="strategy_planning_authority_position_count",
+        )
+        selected_dynamic_position_count = position_count_authority.selected_dynamic_position_count
+        position_count_fields = position_count_authority.to_dict()
+        cash_exposure_authority = resolve_cash_exposure_authority(
+            runtime_root=None if cash_exposure_context is not None else runtime_root,
+            business_date=business_date,
+            runtime_mode=mode,
+            current_total_equity=submit_feasibility_current.current_total_equity,
+            active_deployment_capital=submit_feasibility_current.active_deployment_capital,
+            current_cash=submit_feasibility_current.cash,
+            current_market_value=submit_feasibility_current.current_exposure,
+            policy_context=cash_exposure_context,
+            consumer="strategy_planning_authority_cash_exposure",
+        )
+        cash_exposure_fields = cash_exposure_authority.to_dict()
+        if side == "BUY":
+            position_sizing_authority = resolve_position_sizing_authority(
+                symbol=symbol,
+                runtime_root=None if position_sizing_context else runtime_root,
+                business_date=business_date,
+                runtime_mode=mode,
+                active_deployment_capital=submit_feasibility_current.active_deployment_capital,
+                selected_dynamic_exposure_ratio=cash_exposure_authority.selected_dynamic_exposure_ratio,
+                selected_runtime_exposure_limit=cash_exposure_authority.selected_runtime_exposure_limit,
+                selected_dynamic_position_count=selected_dynamic_position_count,
+                current_position_market_value=_position_market_value(submit_feasibility_current, symbol),
+                policy_context=position_sizing_context,
+                consumer="strategy_planning_authority_position_sizing",
+            )
+            position_sizing_fields = position_sizing_authority.with_lot_adjustment(
+                quantity=planned_quantity,
+                notional=round(float(planned_quantity) * float(price), 2),
+            ).to_dict()
+    requested_notional = sizing.get("incremental_buy_notional") if side == "BUY" else sizing.get("current_notional")
+    selected_notional = round(float(planned_quantity) * float(price), 2)
+    binding_constraint = (
+        str(position_sizing_fields.get("position_sizing_binding_constraint") or "")
+        if side == "BUY"
+        else "SELL_EXIT_REDUCE_AUTHORITY"
+    )
+    return {
+        "quantity_contract_version": "runtime_v2_strategy_planning_quantity_v2",
+        "quantity_authority": "strategy_runtime_planning_authority",
+        "planning_source": str(runtime_planning_path),
+        "planning_authority_winner": "strategy_runtime_planning",
+        "planning_consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
+        "planning_action": side,
+        "planning_status": "PASS",
+        "planning_intent": intent,
+        "planning_intent_source": str(plan.get("planning_id") or ""),
+        "planning_quantity_source": "position_sizing_quantity_candidate" if side == "BUY" else "sell_reduce_exit_quantity_contract",
+        "planning_notional_source": "position_sizing_selected_notional" if side == "BUY" else "current_position_sell_notional",
+        "planning_binding_constraint": binding_constraint,
+        "planning_review_reason": "",
+        "requested_quantity": plan.get("quantity_delta_candidate"),
+        "selected_quantity": planned_quantity,
+        "requested_notional": requested_notional,
+        "selected_notional": selected_notional,
+        "source_planning_id": str(plan.get("planning_id") or ""),
+        "source_position_sizing_reference": str(sizing.get("position_reference") or ""),
+        "planned_quantity": planned_quantity,
+        "target_quantity_candidate": plan.get("target_quantity_candidate"),
+        "quantity_delta_candidate": plan.get("quantity_delta_candidate"),
+        "quantity_status": plan.get("quantity_status"),
+        "target_notional": sizing.get("target_notional"),
+        "incremental_buy_notional": sizing.get("incremental_buy_notional"),
+        "lot_rounding": "already_applied_by_position_sizing",
+        "price_authority": "phase23_bo_executable_plan_price_authority",
+        "reference_price": price,
+        "reference_price_authority": dict(plan.get("reference_price_authority") or {}),
+        "reference_price_resolution": dict(plan.get("reference_price_resolution") or price_resolution.get("resolution") or {}),
+        "reference_price_type": str(plan.get("reference_price_type") or ""),
+        "reference_price_date": str(plan.get("reference_price_date") or ""),
+        "position_count_authority": position_count_fields,
+        "cash_exposure_authority": cash_exposure_fields,
+        "position_sizing_authority": position_sizing_fields,
+        "buy_quality_authority": _quality_authority_from_plan(plan),
+        "quality_decision_id": str(plan.get("quality_decision_id") or ""),
+        "quality_score": plan.get("quality_score"),
+        "quality_band": str(plan.get("quality_band") or ""),
+        "quality_action": str(plan.get("quality_action") or ""),
+        "quality_status": str(plan.get("quality_status") or ""),
+        "quality_reason_codes": list(plan.get("quality_reason_codes") or []),
+        "component_scores": dict(plan.get("component_scores") or {}),
+        "component_statuses": dict(plan.get("component_statuses") or {}),
+        "quality_policy_version": str(plan.get("quality_policy_version") or ""),
+        "quality_allocation_adjustment": plan.get("quality_allocation_adjustment"),
+        "pre_quality_base_weight": plan.get("pre_quality_base_weight"),
+        "post_quality_target_weight": plan.get("post_quality_target_weight"),
+        **position_count_fields,
+        **cash_exposure_fields,
+        **position_sizing_fields,
+        "legacy_planning_used": False,
+        "planning_fallback_used": False,
+        "runtime_mode": mode,
+        "business_date": business_date,
+    }
+
+
+def _position_market_value(current: RuntimeCurrentExposure, symbol: str) -> float:
+    for existing_symbol, market_value in current.position_market_values.items():
+        if existing_symbol == symbol:
+            return float(market_value)
+    return 0.0
+
+
+def _strategy_authority_context(
+    *,
+    strategy_path: Path,
+    position_sizing_path: Path,
+    position_sizing_payload: Mapping[str, Any],
+    portfolio_policy_path: Path,
+    portfolio_policy_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_artifacts = _strategy_authority_source_artifacts(
+        strategy_path=strategy_path,
+        position_sizing_path=position_sizing_path,
+        portfolio_policy_path=portfolio_policy_path,
+    )
+    source_hashes = _strategy_authority_source_hashes(
+        position_sizing_path=position_sizing_path,
+        portfolio_policy_path=portfolio_policy_path,
+    )
+    target_position_count = _first_int(
+        position_sizing_payload.get("dynamic_position_count"),
+        position_sizing_payload.get("target_position_count"),
+        portfolio_policy_payload.get("target_position_count"),
+        portfolio_policy_payload.get("meaningful_allocation_position_count"),
+    )
+    cash_ratio = _first_float(
+        portfolio_policy_payload.get("cash_reserve_ratio"),
+        portfolio_policy_payload.get("cash_reserve"),
+        position_sizing_payload.get("residual_cash_ratio"),
+    )
+    exposure_ratio = _first_float(
+        position_sizing_payload.get("target_gross_exposure_ratio"),
+        position_sizing_payload.get("dynamic_cash_exposure"),
+        position_sizing_payload.get("aggregate_exposure_cap"),
+        portfolio_policy_payload.get("target_gross_exposure_ratio"),
+        portfolio_policy_payload.get("target_gross_exposure"),
+    )
+    maximum_exposure_ratio = _first_float(
+        portfolio_policy_payload.get("maximum_gross_exposure_ratio"),
+        position_sizing_payload.get("aggregate_exposure_cap"),
+        exposure_ratio,
+    )
+    position_count_authority = {
+        "selected_dynamic_position_count": target_position_count,
+        "target_position_count": target_position_count,
+        "actual_target_position_count": target_position_count,
+        "safety_hard_maximum": _first_int(portfolio_policy_payload.get("maximum_position_count")),
+        "source_artifacts": source_artifacts,
+        "source_hashes": source_hashes,
+        "producer": "strategy.runtime_planning.position_sizing",
+        "consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
+    }
+    cash_exposure_authority = {
+        "selected_dynamic_cash_ratio": cash_ratio,
+        "target_cash_ratio": cash_ratio,
+        "selected_dynamic_exposure_ratio": exposure_ratio,
+        "target_gross_exposure_ratio": exposure_ratio,
+        "maximum_gross_exposure_ratio": maximum_exposure_ratio,
+        "source_artifacts": source_artifacts,
+        "source_hashes": source_hashes,
+        "producer": "strategy.runtime_planning.portfolio_policy_and_position_sizing",
+        "consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
+    }
+    position_sizing_authority = dict(position_sizing_payload)
+    position_sizing_authority.setdefault("source_artifacts", source_artifacts)
+    position_sizing_authority.setdefault("source_hashes", source_hashes)
+    position_sizing_authority["producer"] = "strategy.position_sizing"
+    position_sizing_authority["consumer"] = "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority"
+    return {
+        "position_count_authority": position_count_authority,
+        "cash_exposure_authority": cash_exposure_authority,
+        "position_sizing_authority": position_sizing_authority,
+        "source_artifacts": source_artifacts,
+        "source_hashes": source_hashes,
+    }
+
+
+def _position_sizing_authority_context_for_symbol(
+    *,
+    authority_context: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+    symbol: str,
+) -> Mapping[str, Any]:
+    nested = authority_context.get("position_sizing_authority")
+    if isinstance(nested, Mapping):
+        payload = dict(nested)
+        positions = [dict(item) for item in payload.get("positions") or [] if isinstance(item, Mapping)]
+        if not positions and sizing:
+            row = dict(sizing)
+            row.setdefault("security_code", symbol)
+            positions = [row]
+        payload["positions"] = positions
+        return payload
+    row = dict(sizing)
+    row.setdefault("security_code", symbol)
+    return {"positions": [row], "source_artifacts": list(authority_context.get("source_artifacts") or []), "source_hashes": list(authority_context.get("source_hashes") or [])}
+
+
+def _strategy_authority_source_artifacts(
+    *,
+    strategy_path: Path,
+    position_sizing_path: Path,
+    portfolio_policy_path: Path,
+) -> list[dict[str, Any]]:
+    artifacts = []
+    if portfolio_policy_path.is_file():
+        artifacts.append({"role": "portfolio_policy", "path": str(portfolio_policy_path), "required": True, "status": "PASS"})
+    if position_sizing_path.is_file():
+        artifacts.append({"role": "position_sizing", "path": str(position_sizing_path), "required": True, "status": "PASS"})
+    dynamic_position_count_path = strategy_path / "dynamic_position_count.json"
+    dynamic_cash_exposure_path = strategy_path / "dynamic_cash_exposure.json"
+    if dynamic_position_count_path.is_file():
+        artifacts.append({"role": "dynamic_position_count", "path": str(dynamic_position_count_path), "required": False, "status": "PASS"})
+    if dynamic_cash_exposure_path.is_file():
+        artifacts.append({"role": "dynamic_cash_exposure", "path": str(dynamic_cash_exposure_path), "required": False, "status": "PASS"})
+    return artifacts
+
+
+def _strategy_authority_source_hashes(
+    *,
+    position_sizing_path: Path,
+    portfolio_policy_path: Path,
+) -> list[dict[str, Any]]:
+    hashes = []
+    if portfolio_policy_path.is_file():
+        hashes.append({"role": "portfolio_policy", "path": str(portfolio_policy_path), "sha256": _file_hash(portfolio_policy_path)})
+    if position_sizing_path.is_file():
+        hashes.append({"role": "position_sizing", "path": str(position_sizing_path), "sha256": _file_hash(position_sizing_path)})
+    return hashes
+
+
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        if value in (None, "") or isinstance(value, bool):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        if value in (None, "") or isinstance(value, bool):
+            continue
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _side_planning_status(item_lineage: list[dict[str, Any]], *, side: str) -> str:
+    side_items = [item for item in item_lineage if str(item.get("order_side_intent") or "").upper() == side]
+    if any(bool(item.get("pending_item_generated")) for item in side_items):
+        return "PASS"
+    if side_items:
+        return "REVIEW_REQUIRED"
+    return "NO_ORDER"
 
 
 def _resolve_plan_price_authority(*, plan: Mapping[str, Any], symbol: str, business_date: str) -> dict[str, Any]:
@@ -515,6 +905,7 @@ def _listed_info_from_opportunity_authority(
     symbol: str,
     business_date: str,
     opportunity_authority: Mapping[str, Any],
+    plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not opportunity_authority:
         return None
@@ -530,6 +921,7 @@ def _listed_info_from_opportunity_authority(
     if not (artifact_path and artifact_hash and row_id):
         return None
     opportunity_feature_date = str(opportunity_authority.get("opportunity_feature_date") or business_date)
+    plan = plan or {}
     return {
         "code": symbol,
         "market": str(opportunity_authority.get("market") or "東証"),
@@ -556,6 +948,32 @@ def _listed_info_from_opportunity_authority(
         "ranking_schema_version": str(opportunity_authority.get("ranking_schema_version") or ""),
         "ranking_schema_name": str(opportunity_authority.get("ranking_schema_name") or ""),
         "ranking_artifact_role": str(opportunity_authority.get("ranking_artifact_role") or ""),
+        "buy_quality_authority": _quality_authority_from_plan(plan),
+        "quality_decision_id": str(plan.get("quality_decision_id") or ""),
+        "quality_score": plan.get("quality_score"),
+        "quality_band": str(plan.get("quality_band") or ""),
+        "quality_action": str(plan.get("quality_action") or ""),
+        "quality_status": str(plan.get("quality_status") or ""),
+        "quality_reason_codes": list(plan.get("quality_reason_codes") or []),
+        "component_scores": dict(plan.get("component_scores") or {}),
+        "component_statuses": dict(plan.get("component_statuses") or {}),
+        "quality_policy_version": str(plan.get("quality_policy_version") or ""),
+        "quality_allocation_adjustment": plan.get("quality_allocation_adjustment"),
+    }
+
+
+def _quality_authority_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+    authority = plan.get("buy_quality_authority")
+    if isinstance(authority, Mapping):
+        return dict(authority)
+    return {
+        "authority_type": "ADAPTIVE_BUY_QUALITY_AUTHORITY",
+        "producer": "Production Strategy BUY Quality Resolver",
+        "quality_decision_id": str(plan.get("quality_decision_id") or ""),
+        "quality_action": str(plan.get("quality_action") or ""),
+        "quality_status": str(plan.get("quality_status") or ""),
+        "source_artifact_path": str(plan.get("buy_quality_artifact_path") or ""),
+        "source_artifact_hash": str(plan.get("buy_quality_artifact_hash") or ""),
     }
 
 
@@ -634,6 +1052,84 @@ def _resolve_submit_policy_context(payload: Mapping[str, Any] | None) -> dict[st
     }
 
 
+def _accepted_generation_binding_context(
+    *,
+    input_manifest_path: Path,
+    mode: str,
+    business_date: str,
+) -> dict[str, Any]:
+    if not input_manifest_path.is_file():
+        return {
+            "schema_version": "phase26_step8_accepted_generation_binding.v1",
+            "consumer": "strategy_planning_authority",
+            "mode": mode,
+            "requested_business_date": business_date,
+            "selected_business_date": "",
+            "accepted_generation_id": "",
+            "accepted_generation_business_date": "",
+            "generation_binding_status": "REVIEW_REQUIRED",
+            "temporal_binding_status": "REVIEW_REQUIRED",
+            "generation_conflict": False,
+            "business_date_conflict": True,
+            "selection_reason": "strategy_input_manifest_missing",
+            "latest_fallback_used": False,
+            "shared_state_fallback_used": False,
+            "default_generation_used": False,
+        }
+    try:
+        manifest = _read_json(input_manifest_path)
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    binding = manifest.get("accepted_generation_binding")
+    if not isinstance(binding, Mapping):
+        binding = {}
+    payload = dict(binding)
+    payload.setdefault("schema_version", "phase26_step8_accepted_generation_binding.v1")
+    payload["consumer"] = "strategy_planning_authority"
+    payload["mode"] = mode
+    payload["requested_business_date"] = business_date
+    payload["accepted_generation_id"] = str(payload.get("accepted_generation_id") or manifest.get("accepted_generation_id") or "")
+    payload["accepted_generation_business_date"] = str(
+        payload.get("accepted_generation_business_date")
+        or payload.get("selected_business_date")
+        or manifest.get("business_date")
+        or ""
+    )
+    payload["generation_binding_status"] = str(payload.get("generation_binding_status") or "REVIEW_REQUIRED")
+    payload["temporal_binding_status"] = str(payload.get("temporal_binding_status") or "REVIEW_REQUIRED")
+    payload["business_date_conflict"] = _accepted_generation_business_date_conflict(
+        binding=payload,
+        business_date=business_date,
+    )
+    payload.setdefault("generation_conflict", False)
+    payload.setdefault("latest_fallback_used", False)
+    payload.setdefault("shared_state_fallback_used", False)
+    payload.setdefault("default_generation_used", False)
+    return payload
+
+
+def _accepted_generation_business_date_conflict(*, binding: Mapping[str, Any], business_date: str) -> bool:
+    if _historical_evaluation_authority_temporal_separation(binding=binding, business_date=business_date):
+        return False
+    accepted_business_date = str(binding.get("accepted_generation_business_date") or "")
+    return bool(
+        binding.get("business_date_conflict")
+        or (accepted_business_date and accepted_business_date != business_date)
+    )
+
+
+def _historical_evaluation_authority_temporal_separation(*, binding: Mapping[str, Any], business_date: str) -> bool:
+    return (
+        str(binding.get("temporal_authority_source") or "") == "evaluation_authority_time"
+        and str(binding.get("temporal_authority_winner") or "") == "run_start_fixed_accepted_generation"
+        and str(binding.get("historical_business_date_acceptance_comparison") or "") == "NOT_APPLIED_TO_ACCEPTED_GENERATION"
+        and str(binding.get("market_as_of_business_date") or "") == business_date
+        and str(binding.get("requested_business_date") or "") == business_date
+        and str(binding.get("generation_binding_status") or "") == "PASS"
+        and str(binding.get("temporal_binding_status") or "") == "PASS"
+    )
+
+
 def _load_submit_feasibility_policy(submit_policy_context: Mapping[str, Any]) -> Any | None:
     source = str(submit_policy_context.get("submit_policy_source") or "")
     if not source:
@@ -670,6 +1166,20 @@ def _pending_item_with_safety_context(*, item: PendingOrderItem, safety_context:
         runtime_test_run_id=str(safety_context.get("runtime_test_run_id") or ""),
         runtime_test_profile_id=str(safety_context.get("runtime_test_profile_id") or ""),
         runtime_test_evidence_root=str(safety_context.get("runtime_test_evidence_root") or ""),
+    )
+
+
+def _pending_item_with_accepted_generation_binding(
+    *,
+    item: PendingOrderItem,
+    accepted_generation_binding: Mapping[str, Any],
+) -> PendingOrderItem:
+    return replace(
+        item,
+        accepted_generation_id=str(accepted_generation_binding.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(accepted_generation_binding.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(accepted_generation_binding.get("generation_binding_status") or ""),
+        accepted_generation_binding=dict(accepted_generation_binding),
     )
 
 

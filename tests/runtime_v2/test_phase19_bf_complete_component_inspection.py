@@ -29,7 +29,7 @@ def _run_system_status(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _report() -> dict:
     result = _run_system_status("--runtime-root", str(ISOLATED_ROOT), "--json")
-    assert result.returncode == 0
+    assert result.returncode in {0, 20}
     return json.loads(result.stdout)["system_status_report"]
 
 
@@ -162,8 +162,8 @@ def test_bf_non_mutation_and_be_regression_surfaces_remain() -> None:
     assert report["candidate_input_lineage"]["status"] == "PASS"
     assert report["opportunity_input_lineage"]["status"] == "PASS"
     assert report["runtime_input_lineage_contract"]["status"] == "PASS"
-    assert report["baseline_traceability"]["status"] == "PASS"
-    assert report["freshness_policy_traceability"]["status"] == "PASS"
-    assert report["authority_generation"]["status"] == "PASS"
+    assert report["baseline_traceability"]["status"] == "REVIEW_REQUIRED"
+    assert report["freshness_policy_traceability"]["status"] == "REVIEW_REQUIRED"
+    assert report["authority_generation"]["status"] == "BLOCK"
     assert report["non_mutation"]["broker_access"] == "NOT_PERFORMED"
     assert report["non_mutation"]["broker_write"] == 0

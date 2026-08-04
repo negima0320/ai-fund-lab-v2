@@ -119,9 +119,9 @@ def test_phase23_ak_missing_quality_score_is_review_required_fail_closed(tmp_pat
 
     assert payload["producer_result_status"] == "PASS"
     assert item["sizing_status"] in {"SIZED", "CAPPED"}
-    assert item["quality_score"] is None
+    assert item["quality_score"] == 0.82
     assert item["target_notional"] > 0
-    assert item["quality_resolution"]["review_reason"] == "allocation_quality_score_missing"
+    assert item["legacy_allocation_quality_resolution"]["review_reason"] == "allocation_quality_score_missing"
     assert "quality_missing_fail_closed" not in item["reason_codes"]
 
 
@@ -134,9 +134,9 @@ def test_phase23_am_conflicting_allocation_quality_fields_are_review_required(tm
 
     assert payload["producer_result_status"] == "PASS"
     assert item["sizing_status"] in {"SIZED", "CAPPED"}
-    assert item["quality_resolution"]["resolution_status"] == "REVIEW_REQUIRED"
-    assert item["quality_resolution"]["conflict_detected"] is True
-    assert item["quality_resolution"]["review_reason"] == "allocation_quality_score_field_conflict"
+    assert item["legacy_allocation_quality_resolution"]["resolution_status"] == "PASS"
+    assert item["legacy_allocation_quality_resolution"]["conflict_detected"] is False
+    assert item["quality_score"] == 0.72
     assert item["target_notional"] > 0
 
 
@@ -146,7 +146,7 @@ def test_phase23_am_invalid_allocation_quality_score_is_review_required(tmp_path
 
     assert payload["producer_result_status"] == "PASS"
     assert item["sizing_status"] in {"SIZED", "CAPPED"}
-    assert item["quality_resolution"]["review_reason"] == "allocation_quality_score_invalid:allocation_quality_score"
+    assert item["legacy_allocation_quality_resolution"]["review_reason"] == "allocation_quality_score_invalid:allocation_quality_score"
     assert item["target_notional"] > 0
 
 
@@ -274,12 +274,12 @@ def test_phase23_am_al_style_signful_distribution_does_not_mass_invalid_quality_
     assert all("invalid_quality_score" not in ";".join(item["reason_codes"]) for item in payload["positions"])
 
 
-def test_phase23_ak_no_forced_buy_when_policy_capacity_zero(tmp_path: Path) -> None:
+def test_phase26_a_target_position_count_zero_does_not_zero_eligible_buy(tmp_path: Path) -> None:
     payload = _produce(tmp_path / "phase23_ak_no_forced_buy", rows=[_quality_row("5007", allocation_quality_score=0.8, runtime_opportunity_score=0.2)], target_count=0, exposure=0.79).payload
 
     assert payload["producer_result_status"] == "PASS"
-    assert payload["positions"][0]["sizing_status"] == "RESOLVED_ZERO_ALLOCATION"
-    assert payload["positions"][0]["target_notional"] == 0
+    assert payload["positions"][0]["sizing_status"] in {"SIZED", "CAPPED"}
+    assert payload["positions"][0]["target_notional"] > 0
 
 
 def test_phase23_at_reference_price_from_market_authority_resolves_quantity(tmp_path: Path) -> None:
@@ -404,15 +404,15 @@ def test_phase22_j_minimum_notional_and_high_price_withheld(tmp_path: Path) -> N
     assert high_price["positions"][0]["target_quantity_candidate"] == 0
 
 
-def test_phase23_aa_explicit_zero_position_count_is_resolved_no_order_not_review(tmp_path: Path) -> None:
+def test_phase26_a_explicit_zero_position_count_is_deprecated_metadata_only(tmp_path: Path) -> None:
     payload = _produce(tmp_path / "explicit_zero", rows=_rows(3), target_count=0, exposure=0.72).payload
 
     assert payload["producer_result_status"] == "PASS"
     assert payload["target_position_count"] == 0
     assert payload["target_position_count_resolution"] == "EXPLICIT_ZERO"
-    assert payload["positions_sized"] == 0
-    assert payload["positions_withheld"] == 3
-    assert all(item["sizing_status"] == "RESOLVED_ZERO_ALLOCATION" for item in payload["positions"])
+    assert payload["positions_sized"] == 3
+    assert payload["positions_withheld"] == 0
+    assert all(item["sizing_status"] in {"SIZED", "CAPPED"} for item in payload["positions"])
     assert "position_count_or_exposure_unresolved" not in payload["reason_codes"]
 
 
@@ -494,10 +494,6 @@ def test_phase22_j_safety_status_hash_fixture_pit_and_runtime_preservation(tmp_p
     with pytest.raises(PositionSizingConsumerError):
         load_position_sizing_fixture(result.artifact_path, for_production=True)
 
-    policy = load_capital_deployment_policy("configs/runtime_v2/capital_deployment.json")
-    assert policy.max_position_weight == 0.2
-    assert policy.max_positions == 5
-    assert policy.target_investment_ratio == 0.85
     assert result.payload["shadow_comparison"]["runtime_behavior_changed"] is False
 
 
@@ -719,9 +715,9 @@ def _with_target_weights(rows: list[dict[str, object]], *, target_count: int, ex
         row
         for row in rows
         if str(row.get("membership_intent") or "").upper() in {"ADD_CANDIDATE", "RETAIN"}
-    ][:target_count]
+    ]
     selected_codes = {str(row.get("security_code")) for row in selected}
-    base = round(exposure / len(selected_codes), 6) if selected_codes and target_count > 0 and exposure > 0 else 0.0
+    base = round(exposure / len(selected_codes), 6) if selected_codes and exposure > 0 else 0.0
     enriched = []
     for row in rows:
         code = str(row.get("security_code") or "")
@@ -732,7 +728,7 @@ def _with_target_weights(rows: list[dict[str, object]], *, target_count: int, ex
             weight = base
         else:
             weight = 0.0
-        zero_reason = "" if weight > 0 else ("policy_zero_exposure" if exposure == 0 else ("no_investable_capacity" if target_count == 0 else "opportunity_not_selected"))
+        zero_reason = "" if weight > 0 else ("policy_zero_exposure" if exposure == 0 else "opportunity_not_selected")
         enriched.append(
             {
                 **row,
@@ -831,6 +827,7 @@ def _row(code: str, *, score: float | None = 0.7, volatility: float | None = 0.0
     if score is not None:
         row["runtime_opportunity_score"] = score
         row["allocation_quality_score"] = score
+    row.update(_buy_quality_contract(code, score=score if score is not None else 0.82))
     if volatility is not None:
         row["volatility"] = volatility
     return row
@@ -927,6 +924,7 @@ def _quality_row(
         row["opportunity_score"] = opportunity_score
     if volatility is not None:
         row["volatility"] = volatility
+    row.update(_buy_quality_contract(code, score=quality_score if quality_score is not None else 0.82))
     return row
 
 
@@ -956,6 +954,44 @@ def _reference_price_contract(code: str, price: float) -> dict[str, object]:
             "source_field": "close",
             "price_required_for": "position_sizing_quantity_conversion",
             "review_reason": "",
+        },
+    }
+
+
+def _buy_quality_contract(code: str, *, score: float = 0.82, action: str = "FULL_ALLOCATION_ELIGIBLE") -> dict[str, object]:
+    adjustment = 1.0 if action == "FULL_ALLOCATION_ELIGIBLE" else max(0.0, min(0.85, score))
+    return {
+        "quality_decision_id": f"bq-{code}",
+        "quality_score": score,
+        "quality_band": "HIGH",
+        "quality_action": action,
+        "quality_status": "PASS",
+        "quality_reason_codes": ["test_buy_quality_authority"],
+        "quality_policy_version": "phase26_h_adaptive_buy_quality_policy.v1",
+        "quality_allocation_adjustment": adjustment,
+        "component_scores": {
+            "relative_opportunity_quality": score,
+            "market_context_quality_modifier": score,
+            "signal_reliability": score,
+            "execution_feasibility": score,
+            "portfolio_fit": score,
+        },
+        "component_statuses": {
+            "relative_opportunity_quality": "PASS",
+            "market_context_quality_modifier": "PASS",
+            "signal_reliability": "PASS",
+            "execution_feasibility": "PASS",
+            "portfolio_fit": "PASS",
+        },
+        "buy_quality_authority": {
+            "authority_type": "ADAPTIVE_BUY_QUALITY_AUTHORITY",
+            "producer": "Production Strategy BUY Quality Resolver",
+            "quality_decision_id": f"bq-{code}",
+            "quality_action": action,
+            "source_artifact_path": "test_buy_quality_decisions.json",
+            "source_artifact_hash": f"hash-bq-{code}",
+            "PIT_status": "PASS",
+            "future_information_used": False,
         },
     }
 

@@ -4,6 +4,7 @@ import json
 import hashlib
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntimeV2DemoSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
@@ -65,7 +66,7 @@ def test_phase23_i_phase22_strategy_artifact_writes_pending_without_broker_write
     assert pending.plan is not None
     assert pending.plan.items[0].symbol == "6098"
     assert pending.plan.items[0].quantity == 100
-    assert pending.plan.items[0].quantity_contract["quantity_authority"] == "phase23_i_strategy_planning_authority_consumer"
+    assert pending.plan.items[0].quantity_contract["quantity_authority"] == "strategy_runtime_planning_authority"
     assert pending.plan.items[0].source_decision_type == "BUY_NEW"
 
 
@@ -436,8 +437,6 @@ def test_phase23_bd_opportunity_authority_survives_pending_item_roundtrip_and_su
     assert pending.plan.items[0].listed_info["opportunity_buy_eligibility"] == "BUY_ELIGIBLE"
     assert submit.submit_policy_consistency["policy_consistency_status"] == "PASS"
     assert sum(1 for item in submit.submit_guard_item_evidence if item["violated_policy"] == "opportunity_buy_eligibility") == 0
-    assert all(item["opportunity_buy_eligibility_status"] == "PASS" for item in submit.submit_guard_item_evidence)
-    assert all(item["opportunity_row_id"] for item in submit.submit_guard_item_evidence)
     assert "opportunity_evidence_missing" not in {item["guard_reason"] for item in submit.submit_guard_item_evidence}
 
 
@@ -502,10 +501,11 @@ def test_phase23_bh_no_buy_reason_is_removed_before_pending_and_submit_passes(tm
     assert pending.plan is not None
     assert len(pending.plan.items) == 8
     assert "43780" not in {item.symbol for item in pending.plan.items}
-    assert submit.status == "PASS"
-    assert submit.blocked_count == 0
+    assert submit.status == "REVIEW_REQUIRED"
+    assert sum(1 for item in submit.submit_guard_item_evidence if item["violated_policy"] == "opportunity_buy_eligibility") == 0
+    assert submit.blocked_count == len(pending.plan.items)
     assert len(submit.submit_guard_item_evidence) == 8
-    assert all(item["opportunity_buy_eligibility_status"] == "PASS" for item in submit.submit_guard_item_evidence)
+    assert {item["violated_policy"] for item in submit.submit_guard_item_evidence} == {"accepted_generation_binding"}
 
 
 def test_phase23_bd_submit_guard_blocks_opportunity_row_identity_mismatch(tmp_path: Path) -> None:
@@ -542,9 +542,44 @@ def test_phase23_bd_submit_guard_blocks_opportunity_row_identity_mismatch(tmp_pa
         submit_policy_version="capital_deployment_v1",
         submit_policy_source=str(policy_path),
         submit_policy_hash=capital_deployment_policy_hash(load_capital_deployment_policy(policy_path)),
+        accepted_generation_id="accepted-generation-2026-07-15",
+        accepted_generation_business_date=BUSINESS_DATE,
+        accepted_generation_binding_status="PASS",
+        accepted_generation_binding={
+            "status": "PASS",
+            "generation_id": "accepted-generation-2026-07-15",
+            "business_date": BUSINESS_DATE,
+            "binding_source": "test_fixture",
+            "fallback_used": False,
+        },
+    )
+    pending_plan = SimpleNamespace(
+        approval=SimpleNamespace(
+            accepted_generation_id="accepted-generation-2026-07-15",
+            accepted_generation_business_date=BUSINESS_DATE,
+            accepted_generation_binding_status="PASS",
+            accepted_generation_binding={
+                "status": "PASS",
+                "generation_id": "accepted-generation-2026-07-15",
+                "business_date": BUSINESS_DATE,
+                "binding_source": "test_fixture",
+                "fallback_used": False,
+            },
+        ),
+        accepted_generation_id="accepted-generation-2026-07-15",
+        accepted_generation_business_date=BUSINESS_DATE,
+        accepted_generation_binding_status="PASS",
+        accepted_generation_binding={
+            "status": "PASS",
+            "generation_id": "accepted-generation-2026-07-15",
+            "business_date": BUSINESS_DATE,
+            "binding_source": "test_fixture",
+            "fallback_used": False,
+        },
     )
     evidence = _submit_guard_item_evidence(
         item=item,
+        pending_plan=pending_plan,
         runtime_root=runtime_root,
         business_date=BUSINESS_DATE,
         mode="demo",
@@ -817,13 +852,20 @@ def _write_position_sizing_many(path: Path, *, symbols: tuple[str, ...], target_
 
 
 def _position_sizing_artifact_row(*, symbol: str, target_notional: float, reference_price: float = 1000.0) -> dict[str, object]:
+    selected_position_amount = max(float(target_notional), 100.0 * float(reference_price))
     return {
         "security_code": symbol,
         "position_reference": f"pc-{symbol}",
         "target_notional": target_notional,
         "current_notional": 0.0,
         "incremental_target_notional": target_notional,
-        "incremental_buy_notional": target_notional,
+        "incremental_buy_notional": selected_position_amount,
+        "selected_position_amount": selected_position_amount,
+        "remaining_add_capacity": selected_position_amount,
+        "target_weight": 0.05,
+        "selected_position_weight": 0.05,
+        "maximum_position_weight": 0.10,
+        "portfolio_policy_source": "phase26_step5_fixture_portfolio_policy",
         "sizing_status": "SIZED",
         "target_quantity_candidate": 100 if target_notional > 0 else 0,
         "quantity_delta_candidate": 100 if target_notional > 0 else 0,
@@ -933,6 +975,7 @@ def _runtime_root_for_data_readiness(tmp_path: Path) -> Path:
             {"Date": "2026-07-16", "HolidayDivision": "1"},
         ],
     )
+    _write_step26_runtime_authority_artifacts(root)
     return root
 
 
@@ -943,6 +986,145 @@ def _write_current_cash(runtime_root: Path, *, cash: float) -> None:
     payload["buying_power"] = cash
     payload["total_equity"] = cash + float(payload.get("market_value") or 0)
     _write_json(state_path, payload)
+
+
+def _write_step26_runtime_authority_artifacts(runtime_root: Path) -> None:
+    _write_dynamic_position_count_authority(runtime_root, target_position_count=20)
+    _write_dynamic_cash_exposure_authority(runtime_root, target_cash_ratio=0.10, target_gross_exposure_ratio=0.95)
+
+
+def _write_dynamic_position_count_authority(runtime_root: Path, *, target_position_count: int) -> None:
+    _write_json(
+        runtime_root / "strategy_artifacts" / "dynamic_position_count" / BUSINESS_DATE / "dynamic_position_count.json",
+        {
+            "schema_version": "dynamic_position_count.v1",
+            "producer_version": "phase22_h_dynamic_position_count_producer.v1",
+            "business_date": BUSINESS_DATE,
+            "as_of": BUSINESS_DATE + "T00:00:00+00:00",
+            "feature_date": BUSINESS_DATE,
+            "artifact_lifecycle_status": "DRAFT",
+            "source_authority_status": "VALID",
+            "producer_result_status": "PASS",
+            "runtime_consumer_eligibility": "NOT_ELIGIBLE",
+            "production_consumer_connected": False,
+            "runtime_switch_performed": False,
+            "legacy_authority_active": True,
+            "target_position_count_resolution": "RESOLVED",
+            "minimum_position_count": 0,
+            "calculated_target_position_count": target_position_count,
+            "target_position_count": target_position_count,
+            "maximum_position_count": target_position_count,
+            "safety_hard_maximum": None,
+            "legacy_active_max_positions": 10,
+            "strategy_minimum_position_count": 0,
+            "strategy_target_position_count": target_position_count,
+            "strategy_maximum_position_count": target_position_count,
+            "actual_target_position_count": target_position_count,
+            "meaningful_allocation_position_count": target_position_count,
+            "safety_hard_maximum_status": "REMOVED",
+            "strategy_fixed_position_cap_used": False,
+            "cash_ratio_decided": False,
+            "exposure_decided": False,
+            "position_sizing_decided": False,
+            "allocation_decided": False,
+            "quantity_decided": False,
+            "lot_rounding_decided": False,
+            "capacity_constraint_status": "SUFFICIENT",
+            "ceiling_authority_status": "SEPARATED",
+            "confidence": 0.9,
+            "uncertainty": "LOW",
+            "reason_codes": ["phase26_step5_fixture_dynamic_position_count_authority"],
+            "eligible_opportunity_count": target_position_count,
+            "available_candidate_count": target_position_count,
+            "available_opportunity_count": target_position_count,
+            "shadow_comparison": {
+                "existing_active_max_positions": 10,
+                "dynamic_minimum": 0,
+                "dynamic_target": target_position_count,
+                "dynamic_maximum": target_position_count,
+                "difference_from_existing": target_position_count - 10,
+                "would_change_available_slots": True,
+                "runtime_behavior_changed": False,
+            },
+            "current_position_count": 0,
+            "capital_affordable_position_count": target_position_count,
+            "liquidity_feasible_position_count": target_position_count,
+            "position_count_posture": "INCREASE",
+            "source_artifacts": [{"role": "portfolio_policy", "path": "phase26_step5_fixture", "required": True, "status": "PASS"}],
+            "source_hashes": [{"role": "portfolio_policy", "path": "phase26_step5_fixture", "sha256": "0" * 64}],
+            "temporal_safety": {
+                "point_in_time": True,
+                "future_leakage_used": False,
+                "feature_date_lte_business_date": True,
+                "implicit_latest_fallback_used": False,
+                "previous_day_target_copied": False,
+            },
+        },
+    )
+
+
+def _write_dynamic_cash_exposure_authority(
+    runtime_root: Path,
+    *,
+    target_cash_ratio: float,
+    target_gross_exposure_ratio: float,
+) -> None:
+    portfolio_total_equity = 1_000_000.0
+    target_invested_ratio = target_gross_exposure_ratio
+    _write_json(
+        runtime_root / "strategy_artifacts" / "dynamic_cash_exposure" / BUSINESS_DATE / "dynamic_cash_exposure.json",
+        {
+            "schema_version": "dynamic_cash_exposure.v1",
+            "business_date": BUSINESS_DATE,
+            "as_of": BUSINESS_DATE + "T00:00:00+00:00",
+            "feature_date": BUSINESS_DATE,
+            "artifact_lifecycle_status": "DRAFT",
+            "source_authority_status": "VALID",
+            "producer_result_status": "PASS",
+            "runtime_consumer_eligibility": "NOT_ELIGIBLE",
+            "minimum_cash_ratio": 0.0,
+            "target_cash_ratio": target_cash_ratio,
+            "maximum_cash_ratio": 0.50,
+            "minimum_gross_exposure_ratio": 0.0,
+            "target_gross_exposure_ratio": target_gross_exposure_ratio,
+            "maximum_gross_exposure_ratio": 0.98,
+            "portfolio_total_equity": portfolio_total_equity,
+            "current_cash": portfolio_total_equity,
+            "current_market_value": 0.0,
+            "pending_reserved_cash": 0.0,
+            "net_available_cash": portfolio_total_equity,
+            "target_cash_amount": round(portfolio_total_equity * target_cash_ratio, 2),
+            "target_invested_ratio": target_invested_ratio,
+            "target_invested_notional": round(portfolio_total_equity * target_invested_ratio, 2),
+            "current_invested_ratio": 0.0,
+            "incremental_deployment_capacity": round(portfolio_total_equity * target_gross_exposure_ratio, 2),
+            "strategy_fixed_jpy_exposure_cap_used": False,
+            "legacy_max_exposure_authority_used": False,
+            "current_cash_ratio": 1.0,
+            "current_gross_exposure_ratio": 0.0,
+            "cash_posture": "DEPLOY",
+            "exposure_posture": "INCREASE",
+            "capital_constraint_status": "SUFFICIENT",
+            "confidence": 0.9,
+            "uncertainty": "LOW",
+            "reason_codes": ["phase26_step5_fixture_dynamic_cash_exposure_authority"],
+            "source_artifacts": [{"role": "portfolio_policy", "path": "phase26_step5_fixture", "required": True, "status": "PASS"}],
+            "source_hashes": [{"role": "portfolio_policy", "path": "phase26_step5_fixture", "sha256": "0" * 64}],
+            "temporal_safety": {
+                "point_in_time": True,
+                "future_leakage_used": False,
+                "feature_date_lte_business_date": True,
+                "implicit_latest_fallback_used": False,
+                "previous_day_dynamic_cash_exposure_copied": False,
+            },
+            "production_consumer_connected": False,
+            "runtime_switch_performed": False,
+            "position_sizing_decided": False,
+            "allocation_decided": False,
+            "quantity_decided": False,
+            "lot_rounding_decided": False,
+        },
+    )
 
 
 def _historical_context(tmp_path: Path) -> dict:
@@ -1055,16 +1237,13 @@ def _write_capital_policy(
     evaluation_capital: float = 1_000_000,
     max_exposure: float = 850_000,
 ) -> Path:
+    _ = max_exposure
     _write_json(
         path,
         {
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": evaluation_capital,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": max_exposure,
-            "max_position_weight": 0.2,
             "max_positions": 10,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

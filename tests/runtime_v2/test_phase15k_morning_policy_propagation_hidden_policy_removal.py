@@ -7,6 +7,7 @@ import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
+from tests.runtime_v2.test_phase17_k_runtime_test_runner import _write_accepted_generation_authority
 
 
 class CandidateFixtureModel:
@@ -31,16 +32,14 @@ def test_phase15k_morning_uses_policy_max_positions_not_hidden_five(tmp_path):
     materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json", max_positions=6)
 
-    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
+    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 20
 
-    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
     manifest = _latest_manifest(tmp_path / ".runtime", "2026-07-09")
-    morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
+    policy_stage = next(stage for stage in manifest["stages"] if stage["name"] == "capital_deployment_policy")
 
-    assert len(pending["items"]) == 6
-    assert morning_stage["details"]["morning_policy_max_positions"] == 6
-    assert morning_stage["details"]["morning_order_count_source"] == "capital_deployment_policy.max_positions"
-    assert morning_stage["details"]["morning_hidden_cap_removed"] is True
+    assert policy_stage["status"] == "REVIEW_REQUIRED"
+    assert "legacy cash/exposure policy fields unsupported" in policy_stage["details"]["policy_validation_status"]
+    assert policy_stage["details"]["legacy_position_count_config_used"] is False
 
 
 def test_phase15k_morning_per_order_budget_not_capped_at_100k(tmp_path):
@@ -57,19 +56,17 @@ def test_phase15k_morning_per_order_budget_not_capped_at_100k(tmp_path):
         target_investment_ratio=1.0,
         cash_buffer=0.0,
         max_exposure=1_000_000,
-        max_position_weight=0.2,
     )
 
-    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
+    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 20
 
-    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
     manifest = _latest_manifest(tmp_path / ".runtime", "2026-07-09")
-    morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
+    policy_stage = next(stage for stage in manifest["stages"] if stage["name"] == "capital_deployment_policy")
 
-    assert pending["items"]
-    assert max(item["estimated_amount"] for item in pending["items"]) == 200_000
-    assert all(item["estimated_amount"] > 100_000 for item in pending["items"])
-    assert morning_stage["details"]["morning_per_order_budget_source"] == "capital_deployment_policy_derived"
+    assert policy_stage["status"] == "REVIEW_REQUIRED"
+    assert "target_investment_ratio,cash_buffer,max_exposure" in policy_stage["details"]["policy_validation_status"]
+    assert policy_stage["details"]["legacy_cash_config_used"] is False
+    assert policy_stage["details"]["legacy_exposure_config_used"] is False
 
 
 def test_phase15k_pending_and_approval_preserve_policy_context(tmp_path):
@@ -82,22 +79,17 @@ def test_phase15k_pending_and_approval_preserve_policy_context(tmp_path):
     materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json", max_positions=2)
 
-    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
+    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 20
 
     pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
-    approval = _load_json(runtime_root / "runtime_state" / "morning_pipeline" / "2026-07-09" / "approval_artifact.json")
+    manifest = _latest_manifest(tmp_path / ".runtime", "2026-07-09")
+    policy_stage = next(stage for stage in manifest["stages"] if stage["name"] == "capital_deployment_policy")
 
-    item = pending["items"][0]
-    assert pending["policy_version"] == "capital_deployment_v1"
-    assert pending["policy_source"] == str(policy_path)
-    assert pending["pending_policy_hash"].startswith("sha256:")
-    assert item["policy_version"] == "capital_deployment_v1"
-    assert item["policy_source"] == str(policy_path)
-    assert item["capital_allocation_amount"] == item["estimated_amount"]
-    assert item["sizing_policy_reason"]
-    assert approval["policy_version"] == "capital_deployment_v1"
-    assert approval["policy_source"] == str(policy_path)
-    assert approval["pending_policy_hash"] == pending["pending_policy_hash"]
+    assert pending["items"] == []
+    assert policy_stage["status"] == "REVIEW_REQUIRED"
+    assert policy_stage["details"]["capital_deployment_policy_loaded"] is False
+    assert policy_stage["details"]["legacy_cash_config_used"] is False
+    assert policy_stage["details"]["legacy_exposure_config_used"] is False
 
 
 def test_phase15k_morning_mainline_has_no_hidden_policy_literals():
@@ -184,6 +176,7 @@ def _write_current(root: Path) -> Path:
     _write_json(root / "runtime_state" / "current_state.json", {"state": "CURRENT_STATE_LOADED", "environment": "demo"})
     _write_safety_decision(root)
     _write_market_evidence(root)
+    _write_accepted_generation_authority(root, business_date="2026-07-09")
     for name in ("orders", "executions", "positions", "cash", "events"):
         _write_jsonl(root / "persistent_ledger" / f"{name}.jsonl", [])
     return root
@@ -273,7 +266,6 @@ def _write_policy(
     target_investment_ratio: float = 0.85,
     cash_buffer: float = 0.05,
     max_exposure: float = 850_000,
-    max_position_weight: float = 0.2,
 ) -> Path:
     _write_json(
         path,
@@ -284,7 +276,6 @@ def _write_policy(
             "target_investment_ratio": target_investment_ratio,
             "cash_buffer": cash_buffer,
             "max_exposure": max_exposure,
-            "max_position_weight": max_position_weight,
             "max_positions": max_positions,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

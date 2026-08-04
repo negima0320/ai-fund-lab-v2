@@ -12,14 +12,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ai_fund_lab_v2.config import load_settings
+from ai_fund_lab_v2.data_store import validate_records
 from ai_fund_lab_v2.data_sources.jquants.client import JQUANTS_DAILY_QUOTES_ENDPOINT, JQuantsClient, JQuantsClientError
 from ai_fund_lab_v2.paper_trading.market_data_refresh import JQuantsAPIFetcher, run_market_data_refresh
-from ai_fund_lab_v2.runtime.paths import RuntimePaths
 from ai_fund_lab_v2.runtime_v2.market_data_bootstrap import (
     REQUIRED_LOOKBACK_BUSINESS_DAYS,
     compare_normalized_schemas,
     parquet_inventory,
 )
+from ai_fund_lab_v2.runtime_v2.storage.runtime_paths import RuntimePaths
 
 
 ACQUISITION_SCHEMA_VERSION = "phase20_bc_jquants_market_data_acquisition.v1"
@@ -941,15 +942,23 @@ def _validate_raw_records(records: list[dict[str, Any]], *, start_date: str, end
     for row in records:
         if not isinstance(row, dict):
             raise AcquisitionError("raw_record_not_object")
-        missing = [field for field in REQUIRED_RAW_FIELDS if row.get(field) in (None, "")]
-        if missing:
-            raise AcquisitionError(f"raw_required_fields_missing:{','.join(missing)}")
         day = _normalize_date(str(row.get("Date") or ""))
         if day < start_date or day > end_date:
             raise AcquisitionError("raw_date_outside_requested_chunk")
         suspicious = [column for column in row if column.lower() in TRAINING_ONLY_COLUMNS or column.lower().startswith(TRAINING_ONLY_PREFIXES)]
         if suspicious:
             raise AcquisitionError("training_only_columns_detected")
+    validation = validate_records("daily_quotes", records)
+    if validation.status == "ERROR":
+        summary = validation.row_classification_summary
+        reasons = ",".join(validation.messages) or "daily_quotes_raw_schema_error"
+        if summary:
+            reasons = (
+                f"{reasons}:partial={summary.get('partial_ohlcv_corruption_count', 0)}"
+                f":invalid_numeric={summary.get('invalid_numeric_row_count', 0)}"
+                f":schema={summary.get('schema_corruption_count', 0)}"
+            )
+        raise AcquisitionError(f"daily_quotes_raw_validation_error:{reasons}")
 
 
 def _contract_evidence(*, paths: AcquisitionPaths) -> dict[str, dict[str, Any]]:

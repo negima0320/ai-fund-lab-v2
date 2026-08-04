@@ -49,13 +49,21 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
         profile_id="historical-smoke",
         business_date="2022-09-15",
         feature_date="2022-09-15",
+        decision_timing="MORNING_FORMAL_PLANNING_AUTHORITY",
+        authority_role="FORMAL_PLANNING_AUTHORITY_INPUT",
+        materialization_role="IMMUTABLE_MORNING_PLANNING_SNAPSHOT",
     )
 
-    assert summary["artifact_count"] == 8
+    assert summary["artifact_count"] == 9
     assert summary["runtime_mutation_performed"] is False
     assert summary["broker_connection_performed"] is False
     assert summary["broker_write_performed"] is False
     assert summary["active_runtime_consumer_eligibility"] == "NO"
+    assert summary["authority_role"] == "FORMAL_PLANNING_AUTHORITY_INPUT"
+    assert summary["materialization_role"] == "IMMUTABLE_MORNING_PLANNING_SNAPSHOT"
+    assert summary["decision_timing"] == "MORNING_FORMAL_PLANNING_AUTHORITY"
+    assert summary["formal_planning_snapshot"] is True
+    assert summary["post_runtime_shadow"] is False
     strategy_dir = run_dir / "daily" / "2022-09-15" / "strategy"
     assert (strategy_dir / "input_manifest.json").is_file()
     assert (strategy_dir / "strategy_decision_trace.json").is_file()
@@ -67,6 +75,33 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
     validation = validate_run_strategy_shadow(run_dir=run_dir, business_date="2022-09-15")
     assert validation["structural_validity"] == "PASS"
     assert validation["policy_acceptance"] == "NOT_REQUESTED"
+
+
+def test_phase26_hr2_post_runtime_shadow_uses_non_authoritative_subdir(tmp_path: Path) -> None:
+    runtime_root = Path(".runtime")
+    run_dir = tmp_path / "runs" / "phase26hr2-unit"
+    run_dir.mkdir(parents=True)
+
+    summary = generate_strategy_shadow_for_day(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        run_id="phase26hr2-unit",
+        profile_id="historical-smoke",
+        business_date="2022-09-15",
+        feature_date="2022-09-15",
+        artifact_subdir="strategy_eod_shadow",
+        decision_timing="EOD_POST_RUNTIME_OBSERVABILITY_SHADOW",
+        authority_role="POST_RUNTIME_OBSERVABILITY_SHADOW",
+        materialization_role="LATEST_RUNTIME_STATE_MATERIALIZATION",
+    )
+
+    assert summary["authority_role"] == "POST_RUNTIME_OBSERVABILITY_SHADOW"
+    assert summary["materialization_role"] == "LATEST_RUNTIME_STATE_MATERIALIZATION"
+    assert summary["decision_timing"] == "EOD_POST_RUNTIME_OBSERVABILITY_SHADOW"
+    assert summary["formal_planning_snapshot"] is False
+    assert summary["post_runtime_shadow"] is True
+    assert (run_dir / "daily" / "2022-09-15" / "strategy_eod_shadow" / "strategy_shadow_summary.json").is_file()
+    assert not (run_dir / "daily" / "2022-09-15" / "strategy" / "strategy_shadow_summary.json").exists()
 
 
 def test_phase23_e_strategy_shadow_adapts_runtime_current_rows_for_pm_input() -> None:
@@ -157,7 +192,7 @@ def test_phase23_bf_opportunity_path_resolves_as_optional_input(tmp_path: Path) 
                 "schema_version": "runtime_v2_opportunity_rankings_v1",
                 "business_date": "2026-07-06",
                 "feature_date": "2026-07-06",
-                "rankings": [{"symbol": "7203", "rank": 1, "expected_edge_score": 0.7}],
+                "rankings": [{"symbol": "7203", "opportunity_buy_rank": 1, "expected_edge_score": 0.7}],
             }
         )
         + "\n",
@@ -182,9 +217,19 @@ def test_phase24_d_opportunity_summary_counts_buy_eligible_only_from_canonical_r
                 "business_date": "2026-07-06",
                 "feature_date": "2026-07-06",
                 "rankings": [
-                    {"symbol": "7203", "rank": 1, "expected_edge_score": 0.7, "no_buy_reason": ""},
-                    {"symbol": "6758", "rank": 2, "expected_edge_score": -0.1, "no_buy_reason": "non_positive_expected_edge_score"},
-                    {"symbol": "9432", "rank": 3, "expected_edge_score": 0.2, "no_buy_reason": "high_downside_risk_score"},
+                    {"symbol": "7203", "opportunity_buy_rank": 1, "expected_edge_score": 0.7, "no_buy_reason": ""},
+                    {
+                        "symbol": "6758",
+                        "opportunity_buy_rank": 2,
+                        "expected_edge_score": -0.1,
+                        "no_buy_reason": "non_positive_expected_edge_score",
+                    },
+                    {
+                        "symbol": "9432",
+                        "opportunity_buy_rank": 3,
+                        "expected_edge_score": 0.2,
+                        "no_buy_reason": "high_downside_risk_score",
+                    },
                 ],
             }
         )

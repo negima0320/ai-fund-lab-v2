@@ -477,6 +477,9 @@ def _write_market_data(root: Path, *, symbol: str = SYMBOL) -> None:
 
 def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = None, symbol: str = SYMBOL):
     policy = load_capital_deployment_policy(policy_path) if policy_path else None
+    quantity_contract = _authority_quantity_contract(symbol=symbol, policy=policy)
+    binding = _accepted_generation_binding(environment=environment)
+    is_buy = side.upper() == "BUY"
     item = PendingOrderItem(
         pending_item_id="item-1",
         symbol=symbol,
@@ -510,10 +513,6 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         submit_policy_source=policy.policy_source if policy else "",
         submit_policy_hash=capital_deployment_policy_hash(policy) if policy else "",
         evaluation_capital=policy.evaluation_capital if policy else None,
-        target_investment_ratio=policy.target_investment_ratio if policy else None,
-        cash_buffer=policy.cash_buffer if policy else None,
-        max_exposure=policy.max_exposure if policy else None,
-        max_position_weight=policy.max_position_weight if policy else None,
         max_positions=policy.max_positions if policy else None,
         max_buy_order_amount=policy.max_buy_order_amount if policy else None,
         max_sell_liquidation_amount=policy.max_sell_liquidation_amount if policy else None,
@@ -521,6 +520,11 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         buy_notional_policy=policy.buy_notional_policy if policy else "",
         sell_liquidation_policy=policy.sell_liquidation_policy if policy else "",
         manual_review_threshold=asdict(policy.manual_review_threshold) if policy else None,
+        accepted_generation_id=binding["accepted_generation_id"] if is_buy else "",
+        accepted_generation_business_date=binding["accepted_generation_business_date"] if is_buy else "",
+        accepted_generation_binding_status="PASS" if is_buy else "NOT_REQUIRED",
+        accepted_generation_binding=binding if is_buy else None,
+        quantity_contract=quantity_contract,
         safety_decision_id="safety-phase17-g",
         safety_policy_version="safety_policy_v1",
         safety_decision="ALLOW",
@@ -569,6 +573,57 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
     return link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
 
 
+def _authority_quantity_contract(*, symbol: str, policy) -> dict:
+    if policy is None:
+        return {}
+    return {
+        "position_count_authority": {
+            "selected_dynamic_position_count": policy.max_positions,
+            "target_position_count": policy.max_positions,
+            "safety_hard_maximum": policy.max_positions,
+        },
+        "cash_exposure_authority": {
+            "selected_dynamic_cash_ratio": 0.05,
+            "target_cash_ratio": 0.05,
+            "selected_dynamic_exposure_ratio": 0.85,
+            "target_gross_exposure_ratio": 0.85,
+            "exposure_safety_maximum": 0.85,
+        },
+        "position_sizing_authority": {
+            "positions": [
+                {
+                    "symbol": symbol,
+                    "target_weight": 0.20,
+                    "target_notional": 300_000,
+                    "incremental_buy_notional": 300_000,
+                    "maximum_position_weight": 1.0,
+                }
+            ],
+            "effective_maximum_position_weight": 1.0,
+        },
+    }
+
+
+def _accepted_generation_binding(*, environment: str) -> dict:
+    return {
+        "schema_version": "phase26_step8_accepted_generation_binding.v1",
+        "consumer": "phase17_g_submit_fixture",
+        "mode": environment,
+        "requested_business_date": BUSINESS_DATE,
+        "selected_business_date": BUSINESS_DATE,
+        "accepted_generation_id": "phase17-g-fixture-generation",
+        "accepted_generation_business_date": BUSINESS_DATE,
+        "generation_binding_status": "PASS",
+        "temporal_binding_status": "PASS",
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
+        "legacy_component_fallback_used": False,
+        "promotion_candidate_fallback_used": False,
+        "manual_model_path_used": False,
+    }
+
+
 def _command_from_pending(pending):
     return run_submit_preflight(
         pending_plan=pending,
@@ -605,10 +660,6 @@ def _write_policy(path: Path) -> None:
         "policy_version": "capital_deployment_v1",
         "policy_source": str(path),
         "evaluation_capital": 1_000_000,
-        "target_investment_ratio": 0.85,
-        "cash_buffer": 0.05,
-        "max_exposure": 850_000,
-        "max_position_weight": 0.5,
         "max_positions": 5,
         "min_order_amount": 0,
         "max_buy_order_amount": None,

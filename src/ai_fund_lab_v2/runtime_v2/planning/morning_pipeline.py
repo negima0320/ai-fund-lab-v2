@@ -55,6 +55,18 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     safety_manifest_fields,
 )
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import (
+    CashExposureAuthority,
+    resolve_cash_exposure_authority,
+)
+from ai_fund_lab_v2.runtime_v2.position_count_authority import (
+    PositionCountAuthority,
+    resolve_position_count_authority,
+)
+from ai_fund_lab_v2.runtime_v2.position_sizing_authority import (
+    PositionSizingAuthority,
+    resolve_position_sizing_authority,
+)
 from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity
 
 
@@ -110,6 +122,7 @@ class MorningPipelineResult:
     price_source_path: str = ""
     price_missing_count: int = 0
     budget_excluded_count: int = 0
+    position_sizing_review_count: int = 0
     buy_eligibility_status: str = ""
     buy_eligibility_authority_source: str = ""
     buy_eligibility_authority_path: str = ""
@@ -125,11 +138,16 @@ class MorningPipelineResult:
     morning_policy_source: str = ""
     morning_policy_version: str = ""
     morning_policy_sizing_method: str = ""
-    morning_policy_target_investment_ratio: float | None = None
-    morning_policy_cash_buffer: float | None = None
-    morning_policy_max_exposure: float | None = None
-    morning_policy_max_position_weight: float | None = None
+    morning_policy_selected_dynamic_cash_ratio: float | None = None
+    morning_policy_selected_dynamic_exposure_ratio: float | None = None
+    morning_policy_selected_runtime_exposure_limit: float | None = None
+    morning_position_sizing_authority_source: str = ""
     morning_policy_max_positions: int | None = None
+    morning_selected_dynamic_position_count: int | None = None
+    morning_position_count_authority_winner: str = ""
+    morning_position_count_binding_constraint: str = ""
+    morning_available_position_slots: int | None = None
+    morning_position_count_fallback_used: bool = False
     morning_policy_max_buy_order_amount: float | None = None
     morning_policy_min_order_amount: float | None = None
     morning_order_count_source: str = ""
@@ -405,35 +423,46 @@ def run_morning_ai_planning_pending_pipeline(
             policy_context=_empty_morning_policy_context(operator_max_orders=max_orders),
             safety_decision=runtime_safety_decision,
         )
-    evaluation_capital = policy.evaluation_capital
     available_cash = _available_cash(asset_state, capability_default=capability.default_evaluation_capital)
     current_exposure = _current_exposure(asset_state)
+    active_deployment_capital = _active_deployment_capital(asset_state, current_exposure=current_exposure)
     current_position_symbols = _current_position_symbols(asset_state)
-    effective_order_limit = _effective_order_limit(
-        policy=policy,
+    position_count_authority = resolve_position_count_authority(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        runtime_mode=mode,
         current_position_count=len(current_position_symbols),
-        operator_max_orders=max_orders,
+        configured_legacy_max_positions=policy.max_positions,
+        operator_order_limit=max_orders,
+        consumer="morning_planning_buy_admission",
     )
+    cash_exposure_authority = resolve_cash_exposure_authority(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        runtime_mode=mode,
+        current_total_equity=active_deployment_capital,
+        active_deployment_capital=active_deployment_capital,
+        current_cash=available_cash,
+        current_market_value=current_exposure,
+        consumer="morning_planning_cash_exposure",
+    )
+    effective_order_limit = position_count_authority.effective_order_limit
     planning_budget = _policy_planning_budget(
-        policy=policy,
-        available_cash=available_cash,
-        current_exposure=current_exposure,
-    )
-    per_order_budget = _policy_per_order_budget(
-        policy=policy,
-        planning_budget=planning_budget,
-        effective_order_limit=effective_order_limit,
+        cash_exposure_authority=cash_exposure_authority,
     )
     policy_context = _morning_policy_context(
         policy,
         operator_max_orders=max_orders,
         effective_order_limit=effective_order_limit,
         planning_budget=planning_budget,
-        per_order_budget=per_order_budget,
         current_exposure=current_exposure,
         available_cash=available_cash,
+        active_deployment_capital=active_deployment_capital,
+        capital_source=_capital_source(asset_state),
+        position_count_authority=position_count_authority,
+        cash_exposure_authority=cash_exposure_authority,
     )
-    if evaluation_capital is None:
+    if active_deployment_capital is None:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
             environment=mode,
@@ -442,8 +471,8 @@ def run_morning_ai_planning_pending_pipeline(
             feature_date=resolved_feature_date,
             feature_contract=feature_contract,
             target_session_date=target_session_date,
-            reason="evaluation_capital_missing",
-            evaluation_capital=evaluation_capital,
+            reason="active_deployment_capital_missing",
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -451,7 +480,7 @@ def run_morning_ai_planning_pending_pipeline(
             policy_context=policy_context,
             safety_decision=runtime_safety_decision,
         )
-    if planning_budget <= 0 or effective_order_limit <= 0 or per_order_budget <= 0:
+    if planning_budget <= 0 or effective_order_limit <= 0:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
             environment=mode,
@@ -463,9 +492,8 @@ def run_morning_ai_planning_pending_pipeline(
             reason=_budget_no_signal_reason(
                 planning_budget=planning_budget,
                 effective_order_limit=effective_order_limit,
-                per_order_budget=per_order_budget,
             ),
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -484,7 +512,7 @@ def run_morning_ai_planning_pending_pipeline(
             target_session_date=target_session_date,
             reason=feature_contract.reason,
             status=feature_contract.status,
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -506,7 +534,7 @@ def run_morning_ai_planning_pending_pipeline(
             target_session_date=target_session_date,
             reason="buy_ai_opportunity_artifact_missing",
             status="REVIEW_REQUIRED",
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -526,7 +554,7 @@ def run_morning_ai_planning_pending_pipeline(
             feature_contract=feature_contract,
             target_session_date=target_session_date,
             reason="NO_SIGNAL:opportunity_ai_rankings_empty",
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -552,7 +580,7 @@ def run_morning_ai_planning_pending_pipeline(
             target_session_date=target_session_date,
             reason="reliable_price_source_missing",
             status="REVIEW_REQUIRED",
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -581,6 +609,8 @@ def run_morning_ai_planning_pending_pipeline(
     opportunity_buy_eligibility_filtered_count = 0
     opportunity_buy_eligibility_review_count = 0
     opportunity_buy_eligibility_evidence: list[dict[str, Any]] = []
+    position_sizing_review_count = 0
+    remaining_planning_budget = planning_budget
     for signal in candidate_rows:
         symbol = signal.symbol
         broker_symbol = _broker_symbol(symbol, {})
@@ -620,15 +650,39 @@ def run_morning_ai_planning_pending_pipeline(
             if not buy_eligibility.eligible:
                 buy_eligibility_filtered_count += 1
                 continue
-        quantity = _round_lot_quantity(per_order_budget, price.price)
+        position_sizing_authority = resolve_position_sizing_authority(
+            symbol=symbol,
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            runtime_mode=mode,
+            active_deployment_capital=active_deployment_capital,
+            selected_dynamic_exposure_ratio=cash_exposure_authority.selected_dynamic_exposure_ratio,
+            selected_runtime_exposure_limit=cash_exposure_authority.selected_runtime_exposure_limit,
+            selected_dynamic_position_count=position_count_authority.selected_dynamic_position_count,
+            current_position_market_value=0.0,
+            consumer="morning_planning_position_sizing",
+        )
+        if not position_sizing_authority.passed or position_sizing_authority.selected_position_amount <= 0:
+            position_sizing_review_count += 1
+            budget_excluded_count += 1
+            continue
+        sizing_budget = min(position_sizing_authority.selected_position_amount, remaining_planning_budget)
+        quantity = _round_lot_quantity(sizing_budget, price.price)
+        planned_notional = quantity * price.price
         if quantity <= 0:
             budget_excluded_count += 1
             continue
+        position_sizing_authority = position_sizing_authority.with_lot_adjustment(
+            quantity=quantity,
+            notional=planned_notional,
+        )
         selected_rows.append(
             {
                 "code": symbol,
                 "__price_evidence": price,
                 "__planned_quantity": quantity,
+                "__planned_notional": planned_notional,
+                "__position_sizing_authority": position_sizing_authority,
                 "__ai_signal": signal,
                 "__buy_eligibility": buy_eligibility.to_payload() if buy_eligibility is not None else {},
                 "__opportunity_buy_eligibility": (
@@ -636,8 +690,7 @@ def run_morning_ai_planning_pending_pipeline(
                 ),
             }
         )
-        if len(selected_rows) >= effective_order_limit:
-            break
+        remaining_planning_budget = max(remaining_planning_budget - planned_notional, 0.0)
     if not selected_rows:
         reason = "NO_SIGNAL:no_affordable_candidates_with_reliable_price"
         return _write_no_signal_pending(
@@ -649,7 +702,7 @@ def run_morning_ai_planning_pending_pipeline(
             feature_contract=feature_contract,
             target_session_date=target_session_date,
             reason=reason,
-            evaluation_capital=evaluation_capital,
+            evaluation_capital=policy.evaluation_capital,
             available_cash=available_cash,
             planning_budget=planning_budget,
             current_exposure=current_exposure,
@@ -660,6 +713,7 @@ def run_morning_ai_planning_pending_pipeline(
             price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
             price_missing_count=price_missing_count,
             budget_excluded_count=budget_excluded_count,
+            position_sizing_review_count=position_sizing_review_count,
             existing_position_excluded_count=existing_position_excluded_count,
             buy_eligibility_status="REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
             buy_eligibility_authority_source=(
@@ -685,7 +739,7 @@ def run_morning_ai_planning_pending_pipeline(
         for rank, row in enumerate(selected_rows, start=1)
     )
     allocations = tuple(
-        _allocation(row=row, signal=signal, per_order_budget=per_order_budget, policy_context=policy_context)
+        _allocation(row=row, signal=signal, policy_context=policy_context)
         for row, signal in zip(selected_rows, selected_ai_signals)
     )
     planning_result = build_order_plan(
@@ -834,6 +888,7 @@ def run_morning_ai_planning_pending_pipeline(
         price_source_path=str(_price_source_path(Path(feature_root), resolved_feature_date, mode, environment_capability_context)),
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
+        position_sizing_review_count=position_sizing_review_count,
         buy_eligibility_status="REVIEW_REQUIRED" if buy_eligibility_review_count else "PASS",
         buy_eligibility_authority_source=(
             "morning_candidate_listed_issues_snapshot" if buy_eligibility_authority_path is not None else ""
@@ -900,6 +955,7 @@ def _write_no_signal_pending(
     price_source_path: str = "",
     price_missing_count: int = 0,
     budget_excluded_count: int = 0,
+    position_sizing_review_count: int = 0,
     existing_position_excluded_count: int = 0,
     buy_eligibility_status: str = "",
     buy_eligibility_authority_source: str = "",
@@ -1044,6 +1100,7 @@ def _write_no_signal_pending(
         price_source_path=price_source_path,
         price_missing_count=price_missing_count,
         budget_excluded_count=budget_excluded_count,
+        position_sizing_review_count=position_sizing_review_count,
         buy_eligibility_status=buy_eligibility_status,
         buy_eligibility_authority_source=buy_eligibility_authority_source,
         buy_eligibility_authority_path=buy_eligibility_authority_path,
@@ -1223,17 +1280,22 @@ def _allocation(
     *,
     row: dict[str, Any],
     signal: AIPlanningSignal,
-    per_order_budget: float,
     policy_context: dict[str, Any],
 ) -> CapitalAllocationSignal:
     price = row.get("__price_evidence")
+    position_sizing_authority = row.get("__position_sizing_authority")
+    max_amount = (
+        position_sizing_authority.selected_position_amount
+        if isinstance(position_sizing_authority, PositionSizingAuthority)
+        else 0.0
+    )
     if not isinstance(price, PriceEvidence):
         return CapitalAllocationSignal(
             allocation_id=f"morning-allocation-{signal.symbol}",
             symbol=signal.symbol,
             side=signal.side,
             allocated_amount=0.0,
-            max_amount=per_order_budget,
+            max_amount=max_amount,
             cash_required=0.0,
             reason="reliable_price_source_missing",
             estimated_price=0.0,
@@ -1247,18 +1309,23 @@ def _allocation(
             policy_context=policy_context,
         )
     estimated_price = price.price
-    quantity = _round_lot_quantity(per_order_budget, estimated_price)
-    cash_required = quantity * estimated_price
+    quantity = float(row.get("__planned_quantity") or 0.0)
+    cash_required = float(row.get("__planned_notional") or (quantity * estimated_price))
     if quantity <= 0:
         cash_required = 0.0
+    position_sizing_fields = (
+        position_sizing_authority.to_dict()
+        if isinstance(position_sizing_authority, PositionSizingAuthority)
+        else {}
+    )
     return CapitalAllocationSignal(
         allocation_id=f"morning-allocation-{signal.symbol}",
         symbol=signal.symbol,
         side=signal.side,
         allocated_amount=cash_required,
-        max_amount=per_order_budget,
+        max_amount=max_amount,
         cash_required=cash_required,
-        reason=f"runtime_evaluation_capital_allocation price={estimated_price} source={price.price_source}",
+        reason=f"position_sizing_authority_allocation price={estimated_price} source={price.price_source}",
         estimated_price=estimated_price,
         price_source=price.price_source,
         price_as_of=price.price_as_of,
@@ -1268,64 +1335,52 @@ def _allocation(
         policy_source=str(policy_context.get("policy_source") or ""),
         sizing_policy_reason=str(policy_context.get("sizing_policy_reason") or ""),
         policy_context=policy_context,
+        quantity_contract={
+            "quantity_contract_version": "runtime_v2_morning_buy_position_sizing_v1",
+            "position_count_authority": dict(policy_context.get("position_count_authority") or {}),
+            "cash_exposure_authority": dict(policy_context.get("cash_exposure_authority") or {}),
+            "position_sizing_authority": position_sizing_fields,
+            "strategy_requested_position_count": policy_context.get("strategy_requested_position_count"),
+            "selected_dynamic_position_count": policy_context.get("selected_dynamic_position_count"),
+            "current_position_count": policy_context.get("current_position_count"),
+            "available_position_slots": policy_context.get("available_position_slots"),
+            "position_count_authority_winner": policy_context.get("position_count_authority_winner"),
+            "position_count_binding_constraint": policy_context.get("position_count_binding_constraint"),
+            "legacy_position_count_config_used": policy_context.get("legacy_position_count_config_used"),
+            "position_count_fallback_used": policy_context.get("position_count_fallback_used"),
+            "strategy_requested_cash_ratio": policy_context.get("strategy_requested_cash_ratio"),
+            "selected_dynamic_cash_ratio": policy_context.get("selected_dynamic_cash_ratio"),
+            "strategy_requested_exposure_ratio": policy_context.get("strategy_requested_exposure_ratio"),
+            "selected_dynamic_exposure_ratio": policy_context.get("selected_dynamic_exposure_ratio"),
+            "selected_runtime_exposure_limit": policy_context.get("selected_runtime_exposure_limit"),
+            "cash_exposure_authority_winner": policy_context.get("cash_exposure_authority_winner"),
+            "cash_exposure_binding_constraint": policy_context.get("cash_exposure_binding_constraint"),
+            "legacy_cash_config_used": policy_context.get("legacy_cash_config_used"),
+            "legacy_exposure_config_used": policy_context.get("legacy_exposure_config_used"),
+            "cash_exposure_fallback_used": policy_context.get("cash_exposure_fallback_used"),
+            **position_sizing_fields,
+        },
     )
-
-
-def _effective_order_limit(
-    *,
-    policy: CapitalDeploymentPolicy,
-    current_position_count: int,
-    operator_max_orders: int | None,
-) -> int:
-    remaining_slots = max(policy.max_positions - current_position_count, 0)
-    if operator_max_orders is None:
-        return remaining_slots
-    return max(min(operator_max_orders, remaining_slots), 0)
 
 
 def _policy_planning_budget(
     *,
-    policy: CapitalDeploymentPolicy,
-    available_cash: float | None,
-    current_exposure: float,
+    cash_exposure_authority: CashExposureAuthority,
 ) -> float:
-    target_exposure = policy.evaluation_capital * policy.target_investment_ratio
-    cash_buffer_amount = policy.evaluation_capital * policy.cash_buffer
-    target_remaining = max(target_exposure - current_exposure, 0.0)
-    exposure_remaining = max(policy.max_exposure - current_exposure, 0.0)
-    cash_capacity = 0.0 if available_cash is None else max(float(available_cash) - cash_buffer_amount, 0.0)
-    return min(target_remaining, exposure_remaining, cash_capacity)
-
-
-def _policy_per_order_budget(
-    *,
-    policy: CapitalDeploymentPolicy,
-    planning_budget: float,
-    effective_order_limit: int,
-) -> float:
-    if effective_order_limit <= 0 or planning_budget <= 0:
+    if not cash_exposure_authority.passed:
         return 0.0
-    candidates = [
-        float(planning_budget) / float(effective_order_limit),
-        policy.evaluation_capital * policy.max_position_weight,
-    ]
-    if policy.max_buy_order_amount is not None:
-        candidates.append(policy.max_buy_order_amount)
-    return max(min(candidates), 0.0)
+    return max(float(cash_exposure_authority.planning_budget), 0.0)
 
 
 def _budget_no_signal_reason(
     *,
     planning_budget: float,
     effective_order_limit: int,
-    per_order_budget: float,
 ) -> str:
     if effective_order_limit <= 0:
-        return "NO_SIGNAL:max_positions_reached"
+        return "NO_SIGNAL:safety_hard_maximum_slots_unavailable"
     if planning_budget <= 0:
         return "NO_SIGNAL:available_cash_missing_or_zero"
-    if per_order_budget <= 0:
-        return "NO_SIGNAL:per_order_budget_missing_or_zero"
     return "NO_SIGNAL:capital_allocation_budget_unavailable"
 
 
@@ -1335,24 +1390,32 @@ def _morning_policy_context(
     operator_max_orders: int | None,
     effective_order_limit: int,
     planning_budget: float,
-    per_order_budget: float,
     current_exposure: float,
     available_cash: float | None,
+    active_deployment_capital: float | None,
+    capital_source: str,
+    position_count_authority: PositionCountAuthority,
+    cash_exposure_authority: CashExposureAuthority,
 ) -> dict[str, Any]:
-    order_count_source = (
-        "operator_override_capped_by_policy_max_positions"
-        if operator_max_orders is not None
-        else "capital_deployment_policy.max_positions"
-    )
+    order_count_source = str(position_count_authority.authority_source or position_count_authority.position_count_authority_winner)
+    position_count_fields = position_count_authority.to_dict()
+    cash_exposure_fields = cash_exposure_authority.to_dict()
     return {
         "policy_version": policy.policy_version,
         "policy_source": policy.policy_source,
         "evaluation_capital": policy.evaluation_capital,
-        "target_investment_ratio": policy.target_investment_ratio,
-        "cash_buffer": policy.cash_buffer,
-        "max_exposure": policy.max_exposure,
-        "max_position_weight": policy.max_position_weight,
-        "max_positions": policy.max_positions,
+        "initial_or_bootstrap_capital": policy.evaluation_capital,
+        "selected_capital_source": capital_source,
+        "selected_capital_value": active_deployment_capital,
+        "capital_authority_winner": "current_total_equity",
+        "active_deployment_capital": active_deployment_capital,
+        "current_total_equity": active_deployment_capital,
+        "legacy_capital_config_used": False,
+        "capital_fallback_used": False,
+        "max_positions": position_count_authority.selected_dynamic_position_count,
+        "active_max_positions": position_count_authority.selected_dynamic_position_count,
+        "legacy_runtime_max_positions": policy.max_positions,
+        "configured_legacy_max_positions": policy.max_positions,
         "max_buy_order_amount": policy.max_buy_order_amount,
         "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
         "min_order_amount": policy.min_order_amount,
@@ -1365,18 +1428,20 @@ def _morning_policy_context(
         "effective_order_limit": effective_order_limit,
         "operator_max_orders": operator_max_orders,
         "planning_budget": planning_budget,
-        "per_order_budget": per_order_budget,
+        "per_order_budget": None,
         "current_exposure": current_exposure,
         "available_cash": available_cash,
         "capital_deployment_policy_used_by_morning": True,
-        "morning_policy_sizing_method": "target_ratio_cash_buffer_exposure_position_weight",
+        "morning_policy_sizing_method": "strategy_position_sizing_authority",
         "morning_order_count_source": order_count_source,
-        "morning_per_order_budget_source": "capital_deployment_policy_derived",
+        "morning_per_order_budget_source": "position_sizing_authority",
+        "morning_position_sizing_authority_source": "strategy.position_sizing",
         "morning_hidden_cap_removed": True,
-        "sizing_policy_reason": (
-            "derived_from Capital Deployment Policy: target_investment_ratio, cash_buffer, "
-            "max_exposure, max_position_weight, max_positions, max_buy_order_amount"
-        ),
+        "position_count_authority": position_count_fields,
+        "cash_exposure_authority": cash_exposure_fields,
+        **position_count_fields,
+        **cash_exposure_fields,
+        "sizing_policy_reason": "derived_from Strategy Position Sizing authority, dynamic cash/exposure authority, dynamic_position_count, max_buy_order_amount",
     }
 
 
@@ -1400,11 +1465,16 @@ def _result_policy_fields(policy_context: dict[str, Any] | None) -> dict[str, An
         "morning_policy_source": str(context.get("policy_source") or ""),
         "morning_policy_version": str(context.get("policy_version") or ""),
         "morning_policy_sizing_method": str(context.get("morning_policy_sizing_method") or ""),
-        "morning_policy_target_investment_ratio": context.get("target_investment_ratio"),
-        "morning_policy_cash_buffer": context.get("cash_buffer"),
-        "morning_policy_max_exposure": context.get("max_exposure"),
-        "morning_policy_max_position_weight": context.get("max_position_weight"),
+        "morning_policy_selected_dynamic_cash_ratio": context.get("selected_dynamic_cash_ratio"),
+        "morning_policy_selected_dynamic_exposure_ratio": context.get("selected_dynamic_exposure_ratio"),
+        "morning_policy_selected_runtime_exposure_limit": context.get("selected_runtime_exposure_limit"),
+        "morning_position_sizing_authority_source": str(context.get("morning_position_sizing_authority_source") or ""),
         "morning_policy_max_positions": context.get("max_positions"),
+        "morning_selected_dynamic_position_count": context.get("selected_dynamic_position_count"),
+        "morning_position_count_authority_winner": str(context.get("position_count_authority_winner") or ""),
+        "morning_position_count_binding_constraint": str(context.get("position_count_binding_constraint") or ""),
+        "morning_available_position_slots": context.get("available_position_slots"),
+        "morning_position_count_fallback_used": bool(context.get("position_count_fallback_used")),
         "morning_policy_max_buy_order_amount": context.get("max_buy_order_amount"),
         "morning_policy_min_order_amount": context.get("min_order_amount"),
         "morning_order_count_source": str(context.get("morning_order_count_source") or ""),
@@ -1482,10 +1552,9 @@ def _pending_item(item) -> PendingOrderItem:
         policy_version=item.policy_version,
         policy_source=item.policy_source,
         evaluation_capital=item.evaluation_capital,
-        target_investment_ratio=item.target_investment_ratio,
-        cash_buffer=item.cash_buffer,
-        max_exposure=item.max_exposure,
-        max_position_weight=item.max_position_weight,
+        target_investment_ratio=None,
+        cash_buffer=None,
+        max_exposure=None,
         max_positions=item.max_positions,
         max_buy_order_amount=item.max_buy_order_amount,
         max_sell_liquidation_amount=item.max_sell_liquidation_amount,
@@ -1563,6 +1632,19 @@ def _current_exposure(asset_state: CurrentAssetState) -> float:
     if not asset_state.positions:
         return 0.0
     return float(sum(max(position.market_value, 0.0) for position in asset_state.positions if position.quantity > 0))
+
+
+def _active_deployment_capital(asset_state: CurrentAssetState, *, current_exposure: float) -> float | None:
+    _ = current_exposure
+    if asset_state.total_equity is not None:
+        return float(asset_state.total_equity)
+    return None
+
+
+def _capital_source(asset_state: CurrentAssetState) -> str:
+    if asset_state.total_equity is not None:
+        return "current_state.total_equity"
+    return "current_state.total_equity_missing"
 
 
 def _current_position_symbols(asset_state: CurrentAssetState) -> tuple[str, ...]:

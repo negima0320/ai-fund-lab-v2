@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,13 @@ def run_operations_market_refresh(
     feature_artifact_root = paths.root / "feature_artifacts"
     market_report_root = evidence_root / "market_refresh" if evidence_root is not None else paths.root / "market_refresh" / trade_date
     feature_report_root = evidence_root / "feature_refresh" if evidence_root is not None else paths.root / "feature_refresh" / trade_date
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_run_market_data_refresh",
+        "STARTED",
+        {"from_date": start, "to_date": trade_date, "allow_api_fetch": allow_api_fetch, "dry_run": not allow_api_fetch},
+    )
     market_detail = run_market_data_refresh(
         from_date=start,
         to_date=trade_date,
@@ -52,16 +60,49 @@ def run_operations_market_refresh(
         markdown_report_path=market_report_root / "market_data_refresh_detail.md",
         json_report_path=market_report_root / "market_data_refresh_detail.json",
     )
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_run_market_data_refresh",
+        "COMPLETED",
+        {
+            "status": market_detail.status,
+            "jquants_api_fetch_executed": market_detail.jquants_api_fetch_executed,
+            "latest_normalized_daily_quotes_date": market_detail.latest_normalized_daily_quotes_date,
+            "blocked_reasons": list(market_detail.blocked_reasons),
+        },
+    )
     latest_available_market_date = _latest_available_market_date(market_detail.to_dict(), fallback=trade_date)
     feature_freshness_status = _feature_freshness_status(
         decision_for=trade_date,
         latest_available_market_date=latest_available_market_date,
         market_status=market_detail.status,
     )
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_listed_info_for_feature",
+        "STARTED",
+        {"feature_date": latest_available_market_date},
+    )
     listed_info_for_feature = _listed_info_for_feature(
         raw_root / "jquants" / "listed_issues" / "data.parquet",
         feature_date=latest_available_market_date,
         output_path=feature_report_root / "jquants" / "listed_issues" / "listed_info_for_feature.parquet",
+    )
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_listed_info_for_feature",
+        "COMPLETED",
+        {"listed_info_for_feature_path": str(listed_info_for_feature)},
+    )
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_run_feature_refresh",
+        "STARTED",
+        {"target_data_until": latest_available_market_date, "feature_output_root": str(feature_artifact_root)},
     )
     feature_detail = run_feature_refresh(
         target_data_until=latest_available_market_date,
@@ -74,6 +115,17 @@ def run_operations_market_refresh(
         markdown_report_path=feature_report_root / "feature_refresh_detail.md",
         json_report_path=feature_report_root / "feature_refresh_detail.json",
         runtime_root=_runtime_root_for_operations(root),
+    )
+    _append_market_refresh_progress(
+        evidence_root,
+        trade_date,
+        "operations_run_feature_refresh",
+        "COMPLETED",
+        {
+            "status": feature_detail.status,
+            "feature_generation_executed": feature_detail.feature_generation_executed,
+            "blocked_reasons": list(feature_detail.blocked_reasons),
+        },
     )
     candidate = next((item for item in feature_detail.to_dict().get("artifacts", []) if item.get("ai_name") == "candidate"), {})
     feature_marker_path = feature_report_root / "latest_features.json"
@@ -144,6 +196,30 @@ def run_operations_market_refresh(
         "historical_logical_input": dict(historical_logical_input_manifest or {}),
         "created_at": utc_now_iso(),
     }
+
+
+def _append_market_refresh_progress(
+    evidence_root: Path | None,
+    business_date: str,
+    stage: str,
+    status: str,
+    details: dict[str, Any],
+) -> None:
+    if evidence_root is None:
+        return
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "runtime_v2_market_refresh_progress_v1",
+        "business_date": business_date,
+        "stage": stage,
+        "status": status,
+        "details": dict(details or {}),
+        "producer": "ai_fund_lab_v2.operations.market_refresh",
+    }
+    progress_path = evidence_root / "progress.jsonl"
+    with progress_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    (evidence_root / "progress_latest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def load_feature_buy_candidates(

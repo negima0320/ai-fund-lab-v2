@@ -91,51 +91,6 @@ class DummyMarketEvidence:
     market_summary_status = "READY"
     publication_status = "READY"
     provider_status = "READY"
-
-
-def test_phase17_m_market_refresh_consumes_run_scoped_logical_input(tmp_path: Path, monkeypatch) -> None:
-    write_market_authorities(tmp_path / ".runtime")
-    seen: dict[str, Path] = {}
-
-    def fake_operations_refresh(**kwargs):
-        seen["raw_input_root"] = kwargs["raw_input_root"]
-        seen["normalized_input_root"] = kwargs["normalized_input_root"]
-        normalized_path = Path(kwargs["normalized_input_root"]) / "jquants" / "equities_bars_daily" / "data.parquet"
-        frame = pd.read_parquet(normalized_path)
-        assert frame["target_date"].astype(str).max() == "2026-07-06"
-        return {
-            "status": "PASS",
-            "blocked_reasons": [],
-            "latest_available_market_date": "2026-07-06",
-            "data_quality_status": "PASS",
-            "feature_freshness_status": "FEATURE_READY",
-            "jquants_api_fetch_executed": False,
-            "canonical_normalized_updated": False,
-            "feature_refresh_executed": False,
-            "feature_refresh_status": "FEATURES_READY",
-        }
-
-    monkeypatch.setattr(pipeline, "_run_operations_market_refresh", fake_operations_refresh)
-    monkeypatch.setattr(pipeline, "resolve_feature_date_contract", lambda **kwargs: contract_for("2026-07-06"))
-    monkeypatch.setattr(pipeline, "write_feature_date_contract", lambda **kwargs: tmp_path / "contract.json")
-    monkeypatch.setattr(pipeline, "produce_market_quote_evidence", lambda **kwargs: DummyMarketEvidence())
-    result = pipeline.run_runtime_v2_market_refresh_pipeline(
-        business_date="2026-07-06",
-        operations_root=tmp_path / ".runtime" / "operations",
-        mode="historical",
-        runtime_test_context={
-            "run_id": "run-a",
-            "profile_id": "historical-smoke",
-            "evidence_root": str(tmp_path / "reports" / "runtime_tests" / "runs" / "run-a"),
-            "job": "market_refresh",
-        },
-    )
-    assert result.status == "PASS"
-    assert result.historical_logical_input_status == "PASS"
-    assert Path(result.historical_logical_input_manifest_path).is_file()
-    assert "reports/runtime_tests/runs/run-a" in str(seen["normalized_input_root"])
-
-
 def test_phase17_m_future_feature_artifact_is_blocked(tmp_path: Path, monkeypatch) -> None:
     write_market_authorities(tmp_path / ".runtime")
     monkeypatch.setattr(

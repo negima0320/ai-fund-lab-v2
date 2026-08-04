@@ -9,6 +9,7 @@ from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accep
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.safety.portfolio_limits import load_portfolio_safety_limits
 from ai_fund_lab_v2.strategy import corporate_event
+from ai_fund_lab_v2.strategy import buy_quality
 from ai_fund_lab_v2.strategy import input_materialization
 from ai_fund_lab_v2.strategy import market_context
 from ai_fund_lab_v2.strategy import portfolio_construction
@@ -30,6 +31,7 @@ ARTIFACT_FILENAMES = {
     "market_context": "market_context.json",
     "corporate_event": "corporate_event.json",
     "portfolio_policy": "portfolio_policy.json",
+    "buy_quality": "buy_quality_decisions.json",
     "portfolio_construction": "portfolio_construction.json",
     "position_sizing": "position_sizing.json",
     "position_management": "position_management.json",
@@ -51,7 +53,9 @@ def strategy_shadow_job_descriptor(*, run_dir: Path, business_date: str) -> dict
         "input_authority": "Runtime read-only snapshots and COMMITTED Accepted Generation resolver",
         "expected_output_path": str(strategy_dir),
         "mutation_policy": "read_only_strategy_shadow_no_runtime_state_mutation",
-        "failure_policy": "REVIEW_REQUIRED is recorded without halting active legacy Runtime; BLOCK is isolated to strategy_shadow_judgment unless mutation is detected",
+        "failure_policy": "Runtime Test evidence REVIEW_REQUIRED is recorded separately from active Runtime; BLOCK is isolated to strategy evidence unless mutation is detected",
+        "metadata_classification": "read_only_runtime_test_evidence_job",
+        "active_runtime_strategy_consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
         "active_runtime_consumer_eligibility": "NO",
         "runtime_switch_performed": False,
     }
@@ -67,8 +71,12 @@ def generate_strategy_shadow_for_day(
     feature_date: str = "",
     feature_date_authority: Mapping[str, Any] | None = None,
     historical_evaluation_authority_path: str = "",
+    artifact_subdir: str = "strategy",
+    decision_timing: str = "EOD",
+    authority_role: str = "POST_RUNTIME_OBSERVABILITY_SHADOW",
+    materialization_role: str = "LATEST_RUNTIME_STATE_MATERIALIZATION",
 ) -> dict[str, Any]:
-    strategy_dir = run_dir / "daily" / business_date / "strategy"
+    strategy_dir = run_dir / "daily" / business_date / artifact_subdir
     strategy_dir.mkdir(parents=True, exist_ok=True)
     before = _runtime_authority_hashes(runtime_root)
     feature_authority = _normalize_feature_date_authority(
@@ -93,6 +101,15 @@ def generate_strategy_shadow_for_day(
         historical_evaluation_authority_path=historical_evaluation_authority_path,
         strategy_source_authority=strategy_sources,
     )
+    manifest = {
+        **manifest,
+        "artifact_subdir": artifact_subdir,
+        "authority_role": authority_role,
+        "materialization_role": materialization_role,
+        "decision_timing": decision_timing,
+        "formal_planning_snapshot": artifact_subdir == "strategy"
+        and authority_role == "FORMAL_PLANNING_AUTHORITY_INPUT",
+    }
     _write_json(strategy_dir / "input_manifest.json", manifest)
 
     artifact_paths = {name: strategy_dir / filename for name, filename in ARTIFACT_FILENAMES.items()}
@@ -224,6 +241,22 @@ def generate_strategy_shadow_for_day(
         ),
     )
     produce(
+        "buy_quality",
+        lambda: buy_quality.produce_buy_quality_artifact(
+            business_date=business_date,
+            candidate_summary=_bq_summary(candidate, business_date),
+            opportunity_summary=_bq_summary(opportunity, business_date),
+            market_context_artifact_path=artifact_paths["market_context"],
+            portfolio_policy_artifact_path=artifact_paths["portfolio_policy"],
+            current_portfolio_summary=_bq_summary(current, business_date),
+            pending_summary=_bq_summary(pending, business_date),
+            price_volatility_summary=_bq_summary(_materialized_summary(price_volatility), business_date),
+            corporate_event_artifact_path=artifact_paths["corporate_event"],
+            output_path=artifact_paths["buy_quality"],
+            as_of=as_of,
+        ),
+    )
+    produce(
         "portfolio_construction",
         lambda: portfolio_construction.produce_portfolio_construction_artifact(
             business_date=business_date,
@@ -236,6 +269,7 @@ def generate_strategy_shadow_for_day(
             current_portfolio_summary=_pc_summary(current, business_date),
             pending_summary=_pc_summary(pending, business_date),
             policy_config_summary=_pc_summary(results.get("portfolio_policy", policy_config_summary), business_date),
+            buy_quality_summary=_pc_summary(results.get("buy_quality", {}), business_date),
             output_path=artifact_paths["portfolio_construction"],
             as_of=as_of,
         ),
@@ -309,6 +343,12 @@ def generate_strategy_shadow_for_day(
         "run_id": run_id,
         "profile_id": profile_id,
         "business_date": business_date,
+        "artifact_subdir": artifact_subdir,
+        "authority_role": authority_role,
+        "materialization_role": materialization_role,
+        "decision_timing": decision_timing,
+        "formal_planning_snapshot": bool(manifest.get("formal_planning_snapshot")),
+        "post_runtime_shadow": artifact_subdir != "strategy",
         "strategy_shadow_judgment": strategy_status,
         "runtime_judgment": "UNCHANGED_BY_STRATEGY_SHADOW",
         "overall_test_judgment": "REVIEW_REQUIRED" if strategy_status == "REVIEW_REQUIRED" else strategy_status,
@@ -342,7 +382,7 @@ def generate_strategy_shadow_for_day(
         profile_id=profile_id,
         business_date=business_date,
         strategy_dir=strategy_dir,
-        decision_timing="EOD",
+        decision_timing=decision_timing,
         input_manifest=manifest,
     )
     source_manifest_path = strategy_dir / "source_manifest.json"
@@ -522,7 +562,7 @@ def _build_input_manifest(
 ) -> dict[str, Any]:
     resolution = resolve_accepted_generation(
         runtime_root,
-        business_date=None if historical_evaluation_authority_path else business_date,
+        business_date=business_date,
         fixed_authority_path=historical_evaluation_authority_path or None,
     )
     manifest = _read_json(Path(resolution.bundle_manifest_path)) if resolution.bundle_manifest_path and Path(resolution.bundle_manifest_path).is_file() else {}
@@ -545,7 +585,12 @@ def _build_input_manifest(
         "profile": profile_id,
         "runtime_root": str(runtime_root),
         "historical_evaluation_authority_path": historical_evaluation_authority_path,
-        "historical_evaluation_authority_mode": "RUN_START_FIXED" if historical_evaluation_authority_path else "",
+        "historical_evaluation_authority_mode": "BUSINESS_DATE_BOUND_RUN_START_FIXED" if historical_evaluation_authority_path else "",
+        "accepted_generation_binding": resolution.binding_evidence(
+            runtime_mode=profile_id,
+            business_date=business_date,
+            consumer="strategy_shadow",
+        ),
         "strategy_source_authority": dict(strategy_source_authority or {}),
         "trading_calendar": str((strategy_source_authority or {}).get("paths", {}).get("trading_calendar") or runtime_root / "operations" / "jquants" / "raw" / "jquants" / "trading_calendar" / "data.parquet"),
         "jquants_sources": {"operations_root": str(runtime_root / "operations")},
@@ -1239,7 +1284,16 @@ def _pp_summary(item: Mapping[str, Any], business_date: str) -> portfolio_policy
 
 def _pc_summary(item: Mapping[str, Any], business_date: str) -> portfolio_construction.PortfolioConstructionSourceSummary:
     kw = _summary_kwargs(item, business_date)
-    return portfolio_construction.PortfolioConstructionSourceSummary(**kw, rows=tuple(item.get("rows") or ()))
+    payload = _payload_from_summary_item(item)
+    rows = item.get("rows") or payload.get("portfolio_members") or payload.get("decisions") or payload.get("rankings") or payload.get("positions") or ()
+    return portfolio_construction.PortfolioConstructionSourceSummary(**kw, rows=tuple(rows))
+
+
+def _bq_summary(item: Mapping[str, Any], business_date: str) -> buy_quality.BuyQualitySourceSummary:
+    kw = _summary_kwargs(item, business_date)
+    payload = _payload_from_summary_item(item)
+    rows = item.get("rows") or payload.get("decisions") or payload.get("rankings") or payload.get("positions") or ()
+    return buy_quality.BuyQualitySourceSummary(**kw, rows=tuple(rows))
 
 
 def _ps_summary(item: Mapping[str, Any], business_date: str) -> position_sizing.PositionSizingSourceSummary:

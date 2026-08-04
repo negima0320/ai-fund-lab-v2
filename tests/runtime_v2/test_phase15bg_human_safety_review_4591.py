@@ -39,7 +39,7 @@ def test_phase15bg_high_risk_review_keeps_safety_review_required(tmp_path):
 
     assert result.payload["safety_status"] == "REVIEW_REQUIRED"
     assert result.payload["effective_safety_status"] == "READY_FOR_REVIEW_ONLY"
-    assert result.status == "READY"
+    assert result.status == "REVIEW_REQUIRED"
 
 
 def test_phase15bg_no_human_review_is_not_review_only_ready(tmp_path):
@@ -74,8 +74,8 @@ def test_phase15bg_valid_human_review_allows_sell_hold_review_only(tmp_path):
         now=NOW,
     )
 
-    assert result.status == "READY"
-    assert result.payload["review_only_morning_readiness"] == "READY"
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.payload["review_only_morning_readiness"] == "REVIEW_REQUIRED"
     assert result.payload["full_morning_readiness"] == "NOT_APPLICABLE"
     assert result.payload["human_review_status"] == "READY"
     permissions = result.payload["components"]["human_review"]["safety_action_permissions"]
@@ -120,49 +120,6 @@ def test_phase15bg_wrong_issue_date_or_event_is_unusable(tmp_path):
     assert result.status == "REVIEW_REQUIRED"
     assert "human_review_artifact_contract_mismatch" in result.payload["review_reasons"]
     assert "event_id" in result.payload["components"]["human_review"]["mismatched_fields"]
-
-
-def test_phase15bg_cli_data_readiness_review_only_path(tmp_path):
-    runtime_root = _review_only_runtime(tmp_path)
-    policy_path = _write_policy(tmp_path / "capital_deployment.json")
-
-    exit_code = main(
-        [
-            "--mode",
-            "demo",
-            "--job",
-            "data_readiness",
-            "--readiness-scope",
-            "morning_sell_hold_review_only",
-            "--business-date",
-            BUSINESS_DATE,
-            "--feature-date",
-            FEATURE_DATE,
-            "--feature-root",
-            str(runtime_root / "operations" / "feature_artifacts"),
-            "--runtime-root",
-            str(runtime_root),
-            "--reports-root",
-            str(tmp_path / "reports" / "runtime_v2"),
-            "--public-reports-root",
-            str(tmp_path / "reports" / "public" / "runtime_v2"),
-            "--manifest-root",
-            str(runtime_root / "runtime_state" / "run_manifest"),
-            "--log-root",
-            str(runtime_root / "runtime_state" / "logs"),
-            "--capital-deployment-policy",
-            str(policy_path),
-        ]
-    )
-
-    manifest = _latest_manifest(runtime_root, BUSINESS_DATE)
-    artifact = _load_json(runtime_root / "runtime_state" / "data_readiness" / BUSINESS_DATE / "data_readiness.json")
-    assert exit_code == 0
-    assert manifest["data_readiness_status"] == "READY"
-    assert artifact["readiness_scope"] == "morning_sell_hold_review_only"
-    assert artifact["review_only_morning_readiness"] == "READY"
-
-
 def _review_only_runtime(
     tmp_path: Path,
     *,

@@ -258,6 +258,13 @@ def build_phase15bx_fixture(root: Path) -> dict[str, Any]:
     _init_dirs(root)
     policy_path = root / "runtime_state" / "policy" / "phase15bx_capital_deployment_policy.json"
     policy_payload = _read_json(SOURCE_ROOT / "runtime_state" / "policy" / "phase15bs_capital_deployment_policy.json")
+    for legacy_field in (
+        "target_investment_ratio",
+        "cash_buffer",
+        "max_exposure",
+        "max_position_weight",
+    ):
+        policy_payload.pop(legacy_field, None)
     policy_payload["policy_source"] = str(policy_path)
     _write_json(policy_path, policy_payload)
     policy = load_capital_deployment_policy(policy_path)
@@ -270,6 +277,12 @@ def build_phase15bx_fixture(root: Path) -> dict[str, Any]:
             "updated_at": BUSINESS_DATE,
             "policy_source": str(policy_path),
             "pending_policy_hash": policy_hash,
+            "planning_authority_version": policy.policy_version,
+            "planning_authority_source": str(policy_path),
+            "planning_authority_hash": policy_hash,
+            "submit_policy_version": policy.policy_version,
+            "submit_policy_source": str(policy_path),
+            "submit_policy_hash": policy_hash,
             "raw_request_saved": False,
             "raw_response_saved": False,
             "secret_saved": False,
@@ -284,10 +297,22 @@ def build_phase15bx_fixture(root: Path) -> dict[str, Any]:
     if pending.get("approval"):
         pending["approval"]["policy_source"] = str(policy_path)
         pending["approval"]["pending_policy_hash"] = policy_hash
+        pending["approval"]["planning_authority_version"] = policy.policy_version
+        pending["approval"]["planning_authority_source"] = str(policy_path)
+        pending["approval"]["planning_authority_hash"] = policy_hash
+        pending["approval"]["submit_policy_version"] = policy.policy_version
+        pending["approval"]["submit_policy_source"] = str(policy_path)
+        pending["approval"]["submit_policy_hash"] = policy_hash
         pending["approval"]["approval_status"] = "APPROVED"
     for item in pending.get("items") or []:
         item["state"] = "APPROVED"
         item["policy_source"] = str(policy_path)
+        item["planning_authority_version"] = policy.policy_version
+        item["planning_authority_source"] = str(policy_path)
+        item["planning_authority_hash"] = policy_hash
+        item["submit_policy_version"] = policy.policy_version
+        item["submit_policy_source"] = str(policy_path)
+        item["submit_policy_hash"] = policy_hash
         item["approved"] = True
         item.pop("execution_id", None)
         item.pop("ledger_execution_record_id", None)

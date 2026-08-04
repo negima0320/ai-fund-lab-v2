@@ -482,6 +482,18 @@ def _build_pending_and_approval(*, symbol: str, quantity: float, estimated_price
         expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
         review_required=False,
         reason=f"Phase14-D15 manual approval for pure Runtime v2 Demo SELL {symbol}",
+        approved_order_conditions={
+            item.pending_item_id: {
+                "order_type": item.order_type,
+                "target_session": plan.target_session_date,
+                "quantity": item.quantity,
+                "side": item.side,
+                "issue_code": item.symbol,
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": item.order_type,
+            }
+        },
     )
     return link_approval_to_pending(pending_plan=plan, approval_artifact=approval), approval
 

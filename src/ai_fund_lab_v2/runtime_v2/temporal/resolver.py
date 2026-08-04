@@ -27,7 +27,19 @@ def resolve_temporal_context(
 ) -> TemporalContext:
     business_date = runtime_business_date.isoformat() if isinstance(runtime_business_date, date) else runtime_business_date
     jst_now = (now or datetime.now(ZoneInfo(RUNTIME_TIMEZONE))).astimezone(ZoneInfo(RUNTIME_TIMEZONE))
-    calendar = resolve_operation_date(business_date, root=root)
+    status = "PASS"
+    reason = ""
+    if not _valid_date(business_date):
+        status = "REVIEW_REQUIRED"
+        reason = "runtime_business_date_invalid"
+    elif business_date > jst_now.date().isoformat():
+        status = "REVIEW_REQUIRED"
+        reason = "runtime_business_date_future"
+    calendar = (
+        {"latest_available_market_date": business_date, "calendar_source": "runtime_business_date_invalid"}
+        if status == "REVIEW_REQUIRED" and reason == "runtime_business_date_invalid"
+        else resolve_operation_date(business_date, root=root)
+    )
     latest_expected = str(calendar.get("latest_available_market_date") or business_date)
     latest_available = latest_available_market_date or latest_expected
     effective_grace_period = grace_period
@@ -45,4 +57,17 @@ def resolve_temporal_context(
         grace_period=effective_grace_period,
         runtime_mode=runtime_mode,
         broker_environment=broker_environment,
+        temporal_authority_source="runtime_business_date",
+        temporal_authority_winner="runtime_business_date",
+        temporal_authority_status=status,
+        temporal_authority_reason=reason,
+        temporal_fallback_used=False,
     )
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return True

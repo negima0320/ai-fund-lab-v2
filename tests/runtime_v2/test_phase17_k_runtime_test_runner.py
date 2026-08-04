@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
@@ -46,6 +47,7 @@ def make_runtime_root(tmp_path: Path) -> Path:
         json.dumps({"schema_version": "runtime_v2_operation_state_v1", "runtime_mode": "historical", "environment": "historical", "state": "READY", "business_date": "2026-07-06"}),
         encoding="utf-8",
     )
+    _write_accepted_generation_authority(root, business_date="2026-07-06")
     (root / "artifact_registry" / "checkpoints" / "latest.json").write_text(
         json.dumps({"checkpoint_hash": "checkpoint-a"}),
         encoding="utf-8",
@@ -83,6 +85,82 @@ def make_runtime_root(tmp_path: Path) -> Path:
             encoding="utf-8",
         )
     return root
+
+
+def _write_accepted_generation_authority(root: Path, *, business_date: str) -> None:
+    generation_id = "phase26-step10r4-fixture-generation"
+    generation_dir = root / "ai_lifecycle" / "generations" / generation_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    candidate_model = generation_dir / "candidate_model.bin"
+    opportunity_model = generation_dir / "opportunity_model.bin"
+    candidate_model.write_bytes(b"phase26-step10r4-candidate-model")
+    opportunity_model.write_bytes(b"phase26-step10r4-opportunity-model")
+    manifest = {
+        "schema_version": "runtime_v2_accepted_generation_manifest_v1",
+        "generation_id": generation_id,
+        "accepted_generation_id": generation_id,
+        "status": "COMMITTED",
+        "authority_decision": "business-date-bound Accepted Generation ledger",
+        "accepted_at": f"{business_date}T00:00:00+00:00",
+        "effective_from": f"{business_date}T00:00:00+00:00",
+        "candidate_member": {
+            "role": "candidate_model",
+            "artifact_path": "candidate_model.bin",
+            "model_hash": _sha256(candidate_model),
+        },
+        "opportunity_member": {
+            "role": "opportunity_model",
+            "artifact_path": "opportunity_model.bin",
+            "model_hash": _sha256(opportunity_model),
+        },
+        "freshness_metadata": {
+            "field_sources": {
+                "candidate_training_cutoff": {"value": "2026-06-30"},
+                "opportunity_training_cutoff": {"value": "2026-06-30"},
+                "candidate_calibration_cutoff": {"value": "2026-06-30"},
+                "opportunity_calibration_cutoff": {"value": "2026-06-30"},
+                "validation_cutoff": {"value": "2026-06-30"},
+            },
+        },
+        "runtime_baseline": {"source": "phase26_step10r4_test_fixture"},
+    }
+    manifest["aggregate_hash"] = _stable_hash(manifest)
+    manifest_path = generation_dir / "accepted_generation_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    pointer = {
+        "schema_version": "runtime_v2_accepted_generation_pointer_v1",
+        "transaction_state": "COMMITTED",
+        "accepted_generation_id": generation_id,
+        "bundle_manifest_path": str(Path("ai_lifecycle") / "generations" / generation_id / "accepted_generation_manifest.json"),
+        "aggregate_hash": manifest["aggregate_hash"],
+        "accepted_at": manifest["accepted_at"],
+        "effective_from": manifest["effective_from"],
+    }
+    (root / "runtime_state" / "accepted_buy_ai_bundle.json").write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
+    history_dir = root / "ai_lifecycle" / "authority_history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    (history_dir / "accepted_generation_history.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "ACCEPTED_GENERATION_COMMITTED",
+                "generation_id": generation_id,
+                "bundle_manifest_path": str(Path("ai_lifecycle") / "generations" / generation_id / "accepted_generation_manifest.json"),
+                "accepted_at": manifest["accepted_at"],
+                "effective_from": manifest["effective_from"],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _stable_hash(payload: dict) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
 
 
 def call_main(module, args: list[str], capsys: pytest.CaptureFixture[str]) -> dict:
@@ -128,6 +206,32 @@ def test_phase20_h_run_status_human_output_matches_status(tmp_path: Path, capsys
     assert run_status_output == status_output
 
 
+def test_phase26_pf3f_runtime_cli_records_trace_without_fixed_timeout(tmp_path: Path) -> None:
+    runner = load_runner()
+    trace_path = tmp_path / "subprocess_trace.json"
+
+    completed = runner.run_runtime_cli(
+        [sys.executable, "-c", "print('trace-ok')"],
+        cwd=tmp_path,
+        trace_path=trace_path,
+        context={"run_id": "timeout-test", "business_date": "2026-07-21", "job": "market_refresh"},
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "trace-ok"
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace["status"] == "COMPLETED"
+    assert trace["timed_out"] is False
+    assert trace["formal_stall_timeout_contract"] == "NOT_CONFIGURED"
+    assert trace["stall_timeout_seconds"] is None
+    assert trace["job"] == "market_refresh"
+    assert trace["returncode"] == 0
+    assert trace["pid"]
+    assert trace["started_at"]
+    assert trace["ended_at"]
+    assert trace["elapsed_seconds"] >= 0
+
+
 def test_phase17_k_plan_is_read_only_and_uses_runtime_cli_sequence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     runner = load_runner()
     root = make_runtime_root(tmp_path)
@@ -145,6 +249,52 @@ def test_phase17_k_plan_is_read_only_and_uses_runtime_cli_sequence(tmp_path: Pat
     first_command = payload["business_dates"][0]["jobs"][0]["command"]
     assert "-m" in first_command
     assert runner.RUNTIME_CLI_MODULE in first_command
+
+
+def test_phase26_pf3h_date_from_overrides_profile_start_for_business_day_window(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2022-07-01", "2022-07-04", "2022-07-05", "2026-07-06"])
+
+    window = runner.resolve_business_window(
+        profile=runner.load_profile("historical-smoke"),
+        runtime_root=root,
+        business_days=3,
+        start_date=None,
+        date_from="2022-07-01",
+        date_to=None,
+    )
+
+    assert window["requested_start_date"] == "2022-07-01"
+    assert window["profile_start_date"] == "2026-07-06"
+    assert window["selected_start_date"] == "2022-07-01"
+    assert window["selection_authority"] == "cli_date_from"
+    assert window["override_applied"] is True
+    assert window["override_reason"] == "cli_date_from_defines_business_days_window_start"
+    assert window["resolved_business_dates"] == ["2022-07-01", "2022-07-04", "2022-07-05"]
+
+
+def test_phase26_pf3h_profile_start_remains_fallback_when_cli_start_absent(tmp_path: Path) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2026-07-06", "2026-07-07", "2026-07-08"])
+
+    window = runner.resolve_business_window(
+        profile=runner.load_profile("historical-smoke"),
+        runtime_root=root,
+        business_days=3,
+        start_date=None,
+        date_from=None,
+        date_to=None,
+    )
+
+    assert window["requested_start_date"] == "2026-07-06"
+    assert window["profile_start_date"] == "2026-07-06"
+    assert window["selected_start_date"] == "2026-07-06"
+    assert window["selection_authority"] == "profile_window_date_from"
+    assert window["override_applied"] is False
+    assert window["override_reason"] == "profile_default_used_when_cli_start_absent"
+    assert window["resolved_business_dates"] == ["2026-07-06", "2026-07-07", "2026-07-08"]
 
 
 def _write_historical_calendar(root: Path, days: list[str]) -> None:
@@ -191,6 +341,40 @@ def test_phase23_ag_plan_preserves_requested_window_when_calendar_is_partial(tmp
     assert plan["window_resolution_status"] == "REVIEW_REQUIRED"
     assert plan["request_conformance_status"] == "NOT_PASS"
     assert plan["unresolved_requested_dates"] == ["2026-07-16", "2026-07-17"]
+
+
+def test_phase26_pf3c_plan_returns_review_required_for_empty_resolved_window(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runner = load_runner()
+    root = make_runtime_root(tmp_path)
+    _write_historical_calendar(root, ["2026-07-06", "2026-07-07", "2026-07-08"])
+
+    payload = call_main(
+        runner,
+        [
+            "plan",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(tmp_path / "reports"),
+            "--start-date",
+            "2026-07-20",
+            "--business-days",
+            "10",
+        ],
+        capsys,
+    )
+
+    assert payload["_exit_code"] == runner.EXIT_REVIEW_REQUIRED
+    assert payload["status"] == "REVIEW_REQUIRED"
+    assert payload["plan_judgment"] == "PLAN_REVIEW_REQUIRED"
+    assert payload["requested_start_date"] == "2026-07-20"
+    assert payload["resolved_business_dates"] == []
+    assert payload["business_dates"] == []
+    assert payload["eligible_dates"] == []
+    assert payload["first_eligible_start_date"] is None
+    assert payload["operator_ready"] is False
+    assert payload["source_readiness"]["blocked_dates"] == payload["unresolved_requested_dates"]
+    assert payload["calendar_readiness"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_phase23_ag_plan_composes_validated_calendar_overlay_for_full_resolution(tmp_path: Path) -> None:
@@ -655,13 +839,20 @@ def test_phase17_k_resume_uses_fixed_plan_without_skipping_failed_job(
     )
     run_dir = evidence / "runs" / "runtime-test-resume-fixture"
     runner.write_json_atomic(run_dir / "plan.json", plan)
+    historical_authority = runner.materialize_historical_evaluation_authority(
+        run_dir=run_dir,
+        runtime_root=root,
+        profile=runner.load_profile("historical-smoke"),
+        plan_payload=plan,
+    )
     runner.write_json_atomic(
         run_dir / "run_state.json",
         {
-            "schema_version": "phase17_k_run_state_v1",
+            "schema_version": runner.RUN_STATE_SCHEMA_VERSION,
             "run_id": "runtime-test-resume-fixture",
             "status": "HALT",
             "source_baseline": runner.source_baseline(root),
+            "historical_evaluation_authority": historical_authority,
             "completed_jobs": [
                 {"business_date": "2026-07-06", "job": "market_refresh", "exit_code": 0},
                 {"business_date": "2026-07-06", "job": "data_readiness", "exit_code": 30},

@@ -63,6 +63,11 @@ class TemporalContext:
     grace_period: timedelta | None
     runtime_mode: str = "demo"
     broker_environment: str = "demo"
+    temporal_authority_source: str = "runtime_business_date"
+    temporal_authority_winner: str = "runtime_business_date"
+    temporal_authority_status: str = "PASS"
+    temporal_authority_reason: str = ""
+    temporal_fallback_used: bool = False
 
     @property
     def is_non_trading_carryover_day(self) -> bool:

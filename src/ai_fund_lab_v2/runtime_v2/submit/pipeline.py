@@ -325,7 +325,10 @@ def run_submit_pipeline(
             submit_policy_consistency=policy_consistency,
         )
     existing_dedup_keys = _existing_order_dedup_keys(runtime_root_path / "persistent_ledger" / "orders.jsonl")
-    current_state = _current_state_summary(runtime_root_path / "persistent_ledger" / "state.json")
+    current_state = _current_state_summary(
+        runtime_root_path / "persistent_ledger" / "state.json",
+        business_date=business_date,
+    )
     current_positions = dict(current_state["positions"])
     broker_available_positions = _load_broker_available_quantity_snapshot(runtime_root_path)
     runtime_safety_decision = safety_decision or load_runtime_safety_decision(
@@ -357,119 +360,24 @@ def run_submit_pipeline(
             cash=current_state["cash"],
             buying_power=current_state["buying_power"],
             current_exposure=float(current_state["current_exposure"]),
+            current_total_equity=current_state.get("current_total_equity"),
+            active_deployment_capital=current_state.get("active_deployment_capital"),
+            selected_capital_source=str(current_state.get("selected_capital_source") or "current_state.total_equity"),
+            capital_fallback_used=bool(current_state.get("capital_fallback_used", False)),
+            initial_or_bootstrap_capital=current_state.get("initial_or_bootstrap_capital"),
             positions=dict(current_state["positions"]),
+            position_market_values=dict(current_state.get("position_market_values") or {}),
             current_position_source=str(current_state["current_position_source"]),
         ),
-        authority_source="submit_guard_aggregate_batch_feasibility",
+        authority_source="submit_guard_canonical_evidence_revalidation",
+        business_date=business_date,
+        runtime_mode=mode,
     )
     aggregate_by_item_id = {
         str(item.get("pending_item_id") or ""): item
         for item in aggregate_feasibility.evidence.get("items") or ()
         if isinstance(item, dict)
     }
-    if not aggregate_feasibility.passed:
-        for item in approved_items:
-            sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
-            broker_available_evidence = (
-                _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
-                if item.side == "SELL" and mode != "historical"
-                else _historical_available_quantity_evidence(
-                    runtime_root=runtime_root_path,
-                    item=item,
-                    current_quantity=sell_position_quantity,
-                )
-                if item.side == "SELL"
-                else BrokerAvailableQuantityEvidence(checked=False, source="")
-            )
-            corporate_action_event_evidence = _materialize_corporate_action_authority_for_item(
-                runtime_root=runtime_root_path,
-                business_date=business_date,
-                mode=mode,
-                adapter=submit_adapter,
-                item=item,
-                current_quantity=sell_position_quantity,
-                broker_available_quantity=broker_available_evidence.quantity,
-            )
-            guard_evidence = _submit_guard_item_evidence(
-                item=item,
-                runtime_root=runtime_root_path,
-                business_date=business_date,
-                mode=mode,
-                policy=policy,
-                current_state=current_state,
-                broker_position_quantity=sell_position_quantity,
-                broker_available_quantity=broker_available_evidence.quantity,
-                broker_available_quantity_evidence=broker_available_evidence,
-                safety_decision=runtime_safety_decision,
-                feasibility_evidence=aggregate_by_item_id.get(item.pending_item_id),
-                corporate_action_event_evidence=corporate_action_event_evidence,
-            )
-            if str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("status") or "") != "PASS":
-                guard_evidence = _blocked_guard_evidence(
-                    evidence=guard_evidence,
-                    reason=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("reason") or aggregate_feasibility.reason),
-                    violated_policy=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("violated_policy") or "aggregate_submit_feasibility"),
-                    violated_policy_source=str((aggregate_by_item_id.get(item.pending_item_id) or {}).get("violated_policy_source") or "submit_guard_aggregate_batch_feasibility"),
-                    should_have_been_blocked_at_planning=True,
-                )
-            guard_evidence["aggregate_submit_feasibility"] = aggregate_feasibility.evidence
-            item_results.append(
-                SubmitItemResult(
-                    pending_item_id=item.pending_item_id,
-                    symbol=item.symbol,
-                    side=item.side,
-                    quantity=item.quantity,
-                    preflight_status="BLOCKED",
-                    submit_status="NOT_SUBMITTED",
-                    submitted=False,
-                    accepted=False,
-                    rejected=False,
-                    unknown=False,
-                    blocked=True,
-                    review_required=True,
-                    broker_order_id_hash="",
-                    ledger_order_record_id="",
-                    reason=str(guard_evidence["guard_reason"]),
-                    issue_code_normalization={},
-                    response_classification={},
-                    configuration_diagnostic={},
-                    next_action="",
-                    guard_evidence=guard_evidence,
-                )
-            )
-        status = "REVIEW_REQUIRED"
-        reason = "submit aggregate feasibility failed before broker boundary"
-        return SubmitPipelineResult(
-            status=status,
-            reason=reason,
-            pending_plan_id=pending.pending_plan_id,
-            pending_path=str(pending_read.path),
-            orders_ledger_path=str(runtime_root_path / "persistent_ledger" / "orders.jsonl"),
-            demo_submit_executed=False,
-            submitted_count=0,
-            accepted_count=0,
-            rejected_count=0,
-            unknown_count=0,
-            blocked_count=len(item_results),
-            pending_consumed=False,
-            submitted_order_ids=(),
-            ledger_order_record_ids=(),
-            submitted_symbols=(),
-            item_results=tuple(item_results),
-            pending_read_valid=pending_read.valid,
-            pending_classification=pending_read.classification,
-            pending_active=_payload_bool(pending_read.payload, "active_pending"),
-            pending_plan_present=True,
-            pending_item_count=len(pending.items),
-            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
-            submit_action="NO_SUBMIT_ATTEMPTED",
-            review_required=True,
-            halt_required=False,
-            submit_guard_policy=_submit_guard_policy_manifest(policy),
-            submit_policy_consistency=policy_consistency,
-            submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
-        )
-
     for approved_item_id in pending.approved_item_ids:
         item = next(item for item in pending.items if item.pending_item_id == approved_item_id)
         sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
@@ -495,6 +403,7 @@ def run_submit_pipeline(
         )
         guard_evidence = _submit_guard_item_evidence(
             item=item,
+            pending_plan=pending,
             runtime_root=runtime_root_path,
             business_date=business_date,
             mode=mode,
@@ -507,6 +416,18 @@ def run_submit_pipeline(
             feasibility_evidence=aggregate_by_item_id.get(item.pending_item_id),
             corporate_action_event_evidence=corporate_action_event_evidence,
         )
+        guard_evidence["aggregate_submit_feasibility"] = aggregate_feasibility.evidence
+        aggregate_item = aggregate_by_item_id.get(item.pending_item_id) or {}
+        if str(aggregate_item.get("status") or "") != "PASS":
+            guard_evidence = _blocked_guard_evidence(
+                evidence=guard_evidence,
+                reason=str(aggregate_item.get("reason") or aggregate_feasibility.reason),
+                violated_policy=str(aggregate_item.get("violated_policy") or "aggregate_submit_feasibility"),
+                violated_policy_source=str(
+                    aggregate_item.get("violated_policy_source") or "submit_guard_canonical_evidence_revalidation"
+                ),
+                should_have_been_blocked_at_planning=True,
+            )
         if guard_evidence["guard_decision"] == "BLOCKED":
             item_results.append(
                 SubmitItemResult(
@@ -685,7 +606,13 @@ def run_submit_pipeline(
             reason = "safety halt runtime"
         elif any(result.review_required for result in item_results):
             status = "REVIEW_REQUIRED"
-            reason = "submit blocked before broker boundary; manual review required"
+            if any(
+                result.guard_evidence.get("submit_aggregate_status") == "REVIEW_REQUIRED"
+                for result in item_results
+            ):
+                reason = "submit aggregate feasibility failed before broker boundary"
+            else:
+                reason = "submit blocked before broker boundary; manual review required"
         else:
             status = "BLOCKED"
             reason = "no pending items were submitted"
@@ -1313,8 +1240,8 @@ def _current_position_quantities(path: Path) -> dict[str, float]:
     return quantities
 
 
-def _current_state_summary(path: Path) -> dict[str, Any]:
-    return load_runtime_current_exposure(path).to_payload()
+def _current_state_summary(path: Path, *, business_date: str = "") -> dict[str, Any]:
+    return load_runtime_current_exposure(path, business_date=business_date).to_payload()
 
 
 def _load_broker_available_quantity_snapshot(runtime_root: Path) -> dict[str, Any]:
@@ -1632,6 +1559,8 @@ def _submit_guard_policy_manifest(policy: CapitalDeploymentPolicy) -> dict[str, 
             "policy_version": policy.policy_version,
             "active_policy_hash": capital_deployment_policy_hash(policy),
             "max_positions": policy.max_positions,
+            "configured_legacy_max_positions": policy.max_positions,
+            "legacy_position_count_config_used": False,
         }
     )
     return manifest
@@ -1640,6 +1569,7 @@ def _submit_guard_policy_manifest(policy: CapitalDeploymentPolicy) -> dict[str, 
 def _submit_guard_item_evidence(
     *,
     item: Any,
+    pending_plan: Any,
     runtime_root: Path,
     business_date: str,
     mode: str,
@@ -1654,9 +1584,36 @@ def _submit_guard_item_evidence(
 ) -> dict[str, Any]:
     side = str(item.side).upper()
     estimated_amount = float(item.estimated_amount)
-    max_position_amount = policy.evaluation_capital * policy.max_position_weight
     evidence = {
         "guard_policy_version": "submit_guard_policy_v1",
+        "submit_authority_source": "pending_approval_planning_materialized_evidence",
+        "submit_authority_winner": "canonical_quantity_contract_revalidated_at_submit",
+        "submit_scope": "item",
+        "submit_aggregate_status": "",
+        "submit_item_status": "PASS",
+        "planning_evidence_source": "pending_item.quantity_contract",
+        "approval_evidence_source": "approval.approved_order_conditions",
+        "submit_fallback_used": False,
+        "buy_sell_submit_independence_preserved": True,
+        "runtime_mode": mode,
+        "business_date": business_date,
+        "selected_current_source": current_state.get("selected_current_source"),
+        "selected_cash_source": current_state.get("selected_cash_source"),
+        "selected_positions_source": current_state.get("selected_positions_source"),
+        "selected_valuation_source": current_state.get("selected_valuation_source"),
+        "selected_projection_source": current_state.get("selected_projection_source"),
+        "current_authority_winner": current_state.get("current_authority_winner"),
+        "current_source_business_date": current_state.get("current_source_business_date"),
+        "current_source_generation": current_state.get("current_source_generation"),
+        "current_authority_status": current_state.get("current_authority_status"),
+        "current_authority_reason": current_state.get("current_authority_reason"),
+        "source_conflict_detected": current_state.get("source_conflict_detected"),
+        "source_selection_reason": current_state.get("source_selection_reason"),
+        "legacy_current_used": bool(current_state.get("legacy_current_used", False)),
+        "current_fallback_used": bool(current_state.get("current_fallback_used", False)),
+        "runtime_evaluation_capital_used_as_current": bool(
+            current_state.get("runtime_evaluation_capital_used_as_current", False)
+        ),
         "active_amount_policy": "buy_sell_separated_capital_deployment_policy",
         "policy_source": policy.policy_source,
         "policy_version": policy.policy_version,
@@ -1666,16 +1623,24 @@ def _submit_guard_item_evidence(
         "quantity": float(item.quantity),
         "estimated_amount": estimated_amount,
         "capital_allocation_amount": estimated_amount,
+        "quantity_contract": dict(getattr(item, "quantity_contract", None) or {}),
         "max_buy_order_amount": policy.max_buy_order_amount,
         "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
-        "target_investment_ratio": policy.target_investment_ratio,
-        "cash_buffer": policy.cash_buffer,
-        "max_exposure": policy.max_exposure,
-        "max_position_weight": policy.max_position_weight,
         "max_positions": policy.max_positions,
+        "configured_legacy_max_positions": policy.max_positions,
+        "legacy_position_count_config_used": False,
+        "position_count_fallback_used": False,
         "notional_guard_source": "",
         "quantity_guard_source": "",
         "current_position_source": current_state["current_position_source"],
+        "selected_capital_source": current_state.get("selected_capital_source"),
+        "selected_capital_value": current_state.get("active_deployment_capital"),
+        "capital_authority_winner": "current_total_equity",
+        "active_deployment_capital": current_state.get("active_deployment_capital"),
+        "initial_or_bootstrap_capital": current_state.get("initial_or_bootstrap_capital"),
+        "current_total_equity": current_state.get("current_total_equity"),
+        "legacy_capital_config_used": False,
+        "capital_fallback_used": bool(current_state.get("capital_fallback_used", False)),
         "current_quantity": broker_position_quantity,
         "sell_quantity": float(item.quantity) if side == "SELL" else None,
         "sell_quantity_guard_status": "",
@@ -1716,8 +1681,24 @@ def _submit_guard_item_evidence(
         "should_have_been_blocked_at_planning": False,
         "blocked_at_submit_reason": "",
     }
+    generation_evidence = _submit_generation_binding_evidence(
+        item=item,
+        pending_plan=pending_plan,
+        business_date=business_date,
+        mode=mode,
+    )
+    evidence.update(generation_evidence)
+    if generation_evidence["submit_generation_binding_status"] != "PASS":
+        return _blocked_guard_evidence(
+            evidence=evidence,
+            reason=str(generation_evidence["submit_generation_binding_reason"]),
+            violated_policy="accepted_generation_binding",
+            violated_policy_source=str(generation_evidence["submit_generation_binding_source"]),
+            should_have_been_blocked_at_planning=True,
+        )
     if feasibility_evidence:
         evidence.update(_submit_feasibility_evidence_fields(feasibility_evidence))
+        evidence["submit_aggregate_status"] = str(feasibility_evidence.get("status") or "")
     corporate_action_authority = evaluate_corporate_action_adjustment_authority(
         runtime_root=runtime_root,
         business_date=business_date,
@@ -1958,16 +1939,25 @@ def _buy_guard_evidence(
             "pending_item_id": evidence["pending_item_id"],
             "symbol": evidence["symbol"],
             "estimated_amount": estimated_amount,
+            "quantity_contract": evidence.get("quantity_contract") if isinstance(evidence.get("quantity_contract"), Mapping) else evidence,
         })(),
         policy=policy,
         current=RuntimeCurrentExposure(
             cash=current_state["cash"],
             buying_power=current_state["buying_power"],
             current_exposure=float(current_state["current_exposure"]),
+            current_total_equity=current_state.get("current_total_equity"),
+            active_deployment_capital=current_state.get("active_deployment_capital"),
+            selected_capital_source=str(current_state.get("selected_capital_source") or "current_state.total_equity"),
+            capital_fallback_used=bool(current_state.get("capital_fallback_used", False)),
+            initial_or_bootstrap_capital=current_state.get("initial_or_bootstrap_capital"),
             positions=dict(current_state["positions"]),
+            position_market_values=dict(current_state.get("position_market_values") or {}),
             current_position_source=str(current_state["current_position_source"]),
         ),
-        authority_source="submit_guard_buy_feasibility",
+        authority_source="submit_guard_item_canonical_evidence_revalidation",
+        business_date=str(evidence.get("opportunity_business_date") or ""),
+        runtime_mode=str(current_state.get("environment") or ""),
     )
     if feasibility["status"] == "PASS":
         evidence.update(_submit_feasibility_evidence_fields(feasibility))
@@ -1986,11 +1976,81 @@ def _submit_feasibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str,
     return {
         "submit_feasibility_authority_source": str(payload.get("authority_source") or ""),
         "submit_feasibility_sequence_index": payload.get("sequence_index"),
+        "selected_current_source": payload.get("selected_current_source"),
+        "selected_cash_source": payload.get("selected_cash_source"),
+        "selected_positions_source": payload.get("selected_positions_source"),
+        "selected_valuation_source": payload.get("selected_valuation_source"),
+        "selected_projection_source": payload.get("selected_projection_source"),
+        "current_authority_winner": payload.get("current_authority_winner"),
+        "current_source_business_date": payload.get("current_source_business_date"),
+        "current_source_generation": payload.get("current_source_generation"),
+        "current_authority_status": payload.get("current_authority_status"),
+        "current_authority_reason": payload.get("current_authority_reason"),
+        "source_conflict_detected": payload.get("source_conflict_detected"),
+        "source_selection_reason": payload.get("source_selection_reason"),
+        "legacy_current_used": payload.get("legacy_current_used"),
+        "current_fallback_used": payload.get("current_fallback_used"),
+        "runtime_evaluation_capital_used_as_current": payload.get("runtime_evaluation_capital_used_as_current"),
         "cash": payload.get("cash"),
         "buying_power": payload.get("buying_power"),
         "current_exposure": payload.get("current_exposure"),
+        "selected_capital_source": payload.get("selected_capital_source"),
+        "selected_capital_value": payload.get("selected_capital_value"),
+        "capital_authority_winner": payload.get("capital_authority_winner"),
+        "active_deployment_capital": payload.get("active_deployment_capital"),
+        "initial_or_bootstrap_capital": payload.get("initial_or_bootstrap_capital"),
+        "current_total_equity": payload.get("current_total_equity"),
+        "legacy_capital_config_used": payload.get("legacy_capital_config_used"),
+        "capital_fallback_used": payload.get("capital_fallback_used"),
+        "selected_runtime_exposure_limit": payload.get("selected_runtime_exposure_limit"),
+        "planning_budget": payload.get("planning_budget"),
+        "remaining_exposure_capacity": payload.get("remaining_exposure_capacity") or payload.get("remaining_exposure"),
+        "position_sizing_authority": payload.get("position_sizing_authority"),
+        "portfolio_policy_source": payload.get("portfolio_policy_source"),
+        "portfolio_policy_authority_winner": payload.get("portfolio_policy_authority_winner"),
+        "position_sizing_source": payload.get("position_sizing_source"),
+        "position_sizing_authority_winner": payload.get("position_sizing_authority_winner"),
+        "position_sizing_authority_status": payload.get("position_sizing_authority_status"),
+        "position_sizing_authority_reason": payload.get("position_sizing_authority_reason"),
+        "strategy_requested_position_weight": payload.get("strategy_requested_position_weight"),
+        "selected_position_weight": payload.get("selected_position_weight"),
+        "strategy_requested_position_amount": payload.get("strategy_requested_position_amount"),
+        "selected_position_amount": payload.get("selected_position_amount"),
+        "remaining_add_capacity": payload.get("remaining_add_capacity"),
+        "lot_adjusted_quantity": payload.get("lot_adjusted_quantity"),
+        "lot_adjusted_notional": payload.get("lot_adjusted_notional"),
+        "position_sizing_binding_constraint": payload.get("position_sizing_binding_constraint"),
+        "position_sizing_fallback_used": payload.get("position_sizing_fallback_used"),
+        "legacy_position_sizing_used": payload.get("legacy_position_sizing_used"),
+        "position_sizing_authority_source": payload.get("position_sizing_authority_source"),
+        "position_sizing_authority_hash": payload.get("position_sizing_authority_hash"),
         "remaining_exposure": payload.get("remaining_exposure"),
+        "strategy_requested_cash_ratio": payload.get("strategy_requested_cash_ratio"),
+        "selected_dynamic_cash_ratio": payload.get("selected_dynamic_cash_ratio"),
+        "strategy_requested_exposure_ratio": payload.get("strategy_requested_exposure_ratio"),
+        "selected_dynamic_exposure_ratio": payload.get("selected_dynamic_exposure_ratio"),
+        "current_cash": payload.get("current_cash"),
+        "current_market_value": payload.get("current_market_value"),
+        "target_exposure_amount": payload.get("target_exposure_amount"),
+        "safety_exposure_limit": payload.get("safety_exposure_limit"),
+        "cash_exposure_authority_winner": payload.get("cash_exposure_authority_winner"),
+        "cash_exposure_binding_constraint": payload.get("cash_exposure_binding_constraint"),
+        "legacy_cash_config_used": payload.get("legacy_cash_config_used"),
+        "legacy_exposure_config_used": payload.get("legacy_exposure_config_used"),
+        "cash_exposure_fallback_used": payload.get("cash_exposure_fallback_used"),
+        "cash_exposure_authority": payload.get("cash_exposure_authority"),
         "active_max_positions": payload.get("active_max_positions"),
+        "configured_legacy_max_positions": payload.get("configured_legacy_max_positions"),
+        "legacy_runtime_max_positions": payload.get("legacy_runtime_max_positions"),
+        "strategy_requested_position_count": payload.get("strategy_requested_position_count"),
+        "selected_dynamic_position_count": payload.get("selected_dynamic_position_count"),
+        "available_position_slots": payload.get("available_position_slots"),
+        "safety_hard_maximum": payload.get("safety_hard_maximum"),
+        "position_count_authority_winner": payload.get("position_count_authority_winner"),
+        "position_count_binding_constraint": payload.get("position_count_binding_constraint"),
+        "legacy_position_count_config_used": payload.get("legacy_position_count_config_used"),
+        "position_count_fallback_used": payload.get("position_count_fallback_used"),
+        "position_count_authority": payload.get("position_count_authority"),
         "current_position_count": payload.get("current_position_count"),
         "creates_new_position": payload.get("creates_new_position"),
         "post_position_count": payload.get("post_position_count"),
@@ -1998,6 +2058,213 @@ def _submit_feasibility_evidence_fields(payload: Mapping[str, Any]) -> dict[str,
         "post_buy_buying_power": payload.get("post_buy_buying_power"),
         "post_buy_exposure": payload.get("post_buy_exposure"),
     }
+
+
+def _submit_generation_binding_evidence(
+    *,
+    item: Any,
+    pending_plan: Any,
+    business_date: str,
+    mode: str,
+) -> dict[str, Any]:
+    approval = getattr(pending_plan, "approval", None)
+    side = str(getattr(item, "side", "") or "").upper()
+    pending_binding = getattr(pending_plan, "accepted_generation_binding", None)
+    item_binding = getattr(item, "accepted_generation_binding", None)
+    approval_binding = getattr(approval, "accepted_generation_binding", None) if approval is not None else None
+    pending_generation_id = str(getattr(pending_plan, "accepted_generation_id", "") or "")
+    item_generation_id = str(getattr(item, "accepted_generation_id", "") or "")
+    approval_generation_id = str(getattr(approval, "accepted_generation_id", "") or "") if approval is not None else ""
+    pending_business_date = str(getattr(pending_plan, "accepted_generation_business_date", "") or "")
+    item_business_date = str(getattr(item, "accepted_generation_business_date", "") or "")
+    approval_business_date = str(getattr(approval, "accepted_generation_business_date", "") or "") if approval is not None else ""
+    statuses = {
+        "pending": str(getattr(pending_plan, "accepted_generation_binding_status", "") or ""),
+        "item": str(getattr(item, "accepted_generation_binding_status", "") or ""),
+        "approval": str(getattr(approval, "accepted_generation_binding_status", "") or "") if approval is not None else "",
+    }
+    ids = [value for value in (pending_generation_id, item_generation_id, approval_generation_id) if value]
+    dates = [value for value in (pending_business_date, item_business_date, approval_business_date) if value]
+    fallback_flags = _generation_fallback_flags(pending_binding, item_binding, approval_binding)
+    historical_separation = _historical_evaluation_authority_separation_evidence(
+        pending_binding=pending_binding,
+        item_binding=item_binding,
+        approval_binding=approval_binding,
+        business_date=business_date,
+        mode=mode,
+    )
+    reasons: list[str] = []
+    if not pending_generation_id or not item_generation_id or not approval_generation_id:
+        reasons.append("accepted_generation_binding_missing")
+    if len(set(ids)) > 1:
+        reasons.append("accepted_generation_id_mismatch")
+    if (len(set(dates)) > 1 or any(date and date != business_date for date in dates)) and historical_separation["status"] != "PASS":
+        reasons.append("accepted_generation_business_date_mismatch")
+    for source, status in statuses.items():
+        if status and status != "PASS":
+            reasons.append(f"{source}_accepted_generation_binding_not_pass")
+    if any(fallback_flags.values()):
+        reasons.append("accepted_generation_old_path_fallback_flag")
+    sell_not_required = side == "SELL" and (
+        "accepted_generation_binding_missing" in reasons
+        or str(statuses.get("item") or "") in {"", "NOT_REQUIRED"}
+    )
+    status = "PASS" if not reasons or sell_not_required else "BLOCKED"
+    return {
+        "submit_generation_binding_status": status,
+        "submit_generation_binding_reason": (
+            "SELL_NOT_REQUIRED"
+            if sell_not_required
+            else "" if status == "PASS" else ",".join(sorted(set(reasons)))
+        ),
+        "submit_generation_binding_source": "pending_plan.accepted_generation_binding",
+        "planning_generation_id": item_generation_id,
+        "pending_generation_id": pending_generation_id,
+        "approval_generation_id": approval_generation_id,
+        "submit_generation_id": pending_generation_id,
+        "pending_generation_business_date": pending_business_date,
+        "approval_generation_business_date": approval_business_date,
+        "item_generation_business_date": item_business_date,
+        "requested_business_date": business_date,
+        "runtime_mode": mode,
+        "accepted_generation_pending_binding": dict(pending_binding or {}) if isinstance(pending_binding, Mapping) else {},
+        "accepted_generation_item_binding": dict(item_binding or {}) if isinstance(item_binding, Mapping) else {},
+        "accepted_generation_approval_binding": dict(approval_binding or {}) if isinstance(approval_binding, Mapping) else {},
+        "historical_evaluation_authority_separation": historical_separation,
+        "accepted_generation_business_date_classification": "legacy_read_only_metadata_when_historical_evaluation_authority_separation_passes",
+        "selected_business_date_classification": "legacy_read_only_metadata_when_historical_evaluation_authority_separation_passes",
+        "business_date_conflict_classification": "legacy_read_only_metadata_not_active_submit_guard_when_historical_evaluation_authority_separation_passes",
+        **fallback_flags,
+    }
+
+
+def _generation_fallback_flags(*bindings: Any) -> dict[str, bool]:
+    keys = (
+        "latest_fallback_used",
+        "shared_state_fallback_used",
+        "default_generation_used",
+        "legacy_component_fallback_used",
+        "promotion_candidate_fallback_used",
+        "manual_model_path_used",
+    )
+    return {
+        key: any(bool(binding.get(key)) for binding in bindings if isinstance(binding, Mapping))
+        for key in keys
+    }
+
+
+def _historical_evaluation_authority_separation_evidence(
+    *,
+    pending_binding: Any,
+    item_binding: Any,
+    approval_binding: Any,
+    business_date: str,
+    mode: str,
+) -> dict[str, Any]:
+    bindings = {
+        "pending": pending_binding,
+        "item": item_binding,
+        "approval": approval_binding,
+    }
+    reasons: list[str] = []
+    if mode != "historical":
+        reasons.append("runtime_mode_not_historical")
+    for name, binding in bindings.items():
+        if not isinstance(binding, Mapping):
+            reasons.append(f"{name}_authority_context_missing")
+    mapping_bindings = {name: binding for name, binding in bindings.items() if isinstance(binding, Mapping)}
+    if len(mapping_bindings) != 3:
+        return {
+            "status": "NOT_APPLICABLE" if mode != "historical" else "REVIEW_REQUIRED",
+            "reason": ",".join(sorted(set(reasons))) or "historical_authority_context_missing",
+            "canonical_evaluation_authority": "evaluation_authority_time",
+            "canonical_market_pit_authority": "market_as_of_business_date",
+        }
+
+    common_fields = (
+        "accepted_generation_id",
+        "aggregate_hash",
+        "manifest_content_hash",
+        "run_authority_hash",
+        "temporal_authority_source",
+        "temporal_authority_winner",
+        "evaluation_authority_time",
+        "market_as_of_business_date",
+        "historical_evaluation_authority_path",
+    )
+    for field in common_fields:
+        values = {str(binding.get(field) or "") for binding in mapping_bindings.values()}
+        if "" in values:
+            reasons.append(f"{field}_missing")
+        if len(values) > 1:
+            reasons.append(f"{field}_mismatch")
+
+    for name, binding in mapping_bindings.items():
+        if str(binding.get("generation_binding_status") or "") != "PASS":
+            reasons.append(f"{name}_generation_binding_not_pass")
+        if str(binding.get("temporal_binding_status") or "") != "PASS":
+            reasons.append(f"{name}_temporal_binding_not_pass")
+        if str(binding.get("requested_business_date") or "") != business_date:
+            reasons.append(f"{name}_requested_business_date_mismatch")
+        if str(binding.get("market_as_of_business_date") or "") != business_date:
+            reasons.append(f"{name}_market_as_of_business_date_mismatch")
+        if _bool_binding(binding.get("business_date_temporal_comparison_applied")) is not False:
+            reasons.append(f"{name}_business_date_temporal_comparison_applied_invalid")
+        if _bool_binding(binding.get("evaluation_authority_time_temporal_comparison_applied")) is not True:
+            reasons.append(f"{name}_evaluation_authority_time_temporal_comparison_applied_invalid")
+        if str(binding.get("historical_business_date_acceptance_comparison") or "") != "NOT_APPLIED_TO_ACCEPTED_GENERATION":
+            reasons.append(f"{name}_historical_business_date_acceptance_comparison_invalid")
+        if str(binding.get("temporal_authority_source") or "") != "evaluation_authority_time":
+            reasons.append(f"{name}_temporal_authority_source_invalid")
+        if str(binding.get("temporal_authority_winner") or "") != "run_start_fixed_accepted_generation":
+            reasons.append(f"{name}_temporal_authority_winner_invalid")
+        if _generation_fallback_flags(binding).values() and any(_generation_fallback_flags(binding).values()):
+            reasons.append(f"{name}_old_path_fallback_flag")
+        authority_context = binding.get("authority_context")
+        if not isinstance(authority_context, Mapping):
+            reasons.append(f"{name}_authority_context_missing")
+            continue
+        evaluation_authority = authority_context.get("evaluation_authority")
+        market_authority = authority_context.get("market_as_of_authority")
+        if not isinstance(evaluation_authority, Mapping):
+            reasons.append(f"{name}_evaluation_authority_context_missing")
+        else:
+            if str(evaluation_authority.get("generation_id") or "") != str(binding.get("accepted_generation_id") or ""):
+                reasons.append(f"{name}_authority_context_generation_id_mismatch")
+            authority_time = str(evaluation_authority.get("authority_time") or evaluation_authority.get("fixed_at") or "")
+            if authority_time != str(binding.get("evaluation_authority_time") or ""):
+                reasons.append(f"{name}_authority_context_evaluation_time_mismatch")
+        if not isinstance(market_authority, Mapping):
+            reasons.append(f"{name}_market_as_of_authority_context_missing")
+        elif str(market_authority.get("business_date") or "") != business_date:
+            reasons.append(f"{name}_market_as_of_authority_business_date_mismatch")
+
+    status = "PASS" if not reasons else "REVIEW_REQUIRED"
+    first = next(iter(mapping_bindings.values()))
+    return {
+        "status": status,
+        "reason": "" if status == "PASS" else ",".join(sorted(set(reasons))),
+        "canonical_evaluation_authority": "evaluation_authority_time",
+        "canonical_market_pit_authority": "market_as_of_business_date",
+        "evaluation_authority_time": str(first.get("evaluation_authority_time") or ""),
+        "market_as_of_business_date": str(first.get("market_as_of_business_date") or ""),
+        "historical_evaluation_authority_path": str(first.get("historical_evaluation_authority_path") or ""),
+        "run_authority_hash": str(first.get("run_authority_hash") or ""),
+        "manifest_content_hash": str(first.get("manifest_content_hash") or ""),
+        "aggregate_hash": str(first.get("aggregate_hash") or ""),
+    }
+
+
+def _bool_binding(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
 
 
 def _sell_guard_evidence(
@@ -2082,6 +2349,7 @@ def _blocked_guard_evidence(
             "guard_decision": "BLOCKED",
             "guard_reason": reason,
             "manual_review_required": True,
+            "submit_item_status": "REVIEW_REQUIRED",
             "violated_policy": violated_policy,
             "violated_policy_source": violated_policy_source,
             "should_have_been_blocked_at_planning": should_have_been_blocked_at_planning,

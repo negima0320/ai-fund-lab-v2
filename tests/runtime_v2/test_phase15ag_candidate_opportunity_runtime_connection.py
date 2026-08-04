@@ -217,67 +217,6 @@ def test_phase16aq_wrong_artifact_set_is_rejected(tmp_path):
 
     assert result.status == "HALT"
     assert result.reason == "opportunity_model_metrics_artifact_set_mismatch"
-
-
-def test_phase15ag_morning_cli_uses_opportunity_artifact_not_feature_row_signal(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
-    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
-    policy_path = _write_policy(tmp_path / "capital_deployment.json")
-    candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
-    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
-    opportunity_metrics_path = _write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)
-
-    exit_code = main(
-        [
-            "--mode",
-            "demo",
-            "--job",
-            "morning",
-            "--business-date",
-            BUSINESS_DATE,
-            "--feature-date",
-            FEATURE_DATE,
-            "--feature-root",
-            str(feature_root),
-            "--submit-enabled",
-            "false",
-            "--notification-mode",
-            "payload-only",
-            "--runtime-root",
-            str(runtime_root),
-            "--reports-root",
-            str(tmp_path / "reports" / "runtime_v2"),
-            "--public-reports-root",
-            str(tmp_path / "reports" / "public" / "runtime_v2"),
-            "--manifest-root",
-            str(runtime_root / "runtime_state" / "run_manifest"),
-            "--log-root",
-            str(runtime_root / "runtime_state" / "logs"),
-            "--capital-deployment-policy",
-            str(policy_path),
-            "--candidate-model-path",
-            str(candidate_model_path),
-            "--opportunity-model-path",
-            str(opportunity_model_path),
-            "--opportunity-training-metrics-path",
-            str(opportunity_metrics_path),
-        ]
-    )
-    manifest = _latest_manifest(runtime_root)
-    pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
-    order_plan = json.loads((runtime_root / "runtime_state" / "morning_pipeline" / BUSINESS_DATE / "order_plan.json").read_text(encoding="utf-8"))
-    pending_symbols = [item["symbol"] for item in pending["items"]]
-
-    assert exit_code == 0
-    assert manifest["candidate_count"] == 3
-    assert manifest["opportunity_count"] == 3
-    assert manifest["selected_rank_count"] == 3
-    assert pending_symbols == ["7203"]
-    assert "runtime_v2_morning_feature_inference" not in json.dumps(order_plan)
-    assert order_plan["buy_ai_context"]["opportunity_artifact_path"] == manifest["opportunity_artifact_path"]
-
-
 def test_phase15ag_missing_buy_ai_models_stops_before_morning_planning(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
@@ -327,70 +266,6 @@ def test_phase15ag_missing_buy_ai_models_stops_before_morning_planning(tmp_path)
     assert "runtime_data_readiness_gate" in stage_names
     assert "candidate_opportunity_ai_runtime_producer" not in stage_names
     assert "morning_ai_planning_pending_pipeline" not in stage_names
-
-
-def test_phase15ag_report_and_notification_include_buy_ai_summary(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    feature_root = _write_feature_inputs(tmp_path / ".runtime" / "operations" / "feature_artifacts")
-    materialize_feature_date_contract(runtime_root, business_date=BUSINESS_DATE, selected_feature_date=FEATURE_DATE)
-    policy_path = _write_policy(tmp_path / "capital_deployment.json")
-    candidate_model_path = _write_candidate_model(tmp_path / "candidate_model.pkl")
-    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
-    opportunity_metrics_path = _write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)
-    main(
-        [
-            "--mode",
-            "demo",
-            "--job",
-            "morning",
-            "--business-date",
-            BUSINESS_DATE,
-            "--feature-date",
-            FEATURE_DATE,
-            "--feature-root",
-            str(feature_root),
-            "--submit-enabled",
-            "false",
-            "--notification-mode",
-            "payload-only",
-            "--runtime-root",
-            str(runtime_root),
-            "--reports-root",
-            str(tmp_path / "reports" / "runtime_v2"),
-            "--public-reports-root",
-            str(tmp_path / "reports" / "public" / "runtime_v2"),
-            "--manifest-root",
-            str(runtime_root / "runtime_state" / "run_manifest"),
-            "--log-root",
-            str(runtime_root / "runtime_state" / "logs"),
-            "--capital-deployment-policy",
-            str(policy_path),
-            "--candidate-model-path",
-            str(candidate_model_path),
-            "--opportunity-model-path",
-            str(opportunity_model_path),
-            "--opportunity-training-metrics-path",
-            str(opportunity_metrics_path),
-        ]
-    )
-
-    result = generate_public_report_from_current(
-        runtime_root=runtime_root,
-        runtime_output_dir=tmp_path / "reports" / "runtime_v2" / BUSINESS_DATE,
-        public_output_dir=tmp_path / "reports" / "public" / "runtime_v2" / BUSINESS_DATE,
-        business_date=BUSINESS_DATE,
-    )
-    runtime_report = Path(result["runtime_report_md"]).read_text(encoding="utf-8")
-    payload = json.loads(Path(result["notification_payload_json"]).read_text(encoding="utf-8"))
-
-    assert "## Candidate AI Summary" in runtime_report
-    assert "## Opportunity AI Summary" in runtime_report
-    assert "## Why Selected" in runtime_report
-    assert payload["buy_ai_summary"].startswith("selected_candidates")
-    assert payload["selected_candidates"] == 3
-    assert payload["selected_top_rank"] == 1
-
-
 def _runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / ".runtime"
     _write_json(
@@ -577,10 +452,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

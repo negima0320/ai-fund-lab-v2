@@ -1103,3 +1103,30 @@ Authority Matrix:
 ### AE-9 Phase19 Entry Boundary
 
 Phase19 may begin implementation with AD-U1 only if the implementation plan preserves these AE clarifications. Phase19 is not authorized to claim autonomous operation complete until AD-U1 through AD-U7 and the Production-equivalent Acceptance Contract pass.
+
+### AE-10 Phase26-G Adaptive BUY Quality Authority
+
+Adaptive BUY Quality Authority is the Production / Demo / Historical common authority that evaluates BUY admission quality and individual allocation strength from PIT evidence. The canonical specification is:
+
+```text
+docs/02_architecture/adaptive_buy_quality_authority.md
+```
+
+Authority Matrix:
+
+| Field | Contract |
+|---|---|
+| Canonical Owner | Production Strategy BUY Quality Resolver |
+| Artifact | `buy_quality_decision.v1` |
+| Producer Inputs | Opportunity Ranking, Candidate Decision, Market Context, Portfolio Policy, Current Portfolio, Data Readiness, Corporate Event, Execution Feasibility |
+| Consumers | Portfolio Construction, Position Sizing, Runtime Planning, Approval, Submit Guard observability |
+| Decision Authority | BUY admission and individual allocation adjustment |
+| Non-Authority | Safety hard maximum, total portfolio exposure, broker execution, raw Opportunity model training |
+| Failure Behavior | Required evidence missing or authority conflict fails closed as `BUY_REVIEW_REQUIRED` / `BUY_REJECTED` |
+| Historical | Same contract; no historical-only branch |
+| Demo | Same contract; no demo-only branch |
+| Production | Same contract; Submit Guard remains final hard boundary |
+
+Performance evidence may trigger human review of the contract, but must not become Training, Calibration, or Runtime decision authority. Historical Test results, Paper Ledger results, future prices, future PnL, final selected trades, or backtest win rates are prohibited Quality inputs.
+
+Adaptive BUY Quality must not reconnect `target_position_count`, fixed Rank N limits, ungrounded fixed raw-score thresholds, or implicit `quality_adjustment=1.0` fallback when required Quality evidence is missing.

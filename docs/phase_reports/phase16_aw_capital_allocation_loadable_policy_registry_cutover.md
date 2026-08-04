@@ -6,7 +6,7 @@ Final judgment: `PHASE16_AW_CAPITAL_POLICY_REGISTRY_CUTOVER_ACCEPTED`
 - Active policy source: `configs/runtime_v2/capital_deployment.json`
 - Policy copy status: `ALREADY_COMPLETED`
 - Replacement events: `ALREADY_COMPLETED`
-- Registry event count: `22`
+- Registry event count: `65`
 - Capital active eligible count: `1`
 - Runtime consumer result: `PASS`
 - Semantic equality: `PASS`

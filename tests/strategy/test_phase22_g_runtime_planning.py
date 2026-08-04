@@ -18,12 +18,12 @@ from ai_fund_lab_v2.strategy.runtime_planning import (
 )
 
 
-def test_phase22_g_produces_draft_pass_not_eligible_shadow_artifact(tmp_path: Path) -> None:
+def test_phase22_g_produces_draft_pass_eligible_runtime_planning_artifact(tmp_path: Path) -> None:
     result = _produce(tmp_path)
 
     assert result.status == "PASS"
     assert result.payload["artifact_lifecycle_status"] == "DRAFT"
-    assert result.payload["runtime_consumer_eligibility"] == "NOT_ELIGIBLE"
+    assert result.payload["runtime_consumer_eligibility"] == "ELIGIBLE"
     assert result.payload["downstream_calculation_eligibility"] == "CALCULATION_ALLOWED_WITH_REVIEW"
     assert result.payload["concrete_allocation_decided"] is False
     assert result.payload["concrete_quantity_decided"] is False
@@ -41,7 +41,7 @@ def test_phase22_g_schema_rejects_invalid_intent_status_and_concrete_fields(tmp_
         lambda item: item["plans"][0].pop("planning_id"),
         lambda item: item["plans"][0].pop("security_code"),
         lambda item: item.update({"schema_version": "runtime_planning.v999"}),
-        lambda item: item.update({"runtime_consumer_eligibility": "ELIGIBLE"}),
+        lambda item: item.update({"runtime_consumer_eligibility": "NOT_ELIGIBLE"}),
         lambda item: item.update({"allocation_jpy": 100000}),
         lambda item: item["plans"][0].update({"quantity": 100}),
         lambda item: item["plans"][0].update({"lot_rounding_result": 100}),
@@ -612,7 +612,7 @@ def test_phase22_g_upstream_review_not_eligible_and_block_propagate(tmp_path: Pa
     result = _produce(tmp_path)
     assert result.payload["producer_result_status"] == "PASS"
     assert "upstream_review_required:SOURCE_NOT_ELIGIBLE" not in result.payload["reason_codes"]
-    assert result.payload["consumer_eligibility_reason_codes"] == ["SOURCE_RUNTIME_CONSUMER_NOT_ELIGIBLE"]
+    assert result.payload["consumer_eligibility_reason_codes"] == []
     with pytest.raises(RuntimePlanningConsumerError):
         load_runtime_planning_fixture(result.artifact_path, for_production=True)
 
@@ -688,24 +688,29 @@ def test_phase22_g_bootstrap_missing_inputs_does_not_use_fixed_fallbacks(tmp_pat
     assert payload["temporal_safety"]["previous_day_runtime_planning_copied"] is False
 
 
-def test_phase22_g_existing_authorities_and_fixture_shadow_preserved(tmp_path: Path) -> None:
+def test_phase26_step5_runtime_planning_authority_switch_contract(tmp_path: Path) -> None:
     result = _produce(tmp_path)
     payload = load_runtime_planning_fixture(result.artifact_path)
 
     assert payload["production_consumer_connected"] is False
-    assert payload["pending_writer_connected"] is False
-    assert payload["runtime_switch_performed"] is False
-    assert payload["legacy_authority_active"] is True
-    assert payload["existing_morning_planning_changed"] is False
-    assert payload["existing_add_planning_changed"] is False
+    assert payload["pending_writer_connected"] is True
+    assert payload["runtime_switch_performed"] is True
+    assert payload["legacy_authority_active"] is False
+    assert payload["legacy_planning_authority_used"] is False
+    assert payload["planning_fallback_used"] is False
+    assert payload["planning_config_authority_used"] is False
+    assert payload["planning_authority_winner"] == "strategy_runtime_planning"
+    assert payload["existing_morning_planning_changed"] is True
+    assert payload["existing_add_planning_changed"] is True
     assert payload["existing_sell_planning_changed"] is False
-    assert payload["pending_changed"] is False
+    assert payload["pending_changed"] is True
     assert payload["approval_changed"] is False
     assert payload["submit_changed"] is False
     assert payload["execution_changed"] is False
     evidence = runtime_planning.produced_but_not_consumed_evidence(payload)
-    assert evidence["runtime_planning_production_consumer_connected"] is False
-    assert evidence["pending_written"] is False
+    assert evidence["runtime_planning_production_consumer_connected"] is True
+    assert evidence["pending_written"] is True
+    assert evidence["pending_changed"] is True
     assert evidence["submit_generated"] is False
 
 

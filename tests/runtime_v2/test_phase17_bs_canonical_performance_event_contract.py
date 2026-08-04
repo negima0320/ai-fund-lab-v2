@@ -148,19 +148,6 @@ def test_phase17_bs_runtime_owned_projection_counts_canonical_fills_once(tmp_pat
     assert result.projected_cash == 1_000_000 - 10_000 - 40_000
     assert result.projected_cash != 1_000_000 - (10_000 + 40_000) * 2
     assert result.projected_market_value == 53_000
-
-
-def test_phase17_bs_morning_reason_reports_max_position_slot_exhaustion():
-    assert (
-        _budget_no_signal_reason(planning_budget=19_160, effective_order_limit=0, per_order_budget=0)
-        == "NO_SIGNAL:max_positions_reached"
-    )
-    assert (
-        _budget_no_signal_reason(planning_budget=0, effective_order_limit=1, per_order_budget=0)
-        == "NO_SIGNAL:available_cash_missing_or_zero"
-    )
-
-
 def _submit_order(
     symbol: str,
     *,

@@ -40,10 +40,12 @@ def test_ai_status_help() -> None:
 
 def test_ai_status_json_review_required_for_statistical_drift() -> None:
     result = _run_ai_status("--json", "--check-runtime-readiness")
-    assert result.returncode == 10
+    assert result.returncode == 20
     payload = json.loads(result.stdout)
     report = payload["ai_status_report"]
-    assert report["status"] == "REVIEW_REQUIRED"
+    assert report["status"] == "BLOCK"
+    assert report["accepted_generation_status"]["status"] == "BLOCK"
+    assert report["runtime_authority_status"]["status"] == "BLOCK"
     assert report["runtime_readiness"]["lifecycle_classification"] in {
         "STATISTICAL_DRIFT_REVIEW_REQUIRED",
         "MODEL_HEALTH_REVIEW_REQUIRED",
@@ -57,15 +59,16 @@ def test_ai_status_json_review_required_for_statistical_drift() -> None:
 
 def test_ai_status_human_summary() -> None:
     result = _run_ai_status("--detailed", "--check-runtime-readiness")
-    assert result.returncode == 10
-    assert "AI Authority Status: RESOLVED_COMMITTED" in result.stdout
+    assert result.returncode == 20
+    assert "AI Authority Status: REVIEW_REQUIRED" in result.stdout
+    assert "Overall Status: BLOCK" in result.stdout
     assert "Broker Access: NOT_PERFORMED" in result.stdout
-    assert "Exit Code: 10" in result.stdout
+    assert "Exit Code: 20" in result.stdout
 
 
 def test_ai_status_write_evidence(tmp_path: Path) -> None:
     result = _run_ai_status("--json", "--write-evidence", "--check-runtime-readiness", evidence_root=tmp_path)
-    assert result.returncode == 10
+    assert result.returncode == 20
     payload = json.loads(result.stdout)
     evidence_path = Path(payload["evidence_path"])
     assert evidence_path.is_dir()
@@ -87,12 +90,12 @@ def test_ai_status_write_evidence(tmp_path: Path) -> None:
     }
     assert expected_files.issubset({path.name for path in evidence_path.iterdir()})
     summary = json.loads((evidence_path / "ai_status_summary.json").read_text(encoding="utf-8"))
-    assert summary["overall_status"] == "REVIEW_REQUIRED"
+    assert summary["overall_status"] == "BLOCK"
 
 
 def test_ai_status_does_not_mutate_runtime_pointer(tmp_path: Path) -> None:
     before = _sha256(POINTER)
     result = _run_ai_status("--json", "--write-evidence", evidence_root=tmp_path)
     after = _sha256(POINTER)
-    assert result.returncode == 10
+    assert result.returncode == 20
     assert before == after

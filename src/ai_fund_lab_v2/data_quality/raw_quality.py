@@ -30,6 +30,16 @@ class QualityReport:
     latest_manifest: dict[str, Any] | None
     storage_count_mismatch: bool
     normalized: dict[str, Any] | None = None
+    valid_price_row_count: int = 0
+    valid_no_price_row_count: int = 0
+    partial_ohlcv_corruption_count: int = 0
+    invalid_numeric_row_count: int = 0
+    schema_corruption_count: int = 0
+    affected_dates: list[str] | None = None
+    affected_codes: list[str] | None = None
+    instrument_classification: dict[str, Any] | None = None
+    source_null_policy: str = ""
+    endpoint_validation_status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,6 +63,7 @@ class RawQualityChecker:
         storage_count_mismatch = self._storage_count_mismatch(endpoint_name)
         status = self._status(endpoint_name, missing_dates, duplicate_key_count, validation["status"], storage_count_mismatch)
         normalized = self._normalized_summary(endpoint_name)
+        row_summary = validation.get("row_classification_summary") or {}
         return QualityReport(
             endpoint_name=endpoint_name,
             expected_dates=expected_dates,
@@ -67,6 +78,16 @@ class RawQualityChecker:
             latest_manifest=latest_manifest,
             storage_count_mismatch=storage_count_mismatch,
             normalized=normalized,
+            valid_price_row_count=int(row_summary.get("valid_price_row_count") or 0),
+            valid_no_price_row_count=int(row_summary.get("valid_no_price_row_count") or 0),
+            partial_ohlcv_corruption_count=int(row_summary.get("partial_ohlcv_corruption_count") or 0),
+            invalid_numeric_row_count=int(row_summary.get("invalid_numeric_row_count") or 0),
+            schema_corruption_count=int(row_summary.get("schema_corruption_count") or 0),
+            affected_dates=list(row_summary.get("affected_dates") or []),
+            affected_codes=list(row_summary.get("affected_codes") or []),
+            instrument_classification=self._instrument_classification(endpoint_name, records),
+            source_null_policy=str(row_summary.get("source_null_policy") or ""),
+            endpoint_validation_status=str(row_summary.get("endpoint_validation_status") or validation["status"]),
         )
 
     def check_many(self, endpoint_name: str, from_date: str, to_date: str) -> list[QualityReport]:
@@ -175,6 +196,47 @@ class RawQualityChecker:
         ]
         return rows[-1] if rows else None
 
+    def _instrument_classification(self, endpoint_name: str, records: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if endpoint_name != "daily_quotes":
+            return None
+        no_price_rows = [record for record in records if _is_valid_no_price_candidate(record)]
+        if not no_price_rows:
+            return {
+                "status": "NOT_APPLICABLE",
+                "classified_row_count": 0,
+                "unclassified_row_count": 0,
+                "prodcat_counts": {},
+                "market_name_counts": {},
+                "representative_codes_by_prodcat": {},
+            }
+        listed_rows = self.store.read_raw_collection(RAW_COLLECTIONS["listed_issues"])
+        latest_by_code = _latest_listed_by_code(listed_rows)
+        prodcat_counts: Counter[str] = Counter()
+        market_counts: Counter[str] = Counter()
+        representative_codes: dict[str, list[str]] = {}
+        unclassified = 0
+        for row in no_price_rows:
+            code = str(row.get("Code") or row.get("code") or "")
+            quote_date = str(row.get("Date") or row.get("target_date") or "")
+            listed = _listed_as_of(latest_by_code.get(code, []), quote_date)
+            prodcat = str((listed or {}).get("ProdCat") or "UNKNOWN")
+            market = str((listed or {}).get("MktNm") or (listed or {}).get("Mkt") or "UNKNOWN")
+            if not listed:
+                unclassified += 1
+            prodcat_counts[prodcat] += 1
+            market_counts[market] += 1
+            bucket = representative_codes.setdefault(prodcat, [])
+            if code and code not in bucket and len(bucket) < 20:
+                bucket.append(code)
+        return {
+            "status": "PASS" if unclassified == 0 else "PARTIAL",
+            "classified_row_count": len(no_price_rows) - unclassified,
+            "unclassified_row_count": unclassified,
+            "prodcat_counts": dict(sorted(prodcat_counts.items())),
+            "market_name_counts": dict(sorted(market_counts.items())),
+            "representative_codes_by_prodcat": representative_codes,
+        }
+
 
 def render_markdown(reports: list[QualityReport]) -> str:
     lines = ["# J-Quants Raw Quality Report", ""]
@@ -198,6 +260,17 @@ def render_markdown(reports: list[QualityReport]) -> str:
         lines.append(f"- validation_status: {report.validation.get('status')}")
         lines.append(f"- validation_messages: {', '.join(report.validation.get('messages', [])) or '(none)'}")
         lines.append(f"- schema_version: {report.schema_version}")
+        if report.endpoint_name == "daily_quotes":
+            lines.append(f"- valid_price_row_count: {report.valid_price_row_count}")
+            lines.append(f"- valid_no_price_row_count: {report.valid_no_price_row_count}")
+            lines.append(f"- partial_ohlcv_corruption_count: {report.partial_ohlcv_corruption_count}")
+            lines.append(f"- invalid_numeric_row_count: {report.invalid_numeric_row_count}")
+            lines.append(f"- schema_corruption_count: {report.schema_corruption_count}")
+            lines.append(f"- source_null_policy: {report.source_null_policy or '(none)'}")
+            lines.append(f"- endpoint_validation_status: {report.endpoint_validation_status or report.validation.get('status')}")
+            if report.instrument_classification:
+                lines.append(f"- instrument_classification_status: {report.instrument_classification.get('status')}")
+                lines.append(f"- instrument_prodcat_counts: {report.instrument_classification.get('prodcat_counts')}")
         if report.normalized:
             normalized_validation = report.normalized.get("validation") or {}
             lines.append(f"- normalized_schema_version: {report.normalized.get('schema_version')}")
@@ -207,3 +280,31 @@ def render_markdown(reports: list[QualityReport]) -> str:
         lines.append(f"- latest_manifest_storage_format: {(report.latest_manifest or {}).get('storage_format', '(none)')}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _is_valid_no_price_candidate(record: dict[str, Any]) -> bool:
+    raw_fields = ("O", "H", "L", "C", "Vo")
+    adjusted_fields = ("AdjO", "AdjH", "AdjL", "AdjC", "AdjVo")
+    return all(record.get(field) in (None, "") for field in raw_fields + adjusted_fields) and bool(
+        record.get("Date") and record.get("Code")
+    )
+
+
+def _latest_listed_by_code(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        code = str(record.get("Code") or record.get("code") or "")
+        if not code:
+            continue
+        grouped.setdefault(code, []).append(record)
+    return {code: sorted(rows, key=lambda item: str(item.get("Date") or item.get("target_date") or "")) for code, rows in grouped.items()}
+
+
+def _listed_as_of(records: list[dict[str, Any]], quote_date: str) -> dict[str, Any] | None:
+    selected: dict[str, Any] | None = None
+    for record in records:
+        listed_date = str(record.get("Date") or record.get("target_date") or "")
+        if listed_date and quote_date and listed_date > quote_date:
+            break
+        selected = record
+    return selected

@@ -36,11 +36,12 @@ def test_prepare_isolated_materializes_clean_day1_authority(tmp_path: Path) -> N
     )
     payload = json.loads(result.stdout)
 
-    assert result.returncode == 0
+    assert result.returncode == 20
     assert payload["shared_runtime_non_mutation"] is True
     assert payload["temporal_preflight"]["future_state_reference_count"] == 0
     assert payload["temporal_preflight"]["temporal_isolation_status"] == "PASS"
-    assert payload["accepted_generation_resolution"]["resolution_status"] == "RESOLVED_COMMITTED"
+    assert payload["accepted_generation_resolution"]["resolution_status"] == "REVIEW_REQUIRED"
+    assert "accepted_generation_accepted_at_after_business_date" in payload["accepted_generation_resolution"]["reason_codes"]
     assert payload["day1_pre_run_artifact_inventory"]["status"] == "PASS"
     assert payload["historical_initial_state"]["cash"] == 1_000_000.0
     assert payload["historical_initial_state"]["positions"] == []

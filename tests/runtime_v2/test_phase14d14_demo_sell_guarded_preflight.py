@@ -195,6 +195,18 @@ def _approved_sell_pending(quantity: float, estimated_amount: float):
         expires_at="2026-07-07T15:00:00+09:00",
         review_required=False,
         reason="phase14d14 sell guarded preflight",
+        approved_order_conditions={
+            "phase14d14-sell-7203-100": {
+                "order_type": "MARKET",
+                "target_session": pending.target_session_date,
+                "quantity": quantity,
+                "side": "SELL",
+                "issue_code": "7203",
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": "MARKET",
+            }
+        },
     )
     return link_approval_to_pending(pending_plan=pending, approval_artifact=approval), approval
 

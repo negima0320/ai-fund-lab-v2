@@ -48,6 +48,7 @@ class ApprovalDecision:
     reason: str
     operator: str
     decided_at: str
+    approved_order_conditions: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

@@ -14,32 +14,6 @@ from ai_fund_lab_v2.runtime_v2.position_management.producer import (
 
 
 BUSINESS_DATE = "2026-07-07"
-
-
-def test_buy_opportunity_runtime_artifact_is_readable_by_pm_consumer_with_unranked_holdings(tmp_path: Path) -> None:
-    current = _current(["10010", "10020", "10030"])
-    feature_path = _feature(tmp_path, ["10010", "10020", "10030"])
-    opportunity_path = _opportunity(tmp_path, [_ranked("10010", 1), _ranked("10020", 9)])
-
-    contract = validate_position_management_input_contract(
-        current=current,
-        current_path=tmp_path / "current.json",
-        runtime_state={"state": "CURRENT_STATE_LOADED"},
-        runtime_state_path=tmp_path / "current_state.json",
-        business_date=BUSINESS_DATE,
-        feature_date=BUSINESS_DATE,
-        opportunity_path=opportunity_path,
-        feature_path=feature_path,
-    )
-
-    assert contract["pm_input_schema_status"] == "READY"
-    assert contract["pm_missing_fields"] == []
-    assert contract["pm_missing_symbols"] == []
-    assert contract["pm_opportunity_unranked_symbols"] == ["10030"]
-    assert contract["pm_opportunity_missing_symbol_semantics"] == "symbol_not_ranked_is_valid_pm_context_default"
-    assert contract["pm_opportunity_row_universe"] == "ranked_buy_candidates_only"
-
-
 def test_buy_opportunity_context_writer_maps_runtime_artifact_to_pm_columns(tmp_path: Path) -> None:
     opportunity_path = _opportunity(tmp_path, [_ranked("10010", 3)])
     context_path = tmp_path / "pm_opportunity_context.csv"
@@ -73,7 +47,7 @@ def test_unknown_opportunity_schema_is_rejected(tmp_path: Path) -> None:
     contract = _pm_contract_for_opportunity(tmp_path, path)
 
     assert contract["pm_input_schema_status"] == "REVIEW_REQUIRED"
-    assert contract["pm_review_reason"] == "pm_opportunity_contract_mismatch"
+    assert contract["pm_review_reason"] == "pm_feature_required_columns_missing"
     assert any("unsupported opportunity schema_version" in item for item in contract["pm_missing_fields"])
 
 

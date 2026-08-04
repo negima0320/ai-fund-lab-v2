@@ -301,11 +301,28 @@ def _approved_pending(items: tuple[PendingOrderItem, ...], *, policy_path: Optio
         policy_version=pending.policy_version,
         policy_source=pending.policy_source,
         pending_policy_hash=pending.pending_policy_hash,
+        approved_order_conditions={
+            item.pending_item_id: {
+                "order_type": item.order_type,
+                "target_session": pending.target_session_date,
+                "quantity": item.quantity,
+                "side": item.side,
+                "issue_code": item.symbol,
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": item.order_type,
+            }
+            for item in pending.items
+        },
     )
     return link_approval_to_pending(pending_plan=pending, approval_artifact=approval)
 
 
 def _item_with_policy(item: PendingOrderItem, policy) -> PendingOrderItem:
+    quantity_contract = dict(item.quantity_contract or {})
+    quantity_contract.update(_authority_quantity_contract(item, policy))
+    binding = _accepted_generation_binding()
+    is_buy = item.side.upper() == "BUY"
     return replace(
         item,
         capital_allocation_amount=item.estimated_amount,
@@ -318,10 +335,6 @@ def _item_with_policy(item: PendingOrderItem, policy) -> PendingOrderItem:
         submit_policy_source=policy.policy_source,
         submit_policy_hash=capital_deployment_policy_hash(policy),
         evaluation_capital=policy.evaluation_capital,
-        target_investment_ratio=policy.target_investment_ratio,
-        cash_buffer=policy.cash_buffer,
-        max_exposure=policy.max_exposure,
-        max_position_weight=policy.max_position_weight,
         max_positions=policy.max_positions,
         max_buy_order_amount=policy.max_buy_order_amount,
         max_sell_liquidation_amount=policy.max_sell_liquidation_amount,
@@ -332,8 +345,62 @@ def _item_with_policy(item: PendingOrderItem, policy) -> PendingOrderItem:
             "buy_amount": policy.manual_review_threshold.buy_amount,
             "sell_liquidation_amount": policy.manual_review_threshold.sell_liquidation_amount,
         },
+        accepted_generation_id=binding["accepted_generation_id"] if is_buy else "",
+        accepted_generation_business_date=binding["accepted_generation_business_date"] if is_buy else "",
+        accepted_generation_binding_status="PASS" if is_buy else "NOT_REQUIRED",
+        accepted_generation_binding=binding if is_buy else None,
+        quantity_contract=quantity_contract,
         sizing_policy_reason="phase15i fixture policy evidence",
     )
+
+
+def _authority_quantity_contract(item: PendingOrderItem, policy) -> dict:
+    return {
+        "position_count_authority": {
+            "selected_dynamic_position_count": policy.max_positions,
+            "target_position_count": policy.max_positions,
+            "safety_hard_maximum": policy.max_positions,
+        },
+        "cash_exposure_authority": {
+            "selected_dynamic_cash_ratio": 0.05,
+            "target_cash_ratio": 0.05,
+            "selected_dynamic_exposure_ratio": 0.85,
+            "target_gross_exposure_ratio": 0.85,
+            "exposure_safety_maximum": 0.85,
+        },
+        "position_sizing_authority": {
+            "positions": [
+                {
+                    "symbol": item.symbol,
+                    "target_weight": 0.20,
+                    "target_notional": item.estimated_amount,
+                    "incremental_buy_notional": item.estimated_amount,
+                    "maximum_position_weight": 1.0,
+                }
+            ],
+            "effective_maximum_position_weight": 1.0,
+        },
+    }
+
+
+def _accepted_generation_binding() -> dict:
+    return {
+        "schema_version": "phase26_step8_accepted_generation_binding.v1",
+        "consumer": "phase15i_submit_fixture",
+        "mode": "demo",
+        "requested_business_date": "2026-07-09",
+        "selected_business_date": "2026-07-09",
+        "accepted_generation_id": "phase15i-fixture-generation",
+        "accepted_generation_business_date": "2026-07-09",
+        "generation_binding_status": "PASS",
+        "temporal_binding_status": "PASS",
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
+        "legacy_component_fallback_used": False,
+        "promotion_candidate_fallback_used": False,
+        "manual_model_path_used": False,
+    }
 
 
 def _item(
@@ -509,10 +576,6 @@ def _write_policy(path: Path, *, max_buy_order_amount=None, max_sell_liquidation
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": max_buy_order_amount,

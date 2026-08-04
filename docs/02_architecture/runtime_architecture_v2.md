@@ -2687,3 +2687,52 @@ Submit and historical simulated submit must keep the Corporate Action Guard fail
 - the same event has not been applied twice across resume/retry
 
 Missing, unresolved, stale, mixed pre/post adjustment quantity, source hash mismatch, future snapshot use, or double-adjustment risk is fail-closed as `REVIEW_REQUIRED` or `BLOCK` before broker boundary. Submit Guard thresholds, Strategy, PM, Position Sizing, Capital Deployment policy, and order quantities are not changed by this authority.
+
+## Phase26-G Adaptive BUY Quality Runtime Propagation Contract
+
+Runtime v2 consumes, verifies, and propagates Adaptive BUY Quality lineage; it does not recompute BUY Quality.
+
+Canonical Strategy specification:
+
+```text
+docs/02_architecture/adaptive_buy_quality_authority.md
+```
+
+The canonical artifact is `buy_quality_decision.v1`, produced by the Production Strategy BUY Quality Resolver. It must be PIT-bound to the same business date, Accepted Generation, Opportunity row, and temporal authority used by the BUY planning chain.
+
+Runtime propagation:
+
+```text
+BUY Quality Artifact
+  -> Portfolio Construction
+  -> Position Sizing
+  -> Runtime Planning
+  -> Pending Item
+  -> Approval Artifact
+  -> Submit Guard Evidence
+  -> Order
+  -> Fill Observability
+  -> Trade Attribution
+```
+
+Minimum propagated fields:
+
+```text
+quality_decision_id
+quality_score
+quality_band
+quality_action
+quality_reason_codes
+component_scores
+quality_policy_version
+source_opportunity_id
+```
+
+Failure contract:
+
+- missing required quality decision for BUY positive allocation is fail-closed before Pending/Submit boundary
+- `quality_action=REVIEW_REQUIRED` does not cross broker or simulated broker boundary as BUY
+- `quality_action=REJECT` produces no BUY item
+- source hash, opportunity row, Accepted Generation, or temporal mismatch is `REVIEW_REQUIRED` or `BLOCK`
+- Submit Guard may verify lineage/status but must not recompute Quality
+- Production, Demo, and Historical use the same propagation contract; no historical-only bypass

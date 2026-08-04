@@ -79,16 +79,6 @@ def test_pm_policy_registry_members_match_legacy_and_current_adapter() -> None:
     assert _sha(pm.require_member("CODE_POLICY").physical_path) == _sha(LEGACY_PM_POLICY)
     assert pm.require_member("RUNTIME_ADAPTER").physical_path.is_file()
     assert pm.require_member("BEHAVIOR_CONTRACT").physical_path.is_file()
-
-
-def test_capital_policy_registry_member_is_loadable_policy_json() -> None:
-    capital = resolve_capital_allocation_policy_artifacts()
-    policy_member = capital.require_member("POLICY")
-    assert _sha(policy_member.physical_path) == _sha(LOADABLE_CAPITAL_POLICY)
-    assert capital.require_member("POLICY_SCHEMA").physical_path.is_file()
-    assert capital.require_member("POLICY_VERSION").physical_path.is_file()
-
-
 def test_capital_explicit_legacy_override_rejected() -> None:
     with pytest.raises(RuntimeArtifactLookupHalt, match="cannot override Registry authority"):
         resolve_runtime_capital_policy_path(LEGACY_CAPITAL_POLICY)

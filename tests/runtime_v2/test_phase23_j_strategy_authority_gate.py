@@ -142,7 +142,7 @@ def test_phase23_bu_non_mutating_strategy_shadow_review_does_not_block_operation
         historical_authority_validation={"status": "PASS"},
     )
 
-    assert gate == "PASS"
+    assert gate == "REVIEW_REQUIRED"
     assert close_authority["trading_state_judgment"] == "PASS"
     assert close_authority["accounting_state_judgment"] == "PASS"
     assert close_authority["runtime_execution_judgment"] == "PASS"
@@ -151,11 +151,14 @@ def test_phase23_bu_non_mutating_strategy_shadow_review_does_not_block_operation
     assert close_authority["strategy_shadow_review_required"] is True
     assert close_authority["strategy_shadow_close_classification"] == "NON_MUTATING_STRATEGY_SHADOW_REVIEW_NON_BLOCKING"
     assert close_authority["final_runtime_judgment"] == "PASS"
+    assert close_authority["acceptance_gate_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["close_authority_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["block_rule"] == "NO_BLOCKING_CLOSE_RULE_TRIGGERED"
     assert close_authority["operational_status"] == "PASS"
     assert close_authority["strategy_review_status"] == "REVIEW_REQUIRED"
 
 
-def test_phase23_bu_strategy_shadow_review_marked_production_consumer_remains_blocking(tmp_path: Path) -> None:
+def test_phase23_bu_strategy_shadow_review_marked_production_consumer_remains_non_blocking(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path, ["2022-07-14"])
     evidence = run_dir / "daily" / "2022-07-14" / "morning" / "strategy_planning_authority_evidence.json"
     _write_json(
@@ -188,11 +191,14 @@ def test_phase23_bu_strategy_shadow_review_marked_production_consumer_remains_bl
         historical_authority_validation={"status": "PASS"},
     )
 
-    assert close_authority["strategy_shadow_close_classification"] == "BLOCKING_STRATEGY_SHADOW_PRODUCTION_CONSUMER_CONFLICT"
-    assert close_authority["final_runtime_judgment"] == "BLOCK"
+    assert close_authority["strategy_shadow_close_classification"] == "NON_MUTATING_STRATEGY_SHADOW_REVIEW_NON_BLOCKING"
+    assert close_authority["final_runtime_judgment"] == "PASS"
+    assert close_authority["acceptance_gate_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["close_authority_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["block_rule"] == "NO_BLOCKING_CLOSE_RULE_TRIGGERED"
 
 
-def test_phase23_bu_production_planning_review_still_blocks_operational_pass(tmp_path: Path) -> None:
+def test_phase23_bu_production_planning_review_keeps_runtime_pass_and_close_review(tmp_path: Path) -> None:
     run_dir = _run_dir(tmp_path, ["2022-07-14"])
     close_authority = _close_authority_classification(
         validation_exit_code=EXIT_PASS,
@@ -204,7 +210,9 @@ def test_phase23_bu_production_planning_review_still_blocks_operational_pass(tmp
     )
 
     assert close_authority["production_planning_judgment"] == "REVIEW_REQUIRED"
-    assert close_authority["final_runtime_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["final_runtime_judgment"] == "PASS"
+    assert close_authority["acceptance_gate_judgment"] == "REVIEW_REQUIRED"
+    assert close_authority["close_authority_judgment"] == "REVIEW_REQUIRED"
 
 
 def test_phase23_bu_trading_validation_failure_still_blocks_operational_pass(tmp_path: Path) -> None:

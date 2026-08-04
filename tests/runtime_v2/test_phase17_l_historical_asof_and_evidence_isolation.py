@@ -161,6 +161,19 @@ def write_validated_acquisition_state(root: Path, *, run_id: str = "jquants-acqu
     (run_root / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def write_acquisition_run(root: Path, *, run_id: str, days: list[str]) -> None:
+    run_root = root / "market_data_acquisition" / "runs" / run_id
+    acquisition = _normalized_quotes(days)
+    for prefix in ("raw", "raw_normalized"):
+        target = run_root / prefix / "jquants" / "equities_bars_daily"
+        target.mkdir(parents=True, exist_ok=True)
+        acquisition.to_parquet(target / "data.parquet", index=False)
+    calendar_target = run_root / "raw" / "jquants" / "trading_calendar"
+    calendar_target.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"Date": day, "HolDiv": "1"} for day in days]).to_parquet(calendar_target / "data.parquet", index=False)
+    write_validated_acquisition_state(root, run_id=run_id)
+
+
 def test_phase17_l_asof_resolver_excludes_physical_future_rows(tmp_path: Path) -> None:
     write_market_authorities(tmp_path / ".runtime")
     result = resolve_historical_market_data_asof(
@@ -300,6 +313,39 @@ def test_phase23_ae_historical_asof_fails_closed_when_incremental_staging_is_unv
     assert coverage["selected_source_role"] == "composed_canonical_plus_acquisition_staging"
     assert coverage["reason"] == "STAGING_VALIDATION_ARTIFACT_MISSING"
     assert coverage["composition_attempt"]["composition_attempts"][0]["overlay_target_date_available"] is True
+
+
+def test_phase26_pf3f_composition_skips_target_missing_staging_candidates(tmp_path: Path) -> None:
+    current_days = pd.bdate_range("2026-07-01", "2026-07-14").strftime("%Y-%m-%d").tolist()
+    write_phase20_bi_market_authorities(tmp_path / ".runtime", current_days=current_days)
+    write_acquisition_run(
+        tmp_path / ".runtime",
+        run_id="jquants-acquisition-target-present",
+        days=["2026-07-21"],
+    )
+    write_acquisition_run(
+        tmp_path / ".runtime",
+        run_id="jquants-acquisition-target-missing-large",
+        days=pd.bdate_range("2025-12-01", "2026-07-14").strftime("%Y-%m-%d").tolist(),
+    )
+
+    result = resolve_historical_market_data_asof(
+        operations_root=tmp_path / ".runtime" / "operations",
+        business_date="2026-07-21",
+        require_feature_lookback=True,
+    )
+
+    coverage = result.feature_lookback_coverage or {}
+    attempts = coverage["composition_attempt"]["composition_attempts"]
+    skipped = [attempt for attempt in attempts if attempt["status"] == "SKIPPED"]
+    material_attempts = [attempt for attempt in attempts if attempt["status"] != "SKIPPED"]
+    assert result.status == "HALT"
+    assert material_attempts
+    assert material_attempts[0]["overlay_target_date_available"] is True
+    assert skipped
+    assert skipped[0]["reason"] == "COMPOSITION_TARGET_DATE_UNAVAILABLE"
+    assert skipped[0]["pit_semantics_preserved"] is True
+    assert skipped[0]["future_rows_selectable"] is False
 
 
 def test_phase17_l_asof_resolver_fails_closed_on_hash_mismatch(tmp_path: Path) -> None:

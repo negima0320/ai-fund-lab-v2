@@ -159,7 +159,8 @@ def test_phase24_h_phase24g_generalized_sequence_reconciles_execution_basis_pnl(
     assert sum(pos["unrealized_pnl"] for pos in state["positions"]) == pytest.approx(-5420)
     assert state["realized_pnl"] == pytest.approx(-58800)
     assert state["realized_pnl"] + state["new_unrealized_pnl"] == pytest.approx(-64220)
-    assert state["total_equity"] - state["runtime_evaluation_capital"] == pytest.approx(-64220)
+    assert state["total_equity"] - state["initial_or_bootstrap_capital"] == pytest.approx(-64220)
+    assert "runtime_evaluation_capital" not in state
     assert state["cash"] == pytest.approx(282130)
     assert len(state["positions"]) == 4
 
@@ -276,4 +277,3 @@ def _write_json(path: Path, payload: dict) -> None:
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
-

@@ -421,7 +421,7 @@ def test_phase23_ao_negative_new_opportunity_is_not_forced_into_target_membershi
     assert member["target_weight_resolution"]["zero_weight_reason"] == "opportunity_not_selected"
 
 
-def test_phase23_bh_no_buy_reason_opportunity_is_excluded_without_forced_replacement(tmp_path: Path) -> None:
+def test_phase26_a_no_buy_reason_opportunity_is_excluded_without_target_count_slot_limit(tmp_path: Path) -> None:
     candidate = _source_summary(
         tmp_path,
         "candidate",
@@ -450,7 +450,7 @@ def test_phase23_bh_no_buy_reason_opportunity_is_excluded_without_forced_replace
         opportunity_summary=opportunity,
         current_portfolio_summary=_current_summary(tmp_path),
         pending_summary=_source_summary(tmp_path, "pending", rows=[]),
-        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=4, exposure=0.8, cap=0.2),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.8, cap=0.2),
     )
     by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
 
@@ -458,8 +458,9 @@ def test_phase23_bh_no_buy_reason_opportunity_is_excluded_without_forced_replace
     assert by_code["43780"]["target_membership"] is False
     assert by_code["43780"]["target_weight"] == 0.0
     assert "opportunity_no_buy_reason_present:high_downside_risk_score" in by_code["43780"]["reason_codes"]
-    assert by_code["8888"]["target_membership"] is False
-    assert "8888" not in {member["security_code"] for member in payload["portfolio_members"] if member["target_membership"]}
+    assert by_code["8888"]["target_membership"] is True
+    assert by_code["8888"]["target_weight"] > 0
+    assert by_code["8888"]["target_weight_authority"]["target_position_count_decision_authority"] == "DEPRECATED_METADATA_ONLY"
 
 
 def test_phase22_e_date_pit_blocks_cross_date_and_future_snapshot(tmp_path: Path) -> None:

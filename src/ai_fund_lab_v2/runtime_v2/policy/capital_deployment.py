@@ -17,10 +17,6 @@ REQUIRED_FIELDS = (
     "policy_version",
     "policy_source",
     "evaluation_capital",
-    "target_investment_ratio",
-    "cash_buffer",
-    "max_exposure",
-    "max_position_weight",
     "max_positions",
     "min_order_amount",
     "max_buy_order_amount",
@@ -34,10 +30,6 @@ POLICY_HASH_FIELDS = (
     "policy_version",
     "policy_source",
     "evaluation_capital",
-    "target_investment_ratio",
-    "cash_buffer",
-    "max_exposure",
-    "max_position_weight",
     "max_positions",
     "min_order_amount",
     "max_buy_order_amount",
@@ -45,6 +37,16 @@ POLICY_HASH_FIELDS = (
     "buy_notional_policy",
     "sell_liquidation_policy",
     "manual_review_threshold",
+)
+
+LEGACY_CASH_EXPOSURE_FIELDS = (
+    "target_investment_ratio",
+    "cash_buffer",
+    "max_exposure",
+)
+
+LEGACY_POSITION_SIZING_FIELDS = (
+    "max_position_weight",
 )
 
 
@@ -63,10 +65,6 @@ class CapitalDeploymentPolicy:
     policy_version: str
     policy_source: str
     evaluation_capital: float
-    target_investment_ratio: float
-    cash_buffer: float
-    max_exposure: float
-    max_position_weight: float
     max_positions: int
     min_order_amount: float
     max_buy_order_amount: float | None
@@ -88,13 +86,20 @@ class CapitalDeploymentPolicy:
             "capital_deployment_policy_path": self.loaded_from,
             "capital_deployment_policy_version": self.policy_version,
             "evaluation_capital": self.evaluation_capital,
-            "target_investment_ratio": self.target_investment_ratio,
-            "cash_buffer": self.cash_buffer,
-            "max_exposure": self.max_exposure,
-            "max_position_weight": self.max_position_weight,
-            "active_max_positions": self.max_positions,
-            "max_positions_source": self.policy_source,
+            "cash_exposure_authority_source": "dynamic_cash_exposure_required",
+            "legacy_cash_config_used": False,
+            "legacy_exposure_config_used": False,
+            "cash_exposure_fallback_used": False,
+            "position_sizing_authority_source": "position_sizing_required",
+            "position_sizing_fallback_used": False,
+            "legacy_position_sizing_used": False,
+            "active_max_positions": None,
+            "max_positions_source": "dynamic_position_count_required",
             "max_positions_policy_version": self.policy_version,
+            "configured_legacy_max_positions": self.max_positions,
+            "legacy_runtime_max_positions": self.max_positions,
+            "legacy_position_count_config_used": False,
+            "position_count_fallback_used": False,
             "max_buy_order_amount": self.max_buy_order_amount,
             "max_sell_liquidation_amount": self.max_sell_liquidation_amount,
             "buy_notional_policy": self.buy_notional_policy,
@@ -109,10 +114,6 @@ def capital_deployment_policy_hash_payload(policy: CapitalDeploymentPolicy) -> d
         "policy_version": policy.policy_version,
         "policy_source": policy.policy_source,
         "evaluation_capital": policy.evaluation_capital,
-        "target_investment_ratio": policy.target_investment_ratio,
-        "cash_buffer": policy.cash_buffer,
-        "max_exposure": policy.max_exposure,
-        "max_position_weight": policy.max_position_weight,
         "max_positions": policy.max_positions,
         "min_order_amount": policy.min_order_amount,
         "max_buy_order_amount": policy.max_buy_order_amount,
@@ -153,6 +154,17 @@ def load_capital_deployment_policy(path: Path | str) -> CapitalDeploymentPolicy:
     if not isinstance(payload, dict):
         raise CapitalDeploymentPolicyError("capital deployment policy must be a JSON object")
 
+    legacy_cash_exposure = [field for field in LEGACY_CASH_EXPOSURE_FIELDS if field in payload]
+    if legacy_cash_exposure:
+        raise CapitalDeploymentPolicyError(
+            "legacy cash/exposure policy fields unsupported: " + ",".join(legacy_cash_exposure)
+        )
+    legacy_position_sizing = [field for field in LEGACY_POSITION_SIZING_FIELDS if field in payload]
+    if legacy_position_sizing:
+        raise CapitalDeploymentPolicyError(
+            "legacy position sizing policy fields unsupported: " + ",".join(legacy_position_sizing)
+        )
+
     missing = [field for field in REQUIRED_FIELDS if field not in payload]
     if missing:
         raise CapitalDeploymentPolicyError("capital deployment policy missing required fields: " + ",".join(missing))
@@ -170,10 +182,6 @@ def load_capital_deployment_policy(path: Path | str) -> CapitalDeploymentPolicy:
         policy_version=_required_text(payload, "policy_version"),
         policy_source=_required_text(payload, "policy_source"),
         evaluation_capital=_required_non_negative_number(payload, "evaluation_capital", positive=True),
-        target_investment_ratio=_required_ratio(payload, "target_investment_ratio"),
-        cash_buffer=_required_ratio(payload, "cash_buffer"),
-        max_exposure=_required_non_negative_number(payload, "max_exposure"),
-        max_position_weight=_required_ratio(payload, "max_position_weight"),
         max_positions=_required_positive_int(payload, "max_positions"),
         min_order_amount=_required_non_negative_number(payload, "min_order_amount"),
         max_buy_order_amount=_optional_non_negative_number(payload, "max_buy_order_amount"),
@@ -186,10 +194,6 @@ def load_capital_deployment_policy(path: Path | str) -> CapitalDeploymentPolicy:
         ),
         loaded_from=str(policy_path),
     )
-    if policy.cash_buffer + policy.target_investment_ratio > 1.0:
-        raise CapitalDeploymentPolicyError("target_investment_ratio + cash_buffer must be <= 1.0")
-    if policy.max_exposure > policy.evaluation_capital:
-        raise CapitalDeploymentPolicyError("max_exposure must be <= evaluation_capital")
     return policy
 
 
@@ -200,13 +204,20 @@ def missing_policy_manifest_fields(path: Path | str | None, *, reason: str) -> d
         "capital_deployment_policy_path": str(path or ""),
         "capital_deployment_policy_version": "",
         "evaluation_capital": None,
-        "target_investment_ratio": None,
-        "cash_buffer": None,
-        "max_exposure": None,
-        "max_position_weight": None,
+        "cash_exposure_authority_source": "",
+        "legacy_cash_config_used": False,
+        "legacy_exposure_config_used": False,
+        "cash_exposure_fallback_used": False,
+        "position_sizing_authority_source": "",
+        "position_sizing_fallback_used": False,
+        "legacy_position_sizing_used": False,
         "active_max_positions": None,
         "max_positions_source": "",
         "max_positions_policy_version": "",
+        "configured_legacy_max_positions": None,
+        "legacy_runtime_max_positions": None,
+        "legacy_position_count_config_used": False,
+        "position_count_fallback_used": False,
         "max_buy_order_amount": None,
         "max_sell_liquidation_amount": None,
         "buy_notional_policy": "",

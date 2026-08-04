@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from ai_fund_lab_v2.runtime_v2.data_readiness import _feature_date_contract_payload
+from tests.runtime_v2.test_phase17_k_runtime_test_runner import _write_accepted_generation_authority
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "runtime_test.py"
@@ -159,6 +160,7 @@ def _make_clean_runtime_root(tmp_path: Path) -> Path:
     _write_json(root / "persistent_ledger" / "state.json", {"business_date": "", "positions": []})
     _write_json(root / "pending_order_plan" / "pending_order_plan.json", {"state": "EMPTY", "active_pending": False})
     _write_json(root / "runtime_state" / "current_state.json", {"business_date": "", "state": "READY"})
+    _write_accepted_generation_authority(root, business_date="2026-07-06")
     return root
 
 

@@ -88,19 +88,26 @@ def project_runtime_owned_fills_to_current(
         fill_resolution.events,
         runtime_owned_symbols=runtime_owned_symbols,
     )
-    quantity_projection = _projected_quantities(
+    pending_events = _business_date_pending_events(
         canonical_events=canonical_events,
+        current_sot_before=before,
+        business_date=business_date,
+    )
+    quantity_projection = _projected_quantities(
+        canonical_events=pending_events,
         latest_positions=latest_positions,
         current_sot_before=before,
         runtime_owned_symbols=runtime_owned_symbols,
         mode=mode,
     )
     cost_projection = _projected_open_costs(
-        canonical_events=canonical_events,
+        canonical_events=pending_events,
         runtime_owned_symbols=runtime_owned_symbols,
+        current_sot_before=before,
     )
     projection_errors = list(quantity_projection["errors"])
-    if canonical_events:
+    projection_errors.extend(_current_acquisition_authority_errors(before))
+    if pending_events:
         for symbol, quantity in quantity_projection["quantities"].items():
             cost_quantity = _number((cost_projection.get(symbol) or {}).get("quantity"))
             if abs(quantity - cost_quantity) > POSITION_QUANTITY_EPSILON:
@@ -147,23 +154,53 @@ def project_runtime_owned_fills_to_current(
     positions = tuple(_current_position(row, business_date=business_date) for row in projected_rows)
     market_value = sum(position.market_value for position in positions)
     cost_basis = sum(position.quantity * position.average_price for position in positions)
-    starting_cash = _number(before.get("runtime_evaluation_capital") or before.get("cash"))
+    if before.get("cash") in (None, ""):
+        return _result(
+            status="REVIEW_REQUIRED",
+            reason="current cash missing; no runtime_evaluation_capital or initial capital projection fallback",
+            state_path=state_path,
+            runtime_owned_symbols=runtime_owned_symbols,
+            excluded=tuple(symbol for symbol in latest_positions if symbol not in runtime_owned_symbols),
+            positions=tuple(_public_position(position) for position in positions),
+            before=before,
+            after={
+                **before,
+                "runtime_owned_projection": {
+                    "projection_status": "REVIEW_REQUIRED",
+                    "projection_source": "runtime_owned_accepted_submit_and_execution_cash_effect",
+                    "broker_cash_copied": False,
+                    "unrelated_demo_positions_copied": False,
+                    "cash_policy": "current_cash_required",
+                    "runtime_evaluation_capital_used_as_current": False,
+                    "current_fallback_used": False,
+                    "legacy_current_used": False,
+                },
+            },
+        )
+    starting_cash = _number(before.get("cash"))
     projected_cash = _projected_cash(
         starting_cash=starting_cash,
         cost_basis=cost_basis,
         submit_orders=submit_orders,
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
+        current_sot_before=before,
+        business_date=business_date,
     )
     if projected_cash < -POSITION_QUANTITY_EPSILON:
         after = {
             **before,
             "runtime_owned_projection": {
+                "projection_status": "REVIEW_REQUIRED",
+                "projection_source": "runtime_owned_accepted_submit_and_execution_cash_effect",
                 "broker_cash_copied": False,
                 "unrelated_demo_positions_copied": False,
-                "cash_policy": "runtime_evaluation_capital_plus_runtime_owned_execution_cash_effect",
+                "cash_policy": "current_cash_plus_runtime_owned_execution_cash_effect",
                 "position_policy": "runtime_submit_accepted_and_orderlist_filled_and_ledger_position_matched",
                 "raw_projected_cash": projected_cash,
+                "runtime_evaluation_capital_used_as_current": False,
+                "current_fallback_used": False,
+                "legacy_current_used": False,
             },
         }
         return _result(
@@ -185,6 +222,8 @@ def project_runtime_owned_fills_to_current(
         submit_orders=submit_orders,
         ledger_executions=ledger_executions,
         runtime_owned_symbols=runtime_owned_symbols,
+        current_sot_before=before,
+        business_date=business_date,
     )
     projected_buying_power = projected_cash
     projected_total_equity = projected_cash + market_value
@@ -220,7 +259,17 @@ def project_runtime_owned_fills_to_current(
     )
     if write:
         write_current_asset_state(state_path, state)
-    after = json.loads(json.dumps(_state_payload_with_metadata(state, before, realized_pnl=realized_pnl), sort_keys=True))
+    after = json.loads(
+        json.dumps(
+            _state_payload_with_metadata(
+                state,
+                before,
+                realized_pnl=realized_pnl,
+                applied_events=pending_events,
+            ),
+            sort_keys=True,
+        )
+    )
     if write:
         state_path.write_text(json.dumps(after, sort_keys=True), encoding="utf-8")
 
@@ -314,10 +363,10 @@ def _projected_quantities(
     for symbol in runtime_owned_symbols:
         events = by_symbol.get(symbol) or []
         has_buy_event = any(event.side.upper() == "BUY" for event in events)
-        if has_buy_event:
-            quantity = 0.0
-        elif symbol in before_positions:
+        if symbol in before_positions:
             quantity = _number(before_positions[symbol].get("quantity"))
+        elif has_buy_event:
+            quantity = 0.0
         elif symbol in latest_positions:
             sell_quantity = sum(event.quantity for event in events if event.side.upper() == "SELL")
             quantity = _number(latest_positions[symbol].get("quantity")) + sell_quantity
@@ -367,9 +416,10 @@ def _projected_open_costs(
     *,
     canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
     runtime_owned_symbols: tuple[str, ...],
+    current_sot_before: dict[str, Any],
 ) -> dict[str, dict[str, float]]:
     positions: dict[str, dict[str, float]] = {
-        symbol: {"quantity": 0.0, "cost": 0.0}
+        symbol: _current_open_cost(symbol, current_sot_before=current_sot_before)
         for symbol in runtime_owned_symbols
     }
     rows = sorted(
@@ -396,6 +446,37 @@ def _projected_open_costs(
     return positions
 
 
+def _current_open_cost(symbol: str, *, current_sot_before: dict[str, Any]) -> dict[str, float]:
+    for row in current_sot_before.get("positions") or ():
+        if str(row.get("symbol") or "").strip() != symbol:
+            continue
+        quantity = _number(row.get("quantity"))
+        if quantity <= POSITION_QUANTITY_EPSILON:
+            return {"quantity": 0.0, "cost": 0.0}
+        cost_basis = _number(row.get("cost_basis"))
+        if cost_basis <= POSITION_QUANTITY_EPSILON:
+            cost_basis = quantity * _number(row.get("average_price"))
+        return {"quantity": quantity, "cost": cost_basis}
+    return {"quantity": 0.0, "cost": 0.0}
+
+
+def _current_acquisition_authority_errors(current_sot_before: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    for row in current_sot_before.get("positions") or ():
+        symbol = str(row.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        quantity = _number(row.get("quantity"))
+        average_price = _number(row.get("average_price"))
+        if row.get("cost_basis") in (None, ""):
+            continue
+        cost_basis = _number(row.get("cost_basis"))
+        expected_cost_basis = quantity * average_price
+        if abs(cost_basis - expected_cost_basis) > POSITION_QUANTITY_EPSILON:
+            errors.append(f"runtime_owned_cost_basis_average_price_mismatch:{symbol}")
+    return errors
+
+
 def _projected_cash(
     *,
     starting_cash: float,
@@ -403,14 +484,21 @@ def _projected_cash(
     submit_orders: list[dict[str, Any]],
     ledger_executions: list[dict[str, Any]],
     runtime_owned_symbols: tuple[str, ...],
+    current_sot_before: dict[str, Any],
+    business_date: str,
 ) -> float:
     execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
     if not execution_rows:
         return starting_cash - cost_basis
     resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
     canonical_events = _runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols)
+    canonical_events = _business_date_pending_events(
+        canonical_events=canonical_events,
+        current_sot_before=current_sot_before,
+        business_date=business_date,
+    )
     if not canonical_events:
-        return starting_cash - cost_basis
+        return starting_cash
     cash = starting_cash
     for event in canonical_events:
         amount = event.gross_notional
@@ -427,6 +515,8 @@ def _projected_realized_pnl(
     submit_orders: list[dict[str, Any]],
     ledger_executions: list[dict[str, Any]],
     runtime_owned_symbols: tuple[str, ...],
+    current_sot_before: dict[str, Any],
+    business_date: str,
 ) -> float:
     positions: dict[str, dict[str, float]] = {
         symbol: {"quantity": 0.0, "cost": 0.0}
@@ -435,8 +525,13 @@ def _projected_realized_pnl(
     realized = 0.0
     execution_rows = [row for row in ledger_executions if row.get("source") in EXECUTION_READONLY_SOURCES]
     resolution = resolve_performance_fills(executions=execution_rows, orders=submit_orders)
+    canonical_events = _business_date_pending_events(
+        canonical_events=_runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols),
+        current_sot_before=current_sot_before,
+        business_date=business_date,
+    )
     rows = sorted(
-        _runtime_owned_canonical_events(resolution.events, runtime_owned_symbols=runtime_owned_symbols),
+        canonical_events,
         key=lambda event: event.executed_at,
     )
     for row in rows:
@@ -464,11 +559,61 @@ def _runtime_owned_canonical_events(
     return tuple(event for event in events if event.symbol in runtime_owned_symbols)
 
 
+def _business_date_pending_events(
+    *,
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+    current_sot_before: dict[str, Any],
+    business_date: str,
+) -> tuple[CanonicalPerformanceExecutionEvent, ...]:
+    current_as_of = str(current_sot_before.get("as_of") or current_sot_before.get("business_date") or "").strip()
+    applied = _current_applied_execution_keys(current_sot_before)
+    current_projection_without_identity = (
+        (
+            (current_sot_before.get("runtime_owned_projection") or {}).get("projection_status") == "PASS"
+            or str(current_sot_before.get("source") or "") == "runtime_v2_runtime_owned_fill_projection"
+        )
+        and bool(current_sot_before.get("positions") or ())
+        and not applied
+    )
+    pending: list[CanonicalPerformanceExecutionEvent] = []
+    for event in canonical_events:
+        event_date = str(event.business_date or event.executed_at[:10] or "").strip()
+        if not event_date:
+            continue
+        if event_date > business_date:
+            continue
+        if _execution_key(event) in applied:
+            continue
+        if current_as_of and event_date < current_as_of:
+            continue
+        if event_date == current_as_of and current_projection_without_identity:
+            continue
+        pending.append(event)
+    return tuple(pending)
+
+
+def _current_applied_execution_keys(current_sot_before: dict[str, Any]) -> set[str]:
+    projection = current_sot_before.get("runtime_owned_projection") or {}
+    raw_values = (
+        *(projection.get("applied_execution_ids") or ()),
+        *(projection.get("applied_execution_dedup_keys") or ()),
+        *(current_sot_before.get("applied_execution_ids") or ()),
+        *(current_sot_before.get("applied_execution_dedup_keys") or ()),
+        *(current_sot_before.get("execution_references") or ()),
+    )
+    return {str(value) for value in raw_values if str(value)}
+
+
+def _execution_key(event: CanonicalPerformanceExecutionEvent) -> str:
+    return event.canonical_dedup_key or event.source_execution_id or event.canonical_execution_id
+
+
 def _state_payload_with_metadata(
     state: CurrentAssetState,
     before: dict[str, Any],
     *,
     realized_pnl: float = 0.0,
+    applied_events: tuple[CanonicalPerformanceExecutionEvent, ...] = (),
 ) -> dict[str, Any]:
     public_positions = [_public_position(position) for position in state.positions or ()]
     unrealized_pnl = sum(_number(position.get("unrealized_pnl")) for position in public_positions)
@@ -498,12 +643,40 @@ def _state_payload_with_metadata(
         "updated_at": state.created_at,
         "cash_confirmed": state.cash is not None,
         "buying_power_confirmed": state.buying_power is not None,
-        "runtime_evaluation_capital": before.get("runtime_evaluation_capital") or before.get("cash"),
+        "initial_or_bootstrap_capital": before.get("initial_capital")
+        or before.get("bootstrap_capital")
+        or before.get("runtime_evaluation_capital"),
         "runtime_owned_projection": {
+            "projection_status": "PASS",
+            "projection_source": "runtime_owned_accepted_submit_and_execution_cash_effect",
             "broker_cash_copied": False,
             "unrelated_demo_positions_copied": False,
-            "cash_policy": "runtime_evaluation_capital_plus_runtime_owned_execution_cash_effect",
+            "cash_policy": "current_cash_plus_runtime_owned_execution_cash_effect",
+            "runtime_evaluation_capital_used_as_current": False,
+            "current_fallback_used": False,
+            "legacy_current_used": False,
             "position_policy": "runtime_submit_accepted_and_orderlist_filled_and_ledger_position_matched",
+            "execution_application_boundary": "identity_after_current_as_of_to_target_business_date",
+            "applied_execution_ids": sorted(
+                {
+                    *(
+                        str(value)
+                        for value in (before.get("runtime_owned_projection") or {}).get("applied_execution_ids", ())
+                        if str(value)
+                    ),
+                    *(event.source_execution_id for event in applied_events if event.source_execution_id),
+                }
+            ),
+            "applied_execution_dedup_keys": sorted(
+                {
+                    *(
+                        str(value)
+                        for value in (before.get("runtime_owned_projection") or {}).get("applied_execution_dedup_keys", ())
+                        if str(value)
+                    ),
+                    *(_execution_key(event) for event in applied_events if _execution_key(event)),
+                }
+            ),
         },
     }
     return payload

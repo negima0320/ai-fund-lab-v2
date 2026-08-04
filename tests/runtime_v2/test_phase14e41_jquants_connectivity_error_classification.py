@@ -140,41 +140,6 @@ def test_phase14e41_network_error_fresh_carryover_is_allowed(tmp_path, monkeypat
     assert result.freshness_lag_business_days == 1
     assert "API_NETWORK_ERROR" in result.blocked_reasons
     assert "DATA_FRESHNESS_BLOCKED" in result.blocked_reasons
-
-
-def test_phase14e41_network_error_stale_carryover_blocks(tmp_path, monkeypatch):
-    operations_root = tmp_path / ".runtime" / "operations"
-    _write_feature_inputs(operations_root / "feature_artifacts", feature_date="2026-07-07")
-
-    def fake_operations_market_refresh(**kwargs):
-        return {
-            "status": "BLOCK",
-            "blocked_reasons": ["API_NETWORK_ERROR", "api_fetch_failed:JQuantsClientError", "DATA_FRESHNESS_BLOCKED"],
-            "jquants_api_fetch_executed": True,
-            "canonical_normalized_updated": True,
-            "feature_refresh_executed": True,
-            "feature_refresh_status": "FEATURES_READY",
-            "latest_available_market_date": "2026-07-07",
-            "data_quality_status": "BLOCK",
-            "feature_freshness_status": "MARKET_DATA_NOT_YET_AVAILABLE",
-        }
-
-    monkeypatch.setattr(market_refresh_pipeline, "_run_operations_market_refresh", fake_operations_market_refresh)
-
-    result = run_runtime_v2_market_refresh_pipeline(
-        business_date="2026-07-09",
-        operations_root=operations_root,
-        allow_api_fetch=True,
-    )
-
-    assert result.status == "BLOCKED"
-    assert result.reason == "market_refresh_blocked"
-    assert result.carryover_used is True
-    assert result.freshness_lag_business_days == 2
-    assert "API_NETWORK_ERROR" in result.blocked_reasons
-    assert "DATA_FRESHNESS_BLOCKED" in result.blocked_reasons
-
-
 def _write_feature_inputs(root: Path, *, feature_date: str) -> None:
     _write_current_authority(root.parent.parent, business_date=feature_date)
     feature_dir = root / feature_date

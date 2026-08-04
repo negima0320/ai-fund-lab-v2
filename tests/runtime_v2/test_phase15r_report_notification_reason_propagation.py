@@ -142,7 +142,6 @@ def _write_current_and_manifest(root: Path) -> Path:
                 "target_investment_ratio": 0.95,
                 "cash_buffer": 50000,
                 "max_exposure": 900000,
-                "max_position_weight": 0.25,
                 "max_positions": 6,
             },
             "safety_context": {
@@ -179,7 +178,6 @@ def _write_current_and_manifest(root: Path) -> Path:
             "target_investment_ratio": 0.95,
             "cash_buffer": 50000,
             "max_exposure": 900000,
-            "max_position_weight": 0.25,
             "max_positions": 6,
             "safety_decision_id": "safety-phase15r-review",
             "safety_policy_version": "safety_v1",

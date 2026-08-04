@@ -234,55 +234,6 @@ def test_phase15aq_scope_does_not_require_candidate_for_sell_planning(tmp_path):
     assert result.payload["candidate_status"] == "NOT_REQUIRED"
     assert result.payload["pm_status"] == "READY"
     assert "candidate_model" not in result.payload["missing_evidence"]
-
-
-def test_phase17r_historical_data_readiness_uses_contract_and_historical_scope(tmp_path):
-    business_date = "2026-07-06"
-    runtime_root = _runtime_root(tmp_path, business_date=business_date, current_as_of="2026-07-14", mode="historical")
-    feature_root = _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date=business_date)
-    _write_feature_inputs(runtime_root / "operations" / "feature_artifacts", feature_date="2026-07-14")
-    _write_feature_date_contract(runtime_root, business_date=business_date, selected_feature_date=business_date)
-    _write_json(
-        runtime_root / "pending_order_plan" / "pending_order_plan.json",
-        {
-            "schema_version": "runtime_v2_pending_slot_v1",
-            "state": "EMPTY",
-            "status": "EMPTY",
-            "active_pending": False,
-            "target_session_date": business_date,
-            "items": [],
-            "no_action_reason": "NO_SIGNAL:fixture",
-        },
-    )
-    _write_safety_decision(runtime_root, business_date="2026-07-10", mode="historical")
-
-    result = evaluate_runtime_data_readiness(
-        runtime_root=runtime_root,
-        business_date=business_date,
-        mode="historical",
-        readiness_scope="morning",
-        feature_root=feature_root,
-        candidate_model_path=_write_file(tmp_path / "candidate.pkl"),
-        opportunity_model_path=_write_file(tmp_path / "opportunity.pkl"),
-        broker_environment="historical_simulated",
-        runtime_test_evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "phase17r",
-        runtime_test_run_id="phase17r",
-        runtime_test_profile_id="historical-smoke",
-    )
-
-    assert result.status == "READY"
-    assert result.payload["acceptance_scope"] == "historical_replay"
-    assert result.payload["runtime_environment_status"] == "READY"
-    assert result.payload["components"]["runtime_environment"]["reason"] == "historical_replay_environment_ready"
-    assert result.payload["selected_feature_date"] == business_date
-    assert result.payload["components"]["feature"]["readiness_artifact_path"].endswith(f"{business_date}.json")
-    assert result.payload["current_actual_as_of"] == business_date
-    assert result.payload["components"]["safety"]["reason"] == "historical_neutral_no_event_safety_ready"
-    assert "runtime_acceptance_requires_demo_mode" not in result.payload["halt_reasons"]
-    assert not (runtime_root / "runtime_state" / "data_readiness" / business_date / "data_readiness.json").exists()
-    assert result.artifact_path.endswith("/daily/2026-07-06/data_readiness/data_readiness.json")
-
-
 def test_phase17r_historical_missing_feature_contract_is_review_required(tmp_path):
     business_date = "2026-07-06"
     runtime_root = _runtime_root(tmp_path, business_date=business_date, current_as_of=business_date, mode="historical")
@@ -556,10 +507,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

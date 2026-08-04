@@ -6,6 +6,7 @@ from ai_fund_lab_v2.data_quality.normalization import (
     normalized_output_path,
     write_daily_quotes_normalized,
 )
+from ai_fund_lab_v2.candidate_ai.data_loader import adapt_daily_quotes_normalized
 from ai_fund_lab_v2.data_store import create_storage_backend, validate_records
 from ai_fund_lab_v2.runtime import RuntimePaths
 
@@ -65,6 +66,64 @@ def test_normalize_daily_quotes_reports_errors_and_warnings() -> None:
     assert report.sample_warnings
     validation = validate_records(DAILY_QUOTES_NORMALIZED_ENDPOINT, records)
     assert validation.status == "WARNING"
+
+
+def test_normalize_daily_quotes_drops_valid_no_price_rows_without_fabricating_zeroes() -> None:
+    records, report = normalize_daily_quotes(
+        [
+            {
+                "Date": "2026-06-01",
+                "Code": "131A0",
+                "O": None,
+                "H": None,
+                "L": None,
+                "C": None,
+                "Vo": None,
+                "AdjO": None,
+                "AdjH": None,
+                "AdjL": None,
+                "AdjC": None,
+                "AdjVo": None,
+            }
+        ],
+        limit_errors=5,
+    )
+
+    assert records == []
+    assert report.error_count == 0
+    assert report.valid_no_price_dropped_count == 1
+    assert report.status == "WARNING"
+    assert report.sample_errors == []
+    assert "valid_no_price_row_dropped_from_canonical_ohlcv" in report.sample_warnings[0]
+
+
+def test_candidate_loader_excludes_no_price_rows_after_normalization() -> None:
+    normalized_records, _ = normalize_daily_quotes(
+        [
+            {"Date": "2026-06-01", "Code": "72030", "O": 10, "H": 11, "L": 9, "C": 10, "Vo": 100},
+            {
+                "Date": "2026-06-01",
+                "Code": "131A0",
+                "O": None,
+                "H": None,
+                "L": None,
+                "C": None,
+                "Vo": None,
+                "AdjO": None,
+                "AdjH": None,
+                "AdjL": None,
+                "AdjC": None,
+                "AdjVo": None,
+            },
+        ]
+    )
+
+    loaded = adapt_daily_quotes_normalized(normalized_records, as_of_date="2026-06-01")
+
+    assert [row["code"] for row in loaded.rows] == ["72030"]
+    assert loaded.rows[0]["close"] == 10.0
+    assert loaded.rows[0]["volume"] == 100.0
+    assert all(row["code"] != "131A0" for row in loaded.rows)
 
 
 def test_normalized_schema_errors_on_null_prices() -> None:

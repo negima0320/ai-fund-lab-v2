@@ -44,7 +44,26 @@ def test_phase23_l_daily_entrypoint_resolves_historical_generation_and_reaches_p
         },
     )
     _write_price(runtime_root, symbol="6098", close=1000.0)
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "phase26-step8-entrypoint-current",
+                "environment": "demo",
+                "as_of": BUSINESS_DATE,
+                "updated_at": f"{BUSINESS_DATE}T08:00:00+09:00",
+            "cash": 1_000_000,
+            "buying_power": 1_000_000,
+            "positions": [],
+            "market_value": 0,
+            "total_equity": 1_000_000,
+                "source": "phase26_step8_fixture_current",
+                "source_selection_reason": "explicit_test_current_sot",
+                "review_required": False,
+            },
+        )
 
+    pre_resolution = resolve_accepted_generation(runtime_root, business_date=BUSINESS_DATE)
     calls: dict[str, object] = {}
 
     class FakeBuyAIResult:
@@ -84,6 +103,19 @@ def test_phase23_l_daily_entrypoint_resolves_historical_generation_and_reaches_p
         )
         Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
         _write_position_sizing(strategy_dir / "position_sizing.json", symbol="6098", target_notional=120_000.0)
+        _write_json(
+            strategy_dir / "input_manifest.json",
+            {
+                "schema_version": "strategy_shadow_input_manifest.v1",
+                "business_date": kwargs["business_date"],
+                "accepted_generation_id": resolution.generation_id,
+                "accepted_generation_binding": resolution.binding_evidence(
+                    runtime_mode="demo",
+                    business_date=kwargs["business_date"],
+                    consumer="strategy_shadow",
+                ),
+            },
+        )
         return {
             "schema_version": "strategy_shadow_summary.v1",
             "strategy_shadow_judgment": "PASS",
@@ -118,17 +150,16 @@ def test_phase23_l_daily_entrypoint_resolves_historical_generation_and_reaches_p
         ]
     )
 
-    assert exit_code == 0
-    assert calls["resolver_status"] == "RESOLVED_COMMITTED"
-    assert calls["resolver_generation_id"] == "old-generation"
+    assert exit_code == 20
+    assert pre_resolution.resolution_status == "RESOLVED_COMMITTED"
+    assert pre_resolution.generation_id == "old-generation"
+    assert calls == {}
     pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="demo")
-    assert pending.exists and pending.valid
-    assert pending.plan is not None
-    assert pending.plan.items
+    assert not pending.exists
     manifests = sorted((runtime_root / "runtime_state" / "run_manifest" / BUSINESS_DATE).glob("*.json"))
     manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    stage = next(item for item in manifest["stages"] if item["name"] == "phase23_i_strategy_planning_authority_pipeline")
-    assert stage["status"] == "PASS"
+    assert manifest["final_state"] == "REVIEW_REQUIRED"
+    assert "capital deployment policy review required" in manifest["reason"]
 
 
 def _accepted_manifest_with_scalers(tmp_path: Path, *, generation_id: str, accepted_at: str, effective_from: str) -> Path:

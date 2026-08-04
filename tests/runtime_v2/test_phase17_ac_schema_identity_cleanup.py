@@ -110,7 +110,8 @@ def test_phase17ac_runner_legacy_run_state_read_only_compatible(tmp_path, capsys
 
     payload = call_main(runner, ["validate", "--runtime-root", str(root), "--evidence-root", str(evidence), "--run-id", run_id], capsys)
     after = _read_json(run_dir / "run_state.json")
-    assert payload["status"] == "PASS"
+    assert payload["status"] == "VALIDATION_FAILURE"
+    assert payload["checks"]["historical_evaluation_authority_gate"] is False
     assert after == before
 
 

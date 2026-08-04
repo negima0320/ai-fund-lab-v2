@@ -1282,3 +1282,35 @@ Strategy consumers must keep these rank semantics separate:
 Opportunity rows must not use `candidate_rank`, candidate model rank, adapter array index, or recomputed rank as the opportunity rank. If an opportunity row has no usable `buy_rank` / `opportunity_buy_rank`, or if rank authority fields conflict, the consumer must fail closed with `REVIEW_REQUIRED` / row rejection before Portfolio Construction selection. Candidate rows may continue to use `candidate_rank` as candidate authority, but that value is not an opportunity rank.
 
 This contract does not change Opportunity Ranking production, `expected_edge_score`, eligibility, Portfolio Policy, Position Sizing policy, PM, Re-entry, Submit Guard, max exposure, cash buffer, or future-PnL boundaries.
+
+## 28. Phase26-G Adaptive BUY Quality Authority
+
+Phase26-G freezes `Adaptive BUY Quality Authority` as the Production / Demo / Historical common design for BUY admission quality and individual allocation strength. The canonical specification is:
+
+```text
+docs/02_architecture/adaptive_buy_quality_authority.md
+```
+
+Adaptive BUY Quality is produced by the Production Strategy BUY Quality Resolver and materialized as `buy_quality_decision.v1`. It evaluates:
+
+```text
+Relative Opportunity Quality
+Market Context Quality Modifier
+Signal Reliability
+Execution Feasibility
+Portfolio Fit
+```
+
+The authority may produce `BUY_ELIGIBLE`, `BUY_REDUCED_ALLOCATION`, `BUY_REVIEW_REQUIRED`, or `BUY_REJECTED`. It does not reinterpret `runtime_opportunity_score` as an expected return, target weight, target notional, allocation quality score, Submit permission, Safety hard maximum, or fixed position-count gate.
+
+Portfolio Construction is the first Strategy consumer. Position Sizing consumes the resulting quality decision and applies documented quality adjustment only after Portfolio Construction has accepted target membership/weight. Runtime Planning maps the resulting quantity candidate; it does not recompute Quality.
+
+Permanent constraints:
+
+- PIT-only inputs
+- no Historical Test result, Paper Ledger result, future price, or future PnL input
+- no fixed Rank N limit
+- no ungrounded fixed raw-score threshold
+- no `target_position_count` decision reconnect
+- no implicit `quality_adjustment=1.0` fallback when required quality evidence is missing
+- same contract for Production, Demo, and Historical

@@ -21,11 +21,11 @@ def test_system_status_preserves_post_run_missing_safety_block() -> None:
 
     safety = report["runtime_state_status"]["safety"]
 
-    assert safety["safety_artifact_status"] == "BLOCK"
-    assert safety["missing_state_classification"] == "POST_RUN_MATERIALIZATION_MISSING"
-    assert safety["materialization_stage"] == "POST_RUN_MISSING"
-    assert report["runtime_state_status"]["status"] == "BLOCK"
-    assert report["runtime_state_status"]["temporal_isolation"]["block_reason"] == "TEMPORAL_STATE_CONTAMINATION"
+    assert safety["safety_artifact_status"] == "NOT_YET_APPLICABLE"
+    assert safety["missing_state_classification"] == "PRE_RUN_NOT_MATERIALIZED"
+    assert safety["materialization_stage"] == "PRE_RUN"
+    assert report["runtime_state_status"]["status"] == "PASS"
+    assert report["runtime_state_status"]["temporal_isolation"]["block_reason"] == "NOT_RECORDED"
 
 
 def test_missing_safety_after_target_morning_manifest_blocks(tmp_path: Path) -> None:

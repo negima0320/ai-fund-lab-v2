@@ -36,7 +36,7 @@ class RuntimeV2SubmitCommand:
     quantity: float
     order_type: str
     price_type: str
-    limit_price: float
+    limit_price: float | None
     estimated_amount: float
     target_session_date: str
     live_order_allowed: bool

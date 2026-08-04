@@ -84,6 +84,10 @@ def build_runtime_v2_submit_command(
     source_current_path: str = "pending_order_plan/pending_order_plan.json",
 ) -> RuntimeV2SubmitCommand:
     item = next(item for item in pending_plan.items if item.pending_item_id == approved_item_id)
+    conditions = approval_artifact.approved_order_conditions
+    item_condition = conditions.get(item.pending_item_id) if isinstance(conditions, dict) else None
+    if not isinstance(item_condition, dict):
+        raise ValueError("approved order condition missing")
     return RuntimeV2SubmitCommand(
         command_id=_command_id(pending_plan.pending_plan_id, item.pending_item_id, approval_artifact.approval_hash),
         environment=pending_plan.environment,
@@ -94,8 +98,8 @@ def build_runtime_v2_submit_command(
         side=item.side,
         quantity=item.quantity,
         order_type=item.order_type,
-        price_type="MARKET" if item.order_type == "MARKET" else "LIMIT",
-        limit_price=0.0 if item.order_type == "MARKET" else item.estimated_price,
+        price_type=str(item_condition["price_condition"]),
+        limit_price=None if item.order_type == "MARKET" else float(item_condition["limit_price"]),
         estimated_amount=item.estimated_amount,
         target_session_date=pending_plan.target_session_date,
         live_order_allowed=live_order_allowed,
@@ -271,20 +275,24 @@ def _order_condition_block_reason(
 ) -> str:
     conditions = approval_artifact.approved_order_conditions
     if conditions is None:
-        return ""
+        return "approved order conditions missing"
     item_condition = conditions.get(item.pending_item_id) if isinstance(conditions, dict) else None
     if not isinstance(item_condition, dict):
         return "order condition not approved"
-    expected = {
+    expected_text = {
         "order_type": item.order_type,
         "target_session": target_session_date,
-        "quantity": item.quantity,
         "side": item.side,
         "issue_code": item.symbol,
     }
-    for key, expected_value in expected.items():
+    for key, expected_value in expected_text.items():
         if str(item_condition.get(key)) != str(expected_value):
             return "approved order condition mismatch"
+    try:
+        if float(item_condition.get("quantity")) != float(item.quantity):
+            return "approved order condition mismatch"
+    except (TypeError, ValueError):
+        return "approved order condition mismatch"
     if item.order_type == "MARKET" and item_condition.get("limit_price") is not None:
         return "market order limit_price must be null"
     if item.order_type == "LIMIT" and item_condition.get("limit_price") in (None, ""):

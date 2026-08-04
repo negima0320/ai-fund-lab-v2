@@ -180,10 +180,35 @@ def check_broker_positions_vs_asset_state(
             findings.append(_review("BROKER_POSITION_MISSING_IN_ASSET", "broker_position", broker_position.position_ref_hash, "asset position exists", "none", broker_position.as_of))
         elif asset_position.quantity != broker_position.quantity:
             findings.append(_review("POSITION_QUANTITY_MISMATCH", "asset_position", symbol, str(asset_position.quantity), str(broker_position.quantity), asset_state.created_at))
+        elif asset_position.market_value != broker_position.market_value:
+            findings.append(_review("POSITION_MARKET_VALUE_MISMATCH", "asset_position", symbol, str(asset_position.market_value), str(broker_position.market_value), asset_state.created_at))
     for symbol, asset_position in asset_by_symbol.items():
         if symbol not in broker_by_symbol:
             findings.append(_review("ASSET_POSITION_MISSING_IN_BROKER", "asset_position", symbol, "broker position exists", "none", asset_position.as_of))
     return tuple(findings)
+
+
+def check_broker_total_equity_vs_asset_state(
+    *,
+    broker_positions: Sequence[BrokerPositionSnapshot],
+    broker_cash: BrokerCashSnapshot | None,
+    asset_state: CurrentAssetState | None,
+) -> tuple[ReconciliationFinding, ...]:
+    if broker_cash is None or asset_state is None or asset_state.total_equity is None:
+        return ()
+    broker_total_equity = broker_cash.cash + sum(position.market_value for position in broker_positions)
+    if asset_state.total_equity != broker_total_equity:
+        return (
+            _review(
+                "TOTAL_EQUITY_MISMATCH",
+                "asset_state",
+                asset_state.asset_state_id,
+                str(asset_state.total_equity),
+                str(broker_total_equity),
+                asset_state.created_at,
+            ),
+        )
+    return ()
 
 
 def check_broker_cash_vs_asset_state(

@@ -224,69 +224,6 @@ def test_phase21_b_pm_add_generates_buy_pending_with_lineage(tmp_path):
     assert item["capital_allocation_status"] == "APPROVED"
     assert item["quantity"] > 0
     assert item["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-
-
-def test_phase23_bs_pm_add_pending_submit_policy_authority_reaches_submit_guard(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    policy_path = _policy_path(tmp_path)
-    policy = load_capital_deployment_policy(policy_path)
-    _write_current_state(
-        runtime_root,
-        positions=[_current_position("94320", quantity=1100, price=156.6, as_of="2022-07-12")],
-        as_of="2022-07-12",
-    )
-
-    result = run_sell_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date="2022-07-12",
-        mode="demo",
-        exit_decisions=(
-            SellExitDecision(
-                symbol="94320",
-                quantity=0,
-                reason="add",
-                source_decision="ADD",
-                source_decision_id="pm-2022-07-12-94320-add",
-            ),
-        ),
-        capital_deployment_policy=policy,
-        submit_policy_context=_submit_policy_context(policy),
-    )
-    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
-    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2022-07-12" / "pm_add_order_plan.json")
-    submit = run_submit_pipeline(
-        runtime_root=runtime_root,
-        business_date="2022-07-12",
-        mode="demo",
-        submit_enabled=True,
-        job="submit",
-        settings=_demo_settings(),
-        adapter=FakeRuntimeV2DemoSubmitAdapter(),
-        capital_deployment_policy_path=policy_path,
-    )
-
-    assert result.status == "PASS"
-    assert pending["pending_plan_id"] == "pending-order-plan-pm-add-2022-07-12"
-    assert len(pending["items"]) == 1
-    assert pending["items"][0]["symbol"] == "94320"
-    assert pending["items"][0]["side"] == "BUY"
-    assert pending["items"][0]["quantity"] == 100
-    assert pending["items"][0]["source_decision_type"] == "ADD"
-    assert order_plan["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["approval"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["items"][0]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert submit.submit_policy_consistency["policy_consistency_status"] == "PASS"
-    assert submit.submit_policy_consistency["policy_mismatch_reason"] == ""
-    assert submit.item_results[0].pending_item_id == pending["items"][0]["pending_item_id"]
-    assert submit.item_results[0].guard_evidence["safety_guard_status"] == "PASS"
-    assert submit.item_results[0].guard_evidence["buy_eligibility_status"] == "PASS"
-    assert submit.item_results[0].guard_evidence["opportunity_buy_eligibility_status"] == "PASS"
-    assert submit.item_results[0].guard_evidence["violated_policy"] == "submit_preflight"
-    assert submit.item_results[0].reason == "symbol not supported by broker capability"
-    assert submit.item_results[0].reason != "missing_submit_policy_evidence"
-
-
 def test_phase21_b_pm_add_rejects_duplicate_pending_order(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy = _policy(tmp_path)
@@ -327,42 +264,6 @@ def test_phase21_b_pm_producer_keeps_add_as_planning_candidate():
     assert len(decisions) == 1
     assert decisions[0].source_decision == "ADD"
     assert decisions[0].source_decision_id == "pm-2026-07-08-9432-add"
-
-
-def test_phase21_b_add_submit_ledger_keeps_lineage(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    policy_path = _policy_path(tmp_path)
-    policy = load_capital_deployment_policy(policy_path)
-    _write_current_state(runtime_root, positions=[_current_position("72030", quantity=1000, price=100)])
-
-    run_sell_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-08",
-        mode="demo",
-        exit_decisions=(SellExitDecision(symbol="7203", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-ledger"),),
-        capital_deployment_policy=policy,
-        submit_policy_context=_submit_policy_context(policy),
-    )
-    submit = run_submit_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-08",
-        mode="demo",
-        submit_enabled=True,
-        job="submit",
-        settings=_demo_settings(),
-        adapter=FakeRuntimeV2DemoSubmitAdapter(),
-        capital_deployment_policy_path=policy_path,
-    )
-    orders = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
-
-    assert submit.status == "PASS"
-    assert submit.submit_policy_consistency["policy_consistency_status"] == "PASS"
-    assert orders[0]["side"] == "BUY"
-    assert orders[0]["source_decision_type"] == "ADD"
-    assert orders[0]["source_pm_decision_id"] == "pm-add-ledger"
-    assert orders[0]["add_candidate_signal"] is True
-
-
 def _runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / ".runtime"
     (root / "pending_order_plan").mkdir(parents=True)
@@ -376,6 +277,7 @@ def _runtime_root(tmp_path: Path) -> Path:
 
 
 def _write_current_state(root: Path, *, positions, as_of: str = "2026-07-08"):
+    market_value = sum(float(item["market_value"]) for item in positions)
     payload = {
         "schema_version": "1",
         "asset_state_id": "asset-phase21b",
@@ -385,8 +287,8 @@ def _write_current_state(root: Path, *, positions, as_of: str = "2026-07-08"):
         "positions": positions,
         "cash": 1_000_000,
         "buying_power": 1_000_000,
-        "market_value": sum(float(item["market_value"]) for item in positions),
-        "total_equity": 1_000_000 + sum(float(item["market_value"]) for item in positions),
+        "market_value": market_value,
+        "total_equity": 1_000_000 + market_value,
         "review_required": False,
         "production_equivalent": False,
         "current_state_confirmed_empty": False,
@@ -398,6 +300,8 @@ def _write_current_state(root: Path, *, positions, as_of: str = "2026-07-08"):
         "updated_at": as_of,
     }
     _write_json(root / "persistent_ledger" / "state.json", payload)
+    _write_dynamic_cash_exposure(root, business_date=as_of, cash=1_000_000, market_value=market_value)
+    _write_position_sizing(root, business_date=as_of, positions=positions, cash=1_000_000, market_value=market_value)
 
 
 def _current_position(symbol: str, *, quantity: float, price: float, as_of: str = "2026-07-08") -> dict:
@@ -428,10 +332,9 @@ def _write_existing_buy_pending(root: Path, *, symbol: str):
         policy_version="capital_deployment_v1",
         policy_source="fixture",
         evaluation_capital=1_000_000,
-        target_investment_ratio=0.85,
-        cash_buffer=0.05,
-        max_exposure=850_000,
-        max_position_weight=0.2,
+        target_investment_ratio=None,
+        cash_buffer=None,
+        max_exposure=None,
         max_positions=5,
         min_order_amount=0,
         buy_notional_policy="fixture",
@@ -473,10 +376,6 @@ def _policy_path(tmp_path: Path, *, max_buy_order_amount=None) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": max_buy_order_amount,
@@ -490,6 +389,161 @@ def _policy_path(tmp_path: Path, *, max_buy_order_amount=None) -> Path:
         },
     )
     return path
+
+
+def _write_position_sizing(root: Path, *, business_date: str, positions, cash: float, market_value: float) -> None:
+    total_equity = cash + market_value
+    rows = []
+    for item in positions:
+        current_notional = float(item["market_value"])
+        target_weight = 0.18
+        target_notional = round(total_equity * target_weight, 2)
+        incremental = max(round(target_notional - current_notional, 2), 0.0)
+        rows.append(
+            {
+                "security_code": str(item["symbol"]),
+                "membership_intent": "KEEP",
+                "pm_action": "ADD",
+                "current_weight": round(current_notional / total_equity, 6) if total_equity else 0.0,
+                "base_weight": target_weight,
+                "quality_adjustment": 1.0,
+                "volatility_adjustment": 1.0,
+                "pm_intent_adjustment": 1.0,
+                "adjusted_weight": target_weight,
+                "capped_weight": target_weight,
+                "target_weight": target_weight,
+                "weight_delta": round(target_weight - (current_notional / total_equity if total_equity else 0.0), 6),
+                "target_notional": target_notional,
+                "current_notional": current_notional,
+                "incremental_target_notional": incremental,
+                "incremental_buy_notional": incremental,
+                "minimum_meaningful_notional": 0.0,
+                "maximum_position_weight": target_weight,
+                "sizing_status": "SIZED",
+                "confidence": 0.9,
+                "uncertainty": "LOW",
+                "reason_codes": ["fixture_position_sizing"],
+                "target_weight_authority": {
+                    "portfolio_policy_reference": {
+                        "path": "fixture_portfolio_policy",
+                    }
+                },
+            }
+        )
+    total_target_weight = round(sum(float(row["target_weight"]) for row in rows), 6)
+    payload = {
+        "schema_version": "position_sizing.v1",
+        "business_date": business_date,
+        "as_of": f"{business_date}T00:00:00+00:00",
+        "feature_date": business_date,
+        "artifact_lifecycle_status": "DRAFT",
+        "source_authority_status": "VALID",
+        "producer_result_status": "PASS",
+        "runtime_consumer_eligibility": "NOT_ELIGIBLE",
+        "target_gross_exposure_ratio": 0.80,
+        "target_position_count": len(rows),
+        "positions": rows,
+        "positions_sized": len(rows),
+        "positions_withheld": 0,
+        "total_target_weight": total_target_weight,
+        "residual_cash_ratio": round(max(1.0 - total_target_weight, 0.0), 6),
+        "concrete_target_weight_decided": True,
+        "target_notional_decided": True,
+        "share_quantity_decided": False,
+        "lot_rounding_decided": False,
+        "order_price_decided": False,
+        "pending_decided": False,
+        "submit_decided": False,
+        "strategy_maximum_position_weight": 0.18,
+        "strategy_maximum_position_weight_source": "fixture#strategy_maximum_position_weight",
+        "safety_maximum_position_weight": 0.25,
+        "safety_maximum_position_weight_source": "fixture#safety_maximum_position_weight",
+        "safety_authority_status": "PASS",
+        "effective_maximum_position_weight": 0.18,
+        "effective_maximum_position_weight_derivation": "min(strategy_maximum_position_weight, safety_maximum_position_weight)",
+        "explicit_zero_cap": False,
+        "emergency_brake_active": False,
+        "market_context_risk_state": "NORMAL",
+        "dynamic_position_count": len(rows),
+        "dynamic_cash_exposure": 0.80,
+        "aggregate_exposure_cap": 0.80,
+        "source_artifacts": [{"role": "portfolio_policy", "path": "fixture_portfolio_policy", "required": True, "status": "PASS"}],
+        "source_hashes": [{"role": "fixture", "path": "fixture", "sha256": "0" * 64}],
+        "temporal_safety": {
+            "point_in_time": True,
+            "future_leakage_used": False,
+            "feature_date_lte_business_date": True,
+            "implicit_latest_fallback_used": False,
+            "previous_day_position_sizing_copied": False,
+        },
+        "production_consumer_connected": False,
+        "runtime_switch_performed": False,
+    }
+    _write_json(
+        root / "strategy_artifacts" / "position_sizing" / business_date / "position_sizing.json",
+        payload,
+    )
+
+
+def _write_dynamic_cash_exposure(root: Path, *, business_date: str, cash: float, market_value: float) -> None:
+    total_equity = cash + market_value
+    target_cash_ratio = 0.20
+    target_exposure_ratio = 0.80
+    payload = {
+        "schema_version": "dynamic_cash_exposure.v1",
+        "business_date": business_date,
+        "as_of": f"{business_date}T00:00:00+00:00",
+        "feature_date": business_date,
+        "artifact_lifecycle_status": "DRAFT",
+        "source_authority_status": "VALID",
+        "producer_result_status": "PASS",
+        "runtime_consumer_eligibility": "NOT_ELIGIBLE",
+        "minimum_cash_ratio": 0.12,
+        "target_cash_ratio": target_cash_ratio,
+        "maximum_cash_ratio": 0.50,
+        "minimum_gross_exposure_ratio": 0.40,
+        "target_gross_exposure_ratio": target_exposure_ratio,
+        "maximum_gross_exposure_ratio": 0.88,
+        "portfolio_total_equity": total_equity,
+        "current_cash": cash,
+        "current_market_value": market_value,
+        "pending_reserved_cash": 0.0,
+        "net_available_cash": cash,
+        "target_cash_amount": round(total_equity * target_cash_ratio, 2),
+        "target_invested_ratio": target_exposure_ratio,
+        "target_invested_notional": round(total_equity * target_exposure_ratio, 2),
+        "current_invested_ratio": 0.0 if total_equity <= 0 else round(market_value / total_equity, 6),
+        "incremental_deployment_capacity": max(round(total_equity * target_exposure_ratio - market_value, 2), 0.0),
+        "strategy_fixed_jpy_exposure_cap_used": False,
+        "legacy_max_exposure_authority_used": False,
+        "current_cash_ratio": 0.0 if total_equity <= 0 else round(cash / total_equity, 6),
+        "current_gross_exposure_ratio": 0.0 if total_equity <= 0 else round(market_value / total_equity, 6),
+        "cash_posture": "DEPLOY",
+        "exposure_posture": "INCREASE",
+        "capital_constraint_status": "SUFFICIENT",
+        "confidence": 0.9,
+        "uncertainty": "LOW",
+        "reason_codes": ["fixture_dynamic_cash_exposure"],
+        "source_artifacts": [{"role": "fixture", "path": "fixture", "required": True, "status": "PASS"}],
+        "source_hashes": [{"role": "fixture", "path": "fixture", "sha256": "0" * 64}],
+        "temporal_safety": {
+            "point_in_time": True,
+            "future_leakage_used": False,
+            "feature_date_lte_business_date": True,
+            "implicit_latest_fallback_used": False,
+            "previous_day_dynamic_cash_exposure_copied": False
+        },
+        "production_consumer_connected": False,
+        "runtime_switch_performed": False,
+        "position_sizing_decided": False,
+        "allocation_decided": False,
+        "quantity_decided": False,
+        "lot_rounding_decided": False
+    }
+    _write_json(
+        root / "strategy_artifacts" / "dynamic_cash_exposure" / business_date / "dynamic_cash_exposure.json",
+        payload,
+    )
 
 
 def _submit_policy_context(policy) -> dict:

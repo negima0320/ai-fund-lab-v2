@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ class NormalizationReport:
     adjusted_count: int
     unadjusted_count: int
     error_count: int
+    valid_no_price_dropped_count: int
     warning_count: int
     duplicate_key_count: int
     status: str
@@ -47,6 +49,7 @@ def normalize_daily_quotes(records: list[dict[str, Any]], limit_errors: int = 20
     adjusted_count = 0
     unadjusted_count = 0
     warning_count = 0
+    valid_no_price_dropped_count = 0
     sample_errors: list[str] = []
     sample_warnings: list[str] = []
 
@@ -63,8 +66,14 @@ def normalize_daily_quotes(records: list[dict[str, Any]], limit_errors: int = 20
         date = str(record.get("Date") or record.get("target_date") or "")
         code = str(record.get("Code") or record.get("code") or "")
         if not source_fields or not date or not code:
-            if len(sample_errors) < limit_errors:
-                missing = _missing_reason(record)
+            missing = _missing_reason(record)
+            if date and code and _has_all_missing(record, ADJUSTED_FIELDS) and _has_all_missing(record, UNADJUSTED_FIELDS):
+                valid_no_price_dropped_count += 1
+                if len(sample_warnings) < limit_errors:
+                    sample_warnings.append(
+                        f"record={index} date={date} code={code} valid_no_price_row_dropped_from_canonical_ohlcv"
+                    )
+            elif len(sample_errors) < limit_errors:
                 sample_errors.append(f"record={index} date={date or '(missing)'} code={code or '(missing)'} {missing}")
             continue
         if price_source == "adjusted":
@@ -98,14 +107,21 @@ def normalize_daily_quotes(records: list[dict[str, Any]], limit_errors: int = 20
 
     duplicate_key_count = _duplicate_key_count(normalized_records)
     validation = validate_records(DAILY_QUOTES_NORMALIZED_ENDPOINT, normalized_records)
-    status = "ERROR" if len(records) != len(normalized_records) else validation.status
+    error_count = len(records) - len(normalized_records) - valid_no_price_dropped_count
+    if error_count or validation.status == "ERROR":
+        status = "ERROR"
+    elif valid_no_price_dropped_count or warning_count or validation.status == "WARNING":
+        status = "WARNING"
+    else:
+        status = validation.status
     report = NormalizationReport(
         endpoint_name=DAILY_QUOTES_NORMALIZED_ENDPOINT,
         input_record_count=len(records),
         output_record_count=len(normalized_records),
         adjusted_count=adjusted_count,
         unadjusted_count=unadjusted_count,
-        error_count=len(records) - len(normalized_records),
+        error_count=error_count,
+        valid_no_price_dropped_count=valid_no_price_dropped_count,
         warning_count=warning_count,
         duplicate_key_count=duplicate_key_count,
         status=status,
@@ -158,19 +174,34 @@ def resolve_input_format(paths: RuntimePaths, input_format: str) -> str:
 
 
 def _has_all(record: dict[str, Any], fields: tuple[str, ...]) -> bool:
-    return all(record.get(field) not in (None, "") for field in fields)
+    return all(not _is_missing_value(record.get(field)) for field in fields)
+
+
+def _has_all_missing(record: dict[str, Any], fields: tuple[str, ...]) -> bool:
+    return all(_is_missing_value(record.get(field)) for field in fields)
 
 
 def _missing_reason(record: dict[str, Any]) -> str:
-    missing_adjusted = [field for field in ADJUSTED_FIELDS if record.get(field) in (None, "")]
-    missing_unadjusted = [field for field in UNADJUSTED_FIELDS if record.get(field) in (None, "")]
-    missing_key = [field for field in ("Date", "Code") if record.get(field) in (None, "")]
+    missing_adjusted = [field for field in ADJUSTED_FIELDS if _is_missing_value(record.get(field))]
+    missing_unadjusted = [field for field in UNADJUSTED_FIELDS if _is_missing_value(record.get(field))]
+    missing_key = [field for field in ("Date", "Code") if _is_missing_value(record.get(field))]
     parts = []
     if missing_key:
         parts.append(f"missing_key={','.join(missing_key)}")
     parts.append(f"missing_adjusted={','.join(missing_adjusted) or '(none)'}")
     parts.append(f"missing_unadjusted={','.join(missing_unadjusted) or '(none)'}")
     return " ".join(parts)
+
+
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ""
+    try:
+        return bool(math.isnan(value))
+    except TypeError:
+        return False
 
 
 def _zero_fields(record: dict[str, Any]) -> list[str]:

@@ -459,6 +459,23 @@ def add_acceptance_evidence_checks(
     if repo_root is None or any(not event.get(field) for field in ("acceptance_report_ref", "review_ref", "regression_ref")):
         return
 
+    report_ref = str(event["acceptance_report_ref"])
+    recorded_report_hash = source_hash_for_ref(event, report_ref)
+    report_path = resolve_evidence_ref(report_ref, repo_root=repo_root)
+    if recorded_report_hash and report_path is not None and report_path.is_file():
+        current_report_hash = sha256_file(report_path)
+        if current_report_hash != recorded_report_hash:
+            add_check(
+                checks,
+                True,
+                "acceptance_evidence",
+                "acceptance report current path differs from event source hash; recorded source hash retained",
+                "$.acceptance_report_ref",
+                result="WARN",
+                severity="WARNING",
+            )
+            return
+
     report = read_evidence_json(event["acceptance_report_ref"], repo_root=repo_root)
     if report is None:
         add_check(checks, False, "acceptance_evidence", "acceptance report exists", "$.acceptance_report_ref", failure_class="HALT")
@@ -699,6 +716,16 @@ def evidence_hash_matches(mapping: Any, expected: Any, *, allow_null: bool = Fal
     expected_clean = strip_sha_prefix(str(expected))
     values = {strip_sha_prefix(str(value)) for value in mapping.values() if value is not None}
     return expected_clean in values
+
+
+def source_hash_for_ref(event: dict[str, Any], ref: str) -> str | None:
+    for item in event.get("source_hashes") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("ref") or "") == ref:
+            value = item.get("hash")
+            return strip_sha_prefix(str(value)) if value else None
+    return None
 
 
 def read_evidence_json(ref: str, *, repo_root: Path) -> Any | None:

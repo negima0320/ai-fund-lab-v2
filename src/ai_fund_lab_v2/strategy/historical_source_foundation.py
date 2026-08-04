@@ -94,7 +94,7 @@ def default_source_specs(runtime_root: Path) -> tuple[SourceSpec, ...]:
 
 
 def build_source_coverage_inventory(*, runtime_root: Path) -> dict[str, Any]:
-    sources = [_inventory_for_spec(spec) for spec in default_source_specs(runtime_root)]
+    sources = [_inventory_for_spec(spec, runtime_root=runtime_root) for spec in default_source_specs(runtime_root)]
     buy_ai = _buy_ai_coverage(runtime_root / "runtime_state" / "buy_ai")
     state = _json_state_coverage(runtime_root=runtime_root)
     accepted = _accepted_generation_coverage(runtime_root / "runtime_state" / "accepted_buy_ai_bundle.json")
@@ -129,11 +129,12 @@ def build_historical_strategy_preflight(
     runtime_root: Path,
     requested_start_date: str,
     requested_business_days: int,
+    requested_dates: list[str] | None = None,
 ) -> dict[str, Any]:
     inventory = build_source_coverage_inventory(runtime_root=runtime_root)
     calendar_dates = _source_dates(inventory, "trading_calendar")
-    requested_dates = _business_dates_from_calendar(calendar_dates, requested_start_date, requested_business_days)
-    evaluation_end = requested_dates[-1] if requested_dates else requested_start_date
+    resolved_dates = list(requested_dates) if requested_dates is not None else _business_dates_from_calendar(calendar_dates, requested_start_date, requested_business_days)
+    evaluation_end = resolved_dates[-1] if resolved_dates else requested_start_date
     required_warmup_start = _warmup_start(calendar_dates, requested_start_date, 21)
     root_blockers: list[str] = []
     missing_sources: list[str] = []
@@ -145,8 +146,8 @@ def build_historical_strategy_preflight(
     listed = _coverage_check(inventory, "listed_information", requested_start_date, evaluation_end)
     sector = _sector_readiness(inventory, requested_start_date, evaluation_end)
     corporate = _corporate_event_readiness(inventory, requested_start_date, evaluation_end)
-    candidate = _daily_output_readiness(inventory["candidate_output"], requested_dates, "candidate")
-    opportunity = _daily_output_readiness(inventory["opportunity_output"], requested_dates, "opportunity")
+    candidate = _daily_runtime_generation_readiness(inventory["candidate_output"], resolved_dates, "candidate")
+    opportunity = _daily_runtime_generation_readiness(inventory["opportunity_output"], resolved_dates, "opportunity")
     portfolio = _state_readiness(inventory["portfolio_state"], requested_start_date, role="portfolio_state")
     pending = _state_readiness(inventory["pending_state"], requested_start_date, role="pending_state")
     accepted = inventory["accepted_generation"]
@@ -169,7 +170,7 @@ def build_historical_strategy_preflight(
             root_blockers.append(name)
             missing_sources.extend(str(code) for code in check.get("reason_codes", []) if code)
     first_eligible = first_eligible_start_date(inventory=inventory, requested_business_days=requested_business_days)
-    operator_ready = bool(requested_dates) and not root_blockers
+    operator_ready = bool(resolved_dates) and not root_blockers
     return {
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "runtime_root": str(runtime_root),
@@ -182,8 +183,8 @@ def build_historical_strategy_preflight(
         "candidate_coverage": candidate,
         "opportunity_coverage": opportunity,
         "portfolio_state_coverage": portfolio,
-        "eligible_dates": requested_dates if operator_ready else [],
-        "blocked_dates": [] if operator_ready else requested_dates,
+        "eligible_dates": resolved_dates if operator_ready else [],
+        "blocked_dates": [] if operator_ready else resolved_dates,
         "first_eligible_start_date": first_eligible,
         "missing_sources": sorted(set(missing_sources)),
         "root_blockers": sorted(set(root_blockers)),
@@ -231,7 +232,7 @@ def first_eligible_start_date(*, inventory: Mapping[str, Any], requested_busines
     calendar_dates = _source_dates(inventory, "trading_calendar")
     if not calendar_dates:
         return ""
-    candidates = sorted(set(calendar_dates) & set(inventory.get("candidate_output", {}).get("dates", [])) & set(inventory.get("opportunity_output", {}).get("dates", [])))
+    candidates = sorted(set(calendar_dates))
     for candidate in candidates:
         dates = _business_dates_from_calendar(calendar_dates, candidate, requested_business_days)
         if len(dates) != requested_business_days:
@@ -249,8 +250,6 @@ def _preflight_from_inventory(*, inventory: Mapping[str, Any], requested_start_d
     checks = [
         _market_check_with_warmup(inventory, calendar_dates, requested_start_date, end, warmup_start),
         _coverage_check(inventory, "listed_information", requested_start_date, end),
-        _daily_output_readiness(inventory["candidate_output"], requested_dates, "candidate"),
-        _daily_output_readiness(inventory["opportunity_output"], requested_dates, "opportunity"),
     ]
     return all(check.get("status") == "PASS" for check in checks)
 
@@ -263,21 +262,34 @@ def _market_check_with_warmup(inventory: Mapping[str, Any], calendar_dates: list
     return check
 
 
-def _inventory_for_spec(spec: SourceSpec) -> dict[str, Any]:
+def _inventory_for_spec(spec: SourceSpec, *, runtime_root: Path) -> dict[str, Any]:
+    overlay_paths = _validated_acquisition_overlay_paths(runtime_root=runtime_root, source_name=spec.name)
+    source_paths = [spec.path, *overlay_paths]
     base: dict[str, Any] = {
         "name": spec.name,
         "authority_owner": spec.authority_owner,
         "canonical_path": str(spec.path),
+        "authority_paths": [str(path) for path in source_paths],
+        "overlay_paths": [str(path) for path in overlay_paths],
+        "overlay_count": len(overlay_paths),
+        "selected_source_role": "canonical_plus_validated_acquisition_overlay" if overlay_paths else "operations_canonical",
+        "canonical_mutated": False,
+        "fallback_path": "",
+        "legacy_path": "",
         "file_format": spec.file_format,
         "required": spec.required,
         "required_lookback": spec.required_lookback,
         "consumer_components": list(spec.consumer_components),
-        "exists": spec.path.is_file(),
+        "exists": any(path.is_file() for path in source_paths),
         "sha256": _file_hash(spec.path),
         "date_column": "",
         "publication_effective_date_fields": list(spec.date_columns),
         "pit_usability": "SOURCE_UNAVAILABLE",
-        "materialization_command": "reuse canonical source; no per-run rewrite",
+        "materialization_command": (
+            "reuse operations canonical source plus validated acquisition staging overlay; no runtime mutation"
+            if overlay_paths
+            else "reuse canonical source; no per-run rewrite"
+        ),
         "missing_periods": [],
         "row_count": 0,
         "symbol_count": 0,
@@ -285,28 +297,80 @@ def _inventory_for_spec(spec: SourceSpec) -> dict[str, Any]:
         "max_business_date": "",
         "dates": [],
     }
-    if not spec.path.is_file():
+    readable_paths = [path for path in source_paths if path.is_file()]
+    if not readable_paths:
         return base
     try:
         import pandas as pd
 
-        frame = pd.read_parquet(spec.path)
+        frames = [pd.read_parquet(path) for path in readable_paths]
+        frame = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
     except Exception as exc:
         base.update({"pit_usability": "READ_ERROR", "read_error": type(exc).__name__})
         return base
     base["row_count"] = int(len(frame))
-    date_col = next((col for col in spec.date_columns if col in frame.columns), "")
-    symbol_col = next((col for col in spec.symbol_columns if col in frame.columns), "")
+    date_col = _best_populated_column(frame, spec.date_columns)
+    symbol_col = _best_populated_column(frame, spec.symbol_columns)
     base["date_column"] = date_col
     if symbol_col:
-        base["symbol_count"] = int(frame[symbol_col].astype(str).nunique())
+        symbols: set[str] = set()
+        for col in spec.symbol_columns:
+            if col in frame.columns:
+                symbols.update(str(value) for value in frame[col].dropna().astype(str))
+        base["symbol_count"] = len(symbols)
     if date_col and not frame.empty:
-        dates = sorted(set(str(value) for value in frame[date_col].dropna().astype(str)))
+        dates: list[str] = sorted(
+            {
+                str(value)
+                for col in spec.date_columns
+                if col in frame.columns
+                for value in frame[col].dropna().astype(str)
+            }
+        )
         base["dates"] = dates
         base["min_business_date"] = dates[0] if dates else ""
         base["max_business_date"] = dates[-1] if dates else ""
         base["pit_usability"] = "PIT_USABLE" if dates else "SOURCE_UNAVAILABLE"
     return base
+
+
+def _best_populated_column(frame: Any, columns: tuple[str, ...]) -> str:
+    present = [column for column in columns if column in frame.columns]
+    if not present:
+        return ""
+    return max(present, key=lambda column: int(frame[column].notna().sum()))
+
+
+def _validated_acquisition_overlay_paths(*, runtime_root: Path, source_name: str) -> list[Path]:
+    relative_by_source = {
+        "trading_calendar": Path("raw/jquants/trading_calendar/data.parquet"),
+        "daily_quotes": Path("raw_normalized/jquants/equities_bars_daily/data.parquet"),
+        "listed_information": Path("raw/jquants/listed_issues/data.parquet"),
+    }
+    relative = relative_by_source.get(source_name)
+    if relative is None:
+        return []
+    run_root = runtime_root / "market_data_acquisition" / "runs"
+    if not run_root.is_dir():
+        return []
+    paths: list[Path] = []
+    for state_path in sorted(run_root.glob("*/state.json")):
+        run_dir = state_path.parent
+        plan_path = run_dir / "plan.json"
+        source_path = run_dir / relative
+        if not plan_path.is_file() or not source_path.is_file():
+            continue
+        state = _read_json(state_path)
+        plan = _read_json(plan_path)
+        final = dict(state.get("final_validation") or {})
+        if state.get("status") != "PASS" or plan.get("status") != "PASS" or final.get("status") != "PASS":
+            continue
+        if state.get("acquisition_run_id") != run_dir.name or plan.get("acquisition_run_id") != run_dir.name:
+            continue
+        if int(final.get("future_date_count") or 0) != 0:
+            continue
+        paths.append(source_path)
+    return paths
 
 
 def _buy_ai_coverage(root: Path) -> dict[str, Any]:
@@ -398,6 +462,12 @@ def _coverage_check(inventory: Mapping[str, Any], source_name: str, start: str, 
         "required_start": required_start,
         "evaluation_end_date": end,
         "reason_codes": reasons,
+        "authority_paths": list(source.get("authority_paths") or []),
+        "overlay_paths": list(source.get("overlay_paths") or []),
+        "selected_source_role": str(source.get("selected_source_role") or ""),
+        "canonical_mutated": bool(source.get("canonical_mutated")),
+        "fallback_path": str(source.get("fallback_path") or ""),
+        "legacy_path": str(source.get("legacy_path") or ""),
     }
 
 
@@ -448,6 +518,35 @@ def _daily_output_readiness(coverage: Mapping[str, Any], dates: list[str], role:
         "missing_dates": missing,
         "reason_codes": [] if not missing and dates else [f"{role}_daily_output_missing"],
         "latest_fallback_used": False,
+    }
+
+
+def _daily_runtime_generation_readiness(coverage: Mapping[str, Any], dates: list[str], role: str) -> dict[str, Any]:
+    available = set(str(day) for day in coverage.get("dates", []))
+    missing = [day for day in dates if day not in available]
+    future_existing_dates = sorted(day for day in available if dates and day > max(dates))
+    return {
+        "status": "PASS" if dates else "REVIEW_REQUIRED",
+        "role": role,
+        "artifact_lifecycle": "DAILY_RUNTIME_GENERATED_ARTIFACT",
+        "producer_job": "morning",
+        "producer": "runtime_v2.buy_ai.producer.produce_buy_ai_decisions",
+        "consumer": "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority",
+        "preexisting_artifact_required": False,
+        "runtime_generation_required": True,
+        "coverage_start": str(coverage.get("min_business_date") or ""),
+        "coverage_end": str(coverage.get("max_business_date") or ""),
+        "requested_dates": dates,
+        "preexisting_dates": sorted(available & set(dates)),
+        "missing_preexisting_dates": missing,
+        "missing_dates": [],
+        "reason_codes": [] if dates else [f"{role}_runtime_generation_window_unresolved"],
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_fallback_used": False,
+        "future_artifact_selectable": False,
+        "future_existing_dates_ignored": future_existing_dates,
+        "failure_semantics": "runtime producer failure on a requested business date becomes REVIEW_REQUIRED/BLOCKED for that day",
     }
 
 

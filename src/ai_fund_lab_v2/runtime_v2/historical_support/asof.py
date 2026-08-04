@@ -525,6 +525,10 @@ def _select_composed_lookback_candidate(
 ) -> dict[str, Any]:
     attempts = []
     for staging in sorted(staging_candidates, key=_lookback_candidate_rank, reverse=True):
+        skip = _skip_composition_attempt_if_target_unavailable(staging, business_date)
+        if skip:
+            attempts.append(skip)
+            continue
         attempt = _composed_lookback_candidate(
             operations_candidate=operations_candidate,
             staging_candidate=staging,
@@ -534,13 +538,52 @@ def _select_composed_lookback_candidate(
         if attempt["status"] == "PASS":
             return attempt | {"composition_attempts": attempts}
     if attempts:
-        return attempts[0] | {"composition_attempts": attempts}
+        first_material_attempt = next((attempt for attempt in attempts if attempt.get("status") != "SKIPPED"), None)
+        if first_material_attempt is not None:
+            return first_material_attempt | {"composition_attempts": attempts}
+        return {
+            "schema_version": "historical_source_composition_v1",
+            "status": "BLOCK",
+            "reason": "COMPOSITION_TARGET_DATE_UNAVAILABLE",
+            "business_date": business_date,
+            "overlay_target_date_available": False,
+            "composition_attempts": attempts,
+            "runtime_market_data_mutated": False,
+        }
     return {
         "schema_version": "historical_source_composition_v1",
         "status": "BLOCK",
         "reason": "validated_staging_source_missing",
         "business_date": business_date,
         "composition_attempts": [],
+    }
+
+
+def _skip_composition_attempt_if_target_unavailable(staging_candidate: dict[str, Any], business_date: str) -> dict[str, Any]:
+    warmup = dict(staging_candidate.get("warmup_sufficiency") or {})
+    calendar = dict(staging_candidate.get("trading_calendar_lookback") or {})
+    target_available = bool(warmup.get("target_date_available"))
+    calendar_target_available = bool(calendar.get("target_date_available"))
+    if target_available or calendar_target_available:
+        return {}
+    normalized_path = str(staging_candidate.get("normalized_path") or "")
+    return {
+        "schema_version": "historical_source_composition_v1",
+        "status": "SKIPPED",
+        "reason": "COMPOSITION_TARGET_DATE_UNAVAILABLE",
+        "business_date": business_date,
+        "overlay_target_date_available": False,
+        "base_source_role": "operations_canonical",
+        "overlay_source_role": str(staging_candidate.get("role") or ""),
+        "normalized_path": normalized_path,
+        "raw_path": str(staging_candidate.get("raw_path") or ""),
+        "trading_calendar_path": str(staging_candidate.get("trading_calendar_path") or ""),
+        "candidate_status": str(staging_candidate.get("status") or ""),
+        "candidate_reason": str(staging_candidate.get("reason") or ""),
+        "candidate_rank": list(_lookback_candidate_rank(staging_candidate)),
+        "skip_policy": "target business date must be present before full PIT composition",
+        "pit_semantics_preserved": True,
+        "future_rows_selectable": False,
     }
 
 

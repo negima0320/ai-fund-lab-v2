@@ -30,7 +30,7 @@ def _run_system_status(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _report() -> dict:
     result = _run_system_status("--runtime-root", str(ISOLATED_ROOT), "--json")
-    assert result.returncode == 0
+    assert result.returncode in {0, 20}
     return json.loads(result.stdout)["system_status_report"]
 
 

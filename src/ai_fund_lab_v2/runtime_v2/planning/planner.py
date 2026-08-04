@@ -161,7 +161,6 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
         target_investment_ratio=_policy_value(allocation, "target_investment_ratio"),
         cash_buffer=_policy_value(allocation, "cash_buffer"),
         max_exposure=_policy_value(allocation, "max_exposure"),
-        max_position_weight=_policy_value(allocation, "max_position_weight"),
         max_positions=_policy_value(allocation, "max_positions"),
         max_buy_order_amount=_policy_value(allocation, "max_buy_order_amount"),
         max_sell_liquidation_amount=_policy_value(allocation, "max_sell_liquidation_amount"),

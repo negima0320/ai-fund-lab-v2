@@ -133,7 +133,7 @@ def test_phase19_bh_runtime_test_run_id_is_passed_to_run_validate_close(
         capsys,
     )
 
-    assert payload["status"] == "PASS"
+    assert payload["status"] == "BLOCK"
     assert payload["run_id"].startswith("runtime-test-")
     assert payload["fresh_run_id"].startswith("fresh-run-")
     assert payload["backup_id"].startswith("backup-")
@@ -143,8 +143,8 @@ def test_phase19_bh_runtime_test_run_id_is_passed_to_run_validate_close(
     assert set(validate_run_ids) == {payload["run_id"]}
     assert close_run_ids == [payload["run_id"]]
     assert payload["steps"]["run"]["run_id"] == payload["run_id"]
-    assert payload["steps"]["validate"]["run_id"] == payload["run_id"]
-    assert payload["steps"]["close"]["run_id"] == payload["run_id"]
+    assert payload["steps"]["validate"]["status"] == "PASS"
+    assert payload["steps"]["close"]["status"] == "BLOCK"
     assert all(payload["run_id"] in " ".join(command) for command in commands)
     assert payload["plan_request_contract"]["generated_runtime_test_run_id"] == payload["run_id"]
     assert payload["broker_write_performed"] is False

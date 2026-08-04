@@ -226,7 +226,8 @@ def validate_daily_evaluation_evidence(payload: dict[str, Any]) -> dict[str, Any
     missing = [field for field in required if field not in payload]
     capital = payload.get("capital") if isinstance(payload.get("capital"), dict) else {}
     capital_required = [
-        "runtime_evaluation_capital",
+        "initial_or_bootstrap_capital",
+        "runtime_evaluation_capital_used_as_current",
         "buying_power",
         "cash",
         "market_value",
@@ -274,11 +275,9 @@ def _build_capital(
     fills_payload: dict[str, Any],
 ) -> dict[str, Any]:
     cash = _pick_number(current_state, valuation_projection, keys=("cash",))
-    buying_power = _pick_number(current_state, valuation_projection, keys=("buying_power", "cash"))
+    buying_power = _pick_number(current_state, valuation_projection, keys=("buying_power",))
     market_value = _pick_number(current_state, valuation_projection, keys=("market_value", "new_total_market_value"))
     total_equity = _pick_number(current_state, valuation_projection, keys=("total_equity",))
-    if total_equity is None and cash is not None and market_value is not None:
-        total_equity = cash + market_value
     position_count = _position_count(current_state=current_state, valuation_projection=valuation_projection)
     target_cash = _number(portfolio_policy.get("cash_reserve_ratio"), portfolio_policy.get("cash_reserve"))
     target_gross = _number(position_sizing.get("aggregate_exposure_cap"), position_sizing.get("dynamic_cash_exposure"))
@@ -289,7 +288,13 @@ def _build_capital(
     cash_ratio = cash / total_equity if _positive(total_equity) and cash is not None else None
     idle_cash = cash - (policy_cash_buffer or 0.0) - (pending_reserved_cash or 0.0) if cash is not None and policy_cash_buffer is not None else None
     return {
-        "runtime_evaluation_capital": _observed_number(current_state.get("runtime_evaluation_capital")),
+        "initial_or_bootstrap_capital": _observed_number(
+            current_state.get("initial_or_bootstrap_capital")
+            or current_state.get("initial_capital")
+            or current_state.get("bootstrap_capital")
+            or current_state.get("runtime_evaluation_capital")
+        ),
+        "runtime_evaluation_capital_used_as_current": {"value": False, "status": "OBSERVED"},
         "buying_power": _observed_number(buying_power),
         "cash": _observed_number(cash),
         "market_value": _observed_number(market_value),

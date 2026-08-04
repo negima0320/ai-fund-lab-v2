@@ -92,10 +92,12 @@ def test_phase18v_fresh_run_happy_path_reuses_normal_runtime_cli_and_closes(
         ],
         capsys,
     )
-    assert payload["status"] == "PASS"
+    assert payload["status"] == "BLOCK"
     assert payload["backup_id"].startswith("backup-")
     assert payload["run_id"].startswith("runtime-test-")
-    assert payload["steps"]["close"]["status"] == "PASS"
+    assert payload["steps"]["run"]["status"] == "PASS"
+    assert payload["steps"]["validate"]["status"] == "PASS"
+    assert payload["steps"]["close"]["status"] == "BLOCK"
     assert len(commands) == len(runner.JOB_SEQUENCE)
     assert commands[0][commands[0].index("-m") + 1] == runner.RUNTIME_CLI_MODULE
     assert (evidence / "runs" / payload["run_id"] / "plan.json").is_file()

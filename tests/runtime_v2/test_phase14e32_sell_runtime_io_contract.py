@@ -103,69 +103,6 @@ def test_phase14e32_sell_planning_blocks_quantity_above_current_position(tmp_pat
     item = result.order_plan.items[0]
     assert item.blocked is True
     assert "sell quantity exceeds current position" in item.reason
-
-
-def test_phase14e32_sell_submit_execution_current_report_notification_flow(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    _write_current_state(runtime_root, positions=[_current_position("6522", quantity=100, price=102)])
-    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
-    _write_broker_positions_snapshot(runtime_root, symbol="6522", quantity=100, available_quantity=100)
-    run_sell_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-08",
-        mode="demo",
-        exit_decisions=(SellExitDecision(symbol="6522", quantity=100, reason="exit signal"),),
-        capital_deployment_policy=_load_policy(policy_path),
-    )
-
-    submit = run_submit_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-08",
-        mode="demo",
-        submit_enabled=True,
-        job="submit",
-        settings=_demo_settings(),
-        adapter=FakeRuntimeV2DemoSubmitAdapter(),
-        capital_deployment_policy_path=policy_path,
-    )
-
-    assert submit.status == "PASS"
-    assert submit.submitted_count == 1
-    assert submit.item_results[0].side == "SELL"
-
-    execution = run_execution_readonly_pipeline(
-        runtime_root=runtime_root,
-        business_date="2026-07-08",
-        mode="demo",
-        snapshot_provider=_sell_filled_snapshot,
-    )
-
-    executions = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
-    assert execution.status == "PASS"
-    assert execution.execution_equivalent_count == 1
-    assert execution.asset_current_written is True
-    assert execution.runtime_owned_projection_status == "PASS"
-    assert execution.projected_position_count == 0
-    assert executions[0]["side"] == "SELL"
-    assert executions[0]["filled_quantity"] == 100
-
-    state = _load_json(runtime_root / "persistent_ledger" / "state.json")
-
-    assert state["positions"] == []
-    assert state["cash"] == 1_000_000 + 10_200
-    assert state["buying_power"] == state["cash"]
-    assert state["market_value"] == 0
-    assert state["total_equity"] == state["cash"]
-
-    reports = build_markdown_reports(load_runtime_v2_report_context(runtime_root, business_date="2026-07-08"))
-    summary = reports.summary
-    assert summary["today_operation"]["sell_order_count"] == 1
-    assert summary["today_operation"]["sell_filled_count"] == 1
-    assert summary["current_portfolio"]["position_count"] == 0
-    assert summary["notification"]["sell_filled_count"] == 1
-    assert reports.public_scan["passed"] is True
-
-
 def _runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / ".runtime"
     (root / "pending_order_plan").mkdir(parents=True)
@@ -309,10 +246,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

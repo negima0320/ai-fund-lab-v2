@@ -21,6 +21,7 @@ from ai_fund_lab_v2.runtime_v2.reconcile.checks import (
     check_broker_cash_vs_asset_state,
     check_broker_executions_vs_ledger_executions,
     check_broker_positions_vs_asset_state,
+    check_broker_total_equity_vs_asset_state,
     check_demo_fallback_policy,
     check_ledger_orders_vs_broker_orders,
     check_pending_vs_ledger_orders,
@@ -79,6 +80,11 @@ def run_reconciliation(
             asset_state=asset_state,
         ),
         *check_broker_cash_vs_asset_state(
+            broker_cash=broker_cash,
+            asset_state=asset_state,
+        ),
+        *check_broker_total_equity_vs_asset_state(
+            broker_positions=broker_positions,
             broker_cash=broker_cash,
             asset_state=asset_state,
         ),

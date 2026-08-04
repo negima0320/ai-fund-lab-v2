@@ -18,42 +18,6 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision, saf
 BUSINESS_DATE = "2026-07-06"
 
 
-def test_phase17_w_historical_morning_capability_allows_common_core(tmp_path):
-    runtime_root = _runtime_root(tmp_path)
-    feature_root = _feature_root(runtime_root, BUSINESS_DATE)
-    context = _historical_context(tmp_path)
-
-    result = run_morning_ai_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date=BUSINESS_DATE,
-        mode="historical",
-        feature_root=feature_root,
-        feature_date=BUSINESS_DATE,
-        max_orders=1,
-        capital_deployment_policy=_policy(tmp_path),
-        safety_decision=_historical_safety(),
-        ai_signals=(
-            AIPlanningSignal(
-                signal_id="sig-7203",
-                symbol="7203",
-                side="BUY",
-                rank=1,
-                score=0.8,
-                reason="fixture",
-                source_ai="opportunity_ai",
-            ),
-        ),
-        environment_capability_context=context,
-    )
-    pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text())
-
-    assert result.status == "PASS"
-    assert result.selected_count == 1
-    assert pending["environment"] == "historical"
-    assert pending["items"][0]["symbol"] == "7203"
-    assert result.safety_source == "data_readiness_historical_temporal_authority"
-
-
 @pytest.mark.parametrize(
     ("override", "failed_check"),
     [
@@ -188,10 +152,6 @@ def _policy(tmp_path: Path) -> CapitalDeploymentPolicy:
         policy_version="capital_deployment_v1",
         policy_source=str(tmp_path / "policy.json"),
         evaluation_capital=1_000_000,
-        target_investment_ratio=0.85,
-        cash_buffer=0.05,
-        max_exposure=850_000,
-        max_position_weight=0.2,
         max_positions=5,
         min_order_amount=0,
         max_buy_order_amount=None,

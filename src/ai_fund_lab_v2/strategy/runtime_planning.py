@@ -24,7 +24,7 @@ from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_pa
 SCHEMA_VERSION = "runtime_planning.v1"
 PRODUCER_VERSION = "phase22_g_runtime_planning_producer.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
-RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
+RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
 QUANTITY_AUTHORITY = "PHASE22_J_POSITION_SIZING"
 
 PLANNING_INTENTS = {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT", "NO_ACTION", "NO_ORDER", "UNRESOLVED"}
@@ -227,14 +227,17 @@ def build_runtime_planning_payload(
         "current_cash": current_cash_summary.to_dict(requested_business_date=business_date),
         "current_position": current_position_summary.to_dict(requested_business_date=business_date),
         "pending": pending_summary.to_dict(requested_business_date=business_date),
-        "planning_config": planning_config_summary.to_dict(requested_business_date=business_date),
+        "planning_config": {
+            **planning_config_summary.to_dict(requested_business_date=business_date),
+            "status": "NON_CANONICAL_OBSERVABILITY",
+            "authority_deleted": True,
+        },
     }
     for name, summary in (
         ("current_portfolio", current_portfolio_summary),
         ("current_cash", current_cash_summary),
         ("current_position", current_position_summary),
         ("pending", pending_summary),
-        ("planning_config", planning_config_summary),
     ):
         if not _summary_aligned(summary, business_date=business_date):
             producer_status = "BLOCK"
@@ -292,7 +295,6 @@ def build_runtime_planning_payload(
                 current_cash_summary.feature_date,
                 current_position_summary.feature_date,
                 pending_summary.feature_date,
-                planning_config_summary.feature_date,
             )
             if value
         ]
@@ -306,7 +308,6 @@ def build_runtime_planning_payload(
             current_cash_summary.feature_date,
             current_position_summary.feature_date,
             pending_summary.feature_date,
-            planning_config_summary.feature_date,
         )
     )
     if future_leakage_used:
@@ -324,7 +325,7 @@ def build_runtime_planning_payload(
         {"role": "current_cash", "path": current_cash_summary.source_ref, "required": True, "status": current_cash_summary.status},
         {"role": "current_position", "path": current_position_summary.source_ref, "required": True, "status": current_position_summary.status},
         {"role": "pending", "path": pending_summary.source_ref, "required": True, "status": pending_summary.status},
-        {"role": "planning_config", "path": planning_config_summary.source_ref, "required": True, "status": planning_config_summary.status},
+        {"role": "planning_config", "path": planning_config_summary.source_ref, "required": False, "status": "NON_CANONICAL_OBSERVABILITY"},
     ]
     source_hashes = _source_hashes(
         portfolio_construction_artifact_path,
@@ -387,13 +388,18 @@ def build_runtime_planning_payload(
             "previous_day_runtime_planning_copied": False,
         },
         "production_consumer_connected": False,
-        "pending_writer_connected": False,
-        "runtime_switch_performed": False,
-        "legacy_authority_active": True,
-        "existing_morning_planning_changed": False,
-        "existing_add_planning_changed": False,
+        "pending_writer_connected": True,
+        "runtime_switch_performed": True,
+        "legacy_authority_active": False,
+        "legacy_planning_authority_used": False,
+        "planning_fallback_used": False,
+        "planning_config_authority_used": False,
+        "planning_authority_winner": "strategy_runtime_planning",
+        "planning_source": "runtime_planning.v1",
+        "existing_morning_planning_changed": True,
+        "existing_add_planning_changed": True,
         "existing_sell_planning_changed": False,
-        "pending_changed": False,
+        "pending_changed": True,
         "approval_changed": False,
         "submit_changed": False,
         "execution_changed": False,
@@ -519,6 +525,11 @@ def validate_runtime_planning_artifact(payload: dict[str, Any]) -> dict[str, Any
         "pending_writer_connected",
         "runtime_switch_performed",
         "legacy_authority_active",
+        "legacy_planning_authority_used",
+        "planning_fallback_used",
+        "planning_config_authority_used",
+        "planning_authority_winner",
+        "planning_source",
     }
     errors.extend(f"required_field_missing:{field}" for field in sorted(required - set(payload)))
     if payload.get("schema_version") != SCHEMA_VERSION:
@@ -530,7 +541,7 @@ def validate_runtime_planning_artifact(payload: dict[str, Any]) -> dict[str, Any
     if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
         errors.append("phase22_g_artifact_lifecycle_must_be_draft")
     if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
-        errors.append("phase22_g_runtime_consumer_eligibility_must_be_not_eligible")
+        errors.append("phase26_step5_runtime_consumer_eligibility_must_be_eligible")
     for field in (
         "concrete_allocation_decided",
         "concrete_quantity_decided",
@@ -538,20 +549,30 @@ def validate_runtime_planning_artifact(payload: dict[str, Any]) -> dict[str, Any
         "pending_written",
         "submit_generated",
         "production_consumer_connected",
-        "pending_writer_connected",
-        "runtime_switch_performed",
-        "existing_morning_planning_changed",
-        "existing_add_planning_changed",
         "existing_sell_planning_changed",
-        "pending_changed",
         "approval_changed",
         "submit_changed",
         "execution_changed",
     ):
         if payload.get(field) is not False:
             errors.append(f"phase22_g_field_must_be_false:{field}")
-    if payload.get("legacy_authority_active") is not True:
-        errors.append("phase22_g_legacy_authority_must_remain_active")
+    for field in (
+        "pending_writer_connected",
+        "runtime_switch_performed",
+        "existing_morning_planning_changed",
+        "existing_add_planning_changed",
+        "pending_changed",
+    ):
+        if payload.get(field) is not True:
+            errors.append(f"phase26_step5_field_must_be_true:{field}")
+    if payload.get("legacy_authority_active") is not False:
+        errors.append("phase26_step5_legacy_authority_must_be_inactive")
+    if payload.get("legacy_planning_authority_used") is not False:
+        errors.append("phase26_step5_legacy_planning_authority_used_must_be_false")
+    if payload.get("planning_fallback_used") is not False:
+        errors.append("phase26_step5_planning_fallback_used_must_be_false")
+    if payload.get("planning_config_authority_used") is not False:
+        errors.append("phase26_step5_planning_config_authority_used_must_be_false")
     for field in ("business_date", "feature_date"):
         try:
             _validate_iso_date(str(payload.get(field) or ""), field=field)
@@ -636,8 +657,6 @@ def load_runtime_planning_fixture(path: Path | str, *, for_production: bool = Fa
         raise RuntimePlanningConsumerError("BLOCK Runtime Planning artifact is not fixture-consumable")
     if for_production:
         raise RuntimePlanningConsumerError("Phase22-G Runtime Planning artifact is not production-consumable")
-    if payload.get("runtime_consumer_eligibility") != "NOT_ELIGIBLE":
-        raise RuntimePlanningConsumerError("Phase22-G Runtime Planning must remain NOT_ELIGIBLE")
     return payload
 
 
@@ -651,15 +670,15 @@ def produced_but_not_consumed_evidence(payload: dict[str, Any]) -> dict[str, Any
         "capital_deployment_shadow_read": bool((upstream.get("capital_deployment") or {}).get("shadow_read_allowed")),
         "position_management_shadow_read": bool((upstream.get("position_management") or {}).get("shadow_read_allowed")),
         "portfolio_policy_shadow_read": bool((upstream.get("portfolio_policy") or {}).get("shadow_read_allowed")),
-        "runtime_planning_production_consumer_connected": False,
-        "pending_written": False,
+        "runtime_planning_production_consumer_connected": True,
+        "pending_written": True,
         "submit_generated": False,
-        "runtime_switch_performed": False,
-        "legacy_authority_active": True,
-        "existing_morning_planning_changed": False,
-        "existing_add_planning_changed": False,
+        "runtime_switch_performed": True,
+        "legacy_authority_active": False,
+        "existing_morning_planning_changed": True,
+        "existing_add_planning_changed": True,
         "existing_sell_planning_changed": False,
-        "pending_changed": False,
+        "pending_changed": True,
         "approval_changed": False,
         "submit_changed": False,
         "execution_changed": False,
@@ -811,6 +830,21 @@ def _build_plans(
             ),
             "opportunity_artifact_path": str(sizing.get("opportunity_artifact_path") or pc_member.get("opportunity_artifact_path") or pc_member.get("input_opportunity_rank_source_path") or ""),
             "opportunity_artifact_hash": str(sizing.get("opportunity_artifact_hash") or pc_member.get("opportunity_artifact_hash") or pc_member.get("input_opportunity_rank_source_hash") or ""),
+            "quality_decision_id": str(sizing.get("quality_decision_id") or pc_member.get("quality_decision_id") or ""),
+            "quality_score": _float_or_none(sizing.get("quality_score", pc_member.get("quality_score"))),
+            "quality_band": str(sizing.get("quality_band") or pc_member.get("quality_band") or ""),
+            "quality_action": str(sizing.get("quality_action") or pc_member.get("quality_action") or ""),
+            "quality_status": str(sizing.get("quality_status") or pc_member.get("quality_status") or ""),
+            "quality_reason_codes": list(sizing.get("quality_reason_codes") or pc_member.get("quality_reason_codes") or []),
+            "component_scores": dict(sizing.get("component_scores") or pc_member.get("component_scores") or {}),
+            "component_statuses": dict(sizing.get("component_statuses") or pc_member.get("component_statuses") or {}),
+            "quality_policy_version": str(sizing.get("quality_policy_version") or pc_member.get("quality_policy_version") or ""),
+            "quality_allocation_adjustment": _float_or_none(sizing.get("quality_allocation_adjustment", pc_member.get("quality_allocation_adjustment"))),
+            "pre_quality_base_weight": _float_or_none(sizing.get("pre_quality_base_weight", pc_member.get("target_weight"))),
+            "post_quality_target_weight": _float_or_none(sizing.get("post_quality_target_weight", sizing.get("target_weight"))),
+            "buy_quality_authority": dict(sizing.get("buy_quality_authority") or pc_member.get("buy_quality_authority") or {}),
+            "buy_quality_artifact_path": str(sizing.get("buy_quality_artifact_path") or pc_member.get("buy_quality_artifact_path") or ""),
+            "buy_quality_artifact_hash": str(sizing.get("buy_quality_artifact_hash") or pc_member.get("buy_quality_artifact_hash") or ""),
         }
         if quantity_required:
             plan.update(_price_authority_fields(sizing))
@@ -1348,9 +1382,10 @@ def _source_hashes(
         ("current_cash", current_cash_summary),
         ("current_position", current_position_summary),
         ("pending", pending_summary),
-        ("planning_config", planning_config_summary),
     ):
         items.append({"role": role, "path": summary.source_ref, "sha256": _strip_sha256(summary.source_hash)})
+    if planning_config_summary.source_hash:
+        items.append({"role": "planning_config_noncanonical_observability", "path": planning_config_summary.source_ref, "sha256": _strip_sha256(planning_config_summary.source_hash)})
     return items
 
 

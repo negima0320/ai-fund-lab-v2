@@ -92,9 +92,10 @@ def test_raw_quality_report_includes_validation_summary(tmp_path: Path) -> None:
 
     report = checker.check("daily_quotes", "2026-06-01", "2026-06-01")
 
-    assert report.validation["status"] == "ERROR"
+    assert report.validation["status"] == "WARNING"
     assert report.schema_version == 1
     assert "missing_required_fields" in report.validation
+    assert report.validation["row_classification_summary"]["valid_no_price_row_count"] == 1
 
 
 def test_raw_quality_accepts_earnings_calendar_snapshot_without_date_gap(tmp_path: Path) -> None:
@@ -114,7 +115,7 @@ def test_raw_quality_accepts_earnings_calendar_snapshot_without_date_gap(tmp_pat
     assert report.status == "OK"
 
 
-def test_raw_quality_distinguishes_raw_v1_error_from_normalized_v2_ok(tmp_path: Path) -> None:
+def test_raw_quality_accepts_complete_adjusted_raw_and_reports_normalized_v2_ok(tmp_path: Path) -> None:
     store = calendar_store(tmp_path)
     adjusted_only = {
         "Date": "2026-06-01",
@@ -132,10 +133,46 @@ def test_raw_quality_distinguishes_raw_v1_error_from_normalized_v2_ok(tmp_path: 
 
     report = checker.check("daily_quotes", "2026-06-01", "2026-06-01")
 
-    assert report.validation["status"] == "ERROR"
+    assert report.validation["status"] == "OK"
+    assert report.valid_price_row_count == 1
     assert report.normalized is not None
     assert report.normalized["validation"]["status"] == "OK"
     assert report.normalized["schema_version"] == 2
+
+
+def test_raw_quality_reports_valid_no_price_rows_without_endpoint_error(tmp_path: Path) -> None:
+    store = calendar_store(tmp_path)
+    store.save_raw(
+        [
+            {
+                "Date": "2026-06-01",
+                "Code": "131A0",
+                "O": None,
+                "H": None,
+                "L": None,
+                "C": None,
+                "Vo": None,
+                "AdjO": None,
+                "AdjH": None,
+                "AdjL": None,
+                "AdjC": None,
+                "AdjVo": None,
+            }
+        ],
+        endpoint="/v2/equities/bars/daily",
+        collection="jquants/equities_bars_daily",
+    )
+    checker = checker_for(store, tmp_path)
+
+    report = checker.check("daily_quotes", "2026-06-01", "2026-06-01")
+
+    assert report.validation["status"] == "WARNING"
+    assert report.status == "WARNING"
+    assert report.valid_no_price_row_count == 1
+    assert report.partial_ohlcv_corruption_count == 0
+    assert report.invalid_numeric_row_count == 0
+    assert report.schema_corruption_count == 0
+    assert report.source_null_policy == "raw_source_faithful_valid_no_price_rows_are_not_canonical_price_rows"
 
 
 def test_raw_quality_ignores_inactive_legacy_storage_format_after_parquet_manifest(tmp_path: Path) -> None:

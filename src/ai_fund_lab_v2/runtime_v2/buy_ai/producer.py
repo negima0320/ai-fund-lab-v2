@@ -176,7 +176,7 @@ def produce_buy_ai_decisions(
     if not allow_isolated_test_paths:
         accepted_generation_resolution = resolve_accepted_generation(
             root,
-            business_date=None if historical_evaluation_authority_path else business_date,
+            business_date=business_date,
             fixed_authority_path=historical_evaluation_authority_path,
         )
         if not accepted_generation_resolution.is_resolved:
@@ -784,6 +784,11 @@ def _produce_candidate_artifact(
     )
     if generation_binding is not None:
         payload["generation_bound_inference"] = generation_binding.evidence()
+        payload["accepted_generation_binding"] = accepted_generation_resolution.binding_evidence(
+            runtime_mode="runtime",
+            business_date=business_date,
+            consumer="buy_ai_candidate",
+        ) if accepted_generation_resolution is not None else {}
         payload["transformation_stage"] = "accepted_generation_bound_imputer_scaler_model"
         payload["legacy_fallback_used"] = False
     _write_json(artifact_path, payload)
@@ -1038,6 +1043,11 @@ def _produce_opportunity_artifact(
         "opportunity_training_metrics_path": str(opportunity_training_metrics_path),
         "metrics_validation": metrics_validation,
         "generation_bound_inference": generation_binding.evidence() if generation_binding is not None else {},
+        "accepted_generation_binding": accepted_generation_resolution.binding_evidence(
+            runtime_mode="runtime",
+            business_date=business_date,
+            consumer="buy_ai_opportunity",
+        ) if accepted_generation_resolution is not None else {},
         **_opportunity_schema_payload_fields(schema_evidence),
         "ranking_count": len(rows),
         "rankings": rows,

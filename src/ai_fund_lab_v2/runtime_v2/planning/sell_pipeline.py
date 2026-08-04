@@ -12,9 +12,13 @@ from typing import Any, Mapping
 
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalDecision, ApprovalStatus
-from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, build_approval_request
+from ai_fund_lab_v2.runtime_v2.approval.policy import (
+    build_approval_artifact,
+    build_approval_request,
+    build_approved_order_conditions,
+)
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
-from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.composition import compose_with_existing_buy_pending, read_active_buy_pending
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import materialize_empty_pending_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
@@ -25,6 +29,8 @@ from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
 )
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy, capital_deployment_policy_hash
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import resolve_cash_exposure_authority
+from ai_fund_lab_v2.runtime_v2.position_sizing_authority import resolve_position_sizing_authority
 from ai_fund_lab_v2.runtime_v2.planning.add_consumer import AddConsumerResult, build_add_pending_items
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal, CapitalAllocationSignal, PlanningInput, RuntimeSafetyContext
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
@@ -257,6 +263,7 @@ def run_sell_planning_pending_pipeline(
     max_orders: int | None = None,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     submit_policy_context: Mapping[str, Any] | None = None,
+    accepted_generation_binding: Mapping[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
     environment_capability_context: dict[str, Any] | None = None,
 ) -> SellPlanningPipelineResult:
@@ -305,6 +312,36 @@ def run_sell_planning_pending_pipeline(
         if str(position.symbol).strip() and position.quantity > 0
     }
     current_exposure = float(sum(position.market_value for position in current_positions.values()))
+    active_deployment_capital = _active_deployment_capital(asset_state, current_exposure=current_exposure)
+    cash_exposure_authority = resolve_cash_exposure_authority(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        runtime_mode=mode,
+        current_total_equity=active_deployment_capital,
+        active_deployment_capital=active_deployment_capital,
+        current_cash=_available_cash(asset_state),
+        current_market_value=current_exposure,
+        consumer="pm_add_cash_exposure",
+    )
+    position_sizing_authorities = {}
+    for decision in exit_decisions:
+        decision_symbol = str(decision.symbol or "").strip()
+        if str(getattr(decision, "source_decision", "") or "").upper() != "ADD" or not decision_symbol:
+            continue
+        matched_position = _matching_position(current_positions, decision_symbol)
+        authority_symbol = str(matched_position.symbol).strip() if matched_position is not None else decision_symbol
+        position_sizing_authorities[decision_symbol] = resolve_position_sizing_authority(
+            symbol=authority_symbol,
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            runtime_mode=mode,
+            active_deployment_capital=active_deployment_capital,
+            selected_dynamic_exposure_ratio=cash_exposure_authority.selected_dynamic_exposure_ratio,
+            selected_runtime_exposure_limit=cash_exposure_authority.selected_runtime_exposure_limit,
+            selected_dynamic_position_count=None,
+            current_position_market_value=0.0 if matched_position is None else float(matched_position.market_value),
+            consumer="pm_add_position_sizing",
+        )
     if not current_positions:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -334,6 +371,8 @@ def run_sell_planning_pending_pipeline(
         environment=mode,
         capital_deployment_policy=capital_deployment_policy,
         safety_decision=runtime_safety_decision,
+        cash_exposure_authority=cash_exposure_authority,
+        position_sizing_authorities=position_sizing_authorities,
     )
     prioritized_decisions = _apply_exit_priority(
         tuple(
@@ -357,6 +396,7 @@ def run_sell_planning_pending_pipeline(
                 existing_buy_pending=existing_buy_pending,
                 capital_deployment_policy=capital_deployment_policy,
                 submit_policy_context=canonical_submit_policy_context,
+                accepted_generation_binding=accepted_generation_binding,
                 safety_decision=runtime_safety_decision,
             )
         return _write_no_signal_pending(
@@ -478,7 +518,10 @@ def run_sell_planning_pending_pipeline(
         if not item.blocked and not item.review_required and item.quantity > 0
     )
     pending_items = tuple(
-        _pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context)
+        _pending_item_with_accepted_generation_binding(
+            item=_pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context),
+            accepted_generation_binding=accepted_generation_binding,
+        )
         for item in sell_pending_items + add_result.accepted_items
     )
     order_plan_payload["submit_policy_context"] = canonical_submit_policy_context or None
@@ -497,6 +540,10 @@ def run_sell_planning_pending_pipeline(
         target_session_date=target_session_date,
         items=pending_items,
         submit_policy_context=canonical_submit_policy_context,
+    )
+    pending = _attach_accepted_generation_binding_to_pending(
+        pending=pending,
+        accepted_generation_binding=accepted_generation_binding,
     )
     pending = _attach_historical_safety_authority(
         pending=pending,
@@ -520,6 +567,10 @@ def run_sell_planning_pending_pipeline(
                 reason="runtime v2 sell daily operation approval",
                 operator="runtime_v2_sell_planning_job",
                 decided_at=f"{business_date}T08:45:00+09:00",
+                approved_order_conditions=build_approved_order_conditions(
+                    pending_items=pending.items,
+                    target_session_date=target_session_date,
+                ),
             ),
         )
         approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
@@ -549,6 +600,7 @@ def run_sell_planning_pending_pipeline(
             runtime_root_path / "persistent_ledger" / "state.json"
         ),
         planning_submit_feasibility_policy=capital_deployment_policy,
+        accepted_generation_binding=accepted_generation_binding,
     )
     pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
@@ -738,6 +790,7 @@ def _write_add_pending(
     existing_buy_pending,
     capital_deployment_policy: CapitalDeploymentPolicy | None = None,
     submit_policy_context: Mapping[str, Any] | None = None,
+    accepted_generation_binding: Mapping[str, Any] | None = None,
     safety_decision: RuntimeSafetyDecision | None = None,
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
@@ -746,7 +799,10 @@ def _write_add_pending(
     approval_path = artifact_dir / "pm_add_approval_artifact.json"
     canonical_submit_policy_context = _submit_policy_context(submit_policy_context)
     pending_items = tuple(
-        _pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context)
+        _pending_item_with_accepted_generation_binding(
+            item=_pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context),
+            accepted_generation_binding=accepted_generation_binding,
+        )
         for item in add_result.accepted_items
     )
     order_plan_payload = {
@@ -775,6 +831,10 @@ def _write_add_pending(
         items=pending_items,
         submit_policy_context=canonical_submit_policy_context,
     )
+    pending = _attach_accepted_generation_binding_to_pending(
+        pending=pending,
+        accepted_generation_binding=accepted_generation_binding,
+    )
     pending = _attach_historical_safety_authority(
         pending=pending,
         business_date=business_date,
@@ -796,6 +856,10 @@ def _write_add_pending(
             reason="runtime v2 pm add planning approval",
             operator="runtime_v2_pm_add_planning_job",
             decided_at=f"{business_date}T08:46:00+09:00",
+            approved_order_conditions=build_approved_order_conditions(
+                pending_items=pending.items,
+                target_session_date=target_session_date,
+            ),
         ),
     )
     approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
@@ -970,10 +1034,9 @@ def _pending_item(item) -> PendingOrderItem:
         policy_version=item.policy_version,
         policy_source=item.policy_source,
         evaluation_capital=item.evaluation_capital,
-        target_investment_ratio=item.target_investment_ratio,
-        cash_buffer=item.cash_buffer,
-        max_exposure=item.max_exposure,
-        max_position_weight=item.max_position_weight,
+        target_investment_ratio=None,
+        cash_buffer=None,
+        max_exposure=None,
         max_positions=item.max_positions,
         max_buy_order_amount=item.max_buy_order_amount,
         max_sell_liquidation_amount=item.max_sell_liquidation_amount,
@@ -1034,6 +1097,47 @@ def _pending_item_with_submit_policy_context(
         submit_policy_version=str(submit_policy_context.get("submit_policy_version") or ""),
         submit_policy_source=str(submit_policy_context.get("submit_policy_source") or ""),
         submit_policy_hash=str(submit_policy_context.get("submit_policy_hash") or ""),
+    )
+
+
+def _attach_accepted_generation_binding_to_pending(
+    *,
+    pending: PendingOrderPlan,
+    accepted_generation_binding: Mapping[str, Any] | None,
+) -> PendingOrderPlan:
+    if not accepted_generation_binding:
+        return pending
+    binding = dict(accepted_generation_binding)
+    return replace(
+        pending,
+        accepted_generation_binding=binding,
+        accepted_generation_id=str(binding.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(binding.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(binding.get("generation_binding_status") or ""),
+        items=tuple(
+            _pending_item_with_accepted_generation_binding(
+                item=item,
+                accepted_generation_binding=binding,
+            )
+            for item in pending.items
+        ),
+    )
+
+
+def _pending_item_with_accepted_generation_binding(
+    *,
+    item: PendingOrderItem,
+    accepted_generation_binding: Mapping[str, Any] | None,
+) -> PendingOrderItem:
+    if not accepted_generation_binding:
+        return item
+    binding = dict(accepted_generation_binding)
+    return replace(
+        item,
+        accepted_generation_id=str(binding.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(binding.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(binding.get("generation_binding_status") or ""),
+        accepted_generation_binding=binding,
     )
 
 
@@ -1448,10 +1552,6 @@ def _policy_context(policy: CapitalDeploymentPolicy | None) -> dict[str, Any] | 
         "policy_version": policy.policy_version,
         "policy_source": policy.policy_source,
         "evaluation_capital": policy.evaluation_capital,
-        "target_investment_ratio": policy.target_investment_ratio,
-        "cash_buffer": policy.cash_buffer,
-        "max_exposure": policy.max_exposure,
-        "max_position_weight": policy.max_position_weight,
         "max_positions": policy.max_positions,
         "max_buy_order_amount": policy.max_buy_order_amount,
         "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
@@ -1464,6 +1564,35 @@ def _policy_context(policy: CapitalDeploymentPolicy | None) -> dict[str, Any] | 
         },
         "sizing_policy_reason": "sell liquidation governed by Capital Deployment Policy evidence",
     }
+
+
+def _active_deployment_capital(asset_state: CurrentAssetState, *, current_exposure: float) -> float | None:
+    if asset_state.total_equity is not None:
+        return float(asset_state.total_equity)
+    if asset_state.cash is not None:
+        return float(asset_state.cash) + float(current_exposure)
+    return None
+
+
+def _available_cash(asset_state: CurrentAssetState) -> float | None:
+    values = [
+        float(value)
+        for value in (asset_state.cash, asset_state.buying_power)
+        if value is not None and float(value) >= 0
+    ]
+    if not values:
+        return None
+    return min(values)
+
+
+def _matching_position(
+    current_positions: Mapping[str, CurrentAssetPosition],
+    symbol: str,
+) -> CurrentAssetPosition | None:
+    for existing_symbol, position in current_positions.items():
+        if same_symbol_identity(existing_symbol, symbol):
+            return position
+    return None
 
 
 def _result_safety_fields(decision: RuntimeSafetyDecision | None) -> dict[str, Any]:

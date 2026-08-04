@@ -108,7 +108,6 @@ class OrderPlanItem:
     target_investment_ratio: float | None = None
     cash_buffer: float | None = None
     max_exposure: float | None = None
-    max_position_weight: float | None = None
     max_positions: int | None = None
     max_buy_order_amount: float | None = None
     max_sell_liquidation_amount: float | None = None

@@ -212,6 +212,7 @@ def _component_paths(strategy_dir: Path) -> dict[str, Path]:
         "market_context": strategy_dir / "market_context.json",
         "corporate_event": strategy_dir / "corporate_event.json",
         "portfolio_policy": strategy_dir / "portfolio_policy.json",
+        "buy_quality": strategy_dir / "buy_quality_decisions.json",
         "portfolio_construction": strategy_dir / "portfolio_construction.json",
         "position_sizing": strategy_dir / "position_sizing.json",
         "position_management": strategy_dir / "position_management.json",

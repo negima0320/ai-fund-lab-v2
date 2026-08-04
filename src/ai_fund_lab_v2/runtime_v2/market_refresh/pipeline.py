@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
@@ -101,11 +102,36 @@ def run_runtime_v2_market_refresh_pipeline(
     """Run market refresh and require actual feature artifacts for business_date."""
 
     root = Path(operations_root)
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "historical_logical_input_materialization",
+        "STARTED" if mode == "historical" else "SKIPPED",
+        {"mode": mode},
+    )
     historical_input = _materialize_historical_input_if_needed(
         mode=mode,
         operations_root=root,
         business_date=business_date,
         runtime_test_context=runtime_test_context,
+    )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "historical_logical_input_materialization",
+        "COMPLETED" if historical_input is not None else "SKIPPED",
+        {
+            "mode": mode,
+            "historical_logical_input_status": historical_input.status if historical_input is not None else "",
+            "historical_logical_input_manifest_path": historical_input.manifest_path if historical_input is not None else "",
+        },
+    )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "operations_market_refresh",
+        "STARTED",
+        {"allow_api_fetch": allow_api_fetch, "mode": mode},
     )
     result = _run_operations_market_refresh(
         trade_date=business_date,
@@ -117,6 +143,19 @@ def run_runtime_v2_market_refresh_pipeline(
         normalized_input_root=Path(historical_input.normalized_root) if historical_input is not None else None,
         historical_logical_input_manifest=historical_input.to_payload() if historical_input is not None else None,
     )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "operations_market_refresh",
+        "COMPLETED",
+        {
+            "status": str(result.get("status") or ""),
+            "data_quality_status": str(result.get("data_quality_status") or ""),
+            "feature_refresh_status": str(result.get("feature_refresh_status") or ""),
+            "jquants_api_fetch_executed": bool(result.get("jquants_api_fetch_executed")),
+        },
+    )
+    _append_market_refresh_progress(runtime_test_context, business_date, "historical_asof_resolution", "STARTED", {"mode": mode})
     historical_asof, historical_asof_path = _resolve_historical_asof_if_needed(
         mode=mode,
         operations_root=root,
@@ -124,7 +163,19 @@ def run_runtime_v2_market_refresh_pipeline(
         runtime_test_context=runtime_test_context,
         historical_input=historical_input,
     )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "historical_asof_resolution",
+        "COMPLETED" if historical_asof is not None else "SKIPPED",
+        {
+            "status": historical_asof.status if historical_asof is not None else "",
+            "reason": historical_asof.reason if historical_asof is not None else "",
+            "evidence_path": str(historical_asof_path or ""),
+        },
+    )
     result = _apply_historical_asof_result(result=result, resolution=historical_asof)
+    _append_market_refresh_progress(runtime_test_context, business_date, "feature_date_contract", "STARTED", {})
     contract = resolve_feature_date_contract(
         operations_root=root,
         requested_feature_date=business_date,
@@ -139,6 +190,19 @@ def run_runtime_v2_market_refresh_pipeline(
         contract=contract,
         business_date=business_date,
     )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "feature_date_contract",
+        "COMPLETED",
+        {
+            "contract_status": contract.status,
+            "contract_path": str(contract_path),
+            "feature_temporal_status": feature_temporal_status,
+            "missing_feature_artifacts": list(contract.missing_feature_artifacts),
+        },
+    )
+    _append_market_refresh_progress(runtime_test_context, business_date, "market_quote_evidence", "STARTED", {})
     market_evidence = produce_market_quote_evidence(
         runtime_root=_runtime_root_for_operations(root),
         operations_root=root,
@@ -153,6 +217,13 @@ def run_runtime_v2_market_refresh_pipeline(
             historical_asof=historical_asof,
         ),
         now=now,
+    )
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "market_quote_evidence",
+        "COMPLETED",
+        {"status": market_evidence.status, "artifact_path": market_evidence.artifact_path},
     )
     generated = contract.generated_feature_artifacts
     missing = contract.missing_feature_artifacts
@@ -183,6 +254,13 @@ def run_runtime_v2_market_refresh_pipeline(
     elif contract.status == "PASS" and historical_asof_ready:
         status = "PASS"
         reason = "HISTORICAL_DATA_AS_OF_READY"
+    _append_market_refresh_progress(
+        runtime_test_context,
+        business_date,
+        "market_refresh_pipeline",
+        status,
+        {"reason": reason, "blocked_reasons": list(blocked)},
+    )
     return RuntimeV2MarketRefreshResult(
         status=status,
         reason=reason,
@@ -238,6 +316,33 @@ def run_runtime_v2_market_refresh_pipeline(
         historical_asof_evidence_path=str(historical_asof_path or ""),
         historical_asof_view=historical_asof.to_payload() if historical_asof is not None else None,
     )
+
+
+def _append_market_refresh_progress(
+    context: dict[str, Any] | None,
+    business_date: str,
+    stage: str,
+    status: str,
+    details: dict[str, Any],
+) -> None:
+    root = _market_refresh_evidence_root(context, business_date)
+    if root is None:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "runtime_v2_market_refresh_progress_v1",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "business_date": business_date,
+        "stage": stage,
+        "status": status,
+        "runtime_test_run_id": str((context or {}).get("run_id") or ""),
+        "runtime_test_profile_id": str((context or {}).get("profile_id") or ""),
+        "details": dict(details or {}),
+    }
+    progress_path = root / "progress.jsonl"
+    with progress_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    (root / "progress_latest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _run_operations_market_refresh(**kwargs) -> dict[str, Any]:

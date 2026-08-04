@@ -2,6 +2,142 @@
 
 ---
 
+# Phase26 Final Status and Phase27 Entry
+
+Phase26-K final review result:
+
+```text
+PHASE26_PRODUCTION_ARCHITECTURE_REPAIR_COMPLETE_PHASE27_PERFORMANCE_IMPROVEMENT_READY
+```
+
+Phase26 final status:
+
+```text
+COMPLETE
+```
+
+Phase26 closure:
+
+```text
+APPROVED
+```
+
+Phase26 primary mission was Production Architecture Repair, Legacy Retirement, Production-equivalent Runtime Integration, Evaluation Foundation completion, and Phase27 Performance Improvement entry preparation. Phase26 closure is based on Architecture / Authority / Migration conformance, not on performance improvement.
+
+Completed responsibility summary:
+
+```text
+Capital Authority Repair: COMPLETE
+Dynamic Position Membership / Position Count Repair: COMPLETE
+Dynamic Cash / Exposure Repair: COMPLETE
+Position Sizing Repair: COMPLETE
+Planning Consumer Integration: COMPLETE
+Submit Guard Responsibility Repair: COMPLETE
+Current / Ledger / Broker Authority Repair: COMPLETE
+Accepted Generation / Temporal Authority Repair: COMPLETE
+Adaptive BUY Quality Authority: COMPLETE
+Quality Consumer Wiring: COMPLETE
+Formal Planning / EOD Shadow Separation: COMPLETE
+Cross-Authority Observability: COMPLETE
+Performance Analysis Foundation: COMPLETE
+Runtime Evaluation Integrity: COMPLETE
+```
+
+Architecture gap closure status:
+
+```text
+Critical Architecture Gap: 0
+High Architecture Gap: 0
+INVALID_DECISION_CONSUMER: 0
+UNKNOWN_REVIEW_REQUIRED: 0
+```
+
+The 100BD baseline for Phase27 is:
+
+```text
+run_id: runtime-test-historical-smoke-20260804T074611098414Z
+business_days: 100
+period: 2023-01-04 through 2023-05-31
+final_equity: 984,580
+return: -15,420
+return_rate: -1.542%
+BUY executions: 25
+SELL executions: 45
+current_positions: 2
+final_cash_ratio: 65.97%
+final_invested_ratio: 34.03%
+runtime_judgment: PASS
+```
+
+Deferred performance issues for Phase27:
+
+```text
+Return -1.542%
+Profit Factor below 1.0
+Drawdown profile
+Win Rate / payoff balance
+Low deployment / high cash ratio
+Quality attribution
+Rank attribution
+Re-entry behavior
+Holding-period behavior
+Cash / exposure efficiency
+```
+
+These are Performance Improvement targets unless new evidence proves an Architecture / Authority defect.
+
+Phase27:
+
+```text
+Performance Improvement and Strategy Evaluation
+```
+
+Phase27 scope:
+
+```text
+Performance baseline analysis
+PF / DD / Win Rate / Holding Period analysis
+Quality attribution
+Rank attribution
+Cash / Exposure efficiency
+Re-entry behavior
+Strategy improvement experiments after baseline attribution
+```
+
+Phase27 first task:
+
+```text
+Run Phase26-I Performance Analysis Toolkit on the 100BD baseline and produce baseline attribution before changing Quality weights, thresholds, Strategy rules, Candidate logic, Opportunity logic, or PM logic.
+```
+
+Evidence-First Performance Rule:
+
+```text
+Hypothesis
+-> Evidence
+-> Root Cause
+-> Design
+-> Implementation
+-> Short Regression
+-> User-run Long Historical Test
+-> Performance Comparison
+```
+
+Phase27 must not start from a predetermined conclusion such as lowering cash ratio or loosening BUY Quality. It must first determine, from run-scoped evidence, why deployment, PF, drawdown, rank attribution, quality attribution, re-entry, and holding-period behavior produced the 100BD baseline.
+
+Out of scope for Phase27 unless new defect evidence appears:
+
+```text
+Capital Authority redesign
+Current / Ledger Authority redesign
+Temporal Authority redesign
+Accepted Generation binding redesign
+Planning Authority redesign
+Submit Guard responsibility redesign
+```
+
+---
+
 # Phase21-23 Strategy Architecture Roadmap
 
 Phase21以降のStrategy関連フェーズを次の通り正式化する。
@@ -6889,6 +7025,30 @@ Utilization under production-equivalent Historical validation.
 
 Phase27 does not start Performance Improvement. Strategy Improvement is a
 Phase28-or-later candidate.
+
+## 2026-08-04 Phase26-G Adaptive BUY Quality Authority Design
+
+Phase26-G freezes the Production / Demo / Historical common Adaptive BUY Quality Authority design after Phase26-F confirmed that low positive Opportunity scores could proceed without a formal calibrated BUY quality authority.
+
+Canonical specification:
+
+```text
+docs/02_architecture/adaptive_buy_quality_authority.md
+```
+
+Design completion judgment:
+
+```text
+PHASE26_G_ADAPTIVE_BUY_QUALITY_AUTHORITY_DESIGN_FROZEN_IMPLEMENTATION_READY
+```
+
+The design prohibits fixed Rank N limits, ungrounded fixed raw-score thresholds, `target_position_count` decision reconnect, Historical Test result input, Paper Ledger input, future information input, and implicit neutral fallback when required Quality evidence is missing.
+
+Next implementation task:
+
+```text
+Phase26-H Production-Common Adaptive BUY Quality Authority Implementation
+```
 
 Phase25-Z deliverables:
 

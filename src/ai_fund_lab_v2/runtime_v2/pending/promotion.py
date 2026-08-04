@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import capital_deployment_policy_hash_from_context
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
@@ -24,6 +24,8 @@ from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
     RuntimeCurrentExposure,
     evaluate_planning_submit_feasibility,
 )
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import cash_exposure_authority_from_context
+from ai_fund_lab_v2.runtime_v2.position_count_authority import position_count_authority_from_context
 
 
 def promote_order_plan_to_pending(
@@ -49,6 +51,7 @@ def promote_order_plan_to_pending(
     policy_context = _policy_context_from_items(item_tuple)
     planning_context = dict(planning_lineage_context or _planning_lineage_context_from_items(item_tuple))
     submit_context = dict(submit_policy_context or _submit_policy_context_from_items(item_tuple))
+    accepted_generation_context = _accepted_generation_context_from_items(item_tuple)
     safety_context = _safety_context_from_items(item_tuple, target_session_date=target_session_date)
     policy_version = str(policy_context.get("policy_version") or "")
     policy_source = str(policy_context.get("policy_source") or "")
@@ -94,6 +97,10 @@ def promote_order_plan_to_pending(
         submit_policy_version=submit_policy_version,
         submit_policy_source=submit_policy_source,
         submit_policy_hash=submit_policy_hash,
+        accepted_generation_binding=accepted_generation_context or None,
+        accepted_generation_id=str(accepted_generation_context.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(accepted_generation_context.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(accepted_generation_context.get("generation_binding_status") or ""),
         safety_context=safety_context or None,
         safety_decision_id=str(safety_context.get("safety_decision_id") or ""),
         safety_policy_version=str(safety_context.get("safety_policy_version") or ""),
@@ -120,11 +127,42 @@ def attach_approval_link(
     approved_items = tuple(item for item in plan.items if item.pending_item_id in approved_tuple)
     feasibility_payload = None
     if planning_submit_feasibility_current is not None and planning_submit_feasibility_policy is not None:
+        policy_context = plan.policy_context if isinstance(plan.policy_context, Mapping) else {}
+        position_count_authority = (
+            position_count_authority_from_context(
+                policy_context,
+                business_date=plan.plan_created_date,
+                runtime_mode=plan.environment,
+                current_position_count=len(planning_submit_feasibility_current.positions),
+                configured_legacy_max_positions=planning_submit_feasibility_policy.max_positions,
+                consumer="planning_submit_feasibility_pre_approved_pending",
+            )
+            if _has_position_count_authority_context(policy_context)
+            else None
+        )
+        cash_exposure_authority = (
+            cash_exposure_authority_from_context(
+                policy_context,
+                business_date=plan.plan_created_date,
+                runtime_mode=plan.environment,
+                current_total_equity=planning_submit_feasibility_current.current_total_equity,
+                active_deployment_capital=planning_submit_feasibility_current.active_deployment_capital,
+                current_cash=planning_submit_feasibility_current.cash,
+                current_market_value=planning_submit_feasibility_current.current_exposure,
+                consumer="planning_submit_feasibility_pre_approved_pending",
+            )
+            if _has_cash_exposure_authority_context(policy_context)
+            else None
+        )
         feasibility = evaluate_planning_submit_feasibility(
             items=approved_items,
             policy=planning_submit_feasibility_policy,
             current=planning_submit_feasibility_current,
             authority_source="planning_submit_feasibility_pre_approved_pending",
+            position_count_authority=position_count_authority,
+            cash_exposure_authority=cash_exposure_authority,
+            business_date=plan.plan_created_date,
+            runtime_mode=plan.environment,
         )
         feasibility_payload = feasibility.evidence
         if not feasibility.passed:
@@ -187,6 +225,10 @@ def attach_approval_link(
             submit_policy_version=plan.submit_policy_version,
             submit_policy_source=plan.submit_policy_source,
             submit_policy_hash=plan.submit_policy_hash,
+            accepted_generation_id=plan.accepted_generation_id,
+            accepted_generation_business_date=plan.accepted_generation_business_date,
+            accepted_generation_binding_status=plan.accepted_generation_binding_status,
+            accepted_generation_binding=plan.accepted_generation_binding,
             safety_decision_id=plan.safety_decision_id,
             safety_policy_version=plan.safety_policy_version,
             approved_order_conditions=approved_order_conditions,
@@ -218,10 +260,6 @@ def _policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
                 "policy_version": item.policy_version,
                 "policy_source": item.policy_source,
                 "evaluation_capital": item.evaluation_capital,
-                "target_investment_ratio": item.target_investment_ratio,
-                "cash_buffer": item.cash_buffer,
-                "max_exposure": item.max_exposure,
-                "max_position_weight": item.max_position_weight,
                 "max_positions": item.max_positions,
                 "max_buy_order_amount": item.max_buy_order_amount,
                 "max_sell_liquidation_amount": item.max_sell_liquidation_amount,
@@ -229,8 +267,66 @@ def _policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
                 "buy_notional_policy": item.buy_notional_policy,
                 "sell_liquidation_policy": item.sell_liquidation_policy,
                 "manual_review_threshold": item.manual_review_threshold,
+                **_authority_context_from_item(item),
             }
     return {}
+
+
+def _authority_context_from_item(item: PendingOrderItem) -> dict:
+    context = item.quantity_contract if isinstance(item.quantity_contract, dict) else {}
+    payload: dict = {}
+    if isinstance(context.get("position_count_authority"), dict):
+        payload["position_count_authority"] = context["position_count_authority"]
+    if isinstance(context.get("cash_exposure_authority"), dict):
+        payload["cash_exposure_authority"] = context["cash_exposure_authority"]
+    for field in (
+        "strategy_requested_position_count",
+        "selected_dynamic_position_count",
+        "strategy_requested_cash_ratio",
+        "selected_dynamic_cash_ratio",
+        "strategy_requested_exposure_ratio",
+        "selected_dynamic_exposure_ratio",
+        "selected_runtime_exposure_limit",
+        "cash_exposure_authority_winner",
+        "cash_exposure_binding_constraint",
+        "legacy_cash_config_used",
+        "legacy_exposure_config_used",
+        "cash_exposure_fallback_used",
+    ):
+        if field in context:
+            payload[field] = context[field]
+    return payload
+
+
+def _has_position_count_authority_context(context: Mapping[str, object]) -> bool:
+    if isinstance(context.get("position_count_authority"), Mapping):
+        return True
+    return any(
+        field in context
+        for field in (
+            "strategy_requested_position_count",
+            "selected_dynamic_position_count",
+            "position_count_authority_winner",
+            "position_count_binding_constraint",
+        )
+    )
+
+
+def _has_cash_exposure_authority_context(context: Mapping[str, object]) -> bool:
+    if isinstance(context.get("cash_exposure_authority"), Mapping):
+        return True
+    return any(
+        field in context
+        for field in (
+            "strategy_requested_cash_ratio",
+            "selected_dynamic_cash_ratio",
+            "strategy_requested_exposure_ratio",
+            "selected_dynamic_exposure_ratio",
+            "selected_runtime_exposure_limit",
+            "cash_exposure_authority_winner",
+            "cash_exposure_binding_constraint",
+        )
+    )
 
 
 def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
@@ -246,6 +342,7 @@ def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
         for item in blocked
         if str(item.get("side") or "").upper() == "SELL" and str(item.get("pending_item_id") or "")
     )
+    sell_present = any(str(item.get("side") or "").upper() == "SELL" for item in items)
     unknown_authority = any(
         str(item.get("violated_policy") or "").endswith("_missing")
         or not str(item.get("violated_policy") or "")
@@ -256,7 +353,7 @@ def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
     review_scope = "BUY_ITEM_SCOPED_REVIEW" if buy_item_scoped else "AUTHORITY_UNKNOWN_REVIEW"
     return {
         "buy_items_status": "REVIEW_REQUIRED" if blocked_buy_ids else "PASS",
-        "sell_items_status": "REVIEW_REQUIRED" if blocked_sell_ids else "NOT_PRESENT",
+        "sell_items_status": "REVIEW_REQUIRED" if blocked_sell_ids else ("PASS" if sell_present else "NOT_PRESENT"),
         "review_required_buy_item_ids": blocked_buy_ids,
         "review_required_sell_item_ids": blocked_sell_ids,
         "review_scope": review_scope,
@@ -333,6 +430,23 @@ def _submit_policy_context_from_items(items: tuple[PendingOrderItem, ...]) -> di
                 "submit_policy_source": item.submit_policy_source,
                 "submit_policy_hash": item.submit_policy_hash,
             }
+    return {}
+
+
+def _accepted_generation_context_from_items(items: tuple[PendingOrderItem, ...]) -> dict:
+    for item in items:
+        if item.accepted_generation_id or item.accepted_generation_binding:
+            binding = dict(item.accepted_generation_binding or {})
+            binding["accepted_generation_id"] = item.accepted_generation_id or str(binding.get("accepted_generation_id") or "")
+            binding["accepted_generation_business_date"] = (
+                item.accepted_generation_business_date
+                or str(binding.get("accepted_generation_business_date") or binding.get("selected_business_date") or "")
+            )
+            binding["generation_binding_status"] = (
+                item.accepted_generation_binding_status
+                or str(binding.get("generation_binding_status") or "")
+            )
+            return binding
     return {}
 
 

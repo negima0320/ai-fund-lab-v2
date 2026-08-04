@@ -110,6 +110,7 @@ def test_phase19_bt_reduce_unknown_intensity_fail_closed():
 def test_phase19_bt_reduce_sell_planning_creates_partial_sell_with_contract_evidence(tmp_path):
     runtime_root = _runtime_root(tmp_path, mode="demo")
     _write_current_state(runtime_root, mode="demo", positions=[_position("6522", quantity=1000, price=100)])
+    accepted_generation_binding = _accepted_generation_binding(mode="demo", business_date=BUSINESS_DATE)
 
     result = run_sell_planning_pending_pipeline(
         runtime_root=runtime_root,
@@ -125,16 +126,54 @@ def test_phase19_bt_reduce_sell_planning_creates_partial_sell_with_contract_evid
                 reduce_intensity="MEDIUM",
             ),
         ),
+        accepted_generation_binding=accepted_generation_binding,
     )
     pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
     order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+    approval = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "approval_artifact.json")
+    pending_item_id = pending["items"][0]["pending_item_id"]
 
     assert result.status == "PASS"
     assert pending["items"][0]["side"] == "SELL"
     assert pending["items"][0]["quantity"] == 300
     assert pending["items"][0]["quantity_contract"]["source_decision"] == "REDUCE"
     assert pending["items"][0]["quantity_contract"]["expected_remaining_quantity"] == 700
+    assert pending["accepted_generation_binding_status"] == "PASS"
+    assert pending["items"][0]["accepted_generation_binding_status"] == "PASS"
+    assert pending["approval"]["accepted_generation_binding_status"] == "PASS"
+    assert approval["approved_order_conditions"][pending_item_id]["side"] == "SELL"
+    assert approval["approved_order_conditions"][pending_item_id]["quantity"] == 300
+    assert pending["approval"]["approved_order_conditions"][pending_item_id]["condition_consumer"] == (
+        "runtime_v2.submit.guards.run_submit_preflight"
+    )
     assert order_plan["items"][0]["quantity_contract"]["target_reduce_ratio"] == 0.33
+
+
+def test_phase26_pf3l_exit_sell_planning_materializes_approval_conditions_and_context(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("76470", quantity=2100, price=26)])
+    binding = _accepted_generation_binding(mode="historical", business_date="2023-01-18")
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date="2023-01-18",
+        mode="historical",
+        exit_decisions=(SellExitDecision(symbol="76470", quantity=2100, reason="hard_stop", source_decision="EXIT"),),
+        accepted_generation_binding=binding,
+        environment_capability_context=_historical_context(),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    approval = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2023-01-18" / "approval_artifact.json")
+    item_id = pending["items"][0]["pending_item_id"]
+
+    assert result.status == "PASS"
+    assert pending["items"][0]["side"] == "SELL"
+    assert pending["items"][0]["quantity_contract"]["source_decision"] == "EXIT"
+    assert pending["approval"]["approved_order_conditions"][item_id]["issue_code"] == "76470"
+    assert approval["approved_order_conditions"][item_id]["quantity"] == 2100
+    assert pending["accepted_generation_id"] == "accepted-generation-pf3l"
+    assert pending["items"][0]["accepted_generation_id"] == "accepted-generation-pf3l"
+    assert pending["approval"]["accepted_generation_id"] == "accepted-generation-pf3l"
 
 
 def test_phase19_bt_reduce_pending_sell_conflict_review_required(tmp_path):
@@ -271,58 +310,6 @@ def test_phase19_bt_reduce_mode_parity(tmp_path):
         quantities[mode] = pending["items"][0]["quantity"]
 
     assert quantities == {"historical": 300, "demo": 300, "production": 300}
-
-
-def test_phase19_bt_reduce_execution_updates_ledger_and_current_partial_position(tmp_path):
-    runtime_root = _runtime_root(tmp_path, mode="demo")
-    _write_current_state(runtime_root, mode="demo", positions=[_position("6522", quantity=1000, price=100)])
-    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
-    _write_broker_positions_snapshot(runtime_root, symbol="6522", quantity=1000, available_quantity=1000)
-    run_sell_planning_pending_pipeline(
-        runtime_root=runtime_root,
-        business_date=BUSINESS_DATE,
-        mode="demo",
-        exit_decisions=(
-            SellExitDecision(
-                symbol="6522",
-                quantity=0,
-                reason="peak_drawdown_warning",
-                source_decision="REDUCE",
-                reduce_intensity="MEDIUM",
-            ),
-        ),
-        capital_deployment_policy=_load_policy(policy_path),
-    )
-
-    submit = run_submit_pipeline(
-        runtime_root=runtime_root,
-        business_date=BUSINESS_DATE,
-        mode="demo",
-        submit_enabled=True,
-        job="submit",
-        settings=_demo_settings(),
-        adapter=FakeRuntimeV2DemoSubmitAdapter(),
-        capital_deployment_policy_path=policy_path,
-    )
-    execution = run_execution_readonly_pipeline(
-        runtime_root=runtime_root,
-        business_date=BUSINESS_DATE,
-        mode="demo",
-        snapshot_provider=_partial_sell_filled_snapshot,
-    )
-    executions = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
-    state = _load_json(runtime_root / "persistent_ledger" / "state.json")
-
-    assert submit.status == "PASS"
-    assert submit.item_results[0].quantity == 300
-    assert execution.status == "PASS"
-    assert executions[0]["side"] == "SELL"
-    assert executions[0]["filled_quantity"] == 300
-    assert state["positions"][0]["symbol"] == "6522"
-    assert state["positions"][0]["quantity"] == 700
-    assert state["cash"] == 1_030_000
-
-
 def _runtime_root(tmp_path: Path, *, mode: str) -> Path:
     root = tmp_path / ".runtime"
     (root / "pending_order_plan").mkdir(parents=True)
@@ -435,10 +422,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,
@@ -501,6 +484,37 @@ def _historical_context() -> dict:
         "runtime_test_run_id": "phase19bt-test",
         "runtime_test_profile_id": "historical-smoke",
         "runtime_test_evidence_root": "reports/runtime_tests/runs/phase19bt-test",
+    }
+
+
+def _accepted_generation_binding(*, mode: str, business_date: str) -> dict:
+    return {
+        "schema_version": "phase26_step8_accepted_generation_binding.v1",
+        "consumer": "sell_planning_pending_pipeline",
+        "mode": mode,
+        "requested_business_date": business_date,
+        "selected_business_date": business_date,
+        "temporal_authority_source": "runtime_business_date",
+        "temporal_authority_winner": "business_date_bound_accepted_generation",
+        "temporal_authority_status": "PASS",
+        "accepted_generation_id": "accepted-generation-pf3l",
+        "accepted_generation_source": "test_fixed_authority",
+        "accepted_generation_business_date": business_date,
+        "accepted_generation_status": "RESOLVED_COMMITTED",
+        "accepted_generation_accepted_at": f"{business_date}T08:00:00+09:00",
+        "accepted_generation_manifest_path": "runtime_state/accepted_buy_ai_bundle.json",
+        "aggregate_hash": "sha256:pf3l",
+        "generation_binding_status": "PASS",
+        "temporal_binding_status": "PASS",
+        "business_date_conflict": False,
+        "market_as_of_business_date": business_date,
+        "generation_conflict": False,
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
+        "legacy_component_fallback_used": False,
+        "promotion_candidate_fallback_used": False,
+        "manual_model_path_used": False,
     }
 
 

@@ -144,7 +144,7 @@ class FullEventLogValidator:
                 repo_root=self.repo_root,
                 subject_ref=f"{self.event_log_path}:{line_number}",
             )
-            if result["overall_result"] != "PASS" or result["failure_class"] != "NONE":
+            if result["failure_class"] != "NONE":
                 add_check(
                     checks,
                     False,

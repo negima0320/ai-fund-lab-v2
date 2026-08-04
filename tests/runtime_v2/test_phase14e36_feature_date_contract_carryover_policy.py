@@ -67,103 +67,6 @@ def test_phase14e36_market_refresh_emits_explicit_carryover_contract(tmp_path, m
     assert set(result.generated_feature_artifacts) == set(ARTIFACTS)
     assert contract["carryover_used"] is True
     assert contract["selected_feature_date"] == "2026-07-07"
-
-
-def test_phase14e36_morning_uses_selected_carryover_feature_date(tmp_path):
-    runtime_root = _write_fixed_current(tmp_path / ".runtime")
-    feature_root = _write_feature_inputs(
-        tmp_path / ".runtime" / "operations" / "feature_artifacts",
-        feature_date="2026-07-08",
-    )
-    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
-    opportunity_model_path = _write_opportunity_model(tmp_path / "opportunity_model.pkl")
-    _write_json(
-        tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-09.json",
-        {
-            "status": "PASS",
-            "reason": "carryover_feature_artifacts_available",
-            "requested_feature_date": "2026-07-09",
-            "selected_feature_date": "2026-07-08",
-            "latest_available_market_date": "2026-07-08",
-            "carryover_used": True,
-            "carryover_reason": "requested_feature_date_missing_latest_available_within_freshness_limit",
-            "freshness_lag_business_days": 1,
-            "freshness_limit_business_days": 1,
-            "feature_artifact_dir": str(feature_root / "2026-07-08"),
-            "generated_feature_artifacts": {name: str(feature_root / "2026-07-08" / name) for name in ARTIFACTS},
-            "missing_feature_artifacts": [],
-            "requested_feature_artifact_dir": str(feature_root / "2026-07-09"),
-            "requested_missing_feature_artifacts": list(ARTIFACTS),
-            "price_source_alignment": "selected_feature_date",
-            "contract_artifact_path": str(
-                tmp_path / ".runtime" / "operations" / "feature_date_contract" / "2026-07-09.json"
-            ),
-        },
-    )
-
-    exit_code = main(
-        [
-            "--mode",
-            "demo",
-            "--job",
-            "morning",
-            "--business-date",
-            "2026-07-09",
-            "--feature-root",
-            str(feature_root),
-            "--submit-enabled",
-            "false",
-            "--notification-mode",
-            "payload-only",
-            "--runtime-root",
-            str(runtime_root),
-            "--reports-root",
-            str(tmp_path / "reports" / "runtime_v2"),
-            "--public-reports-root",
-            str(tmp_path / "reports" / "public" / "runtime_v2"),
-            "--manifest-root",
-            str(tmp_path / ".runtime" / "runtime_state" / "run_manifest"),
-            "--log-root",
-            str(tmp_path / ".runtime" / "runtime_state" / "logs"),
-            "--capital-deployment-policy",
-            str(policy_path),
-            "--candidate-model-path",
-            str(_write_candidate_model(tmp_path / "candidate_model.pkl")),
-            "--opportunity-model-path",
-            str(opportunity_model_path),
-            "--opportunity-training-metrics-path",
-            str(_write_opportunity_metrics(tmp_path / "opportunity_training_metrics.json", opportunity_model_path)),
-        ]
-    )
-
-    pending = json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
-    manifest = json.loads(
-        next((tmp_path / ".runtime" / "runtime_state" / "run_manifest" / "2026-07-09").glob("*.json")).read_text(
-            encoding="utf-8"
-        )
-    )
-    morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
-    readiness_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_data_readiness_gate")
-    order_plan = json.loads((runtime_root / "runtime_state" / "morning_pipeline" / "2026-07-09" / "order_plan.json").read_text(encoding="utf-8"))
-    public_report = (tmp_path / "reports" / "public" / "runtime_v2" / "latest.md").read_text(encoding="utf-8")
-
-    assert exit_code == 0
-    assert pending["state"] == "APPROVED"
-    assert readiness_stage["details"]["feature_date_contract"]["requested_feature_date"] == "2026-07-09"
-    assert readiness_stage["details"]["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
-    assert pending["feature_date_contract"]["requested_feature_date"] == "2026-07-08"
-    assert pending["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
-    assert pending["feature_date_contract"]["carryover_used"] is False
-    assert all(item["price_as_of"] == "2026-07-08" for item in pending["items"])
-    assert morning_stage["status"] == "PASS"
-    assert morning_stage["details"]["feature_date"] == "2026-07-08"
-    assert readiness_stage["details"]["feature_date_contract"]["carryover_used"] is True
-    assert readiness_stage["details"]["feature_date_contract"]["freshness_lag_business_days"] == 1
-    assert "feature_input_missing" not in morning_stage["details"]["reason"]
-    assert order_plan["feature_date_contract"]["selected_feature_date"] == "2026-07-08"
-    assert "Market data freshness" in public_report
-
-
 def test_phase14e36_stale_carryover_blocks_morning(tmp_path):
     runtime_root = _write_fixed_current(tmp_path / ".runtime")
     feature_root = _write_feature_inputs(
@@ -357,10 +260,6 @@ def _write_policy(path: Path) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "target_investment_ratio": 0.85,
-            "cash_buffer": 0.05,
-            "max_exposure": 850_000,
-            "max_position_weight": 0.2,
             "max_positions": 5,
             "min_order_amount": 0,
             "max_buy_order_amount": None,

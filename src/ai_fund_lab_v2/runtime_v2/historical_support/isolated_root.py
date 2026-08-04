@@ -125,7 +125,7 @@ def materialize_isolated_historical_runtime_root(
     }
     _write_json(isolated_root / "runtime_test" / "metadata.json", metadata)
     shared_post_hashes = protected_shared_runtime_hashes(shared)
-    resolution = resolve_accepted_generation(isolated_root).to_dict()
+    resolution = resolve_accepted_generation(isolated_root, business_date=target_business_date).to_dict()
     return {
         "schema_version": ISOLATED_ROOT_SCHEMA_VERSION,
         "status": "PASS" if shared_pre_hashes == shared_post_hashes and resolution.get("resolution_status") == "RESOLVED_COMMITTED" else "BLOCK",

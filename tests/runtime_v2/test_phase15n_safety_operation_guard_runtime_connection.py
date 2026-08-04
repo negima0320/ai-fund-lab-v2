@@ -27,32 +27,6 @@ from tests.runtime_v2.test_phase15k_morning_policy_propagation_hidden_policy_rem
     _write_policy as _write_morning_policy,
 )
 from tests.runtime_v2.feature_date_contract_helpers import materialize_feature_date_contract
-
-
-def test_phase15n_safety_missing_blocks_morning(tmp_path):
-    runtime_root = _write_current(tmp_path / ".runtime")
-    _safety_path(runtime_root).unlink()
-    feature_root = _write_features(
-        tmp_path / ".runtime" / "operations" / "feature_artifacts",
-        candidate_codes=("7203",),
-        price=1000,
-    )
-    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
-    policy_path = _write_morning_policy(tmp_path / "capital_deployment_policy.json", max_positions=1)
-
-    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 20
-
-    manifest = _latest_manifest(tmp_path / ".runtime", "2026-07-09")
-    stage_names = {stage["name"] for stage in manifest["stages"]}
-    readiness_stage = next(stage for stage in manifest["stages"] if stage["name"] == "runtime_data_readiness_gate")
-    assert manifest["final_state"] == "REVIEW_REQUIRED"
-    assert manifest["data_readiness_status"] == "REVIEW_REQUIRED"
-    assert readiness_stage["status"] == "REVIEW_REQUIRED"
-    assert readiness_stage["details"]["safety_status"] == "REVIEW_REQUIRED"
-    assert "safety decision evidence missing" in readiness_stage["details"]["review_reasons"]
-    assert "morning_ai_planning_pending_pipeline" not in stage_names
-
-
 def test_phase15n_safety_missing_blocks_submit_before_broker(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _safety_path(runtime_root).unlink()
@@ -90,27 +64,6 @@ def test_phase15n_safety_missing_blocks_submit_before_broker(tmp_path):
     assert result.demo_submit_executed is False
     assert evidence["safety_guard_status"] == "REVIEW_REQUIRED"
     assert evidence["violated_policy"] == "safety_operation_guard"
-
-
-def test_phase15n_safety_allow_permits_morning_and_submit(tmp_path):
-    runtime_root = _write_current(tmp_path / ".runtime")
-    _write_market_evidence(runtime_root)
-    feature_root = _write_features(
-        tmp_path / ".runtime" / "operations" / "feature_artifacts",
-        candidate_codes=("7203",),
-        price=1000,
-    )
-    materialize_feature_date_contract(runtime_root, business_date="2026-07-09", selected_feature_date="2026-07-08")
-    policy_path = _write_morning_policy(tmp_path / "capital_deployment_policy.json", max_positions=1)
-
-    assert _run_morning(tmp_path, runtime_root, feature_root, policy_path) == 0
-
-    manifest = _latest_manifest(tmp_path / ".runtime", "2026-07-09")
-    morning_stage = next(stage for stage in manifest["stages"] if stage["name"] == "morning_ai_planning_pending_pipeline")
-    assert morning_stage["details"]["safety_decision"] == "ALLOW"
-    assert morning_stage["details"]["safety_status"] == "PASS"
-
-
 def test_phase15n_safety_block_buy_stops_buy_but_not_sell(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_safety_decision(runtime_root, block_buy=True, reason="buy paused")

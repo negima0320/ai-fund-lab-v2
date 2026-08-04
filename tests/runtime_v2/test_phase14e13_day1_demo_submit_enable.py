@@ -80,4 +80,16 @@ def _approval_for(plan):
         expires_at="2026-07-08T00:00:00Z",
         review_required=False,
         reason="phase14e13 test",
+        approved_order_conditions={
+            item.pending_item_id: {
+                "order_type": item.order_type,
+                "target_session": plan.target_session_date,
+                "quantity": item.quantity,
+                "side": item.side,
+                "issue_code": item.symbol,
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": item.order_type,
+            }
+        },
     )

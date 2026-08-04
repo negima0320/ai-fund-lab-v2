@@ -146,5 +146,17 @@ def _approved_pending():
         expires_at="2026-07-07",
         review_required=False,
         reason="test approval",
+        approved_order_conditions={
+            "item-1": {
+                "order_type": "MARKET",
+                "target_session": pending.target_session_date,
+                "quantity": 100,
+                "side": "BUY",
+                "issue_code": "7203",
+                "limit_price": None,
+                "time_in_force": "DAY",
+                "price_condition": "MARKET",
+            }
+        },
     )
     return link_approval_to_pending(pending_plan=pending, approval_artifact=approval), approval

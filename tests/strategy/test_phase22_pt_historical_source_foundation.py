@@ -56,9 +56,76 @@ def test_phase22_pt_candidate_opportunity_date_binding_and_no_latest_fallback(tm
     runtime_root = _runtime_root(tmp_path / "runtime", start="2026-06-01", days=35)
     missing = build_historical_strategy_preflight(runtime_root=runtime_root, requested_start_date="2026-07-07", requested_business_days=1)
 
-    assert missing["candidate_generation_readiness"]["status"] == "NOT_ELIGIBLE_SOURCE_COVERAGE"
+    assert missing["candidate_generation_readiness"]["status"] == "PASS"
+    assert missing["candidate_generation_readiness"]["preexisting_artifact_required"] is False
+    assert missing["candidate_generation_readiness"]["runtime_generation_required"] is True
     assert missing["candidate_generation_readiness"]["latest_fallback_used"] is False
     assert missing["opportunity_generation_readiness"]["latest_fallback_used"] is False
+    assert missing["opportunity_generation_readiness"]["shared_state_fallback_used"] is False
+    assert missing["opportunity_generation_readiness"]["default_generation_fallback_used"] is False
+
+
+def test_phase26_pf3d_inventory_uses_validated_acquisition_overlay_without_mutating_canonical(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path / "runtime", start="2026-06-01", days=35)
+    _write_validated_acquisition_overlay(runtime_root, start="2026-07-21", days=3)
+
+    inventory = build_source_coverage_inventory(runtime_root=runtime_root)
+    quotes = _source(inventory, "daily_quotes")
+    listed = _source(inventory, "listed_information")
+    calendar = _source(inventory, "trading_calendar")
+
+    assert quotes["max_business_date"] == "2026-07-23"
+    assert listed["max_business_date"] == "2026-07-23"
+    assert calendar["max_business_date"] == "2026-07-23"
+    assert quotes["selected_source_role"] == "canonical_plus_validated_acquisition_overlay"
+    assert listed["selected_source_role"] == "canonical_plus_validated_acquisition_overlay"
+    assert quotes["canonical_mutated"] is False
+    assert quotes["fallback_path"] == ""
+    assert quotes["legacy_path"] == ""
+
+
+def test_phase26_pf3d_preflight_uses_plan_resolved_dates_without_silent_window_extension(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path / "runtime", start="2026-06-01", days=35)
+    _write_validated_acquisition_overlay(runtime_root, start="2026-07-21", days=10)
+    for day in ("2026-07-21", "2026-07-22"):
+        _write_json(runtime_root / "runtime_state" / "buy_ai" / day / "candidate_decisions.json", {"business_date": day, "decisions": []})
+        _write_json(runtime_root / "runtime_state" / "buy_ai" / day / "opportunity_rankings.json", {"business_date": day, "rankings": []})
+
+    preflight = build_historical_strategy_preflight(
+        runtime_root=runtime_root,
+        requested_start_date="2026-07-21",
+        requested_business_days=10,
+        requested_dates=["2026-07-21", "2026-07-22"],
+    )
+
+    assert preflight["market_coverage"]["status"] == "PASS"
+    assert preflight["listed_coverage"]["status"] == "PASS"
+    assert preflight["sector_coverage"]["status"] == "PASS"
+    assert preflight["candidate_generation_readiness"]["requested_dates"] == ["2026-07-21", "2026-07-22"]
+    assert preflight["candidate_generation_readiness"]["missing_preexisting_dates"] == []
+    assert preflight["eligible_dates"] == ["2026-07-21", "2026-07-22"]
+
+
+def test_phase26_pf3e_future_buy_ai_artifacts_are_ignored_not_selected(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path / "runtime", start="2026-06-01", days=35)
+    future_day = "2026-07-30"
+    _write_json(runtime_root / "runtime_state" / "buy_ai" / future_day / "candidate_decisions.json", {"business_date": future_day, "decisions": []})
+    _write_json(runtime_root / "runtime_state" / "buy_ai" / future_day / "opportunity_rankings.json", {"business_date": future_day, "rankings": []})
+
+    preflight = build_historical_strategy_preflight(
+        runtime_root=runtime_root,
+        requested_start_date="2026-07-06",
+        requested_business_days=1,
+    )
+
+    candidate = preflight["candidate_generation_readiness"]
+    opportunity = preflight["opportunity_generation_readiness"]
+    assert candidate["status"] == "PASS"
+    assert candidate["preexisting_dates"] == ["2026-07-06"]
+    assert candidate["future_existing_dates_ignored"] == [future_day]
+    assert candidate["future_artifact_selectable"] is False
+    assert opportunity["future_existing_dates_ignored"] == [future_day]
+    assert opportunity["future_artifact_selectable"] is False
 
 
 def test_phase22_pt_runtime_root_isolation_ignores_active_state(tmp_path: Path) -> None:
@@ -115,6 +182,63 @@ def _write_parquet_sources(root: Path, *, start: str, days: int) -> None:
     pd.DataFrame([{"target_date": day, "HolDiv": "1"} for day in calendar_dates]).to_parquet(calendar_path)
     pd.DataFrame(quote_rows).to_parquet(quotes_path)
     pd.DataFrame(listed_rows).to_parquet(listed_path)
+
+
+def _write_validated_acquisition_overlay(root: Path, *, start: str, days: int) -> None:
+    run_id = f"jquants-acquisition-{start.replace('-', '')}"
+    run_root = root / "market_data_acquisition" / "runs" / run_id
+    calendar_dates = _business_dates(start, days)
+    quote_rows = [
+        {
+            "Date": day,
+            "Code": code,
+            "Open": 100.0 + idx,
+            "High": 101.0 + idx,
+            "Low": 99.0 + idx,
+            "Close": 100.5 + idx,
+            "Volume": 1000 + idx,
+            "PriceSource": "JQUANTS_DAILY_QUOTES",
+            "SchemaVersion": "jquants_daily_quotes_normalized.v1",
+            "source_endpoint": "/prices/daily_quotes",
+            "target_date": day,
+            "code": code,
+            "business_key": f"{day}:{code}",
+            "endpoint": "daily_quotes",
+            "source": "jquants",
+        }
+        for idx, day in enumerate(calendar_dates)
+        for code in ("1001", "1002")
+    ]
+    raw_quote_rows = [{"Date": row["Date"], "Code": row["Code"], "Close": row["Close"]} for row in quote_rows]
+    listed_rows = [
+        {"Date": day, "Code": code, "S33Nm": sector, "MktNm": "Prime", "ListedStatus": "LISTED"}
+        for day in calendar_dates
+        for code, sector in (("1001", "Tech"), ("1002", "Retail"))
+    ]
+    calendar_rows = [{"Date": day, "HolidayDivision": "1"} for day in calendar_dates]
+    for relative, rows in (
+        ("raw_normalized/jquants/equities_bars_daily/data.parquet", quote_rows),
+        ("raw/jquants/equities_bars_daily/data.parquet", raw_quote_rows),
+        ("raw/jquants/listed_issues/data.parquet", listed_rows),
+        ("raw/jquants/trading_calendar/data.parquet", calendar_rows),
+    ):
+        path = run_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_parquet(path)
+    _write_json(run_root / "plan.json", {"status": "PASS", "acquisition_run_id": run_id})
+    _write_json(
+        run_root / "state.json",
+        {
+            "status": "PASS",
+            "acquisition_run_id": run_id,
+            "final_validation": {
+                "status": "PASS",
+                "future_date_count": 0,
+                "coverage_start_date": calendar_dates[0],
+                "coverage_end_date": calendar_dates[-1],
+            },
+        },
+    )
 
 
 def _business_dates(start: str, days: int) -> list[str]:

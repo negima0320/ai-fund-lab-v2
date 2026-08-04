@@ -456,6 +456,7 @@ class HistoricalExecutionSnapshotProvider:
             "executions": [_execution_payload(item) for item in evidence_items],
             "positions": positions,
             "buying_power": {
+                "cash_ref": f"historical-cash-{self.business_date or 'unknown'}",
                 "cash_available": str(cash_available),
                 "buying_power": str(cash_available),
                 "currency": "JPY",
@@ -482,7 +483,9 @@ class HistoricalExecutionSnapshotProvider:
 
     def _projected_cash_available(self, evidence_items: list[dict[str, Any]]) -> float:
         state = _read_json(Path(self.runtime_root) / "persistent_ledger" / "state.json")
-        starting_cash = _number(state.get("cash") or state.get("runtime_evaluation_capital"))
+        if "cash" not in state or state.get("cash") in (None, ""):
+            raise EnvironmentCompositionError("historical current cash missing; no runtime_evaluation_capital fallback")
+        starting_cash = _number(state.get("cash"))
         cash_effect = sum(
             _number(item.get("cash_effect"))
             for item in evidence_items
@@ -507,6 +510,8 @@ class HistoricalExecutionSnapshotProvider:
             fill_price = _number(item.get("fill_price"))
             current = positions.get(symbol)
             if side == "BUY":
+                if already_applied:
+                    continue
                 previous_quantity = _number((current or {}).get("quantity"))
                 previous_cost = previous_quantity * _number((current or {}).get("average_price"))
                 new_quantity = previous_quantity + quantity
@@ -517,6 +522,7 @@ class HistoricalExecutionSnapshotProvider:
                     "quantity": new_quantity,
                     "average_price": average_price,
                     "market_value": new_quantity * fill_price,
+                    "as_of": self.business_date,
                 }
             elif side == "SELL":
                 if already_applied:
@@ -537,7 +543,11 @@ class HistoricalExecutionSnapshotProvider:
                     "quantity": remaining,
                     "average_price": average_price,
                     "market_value": remaining * market_price,
+                    "as_of": self.business_date,
                 }
+        for item in positions.values():
+            item["valuation_as_of"] = self.business_date
+            item.setdefault("as_of", self.business_date)
         return [_position_payload(item) for item in positions.values() if _number(item.get("quantity")) > 0]
 
     def _execution_already_applied(self, item: dict[str, Any]) -> bool:
@@ -1343,8 +1353,9 @@ def _position_payload(item: dict[str, Any]) -> dict[str, Any]:
     quantity = float(item["quantity"])
     average_price = float(item.get("average_price") or item.get("fill_price") or 0.0)
     market_value = float(item.get("market_value") or average_price * quantity)
+    as_of = str(item.get("valuation_as_of") or item.get("as_of") or item.get("fill_date") or "")
     return {
-        "position_ref": f"historical-position-{item['symbol']}",
+        "position_ref": f"historical-position-{item['symbol']}-{as_of}" if as_of else f"historical-position-{item['symbol']}",
         "position_key": item["symbol"],
         "symbol": item["symbol"],
         "quantity": quantity,

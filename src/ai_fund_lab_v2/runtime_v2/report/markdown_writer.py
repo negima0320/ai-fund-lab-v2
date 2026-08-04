@@ -1127,7 +1127,9 @@ def _policy_evidence(manifest: dict[str, Any], pending: dict[str, Any]) -> dict[
         or pending_policy.get("target_investment_ratio"),
         "cash_buffer": manifest.get("cash_buffer") or pending_policy.get("cash_buffer"),
         "max_exposure": manifest.get("max_exposure") or pending_policy.get("max_exposure"),
-        "max_position_weight": manifest.get("max_position_weight") or pending_policy.get("max_position_weight"),
+        "position_sizing_authority_source": manifest.get("position_sizing_authority_source")
+        or pending_policy.get("position_sizing_authority_source")
+        or "",
         "max_positions": manifest.get("max_positions") or pending_policy.get("max_positions"),
     }
 
@@ -1569,10 +1571,10 @@ def _policy_summary(policy: dict[str, Any]) -> str:
     source = policy.get("capital_deployment_policy_source") or "missing"
     version = policy.get("capital_deployment_policy_version") or "missing"
     max_exposure = policy.get("max_exposure")
-    max_position_weight = policy.get("max_position_weight")
+    position_sizing_source = policy.get("position_sizing_authority_source") or "missing"
     return (
         f"source={source}, version={version}, max_exposure={max_exposure}, "
-        f"max_position_weight={max_position_weight}"
+        f"position_sizing_authority_source={position_sizing_source}"
     )
 
 

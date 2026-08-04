@@ -3,7 +3,7 @@
   "config_version": "phase22_j_position_sizing_policy.v1",
   "sizing_method": "capped_quality_volatility_hybrid",
   "base_allocation": {
-    "source": "target_gross_exposure_ratio_divided_by_target_position_count"
+    "source": "portfolio_construction_target_weight_authority"
   },
   "opportunity_adjustment": {
     "score_min": 0.0,

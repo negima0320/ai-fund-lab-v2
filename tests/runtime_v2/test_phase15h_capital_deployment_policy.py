@@ -23,8 +23,24 @@ def test_phase15h_policy_loader_valid_preserves_policy_source(tmp_path):
     assert policy.max_buy_order_amount is None
     assert policy.manual_review_threshold.buy_amount is None
     assert policy.to_manifest_fields()["capital_deployment_policy_loaded"] is True
-    assert policy.to_manifest_fields()["active_max_positions"] == 5
-    assert policy.to_manifest_fields()["max_positions_source"] == str(policy_path)
+    assert policy.to_manifest_fields()["active_max_positions"] is None
+    assert policy.to_manifest_fields()["max_positions_source"] == "dynamic_position_count_required"
+
+
+def test_phase26_step3_policy_loader_rejects_legacy_cash_exposure_fields(tmp_path):
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "target_investment_ratio": 0.85,
+            "cash_buffer": 0.05,
+            "max_exposure": 850_000,
+        }
+    )
+    policy_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(CapitalDeploymentPolicyError, match="legacy cash/exposure policy fields unsupported"):
+        load_capital_deployment_policy(policy_path)
 
 
 def test_phase15h_policy_loader_missing_does_not_fallback(tmp_path):
@@ -91,12 +107,17 @@ def test_phase15h_cli_manifest_emits_explicit_policy_fields(tmp_path):
     assert manifest["capital_deployment_policy_source"] == str(policy_path)
     assert manifest["capital_deployment_policy_version"] == "capital_deployment_v1"
     assert manifest["evaluation_capital"] == 1_000_000
-    assert manifest["target_investment_ratio"] == 0.85
-    assert manifest["cash_buffer"] == 0.05
-    assert manifest["max_exposure"] == 850_000
-    assert manifest["max_position_weight"] == 0.2
-    assert manifest["active_max_positions"] == 5
-    assert manifest["max_positions_source"] == str(policy_path)
+    assert "target_investment_ratio" not in manifest
+    assert "cash_buffer" not in manifest
+    assert "max_exposure" not in manifest
+    assert manifest["legacy_cash_config_used"] is False
+    assert manifest["legacy_exposure_config_used"] is False
+    assert manifest["cash_exposure_fallback_used"] is False
+    assert manifest["position_sizing_authority_source"] == "position_sizing_required"
+    assert manifest["legacy_position_sizing_used"] is False
+    assert manifest["position_sizing_fallback_used"] is False
+    assert manifest["active_max_positions"] is None
+    assert manifest["max_positions_source"] == "dynamic_position_count_required"
     assert manifest["max_positions_policy_version"] == "capital_deployment_v1"
     assert manifest["max_buy_order_amount"] is None
     assert manifest["max_sell_liquidation_amount"] is None
@@ -105,7 +126,7 @@ def test_phase15h_cli_manifest_emits_explicit_policy_fields(tmp_path):
     assert manifest["policy_validation_status"] == "PASS"
     assert manifest["policy_missing"] is False
     assert policy_stage["status"] == "PASS"
-    assert policy_stage["details"]["active_max_positions"] == 5
+    assert policy_stage["details"]["active_max_positions"] is None
 
 
 def test_phase15h_cli_missing_policy_stops_runtime_guarded_job(tmp_path):
@@ -154,15 +175,21 @@ def test_phase15h_cli_missing_policy_stops_runtime_guarded_job(tmp_path):
     assert "sell_planning_pending_pipeline" not in stage_names
 
 
+def test_phase26_step4_policy_loader_rejects_legacy_position_sizing_fields(tmp_path):
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    payload = json.loads(policy_path.read_text(encoding="utf-8"))
+    payload["max_position_weight"] = 0.2
+    policy_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(CapitalDeploymentPolicyError, match="legacy position sizing policy fields unsupported"):
+        load_capital_deployment_policy(policy_path)
+
+
 def _write_policy(path: Path) -> Path:
     payload = {
         "policy_version": "capital_deployment_v1",
         "policy_source": str(path),
         "evaluation_capital": 1_000_000,
-        "target_investment_ratio": 0.85,
-        "cash_buffer": 0.05,
-        "max_exposure": 850_000,
-        "max_position_weight": 0.2,
         "max_positions": 5,
         "min_order_amount": 0,
         "max_buy_order_amount": None,

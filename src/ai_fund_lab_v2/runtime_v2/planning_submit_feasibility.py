@@ -8,6 +8,19 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import (
+    CashExposureAuthority,
+    cash_exposure_authority_from_context,
+)
+from ai_fund_lab_v2.runtime_v2.position_count_authority import (
+    PositionCountAuthority,
+    position_count_authority_from_context,
+)
+from ai_fund_lab_v2.runtime_v2.position_sizing_authority import (
+    PositionSizingAuthority,
+    position_sizing_authority_from_context,
+)
+from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity
 
 
 @dataclass(frozen=True)
@@ -15,15 +28,58 @@ class RuntimeCurrentExposure:
     cash: float | None
     buying_power: float | None
     current_exposure: float
+    current_total_equity: float | None
+    active_deployment_capital: float | None
+    selected_capital_source: str
+    capital_fallback_used: bool
+    initial_or_bootstrap_capital: float | None
     positions: dict[str, float]
+    position_market_values: dict[str, float]
     current_position_source: str
+    selected_current_source: str = "persistent_ledger/state.json"
+    selected_cash_source: str = "persistent_ledger/state.json:cash"
+    selected_positions_source: str = "persistent_ledger/state.json:positions"
+    selected_valuation_source: str = "persistent_ledger/state.json:positions.market_value"
+    selected_projection_source: str = ""
+    current_authority_winner: str = "persistent_ledger_state"
+    current_source_business_date: str = ""
+    current_source_generation: str = ""
+    current_authority_status: str = "PASS"
+    current_authority_reason: str = "current_authority_resolved"
+    source_conflict_detected: bool = False
+    source_selection_reason: str = "explicit_persistent_ledger_state_current_authority"
+    legacy_current_used: bool = False
+    current_fallback_used: bool = False
+    runtime_evaluation_capital_used_as_current: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
+            "selected_current_source": self.selected_current_source,
+            "selected_cash_source": self.selected_cash_source,
+            "selected_positions_source": self.selected_positions_source,
+            "selected_valuation_source": self.selected_valuation_source,
+            "selected_projection_source": self.selected_projection_source,
+            "current_authority_winner": self.current_authority_winner,
+            "current_source_business_date": self.current_source_business_date,
+            "current_source_generation": self.current_source_generation,
+            "current_authority_status": self.current_authority_status,
+            "current_authority_reason": self.current_authority_reason,
+            "source_conflict_detected": self.source_conflict_detected,
+            "source_selection_reason": self.source_selection_reason,
+            "legacy_current_used": self.legacy_current_used,
+            "current_fallback_used": self.current_fallback_used,
+            "runtime_evaluation_capital_used_as_current": self.runtime_evaluation_capital_used_as_current,
             "cash": self.cash,
             "buying_power": self.buying_power,
             "current_exposure": self.current_exposure,
+            "current_total_equity": self.current_total_equity,
+            "active_deployment_capital": self.active_deployment_capital,
+            "selected_capital_source": self.selected_capital_source,
+            "capital_authority_winner": "current_total_equity",
+            "capital_fallback_used": self.capital_fallback_used,
+            "initial_or_bootstrap_capital": self.initial_or_bootstrap_capital,
             "positions": dict(self.positions),
+            "position_market_values": dict(self.position_market_values),
             "current_position_source": self.current_position_source,
         }
 
@@ -41,14 +97,27 @@ class SubmitFeasibilityResult:
         return self.status == "PASS"
 
 
-def load_runtime_current_exposure(path: Path | str) -> RuntimeCurrentExposure:
+def load_runtime_current_exposure(path: Path | str, *, business_date: str = "") -> RuntimeCurrentExposure:
     current_path = Path(path)
     empty = RuntimeCurrentExposure(
         cash=None,
         buying_power=None,
         current_exposure=0.0,
+        current_total_equity=None,
+        active_deployment_capital=None,
+        selected_capital_source="missing_current_state",
+        capital_fallback_used=False,
+        initial_or_bootstrap_capital=None,
         positions={},
+        position_market_values={},
         current_position_source=str(current_path),
+        selected_current_source=str(current_path),
+        selected_cash_source=str(current_path) + ":cash",
+        selected_positions_source=str(current_path) + ":positions",
+        selected_valuation_source=str(current_path) + ":positions.market_value",
+        current_authority_winner="missing_current_state",
+        current_authority_status="REVIEW_REQUIRED",
+        current_authority_reason="current_state_missing",
     )
     if not current_path.exists():
         return empty
@@ -57,6 +126,7 @@ def load_runtime_current_exposure(path: Path | str) -> RuntimeCurrentExposure:
     except json.JSONDecodeError:
         return empty
     positions: dict[str, float] = {}
+    position_market_values: dict[str, float] = {}
     exposure = 0.0
     for position in payload.get("positions") or ():
         if not isinstance(position, Mapping):
@@ -64,14 +134,74 @@ def load_runtime_current_exposure(path: Path | str) -> RuntimeCurrentExposure:
         symbol = str(position.get("symbol") or position.get("issue_code") or "").strip()
         if not symbol:
             continue
+        market_value = _float(position.get("market_value"))
         positions[symbol] = positions.get(symbol, 0.0) + _float(position.get("quantity"))
-        exposure += _float(position.get("market_value"))
+        position_market_values[symbol] = position_market_values.get(symbol, 0.0) + market_value
+        exposure += market_value
+    current_business_date = str(
+        payload.get("as_of") or payload.get("business_date") or payload.get("position_state_as_of") or ""
+    )
+    generation = str(payload.get("asset_state_id") or payload.get("generation") or payload.get("created_at") or "")
+    future_dated = bool(business_date and current_business_date and current_business_date > business_date)
+    source_conflict_detected = bool(payload.get("source_conflict_detected", False))
+    cash = None if future_dated else _optional_float(payload.get("cash"))
+    buying_power = None if future_dated else _optional_float(payload.get("buying_power"))
+    current_total_equity = _optional_float(payload.get("total_equity"))
+    selected_source = "current_state.total_equity"
+    if future_dated:
+        current_total_equity = None
+        selected_source = "future_dated_current_rejected"
+    elif current_total_equity is None:
+        selected_source = "current_state.total_equity_missing"
+    projection_payload = payload.get("runtime_owned_projection")
+    projection_source = (
+        str(projection_payload.get("projection_source") or "")
+        if isinstance(projection_payload, Mapping)
+        else ""
+    )
     return RuntimeCurrentExposure(
-        cash=_optional_float(payload.get("cash")),
-        buying_power=_optional_float(payload.get("buying_power")),
+        cash=cash,
+        buying_power=buying_power,
         current_exposure=exposure,
+        current_total_equity=current_total_equity,
+        active_deployment_capital=current_total_equity,
+        selected_capital_source=selected_source if current_total_equity is not None else "current_state_unavailable",
+        capital_fallback_used=False,
+        initial_or_bootstrap_capital=_optional_float(payload.get("initial_capital"))
+        or _optional_float(payload.get("bootstrap_capital"))
+        or _optional_float(payload.get("runtime_evaluation_capital")),
         positions=positions,
+        position_market_values=position_market_values,
         current_position_source=str(current_path),
+        selected_current_source=str(current_path),
+        selected_cash_source=str(current_path) + ":cash",
+        selected_positions_source=str(current_path) + ":positions",
+        selected_valuation_source=str(current_path) + ":positions.market_value",
+        selected_projection_source=projection_source,
+        current_authority_winner="persistent_ledger_state",
+        current_source_business_date=current_business_date,
+        current_source_generation=generation,
+        current_authority_status="REVIEW_REQUIRED"
+        if future_dated or source_conflict_detected or cash is None or buying_power is None or current_total_equity is None
+        else "PASS",
+        current_authority_reason="future_dated_current_rejected"
+        if future_dated
+        else "current_source_conflict_detected"
+        if source_conflict_detected
+        else "current_total_equity_missing"
+        if current_total_equity is None
+        else "current_cash_missing"
+        if cash is None
+        else "current_buying_power_missing"
+        if buying_power is None
+        else "current_authority_resolved",
+        source_conflict_detected=source_conflict_detected,
+        source_selection_reason=str(
+            payload.get("source_selection_reason") or "explicit_persistent_ledger_state_current_authority"
+        ),
+        legacy_current_used=False,
+        current_fallback_used=False,
+        runtime_evaluation_capital_used_as_current=False,
     )
 
 
@@ -81,6 +211,10 @@ def evaluate_planning_submit_feasibility(
     policy: CapitalDeploymentPolicy,
     current: RuntimeCurrentExposure,
     authority_source: str = "planning_submit_feasibility_preflight",
+    position_count_authority: PositionCountAuthority | None = None,
+    cash_exposure_authority: CashExposureAuthority | None = None,
+    business_date: str = "",
+    runtime_mode: str = "",
 ) -> SubmitFeasibilityResult:
     reserved_cash = current.cash
     reserved_buying_power = current.buying_power
@@ -93,16 +227,43 @@ def evaluate_planning_submit_feasibility(
             cash=reserved_cash,
             buying_power=reserved_buying_power,
             current_exposure=reserved_exposure,
+            current_total_equity=current.current_total_equity,
+            active_deployment_capital=current.active_deployment_capital,
+            selected_capital_source=current.selected_capital_source,
+            capital_fallback_used=current.capital_fallback_used,
+            initial_or_bootstrap_capital=current.initial_or_bootstrap_capital,
             positions=reserved_positions,
+            position_market_values=dict(current.position_market_values),
             current_position_source=current.current_position_source,
         )
         if side == "BUY":
+            item_position_count_authority = _item_position_count_authority(
+                position_count_authority=position_count_authority,
+                item=item,
+                policy=policy,
+                current=reserved_current,
+                business_date=business_date,
+                runtime_mode=runtime_mode,
+                authority_source=authority_source,
+            )
+            item_cash_exposure_authority = _item_cash_exposure_authority(
+                cash_exposure_authority=cash_exposure_authority,
+                item=item,
+                current=reserved_current,
+                business_date=business_date,
+                runtime_mode=runtime_mode,
+                authority_source=authority_source,
+            )
             evidence = evaluate_buy_item_submit_feasibility(
                 item=item,
                 policy=policy,
                 current=reserved_current,
                 authority_source=authority_source,
                 sequence_index=index,
+                position_count_authority=item_position_count_authority,
+                cash_exposure_authority=item_cash_exposure_authority,
+                business_date=business_date,
+                runtime_mode=runtime_mode,
             )
             if evidence["status"] == "PASS":
                 estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
@@ -123,6 +284,7 @@ def evaluate_planning_submit_feasibility(
                     current=reserved_current,
                     authority_source=authority_source,
                     sequence_index=index,
+                    cash_exposure_authority=cash_exposure_authority,
                 )
             )
     blocked = [item for item in item_evidence if item["status"] != "PASS"]
@@ -132,13 +294,40 @@ def evaluate_planning_submit_feasibility(
         "reservation_contract": "phase24_id_aggregate_pending_batch_reservation_v1",
         "policy_source": policy.policy_source,
         "policy_version": policy.policy_version,
+        "selected_current_source": current.selected_current_source,
+        "selected_cash_source": current.selected_cash_source,
+        "selected_positions_source": current.selected_positions_source,
+        "selected_valuation_source": current.selected_valuation_source,
+        "selected_projection_source": current.selected_projection_source,
+        "current_authority_winner": current.current_authority_winner,
+        "current_source_business_date": current.current_source_business_date,
+        "current_source_generation": current.current_source_generation,
+        "current_authority_status": current.current_authority_status,
+        "current_authority_reason": current.current_authority_reason,
+        "source_conflict_detected": current.source_conflict_detected,
+        "source_selection_reason": current.source_selection_reason,
+        "legacy_current_used": current.legacy_current_used,
+        "current_fallback_used": current.current_fallback_used,
+        "runtime_evaluation_capital_used_as_current": current.runtime_evaluation_capital_used_as_current,
         "current_position_source": current.current_position_source,
+        "selected_capital_source": current.selected_capital_source,
+        "selected_capital_value": current.active_deployment_capital,
+        "capital_authority_winner": "current_total_equity",
+        "active_deployment_capital": current.active_deployment_capital,
+        "initial_or_bootstrap_capital": current.initial_or_bootstrap_capital,
+        "current_total_equity": current.current_total_equity,
+        "legacy_capital_config_used": False,
+        "capital_fallback_used": current.capital_fallback_used,
         "current_exposure": current.current_exposure,
         "cash": current.cash,
         "buying_power": current.buying_power,
-        "max_exposure": policy.max_exposure,
-        "remaining_exposure": policy.max_exposure - current.current_exposure,
-        "active_max_positions": policy.max_positions,
+        "selected_runtime_exposure_limit": None if cash_exposure_authority is None else cash_exposure_authority.selected_runtime_exposure_limit,
+        "remaining_exposure": None if cash_exposure_authority is None else cash_exposure_authority.remaining_exposure_capacity,
+        "active_max_positions": None if position_count_authority is None else position_count_authority.selected_dynamic_position_count,
+        "configured_legacy_max_positions": policy.max_positions,
+        "legacy_runtime_max_positions": policy.max_positions,
+        "legacy_position_count_config_used": False,
+        "position_count_fallback_used": False,
         "starting_position_count": len(current.positions),
         "ending_reserved_cash": reserved_cash,
         "ending_reserved_buying_power": reserved_buying_power,
@@ -177,27 +366,100 @@ def evaluate_buy_item_submit_feasibility(
     current: RuntimeCurrentExposure,
     authority_source: str,
     sequence_index: int | None = None,
+    position_count_authority: PositionCountAuthority | None = None,
+    cash_exposure_authority: CashExposureAuthority | None = None,
+    position_sizing_authority: PositionSizingAuthority | None = None,
+    business_date: str = "",
+    runtime_mode: str = "",
 ) -> dict[str, Any]:
     estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
     symbol = str(getattr(item, "symbol", "")).strip()
-    max_position_amount = policy.evaluation_capital * policy.max_position_weight
+    active_capital = current.active_deployment_capital
     current_position_count = len(current.positions)
-    creates_new_position = bool(symbol and symbol not in current.positions and estimated_amount > 0)
+    creates_new_position = bool(symbol and not contains_symbol_identity(current.positions.keys(), symbol) and estimated_amount > 0)
+    resolved_position_count_authority = position_count_authority or _item_position_count_authority(
+        position_count_authority=None,
+        item=item,
+        policy=policy,
+        current=current,
+        business_date=business_date,
+        runtime_mode=runtime_mode,
+        authority_source=authority_source,
+    )
+    resolved_position_count_authority = resolved_position_count_authority.with_current_position_count(current_position_count)
+    resolved_cash_exposure_authority = _item_cash_exposure_authority(
+        cash_exposure_authority=cash_exposure_authority,
+        item=item,
+        current=current,
+        business_date=business_date,
+        runtime_mode=runtime_mode,
+        authority_source=authority_source,
+    )
+    resolved_position_sizing_authority = _item_position_sizing_authority(
+        position_sizing_authority=position_sizing_authority,
+        item=item,
+        current=current,
+        business_date=business_date,
+        runtime_mode=runtime_mode,
+        authority_source=authority_source,
+        cash_exposure_authority=resolved_cash_exposure_authority,
+        position_count_authority=resolved_position_count_authority,
+    )
     post_position_count = current_position_count + (1 if creates_new_position else 0)
+    position_count_fields = resolved_position_count_authority.to_dict()
+    cash_exposure_fields = resolved_cash_exposure_authority.to_dict()
+    position_sizing_fields = resolved_position_sizing_authority.to_dict()
     evidence = {
         "pending_item_id": str(getattr(item, "pending_item_id", "")),
         "symbol": symbol,
         "side": "BUY",
         "sequence_index": sequence_index,
         "estimated_amount": estimated_amount,
+        "selected_current_source": current.selected_current_source,
+        "selected_cash_source": current.selected_cash_source,
+        "selected_positions_source": current.selected_positions_source,
+        "selected_valuation_source": current.selected_valuation_source,
+        "selected_projection_source": current.selected_projection_source,
+        "current_authority_winner": current.current_authority_winner,
+        "current_source_business_date": current.current_source_business_date,
+        "current_source_generation": current.current_source_generation,
+        "current_authority_status": current.current_authority_status,
+        "current_authority_reason": current.current_authority_reason,
+        "source_conflict_detected": current.source_conflict_detected,
+        "source_selection_reason": current.source_selection_reason,
+        "legacy_current_used": current.legacy_current_used,
+        "current_fallback_used": current.current_fallback_used,
+        "runtime_evaluation_capital_used_as_current": current.runtime_evaluation_capital_used_as_current,
+        "selected_capital_source": current.selected_capital_source,
+        "selected_capital_value": active_capital,
+        "capital_authority_winner": "current_total_equity",
+        "active_deployment_capital": active_capital,
+        "initial_or_bootstrap_capital": current.initial_or_bootstrap_capital,
+        "current_total_equity": current.current_total_equity,
+        "legacy_capital_config_used": False,
+        "capital_fallback_used": current.capital_fallback_used,
         "current_exposure": current.current_exposure,
         "cash": current.cash,
         "buying_power": current.buying_power,
-        "max_exposure": policy.max_exposure,
-        "remaining_exposure": policy.max_exposure - current.current_exposure,
-        "max_position_amount": max_position_amount,
-        "active_max_positions": policy.max_positions,
+        "selected_runtime_exposure_limit": resolved_cash_exposure_authority.selected_runtime_exposure_limit,
+        "remaining_exposure": resolved_cash_exposure_authority.remaining_exposure_capacity,
+        "position_sizing_authority": position_sizing_fields,
+        **position_sizing_fields,
+        "active_max_positions": resolved_position_count_authority.selected_dynamic_position_count,
+        "configured_legacy_max_positions": policy.max_positions,
+        "legacy_runtime_max_positions": policy.max_positions,
         "current_position_count": current_position_count,
+        "strategy_requested_position_count": resolved_position_count_authority.strategy_requested_position_count,
+        "selected_dynamic_position_count": resolved_position_count_authority.selected_dynamic_position_count,
+        "available_position_slots": resolved_position_count_authority.available_position_slots,
+        "safety_hard_maximum": resolved_position_count_authority.safety_hard_maximum,
+        "position_count_authority_winner": resolved_position_count_authority.position_count_authority_winner,
+        "position_count_binding_constraint": resolved_position_count_authority.position_count_binding_constraint,
+        "legacy_position_count_config_used": resolved_position_count_authority.legacy_position_count_config_used,
+        "position_count_fallback_used": resolved_position_count_authority.position_count_fallback_used,
+        "position_count_authority": position_count_fields,
+        "cash_exposure_authority": cash_exposure_fields,
+        **cash_exposure_fields,
         "creates_new_position": creates_new_position,
         "post_position_count": post_position_count,
         "post_buy_exposure": current.current_exposure + estimated_amount,
@@ -223,12 +485,28 @@ def evaluate_buy_item_submit_feasibility(
         violations.append(("buying_power_missing", "Current buying_power is missing", current.current_position_source))
     elif estimated_amount > float(current.buying_power):
         violations.append(("buying_power", "estimated amount exceeds buying_power", current.current_position_source))
-    if current.current_exposure + estimated_amount > policy.max_exposure:
-        violations.append(("max_exposure", "estimated amount exceeds remaining max_exposure", policy.policy_source))
-    if creates_new_position and post_position_count > policy.max_positions:
-        violations.append(("max_positions", "BUY would exceed active max_positions", policy.policy_source))
-    if estimated_amount > max_position_amount:
-        violations.append(("max_position_weight", "estimated amount exceeds max_position_weight", policy.policy_source))
+    if active_capital is None:
+        violations.append(("active_deployment_capital_missing", "Current total equity authority is missing", current.current_position_source))
+    if current.current_authority_status != "PASS":
+        violations.append(("current_authority", current.current_authority_reason, current.current_position_source))
+    if not resolved_cash_exposure_authority.passed:
+        violations.append(("dynamic_cash_exposure", resolved_cash_exposure_authority.reason, resolved_cash_exposure_authority.authority_source))
+    elif estimated_amount > resolved_cash_exposure_authority.available_cash_after_target:
+        violations.append(("dynamic_cash", "estimated amount exceeds dynamic cash capacity", resolved_cash_exposure_authority.authority_source))
+    elif current.current_exposure + estimated_amount > resolved_cash_exposure_authority.selected_runtime_exposure_limit:
+        violations.append(("dynamic_exposure", "estimated amount exceeds selected_runtime_exposure_limit", resolved_cash_exposure_authority.authority_source))
+    if creates_new_position and not resolved_position_count_authority.passed:
+        violations.append(("safety_hard_maximum", resolved_position_count_authority.reason, resolved_position_count_authority.authority_source))
+    elif (
+        creates_new_position
+        and resolved_position_count_authority.safety_hard_maximum is not None
+        and post_position_count > resolved_position_count_authority.safety_hard_maximum
+    ):
+        violations.append(("safety_hard_maximum", "BUY would exceed safety_hard_maximum", resolved_position_count_authority.authority_source))
+    if not resolved_position_sizing_authority.passed:
+        violations.append(("position_sizing", resolved_position_sizing_authority.reason, resolved_position_sizing_authority.authority_source))
+    elif estimated_amount > resolved_position_sizing_authority.selected_position_amount:
+        violations.append(("position_sizing", "estimated amount exceeds selected_position_amount", resolved_position_sizing_authority.authority_source))
     if policy.max_buy_order_amount is not None and estimated_amount > policy.max_buy_order_amount:
         violations.append(("max_buy_order_amount", "estimated amount exceeds max_buy_order_amount", policy.policy_source))
     if not violations:
@@ -252,17 +530,57 @@ def _sell_item_evidence(
     current: RuntimeCurrentExposure,
     authority_source: str,
     sequence_index: int | None = None,
+    cash_exposure_authority: CashExposureAuthority | None = None,
 ) -> dict[str, Any]:
+    resolved_cash_exposure_authority = (
+        cash_exposure_authority.with_runtime_state(
+            current_cash=current.cash,
+            current_market_value=current.current_exposure,
+            current_total_equity=current.current_total_equity,
+            active_deployment_capital=current.active_deployment_capital,
+        )
+        if cash_exposure_authority is not None
+        else None
+    )
+    cash_exposure_fields = resolved_cash_exposure_authority.to_dict() if resolved_cash_exposure_authority is not None else {}
     return {
         "pending_item_id": str(getattr(item, "pending_item_id", "")),
         "symbol": str(getattr(item, "symbol", "")),
         "side": "SELL",
         "sequence_index": sequence_index,
         "estimated_amount": _float(getattr(item, "estimated_amount", 0.0)),
+        "selected_current_source": current.selected_current_source,
+        "selected_cash_source": current.selected_cash_source,
+        "selected_positions_source": current.selected_positions_source,
+        "selected_valuation_source": current.selected_valuation_source,
+        "selected_projection_source": current.selected_projection_source,
+        "current_authority_winner": current.current_authority_winner,
+        "current_source_business_date": current.current_source_business_date,
+        "current_source_generation": current.current_source_generation,
+        "current_authority_status": current.current_authority_status,
+        "current_authority_reason": current.current_authority_reason,
+        "source_conflict_detected": current.source_conflict_detected,
+        "source_selection_reason": current.source_selection_reason,
+        "legacy_current_used": current.legacy_current_used,
+        "current_fallback_used": current.current_fallback_used,
+        "runtime_evaluation_capital_used_as_current": current.runtime_evaluation_capital_used_as_current,
+        "selected_capital_source": current.selected_capital_source,
+        "selected_capital_value": current.active_deployment_capital,
+        "capital_authority_winner": "current_total_equity",
+        "active_deployment_capital": current.active_deployment_capital,
+        "initial_or_bootstrap_capital": current.initial_or_bootstrap_capital,
+        "current_total_equity": current.current_total_equity,
+        "legacy_capital_config_used": False,
+        "capital_fallback_used": current.capital_fallback_used,
         "current_exposure": current.current_exposure,
-        "max_exposure": policy.max_exposure,
-        "remaining_exposure": policy.max_exposure - current.current_exposure,
-        "active_max_positions": policy.max_positions,
+        "selected_runtime_exposure_limit": None if resolved_cash_exposure_authority is None else resolved_cash_exposure_authority.selected_runtime_exposure_limit,
+        "remaining_exposure": None if resolved_cash_exposure_authority is None else resolved_cash_exposure_authority.remaining_exposure_capacity,
+        **cash_exposure_fields,
+        "active_max_positions": None,
+        "configured_legacy_max_positions": policy.max_positions,
+        "legacy_runtime_max_positions": policy.max_positions,
+        "legacy_position_count_config_used": False,
+        "position_count_fallback_used": False,
         "current_position_count": len(current.positions),
         "post_position_count": len(current.positions),
         "authority_source": authority_source,
@@ -270,7 +588,7 @@ def _sell_item_evidence(
         "policy_version": policy.policy_version,
         "current_position_source": current.current_position_source,
         "status": "PASS",
-        "reason": "sell_exposure_reducing_submit_feasibility_not_blocked_by_buy_max_exposure",
+        "reason": "sell_exposure_reducing_submit_feasibility_not_blocked_by_buy_dynamic_exposure",
         "violated_policy": "",
         "violated_policy_source": "",
     }
@@ -286,3 +604,103 @@ def _float(value: Any) -> float:
     if value in (None, ""):
         return 0.0
     return float(value)
+
+
+def _item_position_count_authority(
+    *,
+    position_count_authority: PositionCountAuthority | None,
+    item: Any,
+    policy: CapitalDeploymentPolicy,
+    current: RuntimeCurrentExposure,
+    business_date: str,
+    runtime_mode: str,
+    authority_source: str,
+) -> PositionCountAuthority:
+    if position_count_authority is not None:
+        return position_count_authority.with_current_position_count(len(current.positions))
+    context = getattr(item, "quantity_contract", None)
+    if not isinstance(context, Mapping):
+        context = {}
+    nested = context.get("position_count_authority")
+    policy_context = nested if isinstance(nested, Mapping) else context
+    return position_count_authority_from_context(
+        policy_context,
+        business_date=business_date or str(getattr(item, "source_pm_business_date", "") or ""),
+        runtime_mode=runtime_mode or "",
+        current_position_count=len(current.positions),
+        configured_legacy_max_positions=policy.max_positions,
+        consumer=authority_source,
+    )
+
+
+def _item_cash_exposure_authority(
+    *,
+    cash_exposure_authority: CashExposureAuthority | None,
+    item: Any,
+    current: RuntimeCurrentExposure,
+    business_date: str,
+    runtime_mode: str,
+    authority_source: str,
+) -> CashExposureAuthority:
+    if cash_exposure_authority is not None:
+        return cash_exposure_authority.with_runtime_state(
+            current_cash=current.cash,
+            current_market_value=current.current_exposure,
+            current_total_equity=current.current_total_equity,
+            active_deployment_capital=current.active_deployment_capital,
+        )
+    context = getattr(item, "quantity_contract", None)
+    if not isinstance(context, Mapping):
+        context = {}
+    nested = context.get("cash_exposure_authority")
+    policy_context = nested if isinstance(nested, Mapping) else context
+    return cash_exposure_authority_from_context(
+        policy_context,
+        business_date=business_date or str(getattr(item, "source_pm_business_date", "") or ""),
+        runtime_mode=runtime_mode or "",
+        current_total_equity=current.current_total_equity,
+        active_deployment_capital=current.active_deployment_capital,
+        current_cash=current.cash,
+        current_market_value=current.current_exposure,
+        consumer=authority_source,
+    )
+
+
+def _item_position_sizing_authority(
+    *,
+    position_sizing_authority: PositionSizingAuthority | None,
+    item: Any,
+    current: RuntimeCurrentExposure,
+    business_date: str,
+    runtime_mode: str,
+    authority_source: str,
+    cash_exposure_authority: CashExposureAuthority | None,
+    position_count_authority: PositionCountAuthority | None,
+) -> PositionSizingAuthority:
+    symbol = str(getattr(item, "symbol", "") or "").strip()
+    if position_sizing_authority is not None:
+        return position_sizing_authority
+    context = getattr(item, "quantity_contract", None)
+    if not isinstance(context, Mapping):
+        context = {}
+    nested = context.get("position_sizing_authority")
+    policy_context = nested if isinstance(nested, Mapping) else context
+    return position_sizing_authority_from_context(
+        policy_context,
+        symbol=symbol,
+        business_date=business_date or str(getattr(item, "source_pm_business_date", "") or ""),
+        runtime_mode=runtime_mode or "",
+        active_deployment_capital=current.active_deployment_capital,
+        selected_dynamic_exposure_ratio=None if cash_exposure_authority is None else cash_exposure_authority.selected_dynamic_exposure_ratio,
+        selected_runtime_exposure_limit=None if cash_exposure_authority is None else cash_exposure_authority.selected_runtime_exposure_limit,
+        selected_dynamic_position_count=None if position_count_authority is None else position_count_authority.selected_dynamic_position_count,
+        current_position_market_value=_current_position_market_value(current, symbol),
+        consumer=authority_source,
+    )
+
+
+def _current_position_market_value(current: RuntimeCurrentExposure, symbol: str) -> float:
+    for existing_symbol, market_value in current.position_market_values.items():
+        if contains_symbol_identity((existing_symbol,), symbol):
+            return float(market_value)
+    return 0.0

@@ -9,6 +9,8 @@ from typing import Any, Mapping, Sequence
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy
+from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import CashExposureAuthority
+from ai_fund_lab_v2.runtime_v2.position_sizing_authority import PositionSizingAuthority
 from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision
 from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity, same_symbol_identity
 
@@ -49,6 +51,8 @@ def build_add_pending_items(
     environment: str,
     capital_deployment_policy: CapitalDeploymentPolicy | None,
     safety_decision: RuntimeSafetyDecision | None,
+    cash_exposure_authority: CashExposureAuthority | None = None,
+    position_sizing_authorities: Mapping[str, PositionSizingAuthority] | None = None,
 ) -> AddConsumerResult:
     add_candidates = tuple(
         decision
@@ -87,9 +91,29 @@ def build_add_pending_items(
     accepted: list[PendingOrderItem] = []
     accepted_symbols: set[str] = set()
     current_exposure = float(sum(position.market_value for position in current_positions.values()))
-    cash_capacity = _cash_capacity(asset_state)
-    remaining_exposure = max(float(capital_deployment_policy.max_exposure) - current_exposure, 0.0)
-    remaining_cash = cash_capacity
+    active_deployment_capital = _active_deployment_capital(asset_state, current_exposure=current_exposure)
+    selected_cash_exposure = (
+        cash_exposure_authority.with_runtime_state(
+            current_cash=_cash_capacity(asset_state),
+            current_market_value=current_exposure,
+            current_total_equity=active_deployment_capital,
+            active_deployment_capital=active_deployment_capital,
+        )
+        if cash_exposure_authority is not None
+        else None
+    )
+    if selected_cash_exposure is None or not selected_cash_exposure.passed:
+        return AddConsumerResult(
+            "REJECTED",
+            "DYNAMIC_CASH_EXPOSURE_AUTHORITY_MISSING",
+            (),
+            tuple(_reject(decision, "DYNAMIC_CASH_EXPOSURE_AUTHORITY_MISSING", business_date) for decision in add_candidates),
+            len(add_candidates),
+            0,
+            len(add_candidates),
+        )
+    remaining_exposure = max(selected_cash_exposure.remaining_exposure_capacity, 0.0)
+    remaining_cash = max(selected_cash_exposure.available_cash_after_target, 0.0)
     for index, decision in enumerate(add_candidates, start=1):
         symbol = str(getattr(decision, "symbol", "") or "").strip()
         position = _matching_position(current_positions, symbol)
@@ -106,12 +130,16 @@ def build_add_pending_items(
         if position.average_price > 0 and price < position.average_price:
             rejected.append(_reject(decision, "NO_LOSS_AVERAGING_GUARD", business_date))
             continue
-        max_position_notional = float(capital_deployment_policy.evaluation_capital) * float(
-            capital_deployment_policy.max_position_weight
-        )
-        position_capacity = max(max_position_notional - float(position.market_value), 0.0)
+        if active_deployment_capital is None:
+            rejected.append(_reject(decision, "ACTIVE_DEPLOYMENT_CAPITAL_MISSING", business_date))
+            continue
+        selected_position_sizing = _matching_position_sizing_authority(position_sizing_authorities or {}, symbol)
+        if selected_position_sizing is None or not selected_position_sizing.passed:
+            rejected.append(_reject(decision, "POSITION_SIZING_AUTHORITY_MISSING", business_date))
+            continue
+        position_capacity = max(float(selected_position_sizing.remaining_add_capacity), 0.0)
         if position_capacity <= 0:
-            rejected.append(_reject(decision, "MAX_POSITION_WEIGHT", business_date))
+            rejected.append(_reject(decision, "POSITION_SIZING_NO_ADD_CAPACITY", business_date))
             continue
         if remaining_exposure <= 0:
             rejected.append(_reject(decision, "MAX_EXPOSURE", business_date))
@@ -166,10 +194,9 @@ def build_add_pending_items(
             policy_version=capital_deployment_policy.policy_version,
             policy_source=capital_deployment_policy.policy_source,
             evaluation_capital=capital_deployment_policy.evaluation_capital,
-            target_investment_ratio=capital_deployment_policy.target_investment_ratio,
-            cash_buffer=capital_deployment_policy.cash_buffer,
-            max_exposure=capital_deployment_policy.max_exposure,
-            max_position_weight=capital_deployment_policy.max_position_weight,
+            target_investment_ratio=None,
+            cash_buffer=None,
+            max_exposure=None,
             max_positions=capital_deployment_policy.max_positions,
             max_buy_order_amount=capital_deployment_policy.max_buy_order_amount,
             max_sell_liquidation_amount=capital_deployment_policy.max_sell_liquidation_amount,
@@ -177,7 +204,7 @@ def build_add_pending_items(
             buy_notional_policy=capital_deployment_policy.buy_notional_policy,
             sell_liquidation_policy=capital_deployment_policy.sell_liquidation_policy,
             manual_review_threshold=capital_deployment_policy.manual_review_threshold.__dict__,
-            sizing_policy_reason="pm_add_capital_deployment_policy",
+            sizing_policy_reason="pm_add_position_sizing_authority",
             safety_decision_id=str(safety_decision.safety_decision_id if safety_decision is not None else ""),
             safety_policy_version=str(safety_decision.safety_policy_version if safety_decision is not None else ""),
             safety_source=str(safety_decision.safety_source if safety_decision is not None else ""),
@@ -186,12 +213,28 @@ def build_add_pending_items(
             quantity_contract={
                 "quantity_contract_version": "runtime_v2_pm_add_quantity_v1",
                 "source_decision": "ADD",
+                "selected_capital_source": _capital_source(asset_state),
+                "selected_capital_value": active_deployment_capital,
+                "capital_authority_winner": "current_total_equity",
+                "active_deployment_capital": active_deployment_capital,
+                "legacy_capital_config_used": False,
+                "capital_fallback_used": False,
+                "cash_exposure_authority": selected_cash_exposure.to_dict(),
+                **selected_cash_exposure.to_dict(),
+                "position_sizing_authority": selected_position_sizing.with_lot_adjustment(
+                    quantity=quantity,
+                    notional=approved_notional,
+                ).to_dict(),
+                **selected_position_sizing.with_lot_adjustment(
+                    quantity=quantity,
+                    notional=approved_notional,
+                ).to_dict(),
                 "requested_add_notional": requested_notional,
                 "approved_add_notional": approved_notional,
                 "tradable_unit": DEFAULT_TRADABLE_UNIT,
                 "final_buy_quantity": quantity,
                 "status": "PASS",
-                "reason": "pm_add_capital_allocation_pass",
+                "reason": "pm_add_position_sizing_allocation_pass",
             },
             source_decision_type="ADD",
             source_pm_decision_id=str(getattr(decision, "source_decision_id", "") or ""),
@@ -199,7 +242,7 @@ def build_add_pending_items(
             source_position_symbol=str(position.symbol),
             add_candidate_signal=True,
             capital_allocation_status="APPROVED",
-            capital_allocation_reason="pm_add_capital_allocation_pass",
+            capital_allocation_reason="pm_add_position_sizing_allocation_pass",
             requested_add_notional=requested_notional,
             approved_add_notional=approved_notional,
             rejected_reason="",
@@ -223,6 +266,16 @@ def _matching_position(
     return None
 
 
+def _matching_position_sizing_authority(
+    authorities: Mapping[str, PositionSizingAuthority],
+    symbol: str,
+) -> PositionSizingAuthority | None:
+    for existing_symbol, authority in authorities.items():
+        if same_symbol_identity(existing_symbol, symbol):
+            return authority
+    return None
+
+
 def _position_price(position: CurrentAssetPosition) -> float:
     if position.quantity <= 0:
         return 0.0
@@ -240,6 +293,19 @@ def _cash_capacity(asset_state: CurrentAssetState) -> float:
     if not values:
         return 0.0
     return min(values)
+
+
+def _active_deployment_capital(asset_state: CurrentAssetState, *, current_exposure: float) -> float | None:
+    _ = current_exposure
+    if asset_state.total_equity is not None:
+        return float(asset_state.total_equity)
+    return None
+
+
+def _capital_source(asset_state: CurrentAssetState) -> str:
+    if asset_state.total_equity is not None:
+        return "current_state.total_equity"
+    return "current_state.total_equity_missing"
 
 
 def _optional_cap(value: float | None) -> float:

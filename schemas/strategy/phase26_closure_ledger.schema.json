@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase26 Closure Ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "phase26_closure_ledger.v1"},
+    "contract_version": {"const": "phase26_step0_closure_contract.v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "gap_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "closure_label": {
+      "enum": [
+        "DESIGN_CLOSURE",
+        "ARTIFACT_FOUNDATION_CLOSURE",
+        "RUNTIME_OPERABILITY_CLOSURE",
+        "MIGRATION_CLOSURE",
+        "ARCHITECTURE_CONFORMANCE_CLOSURE",
+        "PERFORMANCE_EVALUATION_CLOSURE"
+      ]
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claim": {"$ref": "#/$defs/ledger_stage"},
+        "design_sot": {"$ref": "#/$defs/ledger_stage"},
+        "implementation": {"$ref": "#/$defs/ledger_stage"},
+        "producer": {"$ref": "#/$defs/ledger_stage"},
+        "consumer": {"$ref": "#/$defs/ledger_stage"},
+        "runtime_evidence": {"$ref": "#/$defs/ledger_stage"},
+        "negative_assertion": {"$ref": "#/$defs/negative_assertion_stage"},
+        "regression": {"$ref": "#/$defs/ledger_stage"},
+        "closure": {"$ref": "#/$defs/ledger_stage"}
+      },
+      "required": [
+        "claim",
+        "design_sot",
+        "implementation",
+        "producer",
+        "consumer",
+        "runtime_evidence",
+        "negative_assertion",
+        "regression",
+        "closure"
+      ]
+    },
+    "negative_assertions": {"$ref": "#/$defs/negative_assertions"},
+    "mode_parity": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL"]},
+        "required_modes": {"type": "array"},
+        "missing_modes": {"type": "array"},
+        "comparisons": {"type": "array"}
+      },
+      "required": ["status", "required_modes", "missing_modes", "comparisons"]
+    },
+    "full_migration_regression": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL"]},
+        "checks": {"type": "array"}
+      },
+      "required": ["status", "checks"]
+    },
+    "runtime_behavior_changed": {"type": "boolean"},
+    "runtime_decision_behavior_changed": {"type": "boolean"},
+    "intended_architecture_behavior_change": {"type": "boolean"},
+    "strategy_behavior_changed": {"type": "boolean"},
+    "safety_behavior_weakened": {"type": "boolean"},
+    "submit_behavior_changed": {"type": "boolean"},
+    "buy_sell_independence_behavior_repaired": {"type": "boolean"},
+    "submit_guard_weakened": {"type": "boolean"},
+    "old_path_zero": {"type": "object", "additionalProperties": true},
+    "closure_types": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "DESIGN_CLOSURE",
+          "ARTIFACT_FOUNDATION_CLOSURE",
+          "RUNTIME_OPERABILITY_CLOSURE",
+          "MIGRATION_CLOSURE",
+          "ARCHITECTURE_CONFORMANCE_CLOSURE",
+          "PERFORMANCE_EVALUATION_CLOSURE"
+        ]
+      }
+    },
+    "evidence_inventory": {"type": "object", "additionalProperties": true},
+    "decision_trace_contract": {"type": "object", "additionalProperties": true},
+    "authority_evidence_contract": {"type": "object", "additionalProperties": true},
+    "binding_constraint_contract": {"type": "object", "additionalProperties": true},
+    "negative_assertion_aggregation": {"type": "object", "additionalProperties": true},
+    "mode_parity_matrix": {"type": "object", "additionalProperties": true},
+    "shadow_metadata_deletion": {"type": "object", "additionalProperties": true},
+    "step1_step8_regression": {"type": "object", "additionalProperties": true},
+    "safety_preserved": {"type": "boolean"},
+    "closure_judgment": {"type": "string"},
+    "negative_assertion_details": {"type": "object", "additionalProperties": true},
+    "capital_mode_parity": {"type": "object", "additionalProperties": true},
+    "position_count_mode_parity": {"type": "object", "additionalProperties": true},
+    "cash_exposure_mode_parity": {"type": "object", "additionalProperties": true},
+    "capital_authority_regression": {"type": "object", "additionalProperties": true},
+    "position_count_authority_regression": {"type": "object", "additionalProperties": true},
+    "baseline_failures": {"type": "object", "additionalProperties": true},
+    "new_failures": {"type": ["integer", "object"], "minimum": 0}
+  },
+  "required": [
+    "schema_version",
+    "contract_version",
+    "task_id",
+    "gap_ids",
+    "closure_label",
+    "ledger",
+    "negative_assertions",
+    "mode_parity",
+    "full_migration_regression",
+    "runtime_behavior_changed"
+  ],
+  "$defs": {
+    "ledger_stage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "notes": {"type": "string"}
+      },
+      "required": ["status", "evidence_refs"]
+    },
+    "negative_assertion_stage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "old_production_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_demo_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_historical_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_config_authority_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_schema_authority_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_fallback_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_runtime_activation_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_fixture_test_expectation_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]}
+      },
+      "required": ["status", "evidence_refs"]
+    },
+    "negative_assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "old_production_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_demo_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_historical_consumer_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_config_authority_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_schema_authority_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_fallback_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_runtime_activation_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]},
+        "old_fixture_test_expectation_zero": {"enum": ["PASS", "FAIL", "REVIEW_REQUIRED", "NOT_APPLICABLE"]}
+      },
+      "required": [
+        "old_production_consumer_zero",
+        "old_demo_consumer_zero",
+        "old_historical_consumer_zero",
+        "old_config_authority_zero",
+        "old_schema_authority_zero",
+        "old_fallback_zero",
+        "old_runtime_activation_zero",
+        "old_fixture_test_expectation_zero"
+      ]
+    }
+  }
+}

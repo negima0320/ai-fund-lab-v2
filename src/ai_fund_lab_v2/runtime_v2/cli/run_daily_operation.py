@@ -22,6 +22,7 @@ from ai_fund_lab_v2.runtime_v2.artifact_lookup import (
     RuntimeArtifactLookupHalt,
     resolve_runtime_capital_policy_path,
 )
+from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import resolve_accepted_generation
 from ai_fund_lab_v2.runtime_v2.buy_ai.producer import produce_buy_ai_decisions
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
 from ai_fund_lab_v2.runtime_v2.lifecycle_sell_continuity import evaluate_sell_continuity_from_buy_lifecycle_gate
@@ -630,6 +631,10 @@ def main(argv: list[str] | None = None) -> int:
                     "planned_matches_materialized": True,
                 },
                 historical_evaluation_authority_path=args.historical_evaluation_authority or "",
+                artifact_subdir="strategy",
+                decision_timing="MORNING_FORMAL_PLANNING_AUTHORITY",
+                authority_role="FORMAL_PLANNING_AUTHORITY_INPUT",
+                materialization_role="IMMUTABLE_MORNING_PLANNING_SNAPSHOT",
             )
             stages.append(
                 _stage(
@@ -742,6 +747,11 @@ def main(argv: list[str] | None = None) -> int:
                     capital_deployment_policy=capital_deployment_policy,
                     submit_policy_context=_strategy_planning_submit_policy_authority_payload(
                         capital_deployment_policy=capital_deployment_policy,
+                    ),
+                    accepted_generation_binding=_accepted_generation_binding_for_runtime_job(
+                        args=args,
+                        business_date=business_date,
+                        consumer="sell_planning_pending_pipeline",
                     ),
                     safety_decision=effective_safety_decision,
                     environment_capability_context=sell_capability_context,
@@ -1186,7 +1196,7 @@ def _build_manifest(
         "runtime_test_profile_id": args.runtime_test_profile_id or "",
         "runtime_test_evidence_root": args.runtime_test_evidence_root or "",
         "historical_evaluation_authority_path": args.historical_evaluation_authority or "",
-        "historical_evaluation_authority_mode": "RUN_START_FIXED" if args.historical_evaluation_authority else "",
+        "historical_evaluation_authority_mode": "BUSINESS_DATE_BOUND_RUN_START_FIXED" if args.historical_evaluation_authority else "",
         "started_at": started_at,
         "finished_at": _utc_now(),
         "business_date": business_date,
@@ -2619,6 +2629,24 @@ def _read_json_file(path: Path) -> dict[str, Any]:
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _accepted_generation_binding_for_runtime_job(
+    *,
+    args: argparse.Namespace,
+    business_date: str,
+    consumer: str,
+) -> dict[str, Any]:
+    resolution = resolve_accepted_generation(
+        runtime_root=Path(args.runtime_root),
+        business_date=business_date,
+        fixed_authority_path=args.historical_evaluation_authority or None,
+    )
+    return resolution.binding_evidence(
+        runtime_mode=args.mode,
+        business_date=business_date,
+        consumer=consumer,
+    )
 
 
 def _submit_environment_context(

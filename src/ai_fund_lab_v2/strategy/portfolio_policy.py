@@ -724,7 +724,7 @@ def _resolve_internal_portfolio_policy(
         "single_name_weight_cap": cap_authority["single_name_weight_cap"],
         "single_name_weight_cap_source": cap_authority["source"],
         "single_name_weight_cap_authority": cap_authority,
-        "deployment_posture": _deployment_posture(target_position_count, target_gross_exposure_ratio, cash_reserve_ratio),
+        "deployment_posture": _deployment_posture(target_gross_exposure_ratio, cash_reserve_ratio),
         "internal_resolvers": {
             "dynamic_position_count": {
                 "merge_decision": "KEEP_INTERNAL",
@@ -815,10 +815,10 @@ def _load_internal_cash_exposure_config() -> dynamic_cash_exposure.DynamicCashEx
         return None
 
 
-def _deployment_posture(target_position_count: Any, target_gross_exposure_ratio: Any, cash_reserve_ratio: Any) -> str:
-    if target_position_count is None or target_gross_exposure_ratio is None or cash_reserve_ratio is None:
+def _deployment_posture(target_gross_exposure_ratio: Any, cash_reserve_ratio: Any) -> str:
+    if target_gross_exposure_ratio is None or cash_reserve_ratio is None:
         return "UNRESOLVED"
-    if int(target_position_count) <= 0 or float(target_gross_exposure_ratio) <= 0:
+    if float(target_gross_exposure_ratio) <= 0:
         return "PAUSE"
     if float(cash_reserve_ratio) >= 0.35:
         return "DEFENSIVE_DEPLOYMENT"

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalDecision, ApprovalStatus
-from ai_fund_lab_v2.runtime_v2.approval.policy import build_approval_artifact, build_approval_request
+from ai_fund_lab_v2.runtime_v2.approval.policy import (
+    build_approval_artifact,
+    build_approval_request,
+    build_approved_order_conditions,
+)
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
@@ -68,6 +72,7 @@ def compose_with_existing_buy_pending(
     reason: str,
     planning_submit_feasibility_current: RuntimeCurrentExposure | None = None,
     planning_submit_feasibility_policy: CapitalDeploymentPolicy | None = None,
+    accepted_generation_binding: dict | None = None,
 ) -> tuple[PendingOrderPlan, Path, Path, dict]:
     if existing_buy_pending is None:
         return pending, Path(pending.source_order_plan.path), Path(pending.approval.approval_path if pending.approval else ""), {
@@ -107,6 +112,10 @@ def compose_with_existing_buy_pending(
         target_session_date=target_session_date,
         items=composed_items,
     )
+    composed = _attach_accepted_generation_binding(
+        pending=composed,
+        accepted_generation_binding=accepted_generation_binding,
+    )
     approved_item_ids = tuple(item.pending_item_id for item in composed.items)
     request = build_approval_request(
         pending_plan=composed,
@@ -122,6 +131,10 @@ def compose_with_existing_buy_pending(
             reason="runtime v2 pending composition approval",
             operator="runtime_v2_pending_composition_job",
             decided_at=f"{business_date}T08:46:00+09:00",
+            approved_order_conditions=build_approved_order_conditions(
+                pending_items=composed.items,
+                target_session_date=target_session_date,
+            ),
         ),
     )
     approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
@@ -193,3 +206,30 @@ def _jsonable(value):
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _attach_accepted_generation_binding(
+    *,
+    pending: PendingOrderPlan,
+    accepted_generation_binding: dict | None,
+) -> PendingOrderPlan:
+    if not accepted_generation_binding:
+        return pending
+    binding = dict(accepted_generation_binding)
+    return replace(
+        pending,
+        accepted_generation_binding=binding,
+        accepted_generation_id=str(binding.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(binding.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(binding.get("generation_binding_status") or ""),
+        items=tuple(
+            replace(
+                item,
+                accepted_generation_id=str(binding.get("accepted_generation_id") or ""),
+                accepted_generation_business_date=str(binding.get("accepted_generation_business_date") or ""),
+                accepted_generation_binding_status=str(binding.get("generation_binding_status") or ""),
+                accepted_generation_binding=binding,
+            )
+            for item in pending.items
+        ),
+    )

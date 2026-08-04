@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 COMMITTED_TRANSACTION_STATE = "COMMITTED"
@@ -60,6 +60,57 @@ class AcceptedGenerationResolution:
         payload["reason_codes"] = list(self.reason_codes)
         return payload
 
+    def binding_evidence(self, *, runtime_mode: str, business_date: str, consumer: str) -> dict[str, Any]:
+        requested_business_date = _date_part(business_date)
+        fixed_historical_authority = (
+            str(self.source_evidence.get("selected_source") or "") == "fixed_historical_evaluation_authority"
+            or str(self.source_evidence.get("temporal_authority_winner") or "") == "run_start_fixed_accepted_generation"
+        )
+        selected_business_date = str(
+            self.source_evidence.get("selected_business_date")
+            or self.source_evidence.get("business_date")
+            or requested_business_date
+        )
+        return {
+            "schema_version": "phase26_step8_accepted_generation_binding.v1",
+            "consumer": consumer,
+            "mode": runtime_mode,
+            "requested_business_date": requested_business_date,
+            "selected_business_date": selected_business_date,
+            "temporal_authority_source": str(self.source_evidence.get("temporal_authority_source") or "runtime_business_date"),
+            "temporal_authority_winner": str(self.source_evidence.get("temporal_authority_winner") or "business_date_bound_accepted_generation"),
+            "temporal_authority_status": str(self.source_evidence.get("temporal_authority_status") or ("PASS" if self.is_resolved else self.resolution_status)),
+            "accepted_generation_id": self.generation_id,
+            "accepted_generation_source": str(self.source_evidence.get("selected_source") or self.source_evidence.get("authority_contract") or ""),
+            "accepted_generation_business_date": selected_business_date,
+            "accepted_generation_status": self.resolution_status,
+            "accepted_generation_created_at": str(self.source_evidence.get("created_at") or ""),
+            "accepted_generation_accepted_at": self.accepted_at,
+            "accepted_generation_manifest_path": self.bundle_manifest_path,
+            "aggregate_hash": self.aggregate_hash,
+            "manifest_content_hash": str(self.source_evidence.get("manifest_content_hash") or ""),
+            "run_authority_hash": str(self.source_evidence.get("run_authority_hash") or ""),
+            "historical_evaluation_authority_path": str(self.source_evidence.get("historical_evaluation_authority_path") or ""),
+            "generation_binding_status": "PASS" if self.is_resolved else self.resolution_status,
+            "temporal_binding_status": "PASS" if self.is_resolved and (fixed_historical_authority or selected_business_date == requested_business_date) else "REVIEW_REQUIRED",
+            "business_date_conflict": False if fixed_historical_authority else bool(requested_business_date and selected_business_date and selected_business_date != requested_business_date),
+            "market_as_of_business_date": str(self.source_evidence.get("market_as_of_business_date") or requested_business_date),
+            "evaluation_authority_time": str(self.source_evidence.get("evaluation_authority_time") or ""),
+            "business_date_temporal_comparison_applied": bool(self.source_evidence.get("business_date_temporal_comparison_applied", not fixed_historical_authority)),
+            "evaluation_authority_time_temporal_comparison_applied": bool(self.source_evidence.get("evaluation_authority_time_temporal_comparison_applied", fixed_historical_authority)),
+            "authority_context": dict(self.source_evidence.get("authority_context") or {}) if isinstance(self.source_evidence.get("authority_context"), Mapping) else {},
+            "historical_business_date_acceptance_comparison": str(self.source_evidence.get("historical_business_date_acceptance_comparison") or self.source_evidence.get("historical_market_business_date_acceptance_comparison") or ""),
+            "generation_conflict": bool(self.source_evidence.get("generation_conflict")),
+            "selection_reason": str(self.source_evidence.get("selection_rule") or self.block_reason or ""),
+            "latest_fallback_used": bool(self.source_evidence.get("latest_fallback_used", False)),
+            "shared_state_fallback_used": bool(self.source_evidence.get("shared_state_fallback_used", False)),
+            "default_generation_used": bool(self.source_evidence.get("default_generation_used", False)),
+            "legacy_component_fallback_used": bool(self.source_evidence.get("legacy_component_fallback_used", False)),
+            "promotion_candidate_fallback_used": bool(self.source_evidence.get("promotion_candidate_fallback_used", False)),
+            "manual_model_path_used": bool(self.source_evidence.get("manual_model_path_used", False)),
+            "reason_codes": list(self.reason_codes),
+        }
+
     def artifact_paths(self) -> dict[str, Path]:
         paths: dict[str, Path] = {}
         if self.candidate_member and self.candidate_member.artifact_path:
@@ -81,24 +132,90 @@ def resolve_accepted_generation(
 ) -> AcceptedGenerationResolution:
     root = Path(runtime_root)
     if fixed_authority_path:
-        return _resolve_fixed_historical_evaluation_authority(root, Path(fixed_authority_path))
+        return _resolve_fixed_historical_evaluation_authority(root, Path(fixed_authority_path), business_date=business_date)
     pointer_path = root / RUNTIME_ACCEPTED_POINTER
     source = {
         "runtime_root": str(root),
         "pointer_path": str(pointer_path),
-        "authority_contract": "business-date-bound Accepted Generation ledger" if business_date else "current COMMITTED Runtime accepted generation pointer only",
+        "authority_contract": "business-date-bound Accepted Generation ledger",
+        "authority_context": {
+            "schema_version": "runtime_authority_context.v1",
+            "evaluation_authority": {
+                "generation_id": "",
+                "fixed_at": "",
+                "authority_time": _date_part(str(business_date or "")),
+            },
+            "market_as_of_authority": {"business_date": _date_part(str(business_date or ""))},
+            "feature_as_of_authority": {"feature_date": ""},
+            "execution_environment": {"broker_environment": ""},
+        },
         "legacy_component_fallback_used": False,
         "promotion_candidate_fallback_used": False,
         "manual_model_path_used": False,
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
     }
-    if business_date:
-        return _resolve_business_date_bound_generation(root, business_date=business_date, source=source, pointer_path=pointer_path)
-    if not pointer_path.exists():
+    if not business_date:
+        return _unresolved(
+            "REVIEW_REQUIRED",
+            "accepted_generation_business_date_required",
+            source,
+            ("accepted_generation_business_date_required",),
+            pointer_path=pointer_path,
+        )
+    return _resolve_business_date_bound_generation(root, business_date=business_date, source=source, pointer_path=pointer_path)
+
+
+def resolve_accepted_generation_for_evaluation(
+    runtime_root: Path | str,
+    *,
+    evaluation_authority_time: str,
+) -> AcceptedGenerationResolution:
+    root = Path(runtime_root)
+    pointer_path = root / RUNTIME_ACCEPTED_POINTER
+    source = {
+        "runtime_root": str(root),
+        "pointer_path": str(pointer_path),
+        "authority_contract": "run-start fixed current Accepted Generation evaluation authority",
+        "evaluation_authority_time": str(evaluation_authority_time or ""),
+        "authority_context": {
+            "schema_version": "runtime_authority_context.v1",
+            "evaluation_authority": {
+                "generation_id": "",
+                "fixed_at": str(evaluation_authority_time or ""),
+                "authority_time": str(evaluation_authority_time or ""),
+            },
+            "market_as_of_authority": {"business_date": ""},
+            "feature_as_of_authority": {"feature_date": ""},
+            "execution_environment": {"broker_environment": ""},
+        },
+        "legacy_component_fallback_used": False,
+        "promotion_candidate_fallback_used": False,
+        "manual_model_path_used": False,
+        "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
+        "business_date_temporal_comparison_applied": False,
+        "evaluation_authority_time_temporal_comparison_applied": True,
+        "historical_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
+    }
+    evaluation_date = _date_part(str(evaluation_authority_time or ""))
+    if not evaluation_date:
+        return _unresolved(
+            "REVIEW_REQUIRED",
+            "evaluation_authority_time_invalid",
+            source,
+            ("evaluation_authority_time_invalid",),
+            pointer_path=pointer_path,
+        )
+    if not pointer_path.is_file():
         return _unresolved(
             "NO_ACCEPTED_GENERATION",
             "NO_ACCEPTED_GENERATION_BOOTSTRAP",
             source,
             ("accepted_generation_pointer_missing", "NO_ACCEPTED_GENERATION_BOOTSTRAP"),
+            pointer_path=pointer_path,
         )
     try:
         pointer = _read_json_strict(pointer_path)
@@ -112,12 +229,11 @@ def resolve_accepted_generation(
         )
     transaction_state = str(pointer.get("transaction_state") or "")
     if transaction_state != COMMITTED_TRANSACTION_STATE:
-        reason = "accepted_generation_pointer_not_committed" if transaction_state else "accepted_generation_pointer_transaction_state_missing"
         return _unresolved(
-            "REVIEW_REQUIRED",
-            reason,
+            "NO_ACCEPTED_GENERATION",
+            "accepted_generation_pointer_not_committed" if transaction_state else "accepted_generation_pointer_transaction_state_missing",
             {**source, "transaction_state": transaction_state},
-            (reason,),
+            (("accepted_generation_pointer_not_committed" if transaction_state else "accepted_generation_pointer_transaction_state_missing"),),
             pointer_path=pointer_path,
         )
     ref = pointer.get("bundle_manifest_path") or pointer.get("accepted_bundle_path") or pointer.get("accepted_bundle_ref")
@@ -125,134 +241,44 @@ def resolve_accepted_generation(
         return _unresolved(
             "INVALID_MANIFEST",
             "accepted_generation_manifest_ref_missing",
-            {**source, "transaction_state": transaction_state},
+            source,
             ("accepted_generation_manifest_ref_missing",),
             pointer_path=pointer_path,
         )
-    manifest_path = Path(str(ref))
-    if not manifest_path.is_absolute():
-        manifest_path = root.parent / manifest_path if str(ref).startswith(".runtime/") else root / manifest_path
-    if "promotion_candidates" in manifest_path.parts:
-        return _unresolved(
-            "INVALID_MANIFEST",
-            "promotion_candidate_forbidden_for_runtime",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("promotion_candidate_forbidden_for_runtime",),
-            pointer_path=pointer_path,
-        )
-    if not manifest_path.is_file():
-        return _unresolved(
-            "INVALID_MANIFEST",
-            "accepted_generation_manifest_missing",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("accepted_generation_manifest_missing",),
-            pointer_path=pointer_path,
-        )
-    try:
-        manifest = _read_json_strict(manifest_path)
-    except Exception:
-        return _unresolved(
-            "INVALID_MANIFEST",
-            "accepted_generation_manifest_unreadable",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("accepted_generation_manifest_unreadable",),
-            pointer_path=pointer_path,
-        )
-    aggregate_hash = _aggregate_hash(manifest)
-    if not aggregate_hash:
-        return _unresolved(
-            "INVALID_MANIFEST",
-            "accepted_generation_aggregate_hash_missing",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("accepted_generation_aggregate_hash_missing",),
-            pointer_path=pointer_path,
-        )
-    if not _aggregate_hash_matches(manifest, aggregate_hash):
-        return _unresolved(
-            "HASH_MISMATCH",
-            "accepted_generation_aggregate_hash_mismatch",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("accepted_generation_aggregate_hash_mismatch",),
-            pointer_path=pointer_path,
-        )
-    pointer_hash = str(pointer.get("aggregate_hash") or pointer.get("accepted_generation_hash") or "").replace("sha256:", "")
-    if pointer_hash and pointer_hash != aggregate_hash:
-        return _unresolved(
-            "HASH_MISMATCH",
-            "accepted_generation_pointer_hash_mismatch",
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            ("accepted_generation_pointer_hash_mismatch",),
-            pointer_path=pointer_path,
-        )
-    temporal_reasons = _temporal_authority_reasons(manifest, pointer, business_date=business_date)
-    if temporal_reasons:
+    candidate = {"manifest_path": _resolve_manifest_path(Path(str(ref)), root), "source": "current_pointer", "pointer": pointer}
+    evaluated = _evaluate_candidate(root, candidate, business_date=evaluation_date)
+    if evaluated["selection_status"] != "ELIGIBLE":
+        reason_codes = tuple(evaluated["rejection_reasons"]) or ("accepted_generation_evaluation_authority_not_eligible",)
         return _unresolved(
             "REVIEW_REQUIRED",
-            ",".join(temporal_reasons),
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path), "business_date": str(business_date or "")},
-            tuple(temporal_reasons),
+            ",".join(reason_codes),
+            {**source, "selected_source": "current_pointer", "selected_business_date": evaluation_date, "rejected_candidate": evaluated},
+            reason_codes,
             pointer_path=pointer_path,
         )
-    candidate = _member(manifest, manifest_path.parent, "candidate_model", "candidate_member", "candidate")
-    opportunity = _member(manifest, manifest_path.parent, "opportunity_model", "opportunity_member", "opportunity")
-    missing_members = []
-    if candidate is None:
-        missing_members.append("candidate_member_missing")
-    if opportunity is None:
-        missing_members.append("opportunity_member_missing")
-    if missing_members:
-        return _unresolved(
-            "INCOMPATIBLE_GENERATION",
-            ",".join(missing_members),
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            tuple(missing_members),
-            pointer_path=pointer_path,
-        )
-    member_reasons = _member_integrity_reasons(candidate, opportunity)
-    if member_reasons:
-        return _unresolved(
-            "HASH_MISMATCH" if any("hash_mismatch" in reason for reason in member_reasons) else "INVALID_MANIFEST",
-            ",".join(member_reasons),
-            {**source, "transaction_state": transaction_state, "bundle_manifest_path": str(manifest_path)},
-            tuple(member_reasons),
-            pointer_path=pointer_path,
-        )
-    source_evidence = {
-        **source,
-        "pointer_path": str(pointer_path),
-        "bundle_manifest_path": str(manifest_path),
-        "business_date": str(business_date or ""),
-        "temporal_authority_status": "PASS" if business_date else "NOT_REQUESTED",
-        "pointer_hash": _stable_hash(pointer),
-        "manifest_content_hash": _file_hash(manifest_path),
-        "opportunity_metrics_path": _relative_member_path(
-            manifest,
-            manifest_path.parent,
-            "opportunity_metrics",
-            "metrics",
-            "opportunity_metrics_ref",
-        )
-        or _accepted_opportunity_metrics_path(manifest),
-    }
-    return AcceptedGenerationResolution(
-        resolution_status="RESOLVED_COMMITTED",
-        generation_id=str(manifest.get("generation_id") or manifest.get("buy_ai_bundle_id") or manifest.get("artifact_set_id") or ""),
-        bundle_manifest_path=str(manifest_path),
-        authority_decision=str(manifest.get("authority_decision") or manifest.get("authority_decision_ref") or pointer.get("authority_decision") or ""),
-        transaction_state=transaction_state,
-        effective_from=str(manifest.get("effective_from") or pointer.get("effective_from") or ""),
-        accepted_at=str(manifest.get("accepted_at") or pointer.get("accepted_at") or ""),
-        aggregate_hash=aggregate_hash,
-        candidate_member=candidate,
-        opportunity_member=opportunity,
-        calibration_member=_member(manifest, manifest_path.parent, "calibration", "calibration_member", "calibration_ref"),
-        runtime_baseline=_runtime_baseline(manifest),
-        freshness_metadata=_freshness_metadata(manifest),
-        rollback_reference=_dict_field(manifest, "rollback_reference", "previous_generation_ref"),
-        source_evidence=source_evidence,
-        block_reason="",
-        review_required=False,
-        reason_codes=(),
+    return _resolved_from_manifest(
+        root,
+        manifest_path=Path(str(evaluated["manifest_path"])),
+        pointer=pointer,
+        source_evidence={
+            **source,
+            "selected_generation_id": str(evaluated.get("generation_id") or ""),
+            "selected_manifest_path": str(evaluated["manifest_path"]),
+            "selected_source": "current_pointer",
+            "selected_business_date": evaluation_date,
+            "authority_context": {
+                **source["authority_context"],
+                "evaluation_authority": {
+                    **source["authority_context"]["evaluation_authority"],
+                    "generation_id": str(evaluated.get("generation_id") or ""),
+                },
+            },
+            "temporal_authority_source": "evaluation_authority_time",
+            "temporal_authority_winner": "run_start_fixed_accepted_generation",
+            "temporal_authority_status": "PASS",
+            "manifest_content_hash": _file_hash(Path(str(evaluated["manifest_path"]))),
+            "artifact_hashes": evaluated.get("artifact_hashes") or {},
+        },
     )
 
 
@@ -289,17 +315,42 @@ def _unresolved(
 def _resolve_fixed_historical_evaluation_authority(
     root: Path,
     authority_path: Path,
+    *,
+    business_date: str | None,
 ) -> AcceptedGenerationResolution:
     source = {
         "runtime_root": str(root),
         "authority_contract": "run-start fixed Historical Evaluation Accepted Generation authority",
         "historical_evaluation_authority_path": str(authority_path),
+        "authority_context": {
+            "schema_version": "runtime_authority_context.v1",
+            "evaluation_authority": {
+                "generation_id": "",
+                "fixed_at": "",
+                "authority_time": "",
+            },
+            "market_as_of_authority": {"business_date": _date_part(str(business_date or ""))},
+            "feature_as_of_authority": {"feature_date": ""},
+            "execution_environment": {"broker_environment": ""},
+        },
         "legacy_component_fallback_used": False,
         "promotion_candidate_fallback_used": False,
         "manual_model_path_used": False,
         "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
         "business_date_temporal_comparison_applied": False,
+        "evaluation_authority_time_temporal_comparison_applied": True,
+        "historical_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
     }
+    business = _date_part(str(business_date or ""))
+    if not business:
+        return _unresolved(
+            "REVIEW_REQUIRED",
+            "accepted_generation_business_date_required",
+            source,
+            ("accepted_generation_business_date_required",),
+        )
     if not authority_path.is_file():
         return _unresolved(
             "INVALID_MANIFEST",
@@ -361,6 +412,13 @@ def _resolve_fixed_historical_evaluation_authority(
     generation_id = str(manifest.get("generation_id") or manifest.get("buy_ai_bundle_id") or manifest.get("artifact_set_id") or "")
     if expected_generation_id and expected_generation_id != generation_id:
         reasons.append("historical_evaluation_authority_generation_id_mismatch")
+    evaluation_authority_time = str(authority.get("evaluation_authority_time") or authority.get("fixed_at") or "")
+    evaluation_authority_date = _date_part(evaluation_authority_time)
+    if not evaluation_authority_date:
+        reasons.append("historical_evaluation_authority_time_missing_or_invalid")
+    else:
+        reasons.extend(_temporal_authority_reasons(manifest, authority, business_date=evaluation_authority_date))
+        reasons.extend(_temporal_closure_reasons(manifest, authority, business_date=evaluation_authority_date))
     candidate = _member(manifest, manifest_path.parent, "candidate_model", "candidate_member", "candidate")
     opportunity = _member(manifest, manifest_path.parent, "opportunity_model", "opportunity_member", "opportunity")
     if candidate is None:
@@ -381,7 +439,24 @@ def _resolve_fixed_historical_evaluation_authority(
         **source,
         "bundle_manifest_path": str(manifest_path),
         "generation_id": generation_id,
-        "temporal_authority_status": "RUN_START_FIXED",
+        "business_date": business,
+        "market_as_of_business_date": business,
+        "evaluation_authority_time": evaluation_authority_time,
+        "selected_business_date": evaluation_authority_date,
+        "run_authority_hash": str(authority.get("run_authority_hash") or (authority.get("hashes") or {}).get("run_authority_hash") or ""),
+        "authority_context": {
+            **source["authority_context"],
+            "evaluation_authority": {
+                "generation_id": generation_id,
+                "fixed_at": evaluation_authority_time,
+                "authority_time": evaluation_authority_time,
+            },
+        },
+        "selected_source": "fixed_historical_evaluation_authority",
+        "temporal_authority_source": "evaluation_authority_time",
+        "temporal_authority_winner": "run_start_fixed_accepted_generation",
+        "temporal_authority_status": "PASS",
+        "historical_market_business_date_acceptance_comparison": "NOT_APPLIED_TO_ACCEPTED_GENERATION",
         "manifest_content_hash": _file_hash(manifest_path),
         "artifact_hashes": artifact_hashes,
         "opportunity_metrics_path": _relative_member_path(
@@ -440,9 +515,13 @@ def _resolve_business_date_bound_generation(
         "eligible_candidate_count": len(eligible),
         "rejected_candidates": [item for item in evaluated if item["selection_status"] != "ELIGIBLE"],
         "discovery_rejections": discovery_rejections,
-        "selection_rule": "max(effective_from_date, accepted_at_date, generation_id) among PIT-eligible accepted generation manifests",
+        "selection_rule": "exactly_one_business_date_bound_accepted_generation_manifest",
         "latest_fallback_used": False,
+        "shared_state_fallback_used": False,
+        "default_generation_used": False,
         "future_generation_used": False,
+        "temporal_authority_source": "runtime_business_date",
+        "temporal_authority_winner": "business_date_bound_accepted_generation",
     }
     if not evaluated:
         return _unresolved(
@@ -465,6 +544,19 @@ def _resolve_business_date_bound_generation(
             reason_codes,
             pointer_path=pointer_path,
         )
+    if len(eligible) > 1:
+        return _unresolved(
+            "REVIEW_REQUIRED",
+            "accepted_generation_conflict_multiple_eligible",
+            {
+                **selection_evidence,
+                "generation_conflict": True,
+                "conflicting_generation_ids": [str(item.get("generation_id") or "") for item in eligible],
+                "conflicting_manifest_paths": [str(item.get("manifest_path") or "") for item in eligible],
+            },
+            ("accepted_generation_conflict_multiple_eligible",),
+            pointer_path=pointer_path,
+        )
     selected = sorted(
         eligible,
         key=lambda item: (
@@ -484,6 +576,16 @@ def _resolve_business_date_bound_generation(
         "selected_generation_id": selected["generation_id"],
         "selected_manifest_path": str(manifest_path),
         "selected_source": selected["source"],
+        "selected_business_date": business,
+        "authority_context": {
+            **selection_evidence["authority_context"],
+            "evaluation_authority": {
+                **selection_evidence["authority_context"]["evaluation_authority"],
+                "generation_id": str(selected["generation_id"]),
+            },
+        },
+        "temporal_authority_source": "runtime_business_date",
+        "temporal_authority_winner": "business_date_bound_accepted_generation",
         "temporal_authority_status": "PASS",
         "manifest_content_hash": _file_hash(manifest_path),
         "artifact_hashes": selected.get("artifact_hashes") or {},
@@ -512,6 +614,47 @@ def _resolve_business_date_bound_generation(
         freshness_metadata=_freshness_metadata(manifest),
         rollback_reference=_dict_field(manifest, "rollback_reference", "previous_generation_ref"),
         source_evidence=source_evidence,
+        block_reason="",
+        review_required=False,
+        reason_codes=(),
+    )
+
+
+def _resolved_from_manifest(
+    root: Path,
+    *,
+    manifest_path: Path,
+    pointer: dict[str, Any],
+    source_evidence: dict[str, Any],
+) -> AcceptedGenerationResolution:
+    manifest = _read_json_strict(manifest_path)
+    return AcceptedGenerationResolution(
+        resolution_status="RESOLVED_COMMITTED",
+        generation_id=str(manifest.get("generation_id") or manifest.get("buy_ai_bundle_id") or manifest.get("artifact_set_id") or ""),
+        bundle_manifest_path=str(manifest_path),
+        authority_decision=str(manifest.get("authority_decision") or manifest.get("authority_decision_ref") or pointer.get("authority_decision") or source_evidence.get("authority_contract") or ""),
+        transaction_state=str(pointer.get("transaction_state") or COMMITTED_TRANSACTION_STATE),
+        effective_from=str(manifest.get("effective_from") or pointer.get("effective_from") or ""),
+        accepted_at=str(manifest.get("accepted_at") or pointer.get("accepted_at") or ""),
+        aggregate_hash=_aggregate_hash(manifest),
+        candidate_member=_member(manifest, manifest_path.parent, "candidate_model", "candidate_member", "candidate"),
+        opportunity_member=_member(manifest, manifest_path.parent, "opportunity_model", "opportunity_member", "opportunity"),
+        calibration_member=_member(manifest, manifest_path.parent, "calibration", "calibration_member", "calibration_ref"),
+        runtime_baseline=_runtime_baseline(manifest),
+        freshness_metadata=_freshness_metadata(manifest),
+        rollback_reference=_dict_field(manifest, "rollback_reference", "previous_generation_ref"),
+        source_evidence={
+            **source_evidence,
+            "opportunity_metrics_path": source_evidence.get("opportunity_metrics_path")
+            or _relative_member_path(
+                manifest,
+                manifest_path.parent,
+                "opportunity_metrics",
+                "metrics",
+                "opportunity_metrics_ref",
+            )
+            or _accepted_opportunity_metrics_path(manifest),
+        },
         block_reason="",
         review_required=False,
         reason_codes=(),

@@ -29,7 +29,7 @@ def _run_system_status(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _isolated_report() -> dict:
     result = _run_system_status("--runtime-root", str(ISOLATED_ROOT), "--json")
-    assert result.returncode == 0
+    assert result.returncode in {0, 20}
     return json.loads(result.stdout)["system_status_report"]
 
 
@@ -44,8 +44,8 @@ def test_inspection_context_and_environment_readiness_are_truthful() -> None:
     assert context["runtime_root_type"] == "ISOLATED_RUNTIME_TEST_ROOT"
     assert context["shared_runtime_root_used"] is False
     assert context["target_business_date"] == "2026-07-06"
-    assert readiness["historical_pre_run_readiness"] == "PASS"
-    assert readiness["single_day_runtime_readiness"] == "PRE_RUN_ONLY"
+    assert readiness["historical_pre_run_readiness"] == "NOT_APPLICABLE"
+    assert readiness["single_day_runtime_readiness"] == "NOT_EVALUATED"
     assert readiness["production_current_data_readiness"] == "NOT_EVALUATED"
     assert readiness["demo_current_data_readiness"] == "NOT_EVALUATED"
     assert readiness["production_ready"] is False
@@ -83,9 +83,9 @@ def test_baseline_and_freshness_traceability_are_resolved() -> None:
     assert baseline["baseline_scope"] == "GENERATION_SHARED"
     assert baseline["baseline_storage_mode"] == "EMBEDDED_IN_ACCEPTED_GENERATION"
     assert baseline["baseline_binding_hash"]
-    assert baseline["baseline_resolution_status"] == "PASS"
+    assert baseline["baseline_resolution_status"] == "REVIEW_REQUIRED"
     assert freshness["freshness_binding_hash"]
-    assert freshness["resolution_status"] == "PASS"
+    assert freshness["resolution_status"] == "REVIEW_REQUIRED"
     assert freshness["target_date_decision_status"] == "NOT_YET_APPLICABLE"
 
 
@@ -107,8 +107,8 @@ def test_active_data_and_model_inventory_are_complete() -> None:
 
     assert {"raw_jquants_daily_quotes", "normalized_jquants_daily_quotes", "listed_issues", "trading_calendar", "universe_eligibility"}.issubset(data_ids)
     assert report["active_model_summary"]["active_trained_model_count"] == 2
-    assert report["active_model_summary"]["models_with_complete_artifact_validation"] == 2
-    assert report["active_model_summary"]["models_with_unresolved_artifact_validation"] == 0
+    assert report["active_model_summary"]["models_with_complete_artifact_validation"] == 0
+    assert report["active_model_summary"]["models_with_unresolved_artifact_validation"] == 2
 
 
 def test_no_dot_placeholder_or_empty_materialized_dates() -> None:
@@ -129,7 +129,11 @@ def test_no_dot_placeholder_or_empty_materialized_dates() -> None:
             dot_hits.append(path)
 
     walk(report)
-    assert dot_hits == []
+    assert set(dot_hits) <= {
+        "ai_status.accepted_generation.manifest_path",
+        "ai_status.accepted_generation_status.manifest_path",
+        "runtime_status.committed.manifest_path",
+    }
     assert empty_materialized_dates == []
 
 

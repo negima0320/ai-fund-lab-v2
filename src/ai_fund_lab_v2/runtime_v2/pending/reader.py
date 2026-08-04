@@ -241,6 +241,14 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
             submit_policy_version=str(approval.get("submit_policy_version") or ""),
             submit_policy_source=str(approval.get("submit_policy_source") or ""),
             submit_policy_hash=str(approval.get("submit_policy_hash") or ""),
+            accepted_generation_id=str(approval.get("accepted_generation_id") or ""),
+            accepted_generation_business_date=str(approval.get("accepted_generation_business_date") or ""),
+            accepted_generation_binding_status=str(approval.get("accepted_generation_binding_status") or ""),
+            accepted_generation_binding=(
+                dict(approval["accepted_generation_binding"])
+                if isinstance(approval.get("accepted_generation_binding"), Mapping)
+                else None
+            ),
             safety_decision_id=str(approval.get("safety_decision_id") or ""),
             safety_policy_version=str(approval.get("safety_policy_version") or ""),
             approved_order_conditions=(
@@ -278,11 +286,18 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 submit_policy_version=str(item.get("submit_policy_version") or ""),
                 submit_policy_source=str(item.get("submit_policy_source") or ""),
                 submit_policy_hash=str(item.get("submit_policy_hash") or ""),
+                accepted_generation_id=str(item.get("accepted_generation_id") or ""),
+                accepted_generation_business_date=str(item.get("accepted_generation_business_date") or ""),
+                accepted_generation_binding_status=str(item.get("accepted_generation_binding_status") or ""),
+                accepted_generation_binding=(
+                    dict(item["accepted_generation_binding"])
+                    if isinstance(item.get("accepted_generation_binding"), Mapping)
+                    else None
+                ),
                 evaluation_capital=_optional_float(item.get("evaluation_capital")),
                 target_investment_ratio=_optional_float(item.get("target_investment_ratio")),
                 cash_buffer=_optional_float(item.get("cash_buffer")),
                 max_exposure=_optional_float(item.get("max_exposure")),
-                max_position_weight=_optional_float(item.get("max_position_weight")),
                 max_positions=_optional_int(item.get("max_positions")),
                 max_buy_order_amount=_optional_float(item.get("max_buy_order_amount")),
                 max_sell_liquidation_amount=_optional_float(item.get("max_sell_liquidation_amount")),
@@ -353,6 +368,14 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
         submit_policy_version=str(payload.get("submit_policy_version") or ""),
         submit_policy_source=str(payload.get("submit_policy_source") or ""),
         submit_policy_hash=str(payload.get("submit_policy_hash") or ""),
+        accepted_generation_id=str(payload.get("accepted_generation_id") or ""),
+        accepted_generation_business_date=str(payload.get("accepted_generation_business_date") or ""),
+        accepted_generation_binding_status=str(payload.get("accepted_generation_binding_status") or ""),
+        accepted_generation_binding=(
+            dict(payload["accepted_generation_binding"])
+            if isinstance(payload.get("accepted_generation_binding"), Mapping)
+            else None
+        ),
         safety_context=dict(payload["safety_context"]) if payload.get("safety_context") else None,
         safety_decision_id=str(payload.get("safety_decision_id") or ""),
         safety_policy_version=str(payload.get("safety_policy_version") or ""),

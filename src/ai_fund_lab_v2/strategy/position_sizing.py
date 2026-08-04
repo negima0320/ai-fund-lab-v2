@@ -329,9 +329,9 @@ def build_position_sizing_payload(
     target_exposure_unresolved = target_exposure_raw is None
     target_count = None if target_count_unresolved else _positive_int(target_count_raw, 0)
     target_exposure = None if target_exposure_unresolved else _ratio(target_exposure_raw, 0.0)
-    if (target_count_unresolved or target_exposure_unresolved) and status != "BLOCK":
+    if target_exposure_unresolved and status != "BLOCK":
         status = "REVIEW_REQUIRED"
-        reasons.append("position_count_or_exposure_unresolved")
+        reasons.append("position_exposure_unresolved")
     portfolio_value = _positive_float(
         current_position_summary.summary.get("portfolio_total_equity", current_position_summary.summary.get("portfolio_value")),
         0.0,
@@ -371,7 +371,6 @@ def build_position_sizing_payload(
         positions, sizing_reasons = _size_positions(
             config=config,
             rows=sizing_rows,
-            target_count=target_count or 0,
             target_exposure=target_exposure or 0.0,
             portfolio_value=portfolio_value,
             safety_cap=safety_cap or 0.0,
@@ -419,7 +418,7 @@ def build_position_sizing_payload(
             artifact_lifecycle_status=ARTIFACT_LIFECYCLE_STATUS,
             runtime_consumer_eligibility=RUNTIME_CONSUMER_ELIGIBILITY,
             reason_codes=sorted(set(reasons)),
-            decision_resolution="UNRESOLVED" if target_count_unresolved or target_exposure_unresolved or status != "PASS" else "RESOLVED",
+            decision_resolution="UNRESOLVED" if target_exposure_unresolved or status != "PASS" else "RESOLVED",
         ),
         "sizing_method": config.sizing_method if config else "",
         "target_gross_exposure_ratio": None if target_exposure is None else round(target_exposure, 6),
@@ -489,14 +488,13 @@ def build_position_sizing_payload(
 
 
 def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]:
-    required = {"schema_version","business_date","as_of","feature_date","artifact_lifecycle_status","source_authority_status","producer_result_status","runtime_consumer_eligibility","target_gross_exposure_ratio","target_position_count","positions","total_target_weight","residual_cash_ratio","concrete_target_weight_decided","target_notional_decided","share_quantity_decided","lot_rounding_decided","source_artifacts","source_hashes","temporal_safety","strategy_maximum_position_weight","strategy_maximum_position_weight_source","safety_maximum_position_weight","safety_maximum_position_weight_source","safety_authority_status","effective_maximum_position_weight","effective_maximum_position_weight_derivation","explicit_zero_cap","emergency_brake_active","market_context_risk_state","dynamic_position_count","dynamic_cash_exposure","aggregate_exposure_cap"}
+    required = {"schema_version","business_date","as_of","feature_date","artifact_lifecycle_status","source_authority_status","producer_result_status","runtime_consumer_eligibility","target_gross_exposure_ratio","positions","total_target_weight","residual_cash_ratio","concrete_target_weight_decided","target_notional_decided","share_quantity_decided","lot_rounding_decided","source_artifacts","source_hashes","temporal_safety","strategy_maximum_position_weight","strategy_maximum_position_weight_source","safety_maximum_position_weight","safety_maximum_position_weight_source","safety_authority_status","effective_maximum_position_weight","effective_maximum_position_weight_derivation","explicit_zero_cap","emergency_brake_active","market_context_risk_state","dynamic_cash_exposure","aggregate_exposure_cap"}
     errors = [f"required_field_missing:{f}" for f in sorted(required - set(payload))]
     if payload.get("schema_version") != SCHEMA_VERSION: errors.append("unsupported_schema_version")
     if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS: errors.append("artifact_lifecycle_must_be_draft")
     if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY: errors.append("runtime_consumer_eligibility_must_be_not_eligible")
     target_unresolved = (
         payload.get("target_gross_exposure_ratio_resolution") == "UNRESOLVED"
-        or payload.get("target_position_count_resolution") == "UNRESOLVED"
     )
     target_exposure = None if target_unresolved and payload.get("target_gross_exposure_ratio") is None else _ratio_field(errors, payload, "target_gross_exposure_ratio")
     total = _ratio_field(errors, payload, "total_target_weight")
@@ -522,9 +520,6 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
     if safety_cap == 0.20:
         errors.append("legacy_0_20_implicit_safety_concentration_forbidden")
     if target_unresolved:
-        for field in ("target_position_count", "dynamic_position_count"):
-            if payload.get(field) is not None:
-                errors.append(f"unresolved_count_must_be_null:{field}")
         for field in ("dynamic_cash_exposure", "aggregate_exposure_cap"):
             if payload.get(field) is not None:
                 errors.append(f"unresolved_ratio_must_be_null:{field}")
@@ -579,21 +574,22 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, Any], ...], target_count: int, target_exposure: float, portfolio_value: float, safety_cap: float) -> tuple[list[dict[str, Any]], list[str]]:
-    if target_count <= 0 or target_exposure <= 0:
+def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, Any], ...], target_exposure: float, portfolio_value: float, safety_cap: float) -> tuple[list[dict[str, Any]], list[str]]:
+    if target_exposure <= 0:
         return (
             [
                 _zero_allocation_position(
                     row,
                     config=config,
                     safety_cap=safety_cap,
-                    reason="actual_target_position_count_zero" if target_count <= 0 else "target_gross_exposure_zero",
+                    reason="target_gross_exposure_zero",
                 )
                 for row in rows
             ],
             [],
         )
-    base = target_exposure / float(target_count)
+    active_row_count = max(sum(1 for row in rows if float(row.get("target_weight") or 0.0) > 0.0), 1)
+    base = target_exposure / float(active_row_count)
     raw: list[dict[str, Any]] = []
     reasons: list[str] = []
     max_weight = min(config.strategy_maximum_position_weight, safety_cap)
@@ -664,7 +660,8 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
     target_weight_resolution = resolve_target_weight(row)
     runtime_opportunity_resolution = resolve_runtime_opportunity_score(row)
     quality_resolution = resolve_quality_score(row)
-    quality = 1.0
+    adaptive_quality = resolve_adaptive_buy_quality(row)
+    quality = adaptive_quality["quality_allocation_adjustment"]
     vol = _volatility_multiplier(row, config)
     reasons = [f"pm_action:{pm_action}", f"membership_intent:{membership}"]
     status = "SIZED"
@@ -679,11 +676,17 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
     if vol is None:
         vol = 1.0
         reasons.append("volatility_missing_noncanonical_observability")
-    adjusted = target
+    adjusted = target * quality
     if pm_action == "EXIT" or membership in {"REMOVE_CANDIDATE", "EXCLUDE"}:
         adjusted = 0.0
     elif pm_action == "REDUCE":
         adjusted = min(adjusted, current_weight * 0.5)
+    elif membership == "ADD_CANDIDATE" and adaptive_quality["quality_action"] in {"REVIEW_REQUIRED", "REJECT"}:
+        adjusted = 0.0
+        status = "QUALITY_UNAVAILABLE" if adaptive_quality["quality_action"] == "REVIEW_REQUIRED" else "WITHHELD"
+        uncertainty = "BUY_QUALITY_REVIEW_REQUIRED" if adaptive_quality["quality_action"] == "REVIEW_REQUIRED" else "BUY_QUALITY_REJECTED"
+        reasons.append("buy_quality_not_auto_submittable")
+        reasons.append(str(adaptive_quality["review_reason"] or adaptive_quality["quality_action"]))
     capped = min(max(adjusted, 0.0), max_weight)
     if capped < adjusted:
         status = "CAPPED"
@@ -720,6 +723,20 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
         "current_weight": round(current_weight, 6),
         "base_weight": round(base, 6),
         "quality_adjustment": round(quality, 6),
+        "buy_quality_adjustment": round(quality, 6),
+        "quality_decision_id": adaptive_quality["quality_decision_id"],
+        "quality_score": adaptive_quality["quality_score"],
+        "quality_band": adaptive_quality["quality_band"],
+        "quality_action": adaptive_quality["quality_action"],
+        "quality_status": adaptive_quality["quality_status"],
+        "quality_reason_codes": adaptive_quality["quality_reason_codes"],
+        "quality_policy_version": adaptive_quality["quality_policy_version"],
+        "component_scores": adaptive_quality["component_scores"],
+        "component_statuses": adaptive_quality["component_statuses"],
+        "buy_quality_authority": adaptive_quality["buy_quality_authority"],
+        "pre_quality_base_weight": round(target, 6),
+        "quality_allocation_adjustment": round(quality, 6),
+        "post_quality_target_weight": round(capped, 6),
         "volatility_adjustment": round(vol, 6),
         "pm_intent_adjustment": round(float(config.pm_intent_adjustment.get(pm_action, 1.0)), 6),
         "adjusted_weight": round(max(adjusted, 0.0), 6),
@@ -766,9 +783,9 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
         "allocation_quality_authority": quality_resolution.authority,
         "allocation_quality_resolution": quality_resolution.to_dict(),
         "legacy_quality_path_status": "NON_CANONICAL_OBSERVABILITY",
-        "quality_score": quality_resolution.resolved_quality,
-        "quality_authority": quality_resolution.authority,
-        "quality_resolution": quality_resolution.to_dict(),
+        "legacy_allocation_quality_score": quality_resolution.resolved_quality,
+        "legacy_allocation_quality_authority": quality_resolution.authority,
+        "legacy_allocation_quality_resolution": quality_resolution.to_dict(),
         "confidence": round(min(_ratio(row.get("confidence"), 1.0), _ratio(row.get("opportunity_confidence"), 1.0)), 6),
         "uncertainty": uncertainty,
         "reason_codes": sorted(set(reasons)),
@@ -1069,8 +1086,11 @@ def resolve_runtime_opportunity_score(row: Mapping[str, Any]) -> RuntimeOpportun
 def resolve_allocation_quality_score(row: Mapping[str, Any]) -> QualityResolution:
     fields: dict[str, float] = {}
     invalid: list[str] = []
+    adaptive_buy_quality_present = isinstance(row.get("buy_quality_authority"), Mapping) or bool(row.get("quality_decision_id"))
     for field in (ALLOCATION_QUALITY_CANONICAL_FIELD, ALLOCATION_QUALITY_LEGACY_FIELD):
         if field not in row:
+            continue
+        if field == ALLOCATION_QUALITY_LEGACY_FIELD and adaptive_buy_quality_present:
             continue
         value = row.get(field)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
@@ -1206,6 +1226,72 @@ def _quality_multiplier(resolution: QualityResolution, config: PositionSizingCon
     normalized = min(max((float(score) - lo) / (hi - lo), 0.0), 1.0)
     multiplier = 1.0 + (normalized - 0.5) * float(adj["quality_multiplier_strength"])
     return min(max(multiplier, float(adj["minimum_multiplier"])), float(adj["maximum_multiplier"]))
+
+
+def resolve_adaptive_buy_quality(row: Mapping[str, Any]) -> dict[str, Any]:
+    action = str(row.get("quality_action") or "")
+    status = str(row.get("quality_status") or "")
+    score = _optional_quality_score(row.get("quality_score"))
+    adjustment_raw = _optional_quality_score(row.get("quality_allocation_adjustment"))
+    decision_id = str(row.get("quality_decision_id") or "")
+    if not decision_id or not action:
+        return _adaptive_quality_result(
+            row,
+            action="REVIEW_REQUIRED",
+            status="REVIEW_REQUIRED",
+            adjustment=0.0,
+            reason="adaptive_buy_quality_decision_missing",
+        )
+    if action == "FULL_ALLOCATION_ELIGIBLE":
+        adjustment = 1.0
+        reason = ""
+    elif action == "REDUCED_ALLOCATION_ONLY":
+        adjustment = adjustment_raw if adjustment_raw is not None else (min(max(score or 0.0, 0.25), 0.85) if score is not None else 0.0)
+        reason = ""
+    elif action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"}:
+        adjustment = 0.0
+        reason = "adaptive_buy_quality_review_required"
+    elif action in {"REJECT", "BUY_REJECTED"}:
+        adjustment = 0.0
+        reason = "adaptive_buy_quality_rejected"
+    else:
+        adjustment = 0.0
+        reason = "adaptive_buy_quality_action_invalid"
+        action = "REVIEW_REQUIRED"
+        status = "REVIEW_REQUIRED"
+    return _adaptive_quality_result(
+        row,
+        action="REJECT" if action == "BUY_REJECTED" else "REVIEW_REQUIRED" if action == "BUY_REVIEW_REQUIRED" else action,
+        status=status,
+        adjustment=adjustment,
+        reason=reason,
+    )
+
+
+def _adaptive_quality_result(row: Mapping[str, Any], *, action: str, status: str, adjustment: float, reason: str) -> dict[str, Any]:
+    reasons = list(row.get("quality_reason_codes") or [])
+    if reason:
+        reasons.append(reason)
+    return {
+        "quality_decision_id": str(row.get("quality_decision_id") or ""),
+        "quality_score": _optional_quality_score(row.get("quality_score")),
+        "quality_band": str(row.get("quality_band") or ""),
+        "quality_action": action,
+        "quality_status": status,
+        "quality_reason_codes": sorted(set(reasons)),
+        "quality_policy_version": str(row.get("quality_policy_version") or ""),
+        "quality_allocation_adjustment": round(max(0.0, min(1.0, float(adjustment))), 6),
+        "component_scores": dict(row.get("component_scores") or {}),
+        "component_statuses": dict(row.get("component_statuses") or {}),
+        "buy_quality_authority": dict(row.get("buy_quality_authority") or {}),
+        "review_reason": reason,
+    }
+
+
+def _optional_quality_score(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    return max(0.0, min(1.0, float(value)))
 
 
 def _volatility_multiplier(row: Mapping[str, Any], config: PositionSizingConfig) -> float | None:
