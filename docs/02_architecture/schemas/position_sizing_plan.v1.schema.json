@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "docs/02_architecture/schemas/position_sizing_plan.v1.schema.json",
+  "title": "Position Sizing Plan v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "authority_mode",
+    "decision_effect",
+    "run_id",
+    "business_date",
+    "accepted_generation",
+    "artifact_status",
+    "review_status",
+    "lot_size",
+    "input_artifact_refs",
+    "summary",
+    "positions"
+  ],
+  "properties": {
+    "schema_version": { "const": "position_sizing_plan.v1" },
+    "artifact_type": { "const": "position_sizing_plan" },
+    "authority_mode": { "const": "SHADOW" },
+    "decision_effect": { "const": "NONE" },
+    "producer_version": { "type": "string" },
+    "run_id": { "type": "string" },
+    "business_date": { "type": "string" },
+    "accepted_generation": { "type": ["string", "null"] },
+    "generated_at": { "type": "string" },
+    "artifact_status": { "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "review_status": { "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "reason_codes": { "type": "array", "items": { "type": "string" } },
+    "lot_size": { "type": "integer", "minimum": 1 },
+    "input_artifact_refs": { "type": "object" },
+    "summary": {
+      "type": "object",
+      "required": [
+        "position_count",
+        "sizing_status_counts",
+        "delta_classification_counts",
+        "decision_effect_zero",
+        "runtime_connected",
+        "pending_decided",
+        "submit_decided"
+      ],
+      "properties": {
+        "position_count": { "type": "integer", "minimum": 0 },
+        "sizing_status_counts": { "type": "object" },
+        "delta_classification_counts": { "type": "object" },
+        "decision_effect_zero": { "const": true },
+        "runtime_connected": { "const": false },
+        "pending_decided": { "const": false },
+        "submit_decided": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "artifact_type",
+          "authority_mode",
+          "decision_effect",
+          "run_id",
+          "business_date",
+          "accepted_generation",
+          "symbol",
+          "position_campaign_id",
+          "source_target_portfolio_decision_id",
+          "source_position_intent",
+          "source_pm_intent",
+          "target_membership_decision",
+          "target_direction",
+          "target_weight_effect",
+          "current_quantity",
+          "target_quantity_candidate",
+          "quantity_delta_candidate",
+          "orderable_quantity_delta",
+          "lot_rounding_result",
+          "delta_classification",
+          "sizing_status",
+          "reason_codes",
+          "lineage",
+          "review_status"
+        ],
+        "properties": {
+          "schema_version": { "const": "position_sizing_plan.v1" },
+          "artifact_type": { "const": "position_sizing_plan_row" },
+          "authority_mode": { "const": "SHADOW" },
+          "decision_effect": { "const": "NONE" },
+          "run_id": { "type": "string" },
+          "business_date": { "type": "string" },
+          "accepted_generation": { "type": ["string", "null"] },
+          "symbol": { "type": "string" },
+          "position_campaign_id": { "type": ["string", "null"] },
+          "source_target_portfolio_decision_id": { "type": "string" },
+          "source_position_intent": { "type": "string" },
+          "source_pm_intent": { "type": "string" },
+          "target_membership_decision": { "type": ["string", "null"] },
+          "target_direction": { "type": ["string", "null"] },
+          "target_weight_effect": { "type": ["string", "null"] },
+          "current_quantity": { "type": ["integer", "null"] },
+          "target_quantity_candidate": { "type": ["integer", "null"] },
+          "quantity_delta_candidate": { "type": ["integer", "null"] },
+          "orderable_quantity_delta": { "type": ["integer", "null"] },
+          "lot_rounding_result": { "type": "object" },
+          "delta_classification": {
+            "enum": [
+              "POSITIVE_DELTA",
+              "ZERO_DELTA",
+              "NEGATIVE_PARTIAL_DELTA",
+              "FULL_NEGATIVE_DELTA",
+              "NOT_SIZED"
+            ]
+          },
+          "sizing_status": {
+            "enum": [
+              "POSITIVE_DELTA_SIZED",
+              "ZERO_DELTA_SIZED",
+              "NEGATIVE_DELTA_SIZED",
+              "FULL_EXIT_DELTA_SIZED",
+              "ADD_NOT_SIZED",
+              "HOLD_NOT_SIZED",
+              "REDUCE_NOT_SIZED",
+              "EXIT_NOT_SIZED",
+              "UNRESOLVED_NOT_SIZED"
+            ]
+          },
+          "reason_codes": { "type": "array", "items": { "type": "string" } },
+          "lineage": { "type": "object" },
+          "review_status": { "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+          "dedup_key": { "type": "array" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

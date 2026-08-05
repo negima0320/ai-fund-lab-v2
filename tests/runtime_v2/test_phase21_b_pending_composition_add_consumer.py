@@ -7,6 +7,12 @@ from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntim
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.planning.add_consumer import (
+    LEGACY_ADD_MIGRATION_STATE,
+    build_legacy_add_compatibility_artifact,
+    evaluate_legacy_add_double_authority_guard,
+    validate_legacy_add_compatibility_lineage,
+)
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import SellExitDecision, run_sell_planning_pending_pipeline
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import capital_deployment_policy_hash, load_capital_deployment_policy
 from ai_fund_lab_v2.runtime_v2.position_management.producer import _sell_exit_decisions_from_artifact
@@ -96,16 +102,22 @@ def test_phase24_e1_mixed_empty_materializes_no_order_authority_and_submit_accep
     )
 
     assert result.status == "NO_SIGNAL"
-    assert result.add_consumer_status == "REJECTED"
-    assert result.add_rejected_count == 1
+    assert result.add_consumer_status == LEGACY_ADD_MIGRATION_STATE
+    assert result.add_accepted_count == 0
+    assert result.add_rejected_count == 0
     assert pending["state"] == "EMPTY"
     assert pending["items"] == []
     assert pending["no_order_authority_status"] == "PASS"
     reason_codes = pending["no_order_authority"]["authority_reason_codes"]
     assert "existing_position_capacity_satisfied" in reason_codes
-    assert "pm_add_rejected_lot_size_not_viable" in reason_codes
     assert "sell_no_signal" in reason_codes
     assert "no_executable_order_items" in reason_codes
+    assert pending["pm_add_consumer"]["decision_effect"] == "NONE"
+    assert pending["pm_add_consumer"]["quantity_authority"] == "NONE"
+    assert pending["pm_add_consumer"]["pending_authority"] == "NONE"
+    assert pending["pm_add_consumer"]["approval_authority"] == "NONE"
+    assert pending["pm_add_consumer"]["submit_authority"] == "NONE"
+    assert pending["pm_add_consumer"]["telemetry_only"] is True
     assert submit.status == "PASS"
     assert submit.submitted_count == 0
     assert submit.no_order_authority_status == "PASS"
@@ -192,7 +204,7 @@ def test_phase21_b_sell_order_composes_existing_buy_and_sell_pending(tmp_path):
     assert sorted(pending["approval"]["approved_item_ids"]) == sorted(item["pending_item_id"] for item in pending["items"])
 
 
-def test_phase21_b_pm_add_generates_buy_pending_with_lineage(tmp_path):
+def test_phase21_b_pm_add_generates_compatibility_telemetry_only(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy = _policy(tmp_path)
     _write_current_state(runtime_root, positions=[_current_position("94320", quantity=1000, price=100)])
@@ -206,24 +218,32 @@ def test_phase21_b_pm_add_generates_buy_pending_with_lineage(tmp_path):
         submit_policy_context=_submit_policy_context(policy),
     )
     pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
-    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "pm_add_order_plan.json")
-    item = pending["items"][0]
+    order_plan_path = runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "order_plan.json"
+    order_plan = _load_json(order_plan_path)
+    legacy_add_order_plan_path = runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "pm_add_order_plan.json"
 
-    assert result.status == "PASS"
-    assert result.add_consumer_status == "PASS"
-    assert order_plan["submit_policy_context"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert order_plan["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["submit_policy_context"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert pending["approval"]["submit_policy_hash"] == capital_deployment_policy_hash(policy)
-    assert item["side"] == "BUY"
-    assert item["source_decision_type"] == "ADD"
-    assert item["source_pm_decision_id"] == "pm-add-1"
-    assert item["source_position_symbol"] == "94320"
-    assert item["add_candidate_signal"] is True
-    assert item["capital_allocation_status"] == "APPROVED"
-    assert item["quantity"] > 0
-    assert item["submit_policy_hash"] == capital_deployment_policy_hash(policy)
+    assert result.status == "NO_SIGNAL"
+    assert result.add_consumer_status == LEGACY_ADD_MIGRATION_STATE
+    assert result.add_accepted_count == 0
+    assert result.add_rejected_count == 0
+    assert legacy_add_order_plan_path.exists() is False
+    assert pending["state"] == "EMPTY"
+    assert pending["items"] == []
+    assert pending.get("approval_status", "") in {"", "NO_SIGNAL"}
+    evidence = pending["pm_add_consumer"]
+    assert evidence["requested_count"] == 1
+    assert evidence["accepted_count"] == 0
+    assert evidence["accepted_pending_item_ids"] == []
+    assert evidence["migration_state"] == LEGACY_ADD_MIGRATION_STATE
+    assert evidence["decision_effect"] == "NONE"
+    assert evidence["quantity_authority"] == "NONE"
+    assert evidence["pending_authority"] == "NONE"
+    assert evidence["approval_authority"] == "NONE"
+    assert evidence["submit_authority"] == "NONE"
+    assert evidence["telemetry_only"] is True
+    assert evidence["compatibility"][0]["source_pm_decision_id"] == "pm-add-1"
+    assert evidence["compatibility"][0]["legacy_path_would_have_been_invoked"] is True
+    assert order_plan["pm_add_consumer"]["compatibility_count"] == 1
 def test_phase21_b_pm_add_rejects_duplicate_pending_order(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy = _policy(tmp_path)
@@ -240,8 +260,9 @@ def test_phase21_b_pm_add_rejects_duplicate_pending_order(tmp_path):
 
     assert result.status == "NO_SIGNAL"
     assert result.preserved_existing_buy_pending is True
-    assert result.add_consumer_status == "REJECTED"
-    assert result.add_rejected_count == 1
+    assert result.add_consumer_status == LEGACY_ADD_MIGRATION_STATE
+    assert result.add_accepted_count == 0
+    assert result.add_rejected_count == 0
 
 
 def test_phase21_b_pm_producer_keeps_add_as_planning_candidate():
@@ -264,6 +285,103 @@ def test_phase21_b_pm_producer_keeps_add_as_planning_candidate():
     assert len(decisions) == 1
     assert decisions[0].source_decision == "ADD"
     assert decisions[0].source_decision_id == "pm-2026-07-08-9432-add"
+
+
+def test_phase27_d2c_legacy_add_duplicate_dedup_key_blocks():
+    decision = SellExitDecision(symbol="94320", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-1")
+    artifact = build_legacy_add_compatibility_artifact(
+        add_decisions=(decision, decision),
+        business_date="2026-07-08",
+        target_session_date="2026-07-08",
+        environment="demo",
+        run_id="run-1",
+    )
+
+    assert artifact["review_status"] == "REVIEW_REQUIRED"
+    assert artifact["double_authority_guard"]["status"] == "BLOCKED"
+    assert artifact["double_authority_guard"]["fail_open_allowed"] is False
+
+
+def test_phase27_d2c_legacy_add_non_decision_does_not_conflict_with_canonical_authority():
+    decision = SellExitDecision(symbol="94320", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-1")
+    artifact = build_legacy_add_compatibility_artifact(
+        add_decisions=(decision,),
+        business_date="2026-07-08",
+        target_session_date="2026-07-08",
+        environment="demo",
+        run_id="run-1",
+    )
+    canonical = {
+        "run_id": "run-1",
+        "business_date": "2026-07-08",
+        "symbol": "94320",
+        "position_campaign_id": "UNKNOWN",
+        "decision_id": "pm-add-1",
+        "decision_effect": "BUY_ADD",
+        "quantity_authority": "POSITION_SIZING",
+        "pending_authority": "RUNTIME_PLANNING",
+    }
+
+    guard = evaluate_legacy_add_double_authority_guard(artifact, canonical_authority_records=(canonical,))
+
+    assert guard["status"] == "PASS"
+    assert guard["canonical_legacy_authority_overlaps"] == []
+
+
+def test_phase27_d2c_legacy_add_executable_overlap_blocks():
+    decision = SellExitDecision(symbol="94320", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-1")
+    artifact = build_legacy_add_compatibility_artifact(
+        add_decisions=(decision,),
+        business_date="2026-07-08",
+        target_session_date="2026-07-08",
+        environment="demo",
+        run_id="run-1",
+    )
+    artifact["compatibility"][0]["decision_effect"] = "BUY_ADD"
+    artifact["compatibility"][0]["quantity_authority"] = "LEGACY_ADD_CONSUMER"
+    canonical = {
+        "run_id": "run-1",
+        "business_date": "2026-07-08",
+        "symbol": "94320",
+        "position_campaign_id": "UNKNOWN",
+        "decision_id": "pm-add-1",
+        "decision_effect": "BUY_ADD",
+        "quantity_authority": "POSITION_SIZING",
+        "pending_authority": "RUNTIME_PLANNING",
+    }
+
+    guard = evaluate_legacy_add_double_authority_guard(artifact, canonical_authority_records=(canonical,))
+
+    assert guard["status"] == "BLOCKED"
+    assert guard["conflict_behavior"] == "BLOCKED"
+    assert guard["fail_open_allowed"] is False
+
+
+def test_phase27_d2c_legacy_add_lineage_mismatches_require_review():
+    decision = SellExitDecision(symbol="94320", quantity=0, reason="add", source_decision="ADD", source_decision_id="pm-add-1")
+    artifact = build_legacy_add_compatibility_artifact(
+        add_decisions=(decision,),
+        business_date="2026-07-08",
+        target_session_date="2026-07-08",
+        environment="demo",
+        run_id="run-1",
+        accepted_generation="generation-a",
+    )
+
+    validation = validate_legacy_add_compatibility_lineage(
+        artifact,
+        expected_business_date="2026-07-09",
+        expected_accepted_generation="generation-b",
+        expected_campaign_by_symbol={"94320": "campaign-1"},
+    )
+
+    assert validation["status"] == "REVIEW_REQUIRED"
+    assert validation["fail_open_allowed"] is False
+    assert validation["reason_codes"] == [
+        "ACCEPTED_GENERATION_MISMATCH",
+        "BUSINESS_DATE_MISMATCH",
+        "POSITION_CAMPAIGN_MISMATCH",
+    ]
 def _runtime_root(tmp_path: Path) -> Path:
     root = tmp_path / ".runtime"
     (root / "pending_order_plan").mkdir(parents=True)

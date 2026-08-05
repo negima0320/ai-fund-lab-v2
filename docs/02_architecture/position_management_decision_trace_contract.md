@@ -148,6 +148,110 @@ EXIT must preserve implementation order and distinguish:
 - `EXIT_BY_EXIT_SCORE_HIGH`
 - `EXIT_BY_WEAK_HOLD_SCORE`
 
+## Phase27-D5 Expected Edge Reason Code Review
+
+Phase27-D5 defines reason codes as explanations of PM Expected Edge reasoning. Reason codes are not independent Action Authority and must not be consumed as standalone BUY/HOLD/SELL decisions by Runtime Planning, Submit, Safety, monitoring, or training shortcuts.
+
+Design classification:
+
+| Reason code | Classification | Contract meaning |
+|---|---|---|
+| `trend_continuation` | KEEP | Continuation evidence supporting Expected Edge adequacy. |
+| `positive_expected_edge` | REVIEW | Compatibility code for positive edge; future contract should prefer explicit Expected Edge adequacy wording. |
+| `downside_risk_contained` | KEEP | Risk-contained evidence supporting HOLD/ADD. |
+| `risk_increased_but_trend_not_broken` | RENAME | Broad fallback; future trace should split the actual risk/weakening trigger. |
+| `peak_drawdown_warning` | KEEP | Risk Review / weakening evidence for REDUCE or EXIT review. |
+| `trend_and_opportunity_broken` | KEEP | Expected Edge deterioration and continuation break evidence for EXIT. |
+| `profit_retention_break` | RENAME | Peak-drawdown/profit-retention risk evidence; not simple profit-taking authority. |
+| `hard_stop_current_return` | KEEP | Loss-containment / severe risk evidence for EXIT. |
+
+Profit-related reason codes must be interpreted as Risk Review evidence. Profit alone must not create `EXIT` or `REDUCE`.
+
+## Phase27-D6-B Reason Semantics Compatibility Repair
+
+Phase27-D6-B implements the D5 reason semantics repair as an additive compatibility layer. It does not change PM action classification, action priority, score formula, thresholds, quantity intent, Runtime Planning, Pending, Submit, Safety, Execution, or Ledger.
+
+Runtime PM decision artifacts and decision trace artifacts keep legacy reason fields readable:
+
+```text
+reason
+decision_reason_codes
+legacy_reason
+legacy_decision_reason_codes
+```
+
+They also add canonical semantic metadata:
+
+```text
+reason_semantics_contract_version = phase27_d6b_pm_reason_semantics_v1
+canonical_decision_reason_codes
+reason_aliases
+expected_edge_semantics
+expected_edge_status
+expected_edge_contract_status
+```
+
+Reason alias contract:
+
+| Legacy reason | Canonical reason | Compatibility | Action effect |
+|---|---|---|---|
+| `profit_retention_break` | `peak_drawdown_profit_retention_risk` | `LEGACY_ALIAS` | `NONE` |
+| `risk_increased_but_trend_not_broken` | `expected_edge_risk_deterioration` or cause-specific risk code when already evidenced | `LEGACY_ALIAS` | `NONE` |
+| `positive_expected_edge` | `expected_edge_adequate` | `LEGACY_ALIAS` | `NONE` |
+| `trend_and_opportunity_broken` | `trend_and_expected_edge_broken` | `LEGACY_ALIAS` | `NONE` |
+| `trend_continuation` | `trend_continuation` | `CANONICAL` | `NONE` |
+| `downside_risk_contained` | `downside_risk_contained` | `CANONICAL` | `NONE` |
+| `peak_drawdown_warning` | `peak_drawdown_warning` | `CANONICAL` | `NONE` |
+| `hard_stop_current_return` | `hard_stop_current_return` | `CANONICAL` | `NONE` |
+
+Unknown legacy reasons must be preserved as `UNKNOWN:<legacy_reason>` in canonical metadata and must not silently map to another cause.
+
+`profit_retention_break` must not be interpreted as simple profit-taking. It is a peak-drawdown / profit-retention risk-review signal. `risk_increased_but_trend_not_broken` remains readable as a legacy alias, but canonical metadata must avoid inventing causes that are not already present in trigger evidence.
+
+## Phase27-D6-C HOLD / REDUCE / EXIT Boundary Trace Semantics
+
+Phase27-D6-C defines how trace semantics should explain the HOLD / REDUCE / EXIT boundary. This is observability and design semantics only; it must not change action classification, priority, score formula, thresholds, quantity intent, Runtime Planning, Pending, Submit, Safety, Execution, or Ledger.
+
+Trace relationship:
+
+| Canonical reason / status | Boundary interpretation |
+|---|---|
+| `expected_edge_adequate` / `ADEQUATE` | HOLD evidence. Expected Edge remains sufficient for active campaign continuation. |
+| `expected_edge_risk_deterioration` / `DETERIORATING` | REDUCE candidate evidence when campaign optionality remains. |
+| `peak_drawdown_profit_retention_risk` | Risk Review evidence. It is not profit-taking authority. |
+| `trend_and_expected_edge_broken` | EXIT evidence when continuation and Expected Edge are broken. |
+| `hard_stop_current_return` / `RISK_OVERRIDE` | Severe risk / loss-containment evidence that may justify full close. |
+
+Required trace non-overclaim:
+
+- Do not describe `profit_retention_break` or `peak_drawdown_profit_retention_risk` as simple profit-taking.
+- Do not describe Trend alone as EXIT authority.
+- Do not describe REDUCE as deletion, full invalidation, or mandatory EXIT.
+- Do not describe Safety as Expected Edge optimizer.
+
+## Phase27-D6-D HOLD / EXIT Boundary Implementation Trace Semantics
+
+Phase27-D6-D allows trace rows to show a HOLD decision with both:
+
+```text
+expected_edge_adequate
+peak_drawdown_profit_retention_risk
+```
+
+This means Expected Edge remains adequate after Risk Review. It must not be interpreted as profit-taking, EXIT suppression, or Safety override.
+
+Trace consumers must preserve:
+
+```text
+decision = HOLD
+runtime_action = NO_SELL_ORDER
+runtime_sell_quantity = 0
+```
+
+for this case. The canonical risk reason remains observability evidence and does not create quantity, pending, submit, or execution authority.
+
+Phase27-D6-E adoption review confirms that D6-D trace consumers must preserve this semantics with adoption status `ADOPTED_WITH_LIMITATIONS`. Same-context `EXIT -> HOLD` rows are valid only when decision-time position state is comparable and severe full-close evidence is absent. Cross-run path-dependent differences must not be reinterpreted as direct D6-D reason-code authority.
+
 ## Confidence Semantics
 
 The legacy `confidence` field is not a calibrated probability.

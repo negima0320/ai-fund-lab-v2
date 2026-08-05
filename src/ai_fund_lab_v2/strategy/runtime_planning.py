@@ -26,6 +26,7 @@ PRODUCER_VERSION = "phase22_g_runtime_planning_producer.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
 QUANTITY_AUTHORITY = "PHASE22_J_POSITION_SIZING"
+CANONICAL_QUANTITY_AUTHORITY = "PHASE27_D2D_POSITION_SIZING_PLAN"
 
 PLANNING_INTENTS = {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT", "NO_ACTION", "NO_ORDER", "UNRESOLVED"}
 ORDER_SIDE_INTENTS = {"BUY", "SELL", "NONE", "UNRESOLVED"}
@@ -134,6 +135,7 @@ def produce_runtime_planning_artifact(
     planning_config_summary: RuntimePlanningSourceSummary,
     output_path: Path | str,
     position_sizing_artifact_path: Path | str | None = None,
+    position_sizing_plan_artifact_path: Path | str | None = None,
     opportunity_artifact_path: Path | str | None = None,
     as_of: str | None = None,
 ) -> RuntimePlanningProducerResult:
@@ -144,6 +146,7 @@ def produce_runtime_planning_artifact(
         portfolio_policy_artifact_path=portfolio_policy_artifact_path,
         position_management_artifact_path=position_management_artifact_path,
         position_sizing_artifact_path=position_sizing_artifact_path,
+        position_sizing_plan_artifact_path=position_sizing_plan_artifact_path,
         current_portfolio_summary=current_portfolio_summary,
         current_cash_summary=current_cash_summary,
         current_position_summary=current_position_summary,
@@ -180,6 +183,7 @@ def build_runtime_planning_payload(
     pending_summary: RuntimePlanningSourceSummary,
     planning_config_summary: RuntimePlanningSourceSummary,
     position_sizing_artifact_path: Path | str | None = None,
+    position_sizing_plan_artifact_path: Path | str | None = None,
     as_of: str | None = None,
     opportunity_artifact_path: Path | str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -253,13 +257,32 @@ def build_runtime_planning_payload(
     cd_payload = _load_json_if_valid(capital_deployment_artifact_path)
     pm_payload = _load_json_if_valid(position_management_artifact_path)
     ps_payload = _load_json_if_valid(position_sizing_artifact_path)
+    canonical_ps_payload = _load_json_if_valid(position_sizing_plan_artifact_path)
+    canonical_ps_status = _position_sizing_plan_source_status(
+        canonical_ps_payload,
+        position_sizing_plan_artifact_path,
+        business_date=business_date,
+    )
+    if canonical_ps_status == "BLOCK":
+        producer_status = "BLOCK"
+        source_status = "AUTHORITY_CONFLICT"
+        reason_codes.append("upstream_block:position_sizing_plan")
+    elif canonical_ps_status == "REVIEW_REQUIRED" and producer_status != "BLOCK":
+        producer_status = "REVIEW_REQUIRED"
+        reason_codes.append("upstream_review_required:position_sizing_plan")
     opportunity_payload = _load_json_if_valid(opportunity_artifact_path)
+    selected_ps_payload, quantity_source_mode = _select_runtime_quantity_source(
+        legacy_ps_payload=ps_payload,
+        canonical_ps_payload=canonical_ps_payload,
+        canonical_path=position_sizing_plan_artifact_path,
+    )
     plans, mapping_reasons = _build_plans(
         business_date=business_date,
         pc_payload=pc_payload,
         cd_payload=cd_payload,
         pm_payload=pm_payload,
-        ps_payload=ps_payload,
+        ps_payload=selected_ps_payload,
+        quantity_source_mode=quantity_source_mode,
         opportunity_payload=opportunity_payload,
         opportunity_artifact_path=opportunity_artifact_path,
         current_position_rows=current_position_summary.rows,
@@ -270,6 +293,7 @@ def build_runtime_planning_payload(
             portfolio_policy_artifact_path,
             position_management_artifact_path,
             position_sizing_artifact_path,
+            position_sizing_plan_artifact_path,
             current_portfolio_summary,
             current_cash_summary,
             current_position_summary,
@@ -320,6 +344,7 @@ def build_runtime_planning_payload(
         {"role": "portfolio_policy", "path": str(portfolio_policy_artifact_path or ""), "required": True, "status": policy_result["status"]},
         {"role": "position_management", "path": str(position_management_artifact_path or ""), "required": True, "status": pm_result["status"]},
         {"role": "position_sizing", "path": str(position_sizing_artifact_path or ""), "required": False, "status": _position_sizing_source_status(ps_payload, position_sizing_artifact_path)},
+        {"role": "position_sizing_plan", "path": str(position_sizing_plan_artifact_path or ""), "required": False, "status": canonical_ps_status},
         {"role": "opportunity_ranking", "path": str(opportunity_artifact_path or ""), "required": False, "status": _opportunity_source_status(opportunity_payload, opportunity_artifact_path, business_date=business_date)},
         {"role": "current_portfolio", "path": current_portfolio_summary.source_ref, "required": True, "status": current_portfolio_summary.status},
         {"role": "current_cash", "path": current_cash_summary.source_ref, "required": True, "status": current_cash_summary.status},
@@ -333,6 +358,7 @@ def build_runtime_planning_payload(
         portfolio_policy_artifact_path,
         position_management_artifact_path,
         position_sizing_artifact_path,
+        position_sizing_plan_artifact_path,
         opportunity_artifact_path,
         current_portfolio_summary,
         current_cash_summary,
@@ -396,6 +422,9 @@ def build_runtime_planning_payload(
         "planning_config_authority_used": False,
         "planning_authority_winner": "strategy_runtime_planning",
         "planning_source": "runtime_planning.v1",
+        "canonical_quantity_source": quantity_source_mode,
+        "canonical_quantity_delta_priority": quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN",
+        "pm_fallback_scope": "LEGACY_COMPATIBILITY_ONLY" if quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN" else "LEGACY_COMPATIBILITY",
         "existing_morning_planning_changed": True,
         "existing_add_planning_changed": True,
         "existing_sell_planning_changed": False,
@@ -708,6 +737,7 @@ def _build_plans(
     cd_payload: dict[str, Any],
     pm_payload: dict[str, Any],
     ps_payload: dict[str, Any],
+    quantity_source_mode: str,
     opportunity_payload: dict[str, Any],
     opportunity_artifact_path: Path | str | None,
     current_position_rows: tuple[Mapping[str, Any], ...],
@@ -746,7 +776,16 @@ def _build_plans(
         sizing = sizing_positions.get(code, {})
         opportunity_authority = opportunity_rows.get(code)
         current_authority = current_position_authorities.get(code, {})
-        intent, intent_reasons = _resolve_intent(code, pc_member, cd_member, pm_position, sizing, current_codes, current_authority)
+        intent, intent_reasons = _resolve_intent(
+            code,
+            pc_member,
+            cd_member,
+            pm_position,
+            sizing,
+            current_codes,
+            current_authority,
+            quantity_source_mode=quantity_source_mode,
+        )
         reasons.extend(intent_reasons)
         if intent == "NO_ACTION" and str(pc_member.get("membership_intent") or "") == "EXCLUDE":
             continue
@@ -764,7 +803,16 @@ def _build_plans(
             quantity_delta = _int_or_none(sizing.get("quantity_delta_candidate")) if sizing else None
             no_order_reason = "opportunity_no_buy_reason_present"
             plan_reasons.append(f"opportunity_no_buy_reason_present:{opportunity_no_buy_reason}")
-        if quantity_status in {"RESOLVED_ZERO_ALLOCATION", "RESOLVED_ZERO_DELTA", "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY", "NO_ORDER_MINIMUM_NOTIONAL_UNMET"}:
+        canonical_zero_no_action = (
+            quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN"
+            and quantity_status == "RESOLVED_ZERO_DELTA"
+            and intent == "NO_ACTION"
+        )
+        if (
+            quantity_status
+            in {"RESOLVED_ZERO_ALLOCATION", "RESOLVED_ZERO_DELTA", "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY", "NO_ORDER_MINIMUM_NOTIONAL_UNMET"}
+            and not canonical_zero_no_action
+        ):
             intent = "NO_ORDER"
         side = "BUY" if intent in {"BUY_NEW", "BUY_ADD"} else ("SELL" if intent in {"SELL_REDUCE", "SELL_EXIT"} else ("NONE" if intent in {"NO_ACTION", "NO_ORDER"} else "UNRESOLVED"))
         quantity_required = intent in {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT"}
@@ -784,6 +832,7 @@ def _build_plans(
             reasons.append(f"existing_pending_conflict:{code}")
             pending_eligibility = "REVIEW_REQUIRED"
         seen_intents.setdefault(code, set()).add(intent)
+        pm_fallback_used = any(str(reason).startswith("pm_") and "maps_to" in str(reason) for reason in intent_reasons)
         plan = {
             "planning_id": _planning_id(business_date, code, intent, pc_member, pm_position, source_hash_seed),
             "security_code": code,
@@ -794,12 +843,20 @@ def _build_plans(
             "capital_deployment_reference": str(cd_member.get("membership_reference") or ""),
             "position_management_reference": str(pm_position.get("position_id") or pc_member.get("position_management_reference") or ""),
             "quantity_required": quantity_required,
-            "quantity_authority": QUANTITY_AUTHORITY if quantity_required else "",
+            "quantity_authority": (CANONICAL_QUANTITY_AUTHORITY if quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN" else QUANTITY_AUTHORITY) if quantity_required else "",
             "quantity_status": quantity_status,
             "target_quantity_candidate": _int_or_none(sizing.get("target_quantity_candidate")),
             "quantity_delta_candidate": quantity_delta,
             "planned_quantity": planned_quantity if quantity_required else 0,
             "quantity_reference": str(sizing.get("position_reference") or "") if quantity_required else "",
+            "canonical_quantity_source": quantity_source_mode,
+            "canonical_quantity_delta_priority": quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN",
+            "pm_fallback_used": pm_fallback_used,
+            "pm_fallback_scope": (
+                ("LEGACY_COMPATIBILITY_ONLY" if quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN" else "LEGACY_COMPATIBILITY")
+                if pm_fallback_used
+                else "NOT_USED"
+            ),
             "pending_eligibility": pending_eligibility,
             "no_order_reason": no_order_reason,
             "current_position_membership_authority": current_authority,
@@ -1060,6 +1117,15 @@ def _resolve_quantity_status(
     quantity_status = str(sizing.get("quantity_status") or "")
     target_quantity = _int_or_none(sizing.get("target_quantity_candidate"))
     quantity_delta = _int_or_none(sizing.get("quantity_delta_candidate"))
+    if str(sizing.get("schema_version") or "") == "position_sizing_plan.v1":
+        sizing_status = str(sizing.get("sizing_status") or "")
+        if sizing_status in {"ADD_NOT_SIZED", "HOLD_NOT_SIZED", "REDUCE_NOT_SIZED", "EXIT_NOT_SIZED", "UNRESOLVED_NOT_SIZED"}:
+            return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", [f"canonical_position_sizing_plan_not_sized:{sizing_status}"]
+        if quantity_delta is not None and target_quantity is not None:
+            if quantity_delta == 0:
+                return "RESOLVED_ZERO_DELTA", 0, quantity_delta, "zero_quantity_delta", ["canonical_quantity_delta_resolved_zero"]
+            return "RESOLVED_EXECUTABLE", abs(quantity_delta), quantity_delta, "", ["canonical_position_sizing_plan_quantity_delta_resolved"]
+        return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", ["canonical_position_sizing_plan_quantity_delta_missing"]
     if quantity_status in {"RESOLVED_CANDIDATE", "RESOLVED_ZERO_DELTA"} and quantity_delta is not None and target_quantity is not None:
         if quantity_delta == 0:
             return "RESOLVED_ZERO_DELTA", 0, quantity_delta, "zero_quantity_delta", ["no_order_zero_quantity_delta"]
@@ -1088,20 +1154,29 @@ def _resolve_intent(
     sizing: Mapping[str, Any],
     current_codes: set[str],
     current_position_authority: Mapping[str, Any] | None = None,
+    quantity_source_mode: str = "LEGACY_POSITION_SIZING",
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
     pm_action = str(pm_position.get("action") or "").upper()
     membership = str(pc_member.get("membership_intent") or "").upper()
     quantity_delta = _int_or_none(sizing.get("quantity_delta_candidate"))
     target_quantity = _int_or_none(sizing.get("target_quantity_candidate"))
+    canonical_source = quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN" or str(sizing.get("schema_version") or "") == "position_sizing_plan.v1"
     current_authority = current_position_authority or {}
     current_authority_status = str(current_authority.get("status") or "")
     current_membership = str(current_authority.get("membership") or "")
-    if quantity_delta is not None:
+    if canonical_source and quantity_delta is not None:
         if quantity_delta > 0:
-            return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["positive_quantity_delta_maps_to_buy_add" if code in current_codes else "positive_quantity_delta_maps_to_buy_new"]
+            return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["canonical_positive_quantity_delta_maps_to_buy_add" if code in current_codes else "canonical_positive_quantity_delta_maps_to_buy_new"]
         if quantity_delta < 0:
-            return ("SELL_EXIT" if target_quantity == 0 else "SELL_REDUCE"), ["negative_quantity_delta_maps_to_sell_exit" if target_quantity == 0 else "negative_quantity_delta_maps_to_sell_reduce"]
+            return ("SELL_EXIT" if target_quantity == 0 else "SELL_REDUCE"), ["canonical_negative_quantity_delta_maps_to_sell_exit" if target_quantity == 0 else "canonical_negative_quantity_delta_maps_to_sell_reduce"]
+        return "NO_ACTION", ["canonical_zero_quantity_delta_maps_to_no_action"]
+    if quantity_delta is not None and quantity_delta != 0:
+        if quantity_delta > 0:
+            return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["position_sizing_positive_quantity_delta_maps_to_buy_add" if code in current_codes else "position_sizing_positive_quantity_delta_maps_to_buy_new"]
+        return ("SELL_EXIT" if target_quantity == 0 else "SELL_REDUCE"), ["position_sizing_negative_quantity_delta_maps_to_sell_exit" if target_quantity == 0 else "position_sizing_negative_quantity_delta_maps_to_sell_reduce"]
+    if canonical_source and pm_action in {"ADD", "REDUCE", "EXIT", "HOLD"}:
+        return "UNRESOLVED", [f"planning_conflict_review:canonical_delta_missing_pm_fallback_disabled:{code}"]
     if pm_action == "ADD":
         return "BUY_ADD", ["pm_add_maps_to_buy_add"]
     if pm_action == "REDUCE":
@@ -1171,7 +1246,7 @@ def _validate_plan(plan: Any, *, index: int) -> list[str]:
     if plan.get("quantity_status") not in QUANTITY_STATUSES:
         errors.append(f"invalid_quantity_status:{index}")
     if plan.get("quantity_required") is True:
-        if plan.get("quantity_authority") != QUANTITY_AUTHORITY:
+        if plan.get("quantity_authority") not in {QUANTITY_AUTHORITY, CANONICAL_QUANTITY_AUTHORITY}:
             errors.append(f"invalid_quantity_authority:{index}")
         if plan.get("quantity_status") not in {"RESOLVED_EXECUTABLE", "REVIEW_REQUIRED_MISSING_PRICE", "REVIEW_REQUIRED_MISSING_TRADABLE_UNIT", "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", "UNRESOLVED"}:
             errors.append(f"invalid_required_quantity_status:{index}")
@@ -1357,6 +1432,7 @@ def _source_hashes(
     portfolio_policy_artifact_path: Path | str | None,
     position_management_artifact_path: Path | str | None,
     position_sizing_artifact_path: Path | str | None,
+    position_sizing_plan_artifact_path: Path | str | None,
     opportunity_artifact_path: Path | str | None,
     current_portfolio_summary: RuntimePlanningSourceSummary,
     current_cash_summary: RuntimePlanningSourceSummary,
@@ -1375,6 +1451,8 @@ def _source_hashes(
         items.append({"role": "capital_deployment_noncanonical_observability", "path": str(capital_deployment_artifact_path), "sha256": sha256_file(capital_deployment_artifact_path)})
     if position_sizing_artifact_path and Path(position_sizing_artifact_path).is_file():
         items.append({"role": "position_sizing", "path": str(position_sizing_artifact_path), "sha256": sha256_file(position_sizing_artifact_path)})
+    if position_sizing_plan_artifact_path and Path(position_sizing_plan_artifact_path).is_file():
+        items.append({"role": "position_sizing_plan", "path": str(position_sizing_plan_artifact_path), "sha256": sha256_file(position_sizing_plan_artifact_path)})
     if opportunity_artifact_path and Path(opportunity_artifact_path).is_file():
         items.append({"role": "opportunity_ranking", "path": str(opportunity_artifact_path), "sha256": sha256_file(opportunity_artifact_path)})
     for role, summary in (
@@ -1399,6 +1477,74 @@ def _position_sizing_source_status(payload: Mapping[str, Any], path: Path | str 
         return "REVIEW_REQUIRED"
     if status == "BLOCK":
         return "BLOCK"
+    return "UNRESOLVED"
+
+
+def _position_sizing_plan_source_status(payload: Mapping[str, Any], path: Path | str | None, *, business_date: str) -> str:
+    if path is None or not Path(path).is_file():
+        return "MISSING_OPTIONAL"
+    if not payload:
+        return "UNRESOLVED"
+    if str(payload.get("schema_version") or "") != "position_sizing_plan.v1":
+        return "BLOCK"
+    if str(payload.get("business_date") or "") != business_date:
+        return "BLOCK"
+    if str(payload.get("authority_mode") or "") != "SHADOW" or str(payload.get("decision_effect") or "") != "NONE":
+        return "BLOCK"
+    status = str(payload.get("artifact_status") or payload.get("producer_result_status") or "")
+    if status == "PASS":
+        return "PASS"
+    if status == "REVIEW_REQUIRED":
+        return "REVIEW_REQUIRED"
+    if status == "BLOCK":
+        return "BLOCK"
+    return "UNRESOLVED"
+
+
+def _select_runtime_quantity_source(
+    *,
+    legacy_ps_payload: dict[str, Any],
+    canonical_ps_payload: dict[str, Any],
+    canonical_path: Path | str | None,
+) -> tuple[dict[str, Any], str]:
+    if canonical_path is not None and canonical_ps_payload:
+        return _runtime_position_sizing_payload_from_plan(canonical_ps_payload), "CANONICAL_POSITION_SIZING_PLAN"
+    return legacy_ps_payload, "LEGACY_POSITION_SIZING"
+
+
+def _runtime_position_sizing_payload_from_plan(payload: Mapping[str, Any]) -> dict[str, Any]:
+    positions = []
+    for row in payload.get("positions") or []:
+        if not isinstance(row, Mapping):
+            continue
+        positions.append(
+            {
+                **dict(row),
+                "schema_version": "position_sizing_plan.v1",
+                "security_code": str(row.get("symbol") or row.get("security_code") or ""),
+                "position_reference": str(row.get("source_target_portfolio_decision_id") or row.get("position_campaign_id") or ""),
+                "quantity_status": _quantity_status_from_position_sizing_plan_row(row),
+                "runtime_quantity_source": "position_sizing_plan.v1",
+            }
+        )
+    return {
+        "schema_version": "position_sizing_plan.v1",
+        "producer_result_status": str(payload.get("artifact_status") or payload.get("producer_result_status") or ""),
+        "business_date": str(payload.get("business_date") or ""),
+        "feature_date": str(payload.get("business_date") or ""),
+        "positions": positions,
+    }
+
+
+def _quantity_status_from_position_sizing_plan_row(row: Mapping[str, Any]) -> str:
+    sizing_status = str(row.get("sizing_status") or "")
+    delta = _int_or_none(row.get("quantity_delta_candidate"))
+    if sizing_status in {"ADD_NOT_SIZED", "HOLD_NOT_SIZED", "REDUCE_NOT_SIZED", "EXIT_NOT_SIZED", "UNRESOLVED_NOT_SIZED"}:
+        return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED"
+    if delta == 0:
+        return "RESOLVED_ZERO_DELTA"
+    if delta is not None:
+        return "RESOLVED_CANDIDATE"
     return "UNRESOLVED"
 
 

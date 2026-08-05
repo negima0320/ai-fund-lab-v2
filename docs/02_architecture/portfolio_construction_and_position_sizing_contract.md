@@ -339,3 +339,122 @@ Runtime Planning receives downstream quantity candidate only after target weight
 ```
 
 Runtime rerun is not authorized by this design task.
+
+## 12. Phase27-D1 Existing Position and BUY_ADD Common Contract
+
+Phase27-D1 extends this boundary contract for Momentum Follow / Momentum Rotation existing-position lifecycle. The detailed common SoT is:
+
+```text
+docs/02_architecture/momentum_follow_position_lifecycle_and_canonical_decision_architecture.md
+```
+
+This section applies equally to Production, Demo, and Historical. It is not a Historical-only repair and not a phase-local performance shortcut.
+
+Phase27-D1R refines the implementation contract by requiring staged immutable artifacts: `position_intent.v1`, `target_portfolio_decision.v1`, `position_sizing_plan.v1`, and `runtime_position_plan.v1`. Portfolio Construction consumes `position_intent.v1` and produces `target_portfolio_decision.v1`; Position Sizing consumes that target decision and produces `position_sizing_plan.v1`. Neither stage may mutate an upstream artifact after publication.
+
+Portfolio Construction must integrate all canonical position decisions into one target portfolio:
+
+```text
+BUY_NEW
+ADD
+HOLD
+REDUCE
+EXIT
+NO_ACTION
+```
+
+Existing positions must be reevaluated daily. PM keeps existing-position directional intent authority, but Portfolio Construction owns target membership and target weight after integrating PM intent, Opportunity evidence, BUY Quality, Portfolio Policy, Market Context, Corporate Events, Current, Cash, and Pending.
+
+Existing-position mapping:
+
+| PM / Canonical Decision | Portfolio Construction meaning | Position Sizing meaning | Runtime Planning mapping |
+|---|---|---|---|
+| `HOLD` | Retain membership and maintain target weight | target quantity approximately equals current quantity | `NO_ACTION` when delta is zero |
+| `ADD` | Retain membership and allow target weight increase when justified | positive quantity delta candidate | `BUY_ADD` |
+| `REDUCE` | Retain membership with lower target weight | negative partial quantity delta candidate | sell reduce intent |
+| `EXIT` | Remove target membership | full negative quantity delta candidate | sell exit intent |
+
+`NO_ACTION` is not a Portfolio Construction substitute for HOLD reasoning. If an existing position remains in the portfolio with zero delta, the artifact must preserve the positive reason for retention or the reason that no active decision authority was available.
+
+BUY_ADD authority:
+
+- PM ADD is directional intent, not an order.
+- Portfolio Construction must not convert PM ADD directly into Pending.
+- ADD becomes executable only if Position Sizing emits a positive `quantity_delta_candidate` for a current holding and Runtime Planning maps that delta to `BUY_ADD`.
+- Rank 1 alone and PM ADD alone do not justify ADD.
+- Quality adjustment must not be applied twice across Portfolio Construction and Position Sizing.
+
+Position Sizing must distinguish:
+
+```text
+total desired quantity
+current quantity
+quantity delta
+order quantity
+```
+
+Contract formulas:
+
+```text
+target_notional_candidate = target_weight_candidate * canonical_capital_base
+target_quantity_candidate = lot-rounded quantity derived from target_notional_candidate and PIT reference_price
+quantity_delta_candidate = target_quantity_candidate - current_quantity
+```
+
+`canonical_capital_base` is Current Total Equity unless a later accepted common architecture contract supersedes it. Cash remains residual; Position Sizing must not create quantity merely to hit a fixed cash ratio.
+
+## 13. Phase27-D2-D Shadow Position Sizing Plan Contract
+
+Phase27-D2-D introduces `position_sizing_plan.v1` as a shadow-only quantity delta contract between `target_portfolio_decision.v1` and future Runtime Planning integration.
+
+This is not the existing formal `position_sizing.v1` output and does not replace active Position Sizing, Runtime Planning, Pending, Approval, Submit, or Execution.
+
+Required authority fields:
+
+```text
+authority_mode = SHADOW
+decision_effect = NONE
+runtime_connected = false
+pending_decided = false
+submit_decided = false
+```
+
+Existing-position mapping:
+
+```text
+PM ADD    -> positive quantity_delta_candidate or ADD_NOT_SIZED
+PM HOLD   -> zero quantity_delta_candidate or HOLD_NOT_SIZED
+PM REDUCE -> negative partial quantity_delta_candidate or REDUCE_NOT_SIZED
+PM EXIT   -> full negative quantity_delta_candidate with target_quantity_candidate = 0 or EXIT_NOT_SIZED
+```
+
+Position Sizing Plan must not overwrite PM intent. In particular, an ADD row may not be silently converted to HOLD/zero delta, and a REDUCE row may not be silently converted to HOLD/zero delta. If the required delta cannot be sized from available evidence, the row must emit the matching `*_NOT_SIZED` status with lineage and reason codes.
+
+Runtime meanings such as `BUY_ADD`, `BUY_NEW`, `SELL_REDUCE`, `SELL_EXIT`, Pending item IDs, Approval IDs, Submit commands, Execution IDs, and Ledger application IDs are downstream fields and are forbidden in `position_sizing_plan.v1`.
+
+## 14. Phase27-D2-E Runtime Planning Quantity Delta Integration
+
+Phase27-D2-E makes `position_sizing_plan.v1` the canonical Runtime Planning quantity-delta input when present. Runtime Planning does not recalculate Strategy decisions; it only maps quantity delta to runtime action.
+
+Canonical Runtime Planning mapping:
+
+| Position state | Canonical quantity delta | Target quantity | Runtime Planning output |
+|---|---:|---:|---|
+| New position | Positive | Positive | `BUY_NEW` |
+| Existing position | Positive | Positive | `BUY_ADD` |
+| Existing position | Zero | Current quantity | `NO_ACTION` |
+| Existing position | Negative partial | Greater than zero | `SELL_REDUCE` |
+| Existing position | Full negative | Zero | `SELL_EXIT` |
+
+Authority rules:
+
+- If canonical `quantity_delta_candidate` exists, PM fallback is disabled for that row.
+- If canonical `position_sizing_plan.v1` is absent, legacy PM fallback may remain only as compatibility behavior.
+- Canonical sizing lineage plus PM fallback on the same row is duplicate authority and must resolve to `REVIEW_REQUIRED` or `BLOCK`.
+- Runtime Planning must preserve Portfolio Construction and Position Sizing outputs; it must not change target weight, target quantity, sizing formula, cash policy, Quality, Opportunity, Momentum, Incremental Eligibility, or PM intent.
+
+## 15. Phase27-D3 PM Performance Philosophy Boundary
+
+Phase27-D3 freezes PM as the Strategy Action Authority for existing-position `ADD`, `HOLD`, `REDUCE`, and `EXIT`. Portfolio Construction resolves target membership and target weight from PM intent plus evidence. Position Sizing resolves target quantity and quantity delta. Runtime Planning maps quantity delta to runtime action. None of these downstream stages may independently create PM action philosophy or convert profit, rank, quality, cash, or sizing evidence into a new BUY/HOLD/SELL decision.
+
+Opportunity, BUY Quality, Market Context, Momentum Evidence, and Incremental Eligibility are evidence producers for PM and Portfolio Construction. They are not action producers. Profit-taking is not an adopted independent PM philosophy; profit presence may be evidence context, but it is not by itself a REDUCE or EXIT authority.

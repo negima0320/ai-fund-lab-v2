@@ -18,6 +18,70 @@ docs/02_architecture/strategy_architecture_v1.md
 
 Autonomous operations must treat Strategy artifacts as accepted operational authorities when they become Production inputs. Market Context、Corporate Event Authority、Portfolio Policy、Portfolio Construction、Capital Deployment、Position ManagementのProduction共通source pathを変更する場合は、該当Artifactの正式なGeneration、Validation、Acceptance、Registry refreshを必要とする。Performance evidence may trigger review, but must not become Training, Calibration, or Runtime decision authority.
 
+Phase27-D3 freezes the Position Management performance philosophy as common Strategy operating policy. Autonomous operations must preserve this separation:
+
+```text
+Performance evidence
+  -> Review trigger / design input
+  -> Human or accepted design revision
+  -> validated PM input/reasoning contract
+```
+
+Performance evidence must not directly become a BUY/HOLD/SELL action producer, training label, calibration target, Runtime fallback, or Submit authority. PM remains the Strategy Action Authority for existing-position `ADD`, `HOLD`, `REDUCE`, and `EXIT`; Opportunity, BUY Quality, Market Context, Momentum Evidence, and Incremental Eligibility are evidence producers unless a later common SoT revision explicitly changes their authority mode.
+
+The PM operating philosophy is:
+
+- Hold while upward trend continuation and expected value remain valid.
+- Do not exit merely because profit exists.
+- Add only when the held symbol remains among the strongest opportunities and incremental value exists.
+- Reduce only for weakening, risk, concentration, or partial-rotation evidence.
+- Improve performance without adding duplicate action authority.
+
+Phase27-D4 freezes Expected Edge as the PM decision contract. Autonomous AI operations must model PM as a component that consumes Point-in-Time evidence and estimates forward-looking Expected Edge before producing Strategy action. Trend-follow evidence, Opportunity rank, BUY Quality, Market Context, Portfolio Fit, Execution Feasibility, and profit/risk evidence are inputs to Expected Edge review; none of them becomes a standalone action authority.
+
+Expected Edge review follows this operating shape:
+
+```text
+PIT data
+  -> evidence artifacts
+  -> AI Expected Edge estimation
+  -> PM action decision
+  -> Portfolio Construction / Position Sizing / Runtime Planning
+```
+
+Profit evidence may trigger Risk Review for large embedded gains, concentration, volatility, or drawdown-from-peak risk, but it must not directly become an EXIT/REDUCE label, Runtime fallback, Submit condition, or training shortcut. Trend is evidence, not the full Expected Edge definition. Rank is evidence, not direct BUY/ADD/EXIT authority.
+
+Phase27-D5 freezes the PM Expected Edge reasoning contract for autonomous operation. PM reasoning must be auditable as:
+
+```text
+Expected Edge evidence
+  -> reason codes / reasoning summary
+  -> PM action
+```
+
+Reason codes are explanations of PM Expected Edge reasoning, not independent action producers. Automated retraining, monitoring, Runtime Planning, Submit, and Safety must not treat a single reason code such as profit, rank, trend, or quality as sufficient Action Authority. Profit-related reason codes are Risk Review evidence only unless paired with Expected Edge deterioration, risk deterioration, or Safety.
+
+Phase27-D6-C freezes the PM HOLD / REDUCE / EXIT boundary for autonomous operation:
+
+```text
+Expected Edge adequate
+  -> active HOLD
+
+Expected Edge / risk-reward deteriorating while campaign optionality remains
+  -> REDUCE candidate
+
+Expected Edge insufficient, continuation broken, severe risk, or Safety full-close requirement
+  -> EXIT
+```
+
+Monitoring and autonomous review may flag profit expansion, large embedded gain, drawdown from peak, concentration, volatility, or changed risk/reward as Risk Review evidence. These signals must not become direct EXIT labels, direct REDUCE labels, Runtime fallbacks, training shortcuts, Pending conditions, or Submit conditions.
+
+Safety may block or require review/full close under hard-limit responsibility. Safety must not be treated as an Expected Edge optimizer, and PM Expected Edge review must not bypass Safety.
+
+Phase27-D6-D implements the first minimal PM boundary change: a profit-retention / peak-drawdown Risk Review signal does not force EXIT when Expected Edge remains adequate and no severe full-close risk is present. Autonomous monitoring must treat this as a PM boundary implementation, not as a new training label, Runtime fallback, cooldown, profit target, or Safety bypass.
+
+Phase27-D6-E adopts the D6-D boundary with limitations after 100BD before/after review. Autonomous operations may treat the narrow D6-D HOLD / EXIT boundary as accepted PM behavior, but must not treat the full 100BD return delta as direct D6-D causal profit. Profile/source-commit differences, non-blocking Strategy Shadow close review, path-dependent portfolio effects, and missing After performance-report parity remain experiment limitations for future reviews.
+
 Phase21-K is the final Phase21 Design Freeze and Phase22 Entry Approval SoT. Phase22 implementation must preserve the Phase21-I Step Gates and Phase21-J Legacy Retirement rules.
 
 Permanent training, generation, model-quality, bootstrap/retraining, and latest-data semantics are defined in:

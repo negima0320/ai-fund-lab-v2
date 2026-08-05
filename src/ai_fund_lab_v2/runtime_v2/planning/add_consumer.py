@@ -1,8 +1,7 @@
-"""PM ADD consumer for Runtime v2 Pending BUY planning."""
+"""Legacy PM ADD compatibility observer for Runtime v2 planning."""
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -12,10 +11,15 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymen
 from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import CashExposureAuthority
 from ai_fund_lab_v2.runtime_v2.position_sizing_authority import PositionSizingAuthority
 from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision
-from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity, same_symbol_identity
 
-
-DEFAULT_TRADABLE_UNIT = 100.0
+LEGACY_ADD_COMPATIBILITY_SCHEMA_VERSION = "legacy_pm_add_compatibility.v1"
+LEGACY_ADD_ARTIFACT_TYPE = "legacy_pm_add_compatibility"
+LEGACY_ADD_MIGRATION_STATE = "NON_DECISION_COMPATIBILITY"
+LEGACY_ADD_AUTHORITY_MODE = "COMPATIBILITY_TELEMETRY_ONLY"
+LEGACY_ADD_DECISION_EFFECT = "NONE"
+LEGACY_ADD_NO_AUTHORITY = "NONE"
+LEGACY_ADD_COMPATIBILITY_REASON = "LEGACY_ADD_NON_DECISION_COMPATIBILITY"
+LEGACY_ADD_DEDUP_FIELDS = ("run_id", "business_date", "symbol", "position_campaign_id", "decision_id")
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,16 @@ class AddConsumerResult:
     requested_count: int
     accepted_count: int
     rejected_count: int
+    compatibility: tuple[dict[str, Any], ...] = ()
+    compatibility_artifact: dict[str, Any] | None = None
+    migration_state: str = ""
+    decision_effect: str = ""
+    quantity_authority: str = ""
+    pending_authority: str = ""
+    approval_authority: str = ""
+    submit_authority: str = ""
+    telemetry_only: bool = False
+    double_authority_guard_status: str = ""
 
     def to_evidence(self) -> dict[str, Any]:
         return {
@@ -37,6 +51,17 @@ class AddConsumerResult:
             "rejected_count": self.rejected_count,
             "accepted_pending_item_ids": [item.pending_item_id for item in self.accepted_items],
             "rejected": list(self.rejected),
+            "migration_state": self.migration_state,
+            "decision_effect": self.decision_effect,
+            "quantity_authority": self.quantity_authority,
+            "pending_authority": self.pending_authority,
+            "approval_authority": self.approval_authority,
+            "submit_authority": self.submit_authority,
+            "telemetry_only": self.telemetry_only,
+            "compatibility_count": len(self.compatibility),
+            "compatibility": list(self.compatibility),
+            "compatibility_artifact": dict(self.compatibility_artifact or {}),
+            "double_authority_guard_status": self.double_authority_guard_status,
         }
 
 
@@ -61,276 +86,235 @@ def build_add_pending_items(
     )
     if not add_candidates:
         return AddConsumerResult("NOT_REQUIRED", "ADD decision missing", (), (), 0, 0, 0)
-    rejected: list[dict[str, Any]] = []
-    if capital_deployment_policy is None:
-        return AddConsumerResult(
-            "REJECTED",
-            "AUTHORITY_NOT_ACCEPTED",
-            (),
-            tuple(_reject(decision, "AUTHORITY_NOT_ACCEPTED", business_date) for decision in add_candidates),
-            len(add_candidates),
-            0,
-            len(add_candidates),
-        )
-    if safety_decision is not None and bool(safety_decision.block_buy):
-        return AddConsumerResult(
-            "REJECTED",
-            "AUTHORITY_NOT_ACCEPTED",
-            (),
-            tuple(_reject(decision, "AUTHORITY_NOT_ACCEPTED", business_date) for decision in add_candidates),
-            len(add_candidates),
-            0,
-            len(add_candidates),
-        )
-
-    existing_pending_buy_symbols = {
-        item.symbol
-        for item in (existing_buy_pending.items if existing_buy_pending is not None else ())
-        if item.side.upper() == "BUY" and item.quantity > 0
-    }
-    accepted: list[PendingOrderItem] = []
-    accepted_symbols: set[str] = set()
-    current_exposure = float(sum(position.market_value for position in current_positions.values()))
-    active_deployment_capital = _active_deployment_capital(asset_state, current_exposure=current_exposure)
-    selected_cash_exposure = (
-        cash_exposure_authority.with_runtime_state(
-            current_cash=_cash_capacity(asset_state),
-            current_market_value=current_exposure,
-            current_total_equity=active_deployment_capital,
-            active_deployment_capital=active_deployment_capital,
-        )
-        if cash_exposure_authority is not None
-        else None
+    artifact = build_legacy_add_compatibility_artifact(
+        add_decisions=add_candidates,
+        business_date=business_date,
+        target_session_date=target_session_date,
+        environment=environment,
     )
-    if selected_cash_exposure is None or not selected_cash_exposure.passed:
-        return AddConsumerResult(
-            "REJECTED",
-            "DYNAMIC_CASH_EXPOSURE_AUTHORITY_MISSING",
-            (),
-            tuple(_reject(decision, "DYNAMIC_CASH_EXPOSURE_AUTHORITY_MISSING", business_date) for decision in add_candidates),
-            len(add_candidates),
-            0,
-            len(add_candidates),
-        )
-    remaining_exposure = max(selected_cash_exposure.remaining_exposure_capacity, 0.0)
-    remaining_cash = max(selected_cash_exposure.available_cash_after_target, 0.0)
-    for index, decision in enumerate(add_candidates, start=1):
-        symbol = str(getattr(decision, "symbol", "") or "").strip()
-        position = _matching_position(current_positions, symbol)
-        if position is None or position.quantity <= 0:
-            rejected.append(_reject(decision, "INVALID_CURRENT_POSITION", business_date))
-            continue
-        if contains_symbol_identity(existing_pending_buy_symbols, symbol) or contains_symbol_identity(accepted_symbols, symbol):
-            rejected.append(_reject(decision, "DUPLICATE_PENDING_ORDER", business_date))
-            continue
-        price = _position_price(position)
-        if price <= 0:
-            rejected.append(_reject(decision, "OPPORTUNITY_NO_LONGER_ELIGIBLE", business_date))
-            continue
-        if position.average_price > 0 and price < position.average_price:
-            rejected.append(_reject(decision, "NO_LOSS_AVERAGING_GUARD", business_date))
-            continue
-        if active_deployment_capital is None:
-            rejected.append(_reject(decision, "ACTIVE_DEPLOYMENT_CAPITAL_MISSING", business_date))
-            continue
-        selected_position_sizing = _matching_position_sizing_authority(position_sizing_authorities or {}, symbol)
-        if selected_position_sizing is None or not selected_position_sizing.passed:
-            rejected.append(_reject(decision, "POSITION_SIZING_AUTHORITY_MISSING", business_date))
-            continue
-        position_capacity = max(float(selected_position_sizing.remaining_add_capacity), 0.0)
-        if position_capacity <= 0:
-            rejected.append(_reject(decision, "POSITION_SIZING_NO_ADD_CAPACITY", business_date))
-            continue
-        if remaining_exposure <= 0:
-            rejected.append(_reject(decision, "MAX_EXPOSURE", business_date))
-            continue
-        if remaining_cash <= 0:
-            rejected.append(_reject(decision, "INSUFFICIENT_CASH", business_date))
-            continue
-        requested_notional = min(
-            position_capacity,
-            remaining_exposure,
-            remaining_cash,
-            _optional_cap(capital_deployment_policy.max_buy_order_amount),
-        )
-        if requested_notional < float(capital_deployment_policy.min_order_amount):
-            rejected.append(_reject(decision, "INSUFFICIENT_CASH", business_date, requested_notional=requested_notional))
-            continue
-        quantity = math.floor((requested_notional / price) / DEFAULT_TRADABLE_UNIT) * DEFAULT_TRADABLE_UNIT
-        approved_notional = quantity * price
-        if quantity <= 0 or approved_notional < float(capital_deployment_policy.min_order_amount):
-            rejected.append(_reject(decision, "LOT_SIZE_NOT_VIABLE", business_date, requested_notional=requested_notional))
-            continue
-        item = PendingOrderItem(
-            pending_item_id=f"opi-pm-add-{business_date}-{symbol}-{index:03d}",
-            symbol=symbol,
-            side="BUY",
-            quantity=quantity,
-            order_type="MARKET",
-            estimated_price=price,
-            estimated_amount=approved_notional,
-            approved=False,
-            state="READY",
-            listed_info={
-                "code": symbol,
-                "market": "東証",
-                "product_category": "011",
-                "security_type": "011",
-                "current_listed": True,
-                "opportunity_business_date": business_date,
-                "opportunity_feature_date": target_session_date,
-                "opportunity_expected_edge_score": max(float(getattr(decision, "score", 0.0) or 0.0), 0.000001),
-                "opportunity_expected_return": None,
-                "opportunity_no_buy_reason": "",
-                "opportunity_buy_rank": None,
-                "opportunity_artifact_path": str(getattr(decision, "source_decision_artifact", "") or ""),
-                "opportunity_artifact_hash": "",
-            },
-            price_source="current_sot_position_valuation",
-            price_as_of=str(position.as_of or asset_state.as_of),
-            price_confidence="current_sot",
-            price_required=True,
-            capital_allocation_amount=approved_notional,
-            policy_version=capital_deployment_policy.policy_version,
-            policy_source=capital_deployment_policy.policy_source,
-            evaluation_capital=capital_deployment_policy.evaluation_capital,
-            target_investment_ratio=None,
-            cash_buffer=None,
-            max_exposure=None,
-            max_positions=capital_deployment_policy.max_positions,
-            max_buy_order_amount=capital_deployment_policy.max_buy_order_amount,
-            max_sell_liquidation_amount=capital_deployment_policy.max_sell_liquidation_amount,
-            min_order_amount=capital_deployment_policy.min_order_amount,
-            buy_notional_policy=capital_deployment_policy.buy_notional_policy,
-            sell_liquidation_policy=capital_deployment_policy.sell_liquidation_policy,
-            manual_review_threshold=capital_deployment_policy.manual_review_threshold.__dict__,
-            sizing_policy_reason="pm_add_position_sizing_authority",
-            safety_decision_id=str(safety_decision.safety_decision_id if safety_decision is not None else ""),
-            safety_policy_version=str(safety_decision.safety_policy_version if safety_decision is not None else ""),
-            safety_source=str(safety_decision.safety_source if safety_decision is not None else ""),
-            safety_decision=str(safety_decision.decision if safety_decision is not None else ""),
-            safety_reason=str(safety_decision.reason if safety_decision is not None else ""),
-            quantity_contract={
-                "quantity_contract_version": "runtime_v2_pm_add_quantity_v1",
-                "source_decision": "ADD",
-                "selected_capital_source": _capital_source(asset_state),
-                "selected_capital_value": active_deployment_capital,
-                "capital_authority_winner": "current_total_equity",
-                "active_deployment_capital": active_deployment_capital,
-                "legacy_capital_config_used": False,
-                "capital_fallback_used": False,
-                "cash_exposure_authority": selected_cash_exposure.to_dict(),
-                **selected_cash_exposure.to_dict(),
-                "position_sizing_authority": selected_position_sizing.with_lot_adjustment(
-                    quantity=quantity,
-                    notional=approved_notional,
-                ).to_dict(),
-                **selected_position_sizing.with_lot_adjustment(
-                    quantity=quantity,
-                    notional=approved_notional,
-                ).to_dict(),
-                "requested_add_notional": requested_notional,
-                "approved_add_notional": approved_notional,
-                "tradable_unit": DEFAULT_TRADABLE_UNIT,
-                "final_buy_quantity": quantity,
-                "status": "PASS",
-                "reason": "pm_add_position_sizing_allocation_pass",
-            },
-            source_decision_type="ADD",
-            source_pm_decision_id=str(getattr(decision, "source_decision_id", "") or ""),
-            source_pm_business_date=business_date,
-            source_position_symbol=str(position.symbol),
-            add_candidate_signal=True,
-            capital_allocation_status="APPROVED",
-            capital_allocation_reason="pm_add_position_sizing_allocation_pass",
-            requested_add_notional=requested_notional,
-            approved_add_notional=approved_notional,
-            rejected_reason="",
-        )
-        accepted.append(item)
-        accepted_symbols.add(symbol)
-        remaining_exposure = max(remaining_exposure - approved_notional, 0.0)
-        remaining_cash = max(remaining_cash - approved_notional, 0.0)
-    status = "PASS" if accepted else "REJECTED"
-    reason = "ADD pending items generated" if accepted else "all ADD candidates rejected"
-    return AddConsumerResult(status, reason, tuple(accepted), tuple(rejected), len(add_candidates), len(accepted), len(rejected))
+    guard = evaluate_legacy_add_double_authority_guard(artifact)
+    status = "BLOCKED" if guard["status"] == "BLOCKED" else LEGACY_ADD_MIGRATION_STATE
+    return AddConsumerResult(
+        status,
+        LEGACY_ADD_COMPATIBILITY_REASON,
+        (),
+        (),
+        len(add_candidates),
+        0,
+        0,
+        compatibility=tuple(artifact["compatibility"]),
+        compatibility_artifact=artifact,
+        migration_state=LEGACY_ADD_MIGRATION_STATE,
+        decision_effect=LEGACY_ADD_DECISION_EFFECT,
+        quantity_authority=LEGACY_ADD_NO_AUTHORITY,
+        pending_authority=LEGACY_ADD_NO_AUTHORITY,
+        approval_authority=LEGACY_ADD_NO_AUTHORITY,
+        submit_authority=LEGACY_ADD_NO_AUTHORITY,
+        telemetry_only=True,
+        double_authority_guard_status=str(guard["status"]),
+    )
 
 
-def _matching_position(
-    current_positions: Mapping[str, CurrentAssetPosition],
-    symbol: str,
-) -> CurrentAssetPosition | None:
-    for existing_symbol, position in current_positions.items():
-        if same_symbol_identity(existing_symbol, symbol):
-            return position
-    return None
-
-
-def _matching_position_sizing_authority(
-    authorities: Mapping[str, PositionSizingAuthority],
-    symbol: str,
-) -> PositionSizingAuthority | None:
-    for existing_symbol, authority in authorities.items():
-        if same_symbol_identity(existing_symbol, symbol):
-            return authority
-    return None
-
-
-def _position_price(position: CurrentAssetPosition) -> float:
-    if position.quantity <= 0:
-        return 0.0
-    if position.market_value > 0:
-        return float(position.market_value) / float(position.quantity)
-    return float(position.average_price)
-
-
-def _cash_capacity(asset_state: CurrentAssetState) -> float:
-    values = [
-        float(value)
-        for value in (asset_state.buying_power, asset_state.cash)
-        if value is not None and float(value) >= 0
-    ]
-    if not values:
-        return 0.0
-    return min(values)
-
-
-def _active_deployment_capital(asset_state: CurrentAssetState, *, current_exposure: float) -> float | None:
-    _ = current_exposure
-    if asset_state.total_equity is not None:
-        return float(asset_state.total_equity)
-    return None
-
-
-def _capital_source(asset_state: CurrentAssetState) -> str:
-    if asset_state.total_equity is not None:
-        return "current_state.total_equity"
-    return "current_state.total_equity_missing"
-
-
-def _optional_cap(value: float | None) -> float:
-    if value is None:
-        return float("inf")
-    return float(value)
-
-
-def _reject(
-    decision: Any,
-    reason: str,
-    business_date: str,
+def build_legacy_add_compatibility_artifact(
     *,
-    requested_notional: float | None = None,
+    add_decisions: Sequence[Any],
+    business_date: str,
+    target_session_date: str = "",
+    environment: str = "",
+    run_id: str = "",
+    accepted_generation: str = "",
+    canonical_position_intent_ref: str = "",
+    canonical_target_portfolio_decision_ref: str = "",
 ) -> dict[str, Any]:
+    records = tuple(
+        _compatibility_record(
+            decision,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=environment,
+            run_id=run_id,
+            accepted_generation=accepted_generation,
+            canonical_position_intent_ref=canonical_position_intent_ref,
+            canonical_target_portfolio_decision_ref=canonical_target_portfolio_decision_ref,
+        )
+        for decision in add_decisions
+        if str(getattr(decision, "source_decision", "") or "").upper() == "ADD"
+    )
+    guard = evaluate_legacy_add_double_authority_guard({"compatibility": list(records)})
     return {
-        "source_decision_type": "ADD",
-        "source_pm_decision_id": str(getattr(decision, "source_decision_id", "") or ""),
-        "source_pm_business_date": business_date,
-        "source_position_symbol": str(getattr(decision, "symbol", "") or ""),
-        "add_candidate_signal": True,
-        "capital_allocation_status": "REJECTED",
-        "capital_allocation_reason": reason,
-        "requested_add_notional": requested_notional,
-        "approved_add_notional": 0.0,
-        "quantity": 0.0,
-        "rejected_reason": reason,
+        "schema_version": LEGACY_ADD_COMPATIBILITY_SCHEMA_VERSION,
+        "artifact_type": LEGACY_ADD_ARTIFACT_TYPE,
+        "migration_state": LEGACY_ADD_MIGRATION_STATE,
+        "authority_mode": LEGACY_ADD_AUTHORITY_MODE,
+        "decision_effect": LEGACY_ADD_DECISION_EFFECT,
+        "business_date": business_date,
+        "target_session_date": target_session_date,
+        "environment": environment,
+        "run_id": run_id,
+        "accepted_generation": accepted_generation,
+        "quantity_authority": LEGACY_ADD_NO_AUTHORITY,
+        "pending_authority": LEGACY_ADD_NO_AUTHORITY,
+        "approval_authority": LEGACY_ADD_NO_AUTHORITY,
+        "submit_authority": LEGACY_ADD_NO_AUTHORITY,
+        "telemetry_only": True,
+        "compatibility_count": len(records),
+        "compatibility": list(records),
+        "double_authority_guard": guard,
+        "review_status": "PASS" if guard["status"] == "PASS" else "REVIEW_REQUIRED",
     }
+
+
+def evaluate_legacy_add_double_authority_guard(
+    compatibility_artifact: Mapping[str, Any],
+    *,
+    canonical_authority_records: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    legacy_records = tuple(
+        record
+        for record in compatibility_artifact.get("compatibility", ())
+        if isinstance(record, Mapping)
+    )
+    duplicate_keys = _duplicate_dedup_keys(legacy_records)
+    canonical_keys = {
+        _dedup_key(record)
+        for record in canonical_authority_records
+        if _record_has_add_authority(record)
+    }
+    legacy_authority_keys = {
+        _dedup_key(record)
+        for record in legacy_records
+        if _record_has_add_authority(record)
+    }
+    overlaps = sorted(key for key in legacy_authority_keys if key in canonical_keys)
+    status = "BLOCKED" if duplicate_keys or overlaps else "PASS"
+    return {
+        "status": status,
+        "dedup_key_fields": list(LEGACY_ADD_DEDUP_FIELDS),
+        "legacy_record_count": len(legacy_records),
+        "canonical_authority_record_count": len(canonical_authority_records),
+        "duplicate_legacy_dedup_keys": duplicate_keys,
+        "canonical_legacy_authority_overlaps": overlaps,
+        "conflict_behavior": "BLOCKED" if status == "BLOCKED" else "PASS",
+        "fail_open_allowed": False,
+    }
+
+
+def validate_legacy_add_compatibility_lineage(
+    compatibility_artifact: Mapping[str, Any],
+    *,
+    expected_business_date: str,
+    expected_accepted_generation: str = "",
+    expected_campaign_by_symbol: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    records = tuple(
+        record
+        for record in compatibility_artifact.get("compatibility", ())
+        if isinstance(record, Mapping)
+    )
+    reason_codes: list[str] = []
+    for record in records:
+        if str(record.get("business_date") or "") != expected_business_date:
+            reason_codes.append("BUSINESS_DATE_MISMATCH")
+        if expected_accepted_generation and str(record.get("accepted_generation") or "") != expected_accepted_generation:
+            reason_codes.append("ACCEPTED_GENERATION_MISMATCH")
+        campaign_by_symbol = expected_campaign_by_symbol or {}
+        symbol = str(record.get("symbol") or "")
+        expected_campaign = str(campaign_by_symbol.get(symbol) or "")
+        if expected_campaign and str(record.get("position_campaign_id") or "") != expected_campaign:
+            reason_codes.append("POSITION_CAMPAIGN_MISMATCH")
+    guard = evaluate_legacy_add_double_authority_guard(compatibility_artifact)
+    if guard["status"] != "PASS":
+        reason_codes.append("DEDUP_KEY_CONFLICT")
+    unique_reasons = sorted(set(reason_codes))
+    return {
+        "status": "PASS" if not unique_reasons else "REVIEW_REQUIRED",
+        "reason_codes": unique_reasons,
+        "record_count": len(records),
+        "double_authority_guard": guard,
+        "fail_open_allowed": False,
+    }
+
+
+def _compatibility_record(
+    decision: Any,
+    *,
+    business_date: str,
+    target_session_date: str,
+    environment: str,
+    run_id: str,
+    accepted_generation: str,
+    canonical_position_intent_ref: str,
+    canonical_target_portfolio_decision_ref: str,
+) -> dict[str, Any]:
+    symbol = str(getattr(decision, "symbol", "") or "").strip()
+    decision_id = str(getattr(decision, "source_decision_id", "") or getattr(decision, "decision_id", "") or "")
+    campaign_id = str(
+        getattr(decision, "position_campaign_id", "")
+        or getattr(decision, "source_position_campaign_id", "")
+        or "UNKNOWN"
+    )
+    effective_run_id = str(run_id or getattr(decision, "run_id", "") or "UNKNOWN")
+    lineage = {
+        "source_decision_artifact": str(getattr(decision, "source_decision_artifact", "") or ""),
+        "source_pm_decision_id": decision_id,
+        "canonical_position_intent_ref": canonical_position_intent_ref
+        or str(getattr(decision, "canonical_position_intent_ref", "") or "NOT_CONNECTED"),
+        "canonical_target_portfolio_decision_ref": canonical_target_portfolio_decision_ref
+        or str(getattr(decision, "canonical_target_portfolio_decision_ref", "") or "NOT_CONNECTED"),
+    }
+    record = {
+        "schema_version": LEGACY_ADD_COMPATIBILITY_SCHEMA_VERSION,
+        "artifact_type": "legacy_pm_add_compatibility_row",
+        "migration_state": LEGACY_ADD_MIGRATION_STATE,
+        "authority_mode": LEGACY_ADD_AUTHORITY_MODE,
+        "decision_effect": LEGACY_ADD_DECISION_EFFECT,
+        "run_id": effective_run_id,
+        "business_date": business_date,
+        "target_session_date": target_session_date,
+        "environment": environment,
+        "accepted_generation": str(accepted_generation or getattr(decision, "accepted_generation", "") or ""),
+        "symbol": symbol,
+        "position_campaign_id": campaign_id,
+        "decision_id": decision_id,
+        "source_pm_decision_id": decision_id,
+        "source_pm_intent": "ADD",
+        "canonical_position_intent_ref": lineage["canonical_position_intent_ref"],
+        "canonical_target_portfolio_decision_ref": lineage["canonical_target_portfolio_decision_ref"],
+        "compatibility_status": "PASS",
+        "compatibility_reason_codes": [LEGACY_ADD_COMPATIBILITY_REASON],
+        "legacy_path_would_have_been_invoked": True,
+        "quantity_authority": LEGACY_ADD_NO_AUTHORITY,
+        "pending_authority": LEGACY_ADD_NO_AUTHORITY,
+        "approval_authority": LEGACY_ADD_NO_AUTHORITY,
+        "submit_authority": LEGACY_ADD_NO_AUTHORITY,
+        "telemetry_only": True,
+        "lineage": lineage,
+        "review_status": "PASS",
+    }
+    record["dedup_key"] = _dedup_key(record)
+    return record
+
+
+def _dedup_key(record: Mapping[str, Any]) -> str:
+    return "|".join(str(record.get(field) or "UNKNOWN") for field in LEGACY_ADD_DEDUP_FIELDS)
+
+
+def _duplicate_dedup_keys(records: Sequence[Mapping[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for record in records:
+        key = _dedup_key(record)
+        if key in seen:
+            duplicates.add(key)
+        seen.add(key)
+    return sorted(duplicates)
+
+
+def _record_has_add_authority(record: Mapping[str, Any]) -> bool:
+    return (
+        str(record.get("decision_effect") or "").upper() != LEGACY_ADD_DECISION_EFFECT
+        or str(record.get("quantity_authority") or "").upper() != LEGACY_ADD_NO_AUTHORITY
+        or str(record.get("pending_authority") or "").upper() != LEGACY_ADD_NO_AUTHORITY
+        or str(record.get("approval_authority") or "").upper() != LEGACY_ADD_NO_AUTHORITY
+        or str(record.get("submit_authority") or "").upper() != LEGACY_ADD_NO_AUTHORITY
+    )

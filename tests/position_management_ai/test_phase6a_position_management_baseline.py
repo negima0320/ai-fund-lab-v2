@@ -37,6 +37,114 @@ def test_phase6a_rule_based_baseline_outputs_required_schema() -> None:
     assert output.loc[output["code"] == "1004", "continue_holding"].item() is True
 
 
+def test_phase27_d6d_expected_edge_adequate_profit_retention_review_holds() -> None:
+    frame = build_position_feature_frame(
+        holding_frame=pd.DataFrame(
+            [
+                {
+                    "target_date": "2026-06-12",
+                    "code": "2001",
+                    "entry_price": 100.0,
+                    "current_price": 108.0,
+                    "holding_days": 12,
+                    "position_size": 100,
+                    "peak_return": 0.22,
+                }
+            ]
+        ),
+        opportunity_frame=pd.DataFrame(
+            [
+                {
+                    "target_date": "2026-06-12",
+                    "code": "2001",
+                    "expected_edge_score": 0.08,
+                    "buy_rank": 12,
+                    "downside_risk_score": 0.30,
+                    "risk_guard_status": "ok",
+                }
+            ]
+        ),
+        feature_frame=pd.DataFrame(
+            [
+                _feature_row(
+                    "2001",
+                    close_over_ma=1.04,
+                    ma_ratio=1.02,
+                    return_5d=0.03,
+                    return_20d=0.08,
+                    volatility=0.03,
+                    volume=1.10,
+                )
+            ]
+        ),
+    )
+    output = build_position_management_output(
+        frame,
+        created_at="2026-06-14T00:00:00+00:00",
+        inference_run_id="fixture_run",
+    )
+    row = output.loc[output["code"] == "2001"].iloc[0]
+
+    assert row["action"] == "HOLD"
+    assert row["continue_holding"] == True
+    assert row["exit_candidate"] == False
+    assert row["action_reason"] == "positive_expected_edge|profit_retention_break"
+    assert row["exit_reason"] == ""
+
+
+def test_phase27_d6d_profit_retention_review_does_not_override_hard_exit_evidence() -> None:
+    frame = build_position_feature_frame(
+        holding_frame=pd.DataFrame(
+            [
+                {
+                    "target_date": "2026-06-12",
+                    "code": "2002",
+                    "entry_price": 100.0,
+                    "current_price": 90.0,
+                    "holding_days": 12,
+                    "position_size": 100,
+                    "peak_return": 0.04,
+                }
+            ]
+        ),
+        opportunity_frame=pd.DataFrame(
+            [
+                {
+                    "target_date": "2026-06-12",
+                    "code": "2002",
+                    "expected_edge_score": 0.08,
+                    "buy_rank": 12,
+                    "downside_risk_score": 0.30,
+                    "risk_guard_status": "ok",
+                }
+            ]
+        ),
+        feature_frame=pd.DataFrame(
+            [
+                _feature_row(
+                    "2002",
+                    close_over_ma=1.04,
+                    ma_ratio=1.02,
+                    return_5d=0.03,
+                    return_20d=0.08,
+                    volatility=0.03,
+                    volume=1.10,
+                )
+            ]
+        ),
+    )
+    output = build_position_management_output(
+        frame,
+        created_at="2026-06-14T00:00:00+00:00",
+        inference_run_id="fixture_run",
+    )
+    row = output.loc[output["code"] == "2002"].iloc[0]
+
+    assert row["action"] == "EXIT"
+    assert row["exit_candidate"] == True
+    assert "hard_stop_current_return" in row["exit_reason"]
+
+
 def test_phase6a_blocks_forbidden_future_feature() -> None:
     features = _feature_frame()
     features["future_return_20d"] = 0.50

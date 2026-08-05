@@ -598,3 +598,46 @@ Phase26-H Production-Common Adaptive BUY Quality Authority Implementation
 ```
 
 Phase26-H must implement producer-first, then consumers, then propagation, then negative assertions and short regression. Long Historical validation remains operator-owned.
+
+## 13. Phase27-D1 Incremental Investment Eligibility Boundary
+
+Phase27-D1 introduces Incremental Investment Eligibility as a separate Momentum Follow / Rotation decision-support contract. The detailed common SoT is:
+
+```text
+docs/02_architecture/momentum_follow_position_lifecycle_and_canonical_decision_architecture.md
+```
+
+Adaptive BUY Quality remains:
+
+```text
+Allocation eligibility and allocation adjustment authority
+```
+
+Incremental Investment Eligibility is:
+
+```text
+BUY_NEW / ADD versus no incremental capital decision support
+```
+
+These authorities must not be merged.
+
+Required separation:
+
+- BUY Quality may adjust or block allocation quality for an otherwise considered opportunity.
+- Incremental Investment Eligibility determines whether adding new capital is rational at all.
+- Relative rank alone is not Incremental Investment Eligibility.
+- Rank 1 alone is not high BUY Quality.
+- PM ADD alone is not Incremental Investment Eligibility.
+- Historical results, Paper Ledger results, prior campaign PnL, future price, or post-hoc audit labels must not become inputs to either authority.
+
+Initial Incremental Investment Eligibility implementation must be shadow/diagnostic unless a later accepted common design grants decision authority. Numeric thresholds are not fixed by Phase27-D1 and must be decided through controlled experiments.
+
+Phase27-D1R requires Incremental Investment Eligibility to publish `authority_mode`:
+
+```text
+SHADOW
+ADVISORY
+ACTIVE
+```
+
+`SHADOW` has no decision effect. `ADVISORY` may be visible to the canonical intent producer but cannot independently change action. `ACTIVE` is allowed only after evidence completeness, calibration, short regression, controlled experiment, human approval, PIT validation, and degression review. Until ACTIVE is approved, BUY Quality must not treat Incremental Eligibility as a hidden quality multiplier.

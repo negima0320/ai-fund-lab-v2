@@ -2,6 +2,99 @@
 
 ---
 
+# Phase27 Closure and Phase28 Entry
+
+Phase27 final status:
+
+```text
+CLOSED_WITH_ADOPTED_PERFORMANCE_IMPROVEMENT_AND_KNOWN_COMPARABILITY_LIMITATIONS
+```
+
+Phase27 primary judgment:
+
+```text
+PHASE27_CLOSED_WITH_FIRST_PERFORMANCE_EXPERIMENT_ADOPTED_PHASE28_READY
+```
+
+Phase27 closed as the phase that established Canonical Position Decision Architecture, froze the PM investment philosophy / Expected Edge contract, retired Legacy ADD execution authority, repaired PM reason / trace semantics, and adopted the first single-change PM HOLD / EXIT performance experiment with limitations.
+
+Phase27 completed summary:
+
+```text
+- Selection / Ineligibility / Re-entry / PM authority diagnosis
+- Canonical Position Decision Architecture
+- Legacy ADD execution authority retirement
+- Expected Edge philosophy and PM contract freeze
+- PM Reason / Trace compatibility repair
+- HOLD / EXIT first single-change experiment
+- 100BD After D6-D return: +6.617%
+- D6-D direct traceable benefit: 37,100 JPY
+- D6-D adoption: ADOPT_WITH_LIMITATIONS
+```
+
+Known Phase27 limitations carried forward:
+
+```text
+- Baseline and After profiles differ: historical-smoke vs historical-extended-smoke
+- source commit differs and both run authorities recorded source dirty
+- After run lacks Baseline-style performance_report parity
+- Close REVIEW_REQUIRED is non-blocking Strategy Shadow review
+- Full +81,590 JPY headline delta is not direct D6-D causal benefit
+- ADD Expected Edge / Incremental Investment Eligibility remains the next performance target
+```
+
+Phase28:
+
+```text
+ADD Expected Edge and Capital Efficiency Improvement
+```
+
+Phase28 status:
+
+```text
+READY_TO_START
+```
+
+Phase28 purpose:
+
+```text
+Use the Phase27 Expected Edge / Canonical PM Architecture to allocate additional capital correctly into winning held positions and improve Capital Efficiency and Portfolio Return.
+```
+
+Phase28 primary goal:
+
+```text
+Use the Canonical BUY_ADD path so BUY_ADD becomes executable only when adding to an existing position improves Portfolio Expected Value after incremental value, opportunity cost, concentration risk, available capital, lot feasibility, and existing exposure are considered.
+```
+
+Phase28 first task:
+
+```text
+Phase28-A ADD Baseline and Incremental Investment Evidence Audit
+```
+
+Phase28 entry rule:
+
+```text
+1 Performance Change = 1 Experiment = 1 user-run 100BD Acceptance
+```
+
+Phase28 non-goals:
+
+```text
+New Action Authority
+HOLD / EXIT philosophy redesign
+D6-D rollback
+BUY_NEW full redesign
+Position Sizing full redesign
+Market Context full redesign
+Model retraining
+Historical-only threshold tuning
+Using 100BD results as Training input
+```
+
+---
+
 # Phase26 Final Status and Phase27 Entry
 
 Phase26-K final review result:

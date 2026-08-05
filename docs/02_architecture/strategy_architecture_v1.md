@@ -46,6 +46,119 @@ Strategy v1の原則:
 - Loss containmentとCapital preservationを無視しない
 - Market Contextは判断材料であり、個別Opportunityを機械的に上書きしない
 
+Phase27-D3 freezes the PM performance philosophy for this Strategy SoT:
+
+- 利益が出たこと自体をEXIT理由にしない。
+- HOLDは「何もしない」ではなく、上昇トレンド継続への積極判断である。
+- EXITは上昇トレンド終了、期待値低下、シグナル崩壊、急激なリスク悪化、またはSafety/Portfolio上の必要性に基づく。
+- ADDは「買う候補がないから」ではなく、保有中の銘柄がなお最有力候補で、Trend ContinuingかつIncremental Value Existsの場合のみ検討する。
+- REDUCEはHOLDとEXITの中間にあるrisk / weakening / partial rotation intentであり、単純な利益確定思想ではない。
+- Cashは結果であって目的ではない。100万円の資金は期待値最大化資金であり、固定フルデプロイ義務ではない。
+- Performance改善でBUY/HOLD/SELL Action Authorityを増やさない。
+
+PM is the Strategy Action Authority for existing-position directional actions. Opportunity, BUY Quality, Market Context, Momentum Evidence, and Incremental Eligibility are Evidence Producers unless a later common SoT explicitly changes their authority mode. They must not independently emit BUY_NEW / ADD / HOLD / REDUCE / EXIT actions.
+
+Phase27-D4 freezes the Expected Edge decision contract for this Strategy SoT.
+
+Expected Edge means whether forward-looking expected value remains sufficiently attractive from Point-in-Time data. It is a Strategy concept consumed by PM; it is not the same as profit rate, trend alone, rank alone, BUY Quality alone, or cash availability.
+
+Expected Edge is estimated from evidence including:
+
+- Trend and momentum continuation evidence
+- Opportunity score/rank evidence
+- BUY Quality and signal reliability evidence
+- Market Context evidence
+- Portfolio Fit and concentration/risk evidence
+- Execution Feasibility evidence
+
+PM evaluates Expected Edge and decides `BUY_NEW`, `ADD`, `HOLD`, `REDUCE`, or `EXIT`. Other components provide evidence or constraints, not action decisions.
+
+Important boundaries:
+
+- Trend is Expected Edge evidence, not Expected Edge itself.
+- Rank is Expected Edge evidence, not BUY/ADD/EXIT authority.
+- BUY Quality is Expected Edge evidence, not Action Authority.
+- Profit does not directly create EXIT. Profit may trigger Risk Review when a position has unusually large embedded gain, concentration, volatility, or drawdown-from-peak risk, but profit alone is not an independent sell philosophy.
+- Cash is an outcome of Expected Edge, risk, sizing, and safety decisions; cash is not a reason to force BUY or ADD.
+
+Phase27-D5 freezes the PM Expected Edge reasoning contract.
+
+PM converts Expected Edge into Strategy action through a reasoning contract:
+
+```text
+Expected Edge Evidence
+  -> PM Expected Edge Reasoning
+  -> BUY_NEW / ADD / HOLD / REDUCE / EXIT
+```
+
+PM must not decide action from Trend alone, Rank alone, Profit alone, Market Context alone, or BUY Quality alone. Those are reason inputs and explanation evidence for Expected Edge.
+
+Action boundaries without numeric thresholds:
+
+- `BUY_NEW`: Expected Edge is sufficiently high for a no-position entry and entry evidence is coherent.
+- `HOLD`: Expected Edge is maintained enough to continue the campaign. Small deterioration does not automatically become REDUCE or EXIT.
+- `ADD`: Expected Edge has improved, the existing position remains a strongest opportunity, and incremental investment value exists.
+- `REDUCE`: Expected Edge or risk/reward has weakened enough to reduce exposure while preserving optionality. REDUCE remains an independent action because it can express weakening/risk before full EXIT is justified.
+- `EXIT`: Expected Edge has deteriorated enough that the campaign should close, or risk/Safety requires full close.
+
+PM reason codes explain Expected Edge reasoning. They do not create separate Action Authority. Profit-related reason codes must be interpreted as Risk Review / peak-drawdown or retention-risk evidence, not simple profit-taking.
+
+Phase27-D6-C freezes the PM HOLD / REDUCE / EXIT boundary design for this Strategy SoT.
+
+The boundary is:
+
+```text
+Expected Edge sufficient
+  -> HOLD
+
+Expected Edge or risk/reward weakening while campaign optionality remains
+  -> REDUCE candidate
+
+Expected Edge insufficient, continuation broken, severe risk, or Safety full-close requirement
+  -> EXIT
+```
+
+HOLD is an active continuation decision. A small Expected Edge decline does not automatically become REDUCE or EXIT. HOLD must be explainable as Expected Edge remaining adequate for the current campaign.
+
+REDUCE remains a distinct review-preserved action. Its role is to reduce exposure when risk review, Expected Edge weakening, concentration, or partial-rotation evidence makes full exposure less attractive while the campaign is not yet invalid. D6-C does not remove REDUCE and does not define numeric REDUCE thresholds.
+
+EXIT is a full close. EXIT must be based on insufficient Expected Edge, broken continuation, signal invalidation, severe risk, or Safety. Trend alone is not EXIT authority. Profit alone is not EXIT authority. Safety may block or require full close under its own hard-limit responsibility, but Safety does not optimize Expected Edge.
+
+Profit / Risk Review contract:
+
+- Profit alone does not produce action.
+- Large embedded gain, drawdown from peak, volatility, concentration after profit expansion, or changed risk/reward may become Risk Review evidence.
+- Risk Review evidence may affect Expected Edge assessment, but it is not a standalone profit-taking philosophy.
+
+Phase27-D6-D implements the first minimal PM HOLD / EXIT boundary improvement:
+
+```text
+peak-drawdown / profit-retention risk review
+AND Expected Edge remains adequate
+AND no severe full-close risk is present
+-> HOLD
+```
+
+This is not a profit-taking rule and not an EXIT suppression rule. Hard stop, broken trend plus insufficient Expected Edge, explicit risk guard, high downside risk, and high exit-score evidence remain full-close evidence under the existing PM contract. No new threshold, holding-day rule, profit target, stop loss, cooldown, BUY logic, ADD logic, sizing, Runtime Planning, Pending, Submit, Safety, or Execution behavior is introduced.
+
+Phase27-D6-E adopts the D6-D boundary with limitations after 100 business-day before/after attribution review. Adoption status:
+
+```text
+D6-D HOLD / EXIT boundary: ADOPTED_WITH_LIMITATIONS
+Run comparability: CONFIRMED_WITH_LIMITATIONS
+Causal benefit: PARTIAL
+Single-change integrity: PATH_DEPENDENT
+Risk regression: NOT_OBSERVED
+```
+
+Known limitations:
+
+- The full +81,590 JPY 100BD equity delta is not directly attributed to D6-D.
+- Direct same-context D6-D benefit is partial; later ADD/HOLD/REDUCE/BUY/Execution differences are path-dependent portfolio effects.
+- Baseline and After profiles differ (`historical-smoke` vs `historical-extended-smoke`) and source commits differ.
+- After Run close is `REVIEW_REQUIRED` for non-mutating Strategy Shadow review; it is non-blocking but remains an adoption limitation.
+- Future performance changes must not use this adoption as permission to change ADD, BUY_NEW, Sizing, Runtime Planning, Pending, Submit, Safety, or Execution.
+
 ## 3. Strategy Layer Component Map
 
 Formal target architecture:
@@ -1314,3 +1427,97 @@ Permanent constraints:
 - no `target_position_count` decision reconnect
 - no implicit `quality_adjustment=1.0` fallback when required quality evidence is missing
 - same contract for Production, Demo, and Historical
+
+## 29. Phase27-D1 Momentum Follow Position Lifecycle and Canonical Decision Architecture
+
+Phase27-D1 freezes the Production / Demo / Historical common Strategy design for Momentum Follow / Momentum Rotation position lifecycle and canonical position decisions. The canonical detailed specification is:
+
+```text
+docs/02_architecture/momentum_follow_position_lifecycle_and_canonical_decision_architecture.md
+```
+
+This specification is not a phase-local report. It is a Strategy Architecture SoT extension and must be treated as the common contract for future implementation work that touches existing-position lifecycle, BUY_ADD, HOLD / NO_ACTION semantics, incremental investment eligibility, or re-entry observability.
+
+Phase27-D1R further refines this contract before implementation entry by splitting Canonical Position Decision into immutable staged artifacts, defining action conflict resolution, fixing legacy ADD migration acceptance, and adding implementation completeness / degression requirements. The D1R revision is part of the same common Strategy SoT and is not phase-local.
+
+Investment philosophy:
+
+- Long-term performance objective is annual return `+50%`; this is not a single Phase27 acceptance condition.
+- Starting capital assumption is `1,000,000 JPY`.
+- Risk posture is aggressive / high-risk capital, while preserving Safety, Submit Guard, PIT integrity, and architecture integrity.
+- Strategy style is Momentum Follow / Momentum Rotation.
+- Holding period is an outcome of momentum continuation, not a fixed target.
+- Profit alone is not an EXIT reason.
+- Fast loss control remains required.
+- Cash is a residual result of valid decisions; no fixed cash-ratio target is introduced.
+
+Canonical position lifecycle:
+
+```text
+NO_POSITION
+  -> BUY_NEW
+  -> OPEN_POSITION
+  -> HOLD / ADD / REDUCE
+  -> EXIT
+  -> NO_POSITION
+  -> Optional future BUY_NEW as Re-entry
+```
+
+Allowed canonical position decisions are:
+
+```text
+BUY_NEW
+ADD
+HOLD
+REDUCE
+EXIT
+NO_ACTION
+```
+
+Decision semantics:
+
+- `BUY_NEW` opens a new campaign for a symbol with no current position.
+- `ADD` increases an existing open position only after downstream target portfolio, sizing, planning, and safety authority produce a positive executable delta.
+- `HOLD` is an active Strategy / PM decision to keep an existing position open with approximately unchanged quantity.
+- `REDUCE` partially shrinks an open campaign.
+- `EXIT` closes the campaign.
+- `NO_ACTION` is an execution / planning no-order result and is not equivalent to HOLD unless explicitly linked to a HOLD decision.
+
+Canonical BUY_ADD chain:
+
+```text
+PM ADD
+  -> Canonical Position Decision
+  -> Portfolio Construction
+  -> Position Sizing
+  -> positive quantity_delta_candidate
+  -> Runtime Planning BUY_ADD
+  -> Formal Planning
+  -> Pending
+  -> Approval
+  -> Submit
+  -> Execution
+```
+
+PM ADD is directional intent only. It is not a BUY order, not quantity authority, and not Submit permission. Rank 1 alone does not imply ADD. PM ADD alone does not imply ADD. BUY_ADD must remain subject to Portfolio Construction, Position Sizing, Runtime Planning, Safety, Approval, and Submit.
+
+Legacy ADD disposition:
+
+- The `sell_pipeline -> add_consumer -> pm_add_order_plan -> pending` path is not the canonical Strategy ADD decision path.
+- Phase27-D1 recommends final disposition `RETIRE`, with `COMPATIBILITY_ADAPTER_NON_DECISION` allowed as a migration bridge.
+- The legacy path must not produce an ADD decision or quantity while canonical BUY_ADD authority is active.
+- Production, Demo, and Historical must use the same ADD authority and mutual-exclusion contract.
+- Phase27-D2-C fixes the migration bridge as `NON_DECISION_COMPATIBILITY`: it is telemetry only, with `decision_effect = NONE`, `quantity_authority = NONE`, `pending_authority = NONE`, `approval_authority = NONE`, and `submit_authority = NONE`.
+- The compatibility contract is `legacy_pm_add_compatibility.v1`; its dedup key is `run_id, business_date, symbol, position_campaign_id, decision_id`. Duplicate keys, lineage mismatch, or canonical/legacy executable authority overlap must become `REVIEW_REQUIRED` or explicit block.
+
+Incremental Investment Eligibility is introduced as a Strategy decision-support contract distinct from both relative ranking and Adaptive BUY Quality:
+
+- Relative ranking answers whether a symbol is better than other candidates.
+- Incremental Investment Eligibility answers whether new capital is justified now.
+- Adaptive BUY Quality remains allocation eligibility / adjustment authority.
+
+Momentum Continuation is introduced as a PIT-only foundation for HOLD / ADD / REDUCE / EXIT reasoning. Thresholds are not fixed by Phase27-D1 and must be calibrated later by controlled experiments.
+
+Re-entry is not a separate action. It is a new `BUY_NEW` after full EXIT and must pass the same canonical chain without preferential treatment. Prior campaign PnL, Paper Ledger results, future price, historical-test performance, and audit judgments must not become Strategy inputs.
+
+Future performance work must follow the Phase27-D1 sequence: repair BUY_ADD authority first, prove the canonical contract with targeted tests, then add observability/shadow foundations, and only then run controlled performance experiments one change at a time.

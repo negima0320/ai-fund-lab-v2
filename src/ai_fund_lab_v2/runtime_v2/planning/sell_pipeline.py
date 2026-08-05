@@ -29,8 +29,6 @@ from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
 )
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymentPolicy, capital_deployment_policy_hash
-from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import resolve_cash_exposure_authority
-from ai_fund_lab_v2.runtime_v2.position_sizing_authority import resolve_position_sizing_authority
 from ai_fund_lab_v2.runtime_v2.planning.add_consumer import AddConsumerResult, build_add_pending_items
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal, CapitalAllocationSignal, PlanningInput, RuntimeSafetyContext
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
@@ -312,36 +310,6 @@ def run_sell_planning_pending_pipeline(
         if str(position.symbol).strip() and position.quantity > 0
     }
     current_exposure = float(sum(position.market_value for position in current_positions.values()))
-    active_deployment_capital = _active_deployment_capital(asset_state, current_exposure=current_exposure)
-    cash_exposure_authority = resolve_cash_exposure_authority(
-        runtime_root=runtime_root_path,
-        business_date=business_date,
-        runtime_mode=mode,
-        current_total_equity=active_deployment_capital,
-        active_deployment_capital=active_deployment_capital,
-        current_cash=_available_cash(asset_state),
-        current_market_value=current_exposure,
-        consumer="pm_add_cash_exposure",
-    )
-    position_sizing_authorities = {}
-    for decision in exit_decisions:
-        decision_symbol = str(decision.symbol or "").strip()
-        if str(getattr(decision, "source_decision", "") or "").upper() != "ADD" or not decision_symbol:
-            continue
-        matched_position = _matching_position(current_positions, decision_symbol)
-        authority_symbol = str(matched_position.symbol).strip() if matched_position is not None else decision_symbol
-        position_sizing_authorities[decision_symbol] = resolve_position_sizing_authority(
-            symbol=authority_symbol,
-            runtime_root=runtime_root_path,
-            business_date=business_date,
-            runtime_mode=mode,
-            active_deployment_capital=active_deployment_capital,
-            selected_dynamic_exposure_ratio=cash_exposure_authority.selected_dynamic_exposure_ratio,
-            selected_runtime_exposure_limit=cash_exposure_authority.selected_runtime_exposure_limit,
-            selected_dynamic_position_count=None,
-            current_position_market_value=0.0 if matched_position is None else float(matched_position.market_value),
-            consumer="pm_add_position_sizing",
-        )
     if not current_positions:
         return _write_no_signal_pending(
             runtime_root=runtime_root_path,
@@ -371,8 +339,8 @@ def run_sell_planning_pending_pipeline(
         environment=mode,
         capital_deployment_policy=capital_deployment_policy,
         safety_decision=runtime_safety_decision,
-        cash_exposure_authority=cash_exposure_authority,
-        position_sizing_authorities=position_sizing_authorities,
+        cash_exposure_authority=None,
+        position_sizing_authorities={},
     )
     prioritized_decisions = _apply_exit_priority(
         tuple(

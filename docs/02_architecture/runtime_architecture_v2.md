@@ -2736,3 +2736,90 @@ Failure contract:
 - source hash, opportunity row, Accepted Generation, or temporal mismatch is `REVIEW_REQUIRED` or `BLOCK`
 - Submit Guard may verify lineage/status but must not recompute Quality
 - Production, Demo, and Historical use the same propagation contract; no historical-only bypass
+
+## Phase27-D1 Canonical Position Decision and BUY_ADD Runtime Contract
+
+Phase27-D1 defines the common Strategy-side position lifecycle and canonical decision contract that Runtime v2 consumes. The detailed SoT is:
+
+```text
+docs/02_architecture/momentum_follow_position_lifecycle_and_canonical_decision_architecture.md
+```
+
+Phase27-D1R refines the Runtime-facing contract by requiring Runtime Planning to consume `position_sizing_plan.v1` and produce `runtime_position_plan.v1` without mutating upstream intent, target portfolio, or sizing artifacts.
+
+Runtime v2 remains an execution system. It must not decide Momentum Continuation, Opportunity ranking, Portfolio membership, target weight, target notional, Position Sizing, HOLD / ADD / REDUCE / EXIT, Incremental Investment Eligibility, or cash deployment posture.
+
+Runtime Planning consumes Strategy quantity candidates and maps them to executable intent:
+
+```text
+no current position + positive quantity_delta_candidate -> BUY_NEW
+current position + positive quantity_delta_candidate -> BUY_ADD
+current position + zero quantity_delta_candidate -> NO_ACTION
+current position + negative partial quantity_delta_candidate -> SELL_REDUCE
+current position + full negative quantity_delta_candidate -> SELL_EXIT
+```
+
+`HOLD` and `NO_ACTION` must remain semantically separate:
+
+- `HOLD` is a Strategy / PM decision that an existing position should remain open.
+- `NO_ACTION` is Runtime / Planning no-order output after zero or non-executable delta.
+
+Runtime artifacts should preserve lineage back to the canonical position decision when available:
+
+```text
+position_decision_id
+position_campaign_id
+quality_decision_id
+opportunity_id
+pending_item_id
+order_plan_item_id
+```
+
+BUY_ADD may be executable only through the canonical chain:
+
+```text
+PM ADD
+  -> Canonical Position Decision
+  -> Portfolio Construction
+  -> Position Sizing
+  -> positive quantity_delta_candidate
+  -> Runtime Planning BUY_ADD
+  -> Formal Planning
+  -> Pending
+  -> Approval
+  -> Submit
+  -> Execution
+```
+
+The legacy `sell_pipeline -> add_consumer -> pm_add_order_plan -> pending` path is not canonical BUY_ADD decision authority after Phase27-D1. If retained during migration, it may operate only as a compatibility adapter / observability bridge that cannot independently create ADD decisions, quantities, or Pending while canonical BUY_ADD authority is active.
+
+Phase27-D1R adds explicit legacy migration acceptance: legacy pending production count, quantity authority count, and submit authority count must be zero before retirement is accepted; canonical and legacy duplicate keys must be zero; and Production, Demo, and Historical caller inventories must be complete.
+
+Production, Demo, and Historical must use the same Runtime mapping and ADD mutual-exclusion contract. Historical-only bypasses, run-specific ADD behavior, and direct PM ADD-to-Pending generation are prohibited.
+
+Phase27-D2-C freezes the retained legacy adapter state as `NON_DECISION_COMPATIBILITY`. The compatibility artifact is `legacy_pm_add_compatibility.v1`; it may record that the legacy path would have been invoked, but it must publish `decision_effect = NONE`, `quantity_authority = NONE`, `pending_authority = NONE`, `approval_authority = NONE`, `submit_authority = NONE`, and `telemetry_only = true`. The legacy adapter must not resolve ADD-specific cash exposure, position sizing, lot rounding, Pending, Approval, Submit, Fill Projection, or Ledger authority.
+
+The canonical/legacy ADD dedup key is `run_id, business_date, symbol, position_campaign_id, decision_id`. Duplicate legacy compatibility records, lineage mismatches, or any overlap where legacy and canonical records both claim executable ADD authority must produce `REVIEW_REQUIRED` or an explicit block. Fail-open behavior is prohibited.
+
+Phase27-D2-D adds `position_sizing_plan.v1` as a shadow Strategy artifact that carries existing-position quantity delta candidates. Runtime Planning must not consume this artifact in D2-D. `BUY_ADD`, `BUY_NEW`, Pending, Approval, Submit, Execution, Fill Projection, and Ledger behavior remain unchanged until a later Runtime integration phase explicitly connects `position_sizing_plan.v1`.
+
+Phase27-D2-E connects `position_sizing_plan.v1` to Runtime Planning as canonical quantity delta input. Runtime Planning remains a mapper only:
+
+```text
+position_sizing_plan.v1.quantity_delta_candidate
+  -> Runtime Planning planning_intent
+```
+
+When canonical quantity delta exists, Runtime Planning must not use PM action fallback on the same row. PM ADD / REDUCE / EXIT / HOLD may be used only in legacy compatibility scope when canonical `position_sizing_plan.v1` is absent. A row with canonical sizing lineage but missing delta plus PM fallback evidence must resolve to `REVIEW_REQUIRED` or `BLOCK`; it must not silently produce an executable order.
+
+Canonical mapping:
+
+```text
+no current position + positive delta -> BUY_NEW
+current position + positive delta -> BUY_ADD
+current position + zero delta -> NO_ACTION
+current position + negative delta and target_quantity_candidate > 0 -> SELL_REDUCE
+current position + negative delta and target_quantity_candidate = 0 -> SELL_EXIT
+```
+
+Runtime Planning must not recalculate Ranking, Momentum, Quality, Opportunity, Incremental Eligibility, PM decision, Portfolio target weight, Position Sizing formula, cash policy, Safety, Submit, or Execution. It records `canonical_quantity_source`, `canonical_quantity_delta_priority`, `pm_fallback_used`, and `pm_fallback_scope` so duplicate authority can be audited.

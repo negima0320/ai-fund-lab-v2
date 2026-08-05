@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-fund-lab.local/schemas/target_portfolio_decision.v1.schema.json",
+  "title": "Phase27-D2-B Shadow Target Portfolio Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "authority_mode",
+    "decision_effect",
+    "producer_version",
+    "run_id",
+    "business_date",
+    "accepted_generation",
+    "artifact_status",
+    "review_status",
+    "reason_codes",
+    "input_artifact_refs",
+    "summary",
+    "decisions"
+  ],
+  "properties": {
+    "schema_version": { "const": "target_portfolio_decision.v1" },
+    "artifact_type": { "const": "target_portfolio_decision" },
+    "authority_mode": { "const": "SHADOW" },
+    "decision_effect": { "const": "NONE" },
+    "producer_version": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "business_date": { "type": "string", "format": "date" },
+    "accepted_generation": { "type": ["string", "null"] },
+    "artifact_status": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "review_status": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK"] },
+    "reason_codes": { "type": "array", "items": { "type": "string" } },
+    "input_artifact_refs": { "type": "object" },
+    "summary": { "type": "object" },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "schema_version",
+          "artifact_type",
+          "authority_mode",
+          "decision_effect",
+          "run_id",
+          "business_date",
+          "accepted_generation",
+          "symbol",
+          "current_position_state",
+          "source_position_intent_id",
+          "source_position_intent",
+          "source_pm_decision_id",
+          "source_pm_intent",
+          "target_membership_decision",
+          "target_direction",
+          "target_weight_effect",
+          "resolution_status",
+          "resolution_reason_codes",
+          "resolution_summary",
+          "input_artifact_refs",
+          "lineage",
+          "evidence_status",
+          "missing_required_inputs",
+          "review_status"
+        ],
+        "properties": {
+          "schema_version": { "const": "target_portfolio_decision.v1" },
+          "artifact_type": { "const": "target_portfolio_decision_row" },
+          "authority_mode": { "const": "SHADOW" },
+          "decision_effect": { "const": "NONE" },
+          "run_id": { "type": "string", "minLength": 1 },
+          "business_date": { "type": "string", "format": "date" },
+          "accepted_generation": { "type": ["string", "null"] },
+          "symbol": { "type": "string", "minLength": 1 },
+          "position_campaign_id": { "type": ["string", "null"] },
+          "current_position_state": { "type": "string" },
+          "current_quantity": { "type": ["number", "null"] },
+          "current_weight": { "type": ["number", "null"] },
+          "source_position_intent_id": { "type": ["string", "null"] },
+          "source_position_intent": { "type": "string" },
+          "source_pm_decision_id": { "type": ["string", "null"] },
+          "source_pm_intent": { "type": ["string", "null"] },
+          "target_membership_decision": {
+            "type": "string",
+            "enum": ["ADD_CANDIDATE", "RETAIN", "REMOVE", "NO_MEMBERSHIP_CHANGE", "UNRESOLVED"]
+          },
+          "target_direction": {
+            "type": "string",
+            "enum": ["INCREASE", "MAINTAIN", "DECREASE", "REMOVE", "NONE", "UNRESOLVED"]
+          },
+          "target_weight_effect": {
+            "type": "string",
+            "enum": ["POSITIVE_DELTA_REQUIRED", "ZERO_DELTA_EXPECTED", "NEGATIVE_DELTA_REQUIRED", "FULL_REMOVAL_REQUIRED", "NOT_RESOLVED"]
+          },
+          "resolution_status": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK", "UNRESOLVED"] },
+          "resolution_reason_codes": { "type": "array", "items": { "type": "string" } },
+          "resolution_summary": { "type": "string" },
+          "input_artifact_refs": { "type": "object" },
+          "lineage": { "type": "object" },
+          "evidence_status": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK", "UNRESOLVED"] },
+          "missing_required_inputs": { "type": "array", "items": { "type": "string" } },
+          "review_status": { "type": "string", "enum": ["PASS", "REVIEW_REQUIRED", "BLOCK", "UNRESOLVED"] }
+        }
+      }
+    }
+  }
+}

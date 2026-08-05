@@ -45,6 +45,7 @@ PM_FEATURE_CONTRACT_VERSION = "runtime_v2_pm_feature_input_contract_v2"
 PM_REDUCE_INTENSITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_intensity_v1"
 PM_DECISION_TRACE_CONTRACT_VERSION = "runtime_v2_pm_decision_trace_contract_v1"
 PM_CONFIDENCE_SEMANTICS = "selected_action_score_not_calibrated_probability"
+PM_REASON_SEMANTICS_CONTRACT_VERSION = "phase27_d6b_pm_reason_semantics_v1"
 CURRENT_REQUIRED_FIELDS = ("symbol", "quantity", "as_of", "source", "average_price")
 PM_FEATURE_TECHNICAL_REQUIRED_COLUMNS = (
     "price_momentum_return_5d",
@@ -80,6 +81,56 @@ BUY_OPPORTUNITY_SCHEMA_VERSION = "runtime_v2_opportunity_ranking_v1"
 BUY_OPPORTUNITY_LEGACY_SCHEMA_VERSIONS = {"runtime_v2_opportunity_rankings_v1"}
 BUY_OPPORTUNITY_ARTIFACT_ROLE = "BUY_OPPORTUNITY_RANKING"
 PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH = "PM_RUNTIME_ADAPTER_AUTHORITY_MISMATCH"
+PM_REASON_ALIAS_CONTRACT: dict[str, dict[str, str]] = {
+    "trend_continuation": {
+        "canonical_reason_code": "trend_continuation",
+        "compatibility_status": "CANONICAL",
+        "semantic_change": "NONE",
+        "consumer_behavior": "read_as_continuation_evidence",
+    },
+    "positive_expected_edge": {
+        "canonical_reason_code": "expected_edge_adequate",
+        "compatibility_status": "LEGACY_ALIAS",
+        "semantic_change": "CLARIFIED_AS_EXPECTED_EDGE_ADEQUACY",
+        "consumer_behavior": "legacy_code_readable; canonical trace explains Expected Edge adequacy",
+    },
+    "downside_risk_contained": {
+        "canonical_reason_code": "downside_risk_contained",
+        "compatibility_status": "CANONICAL",
+        "semantic_change": "NONE",
+        "consumer_behavior": "read_as_risk_containment_evidence",
+    },
+    "risk_increased_but_trend_not_broken": {
+        "canonical_reason_code": "expected_edge_risk_deterioration",
+        "compatibility_status": "LEGACY_ALIAS",
+        "semantic_change": "CLARIFIED_AS_BROAD_RISK_OR_WEAKENING_EVIDENCE",
+        "consumer_behavior": "legacy_code_readable; canonical trace does not infer unavailable cause",
+    },
+    "peak_drawdown_warning": {
+        "canonical_reason_code": "peak_drawdown_warning",
+        "compatibility_status": "CANONICAL",
+        "semantic_change": "NONE",
+        "consumer_behavior": "read_as_peak_drawdown_risk_review_evidence",
+    },
+    "trend_and_opportunity_broken": {
+        "canonical_reason_code": "trend_and_expected_edge_broken",
+        "compatibility_status": "LEGACY_ALIAS",
+        "semantic_change": "CLARIFIED_OPPORTUNITY_AS_EXPECTED_EDGE",
+        "consumer_behavior": "legacy_code_readable; canonical trace explains Expected Edge deterioration",
+    },
+    "profit_retention_break": {
+        "canonical_reason_code": "peak_drawdown_profit_retention_risk",
+        "compatibility_status": "LEGACY_ALIAS",
+        "semantic_change": "CLARIFIED_AS_RISK_REVIEW_NOT_PROFIT_TAKING",
+        "consumer_behavior": "legacy_code_readable; must not be interpreted as profit-taking action authority",
+    },
+    "hard_stop_current_return": {
+        "canonical_reason_code": "hard_stop_current_return",
+        "compatibility_status": "CANONICAL",
+        "semantic_change": "NONE",
+        "consumer_behavior": "read_as_loss_containment_or_severe_risk_evidence",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -597,6 +648,21 @@ def _decision_payload(
         reason = reason + "; ADD is outside SELL Planning scope"
     trace = dict(decision_trace or {})
     decision_reason_codes = list(trace.get("decision_reason_codes") or _reason_codes(reason))
+    legacy_decision_reason_codes = list(trace.get("legacy_decision_reason_codes") or decision_reason_codes)
+    canonical_decision_reason_codes = list(
+        trace.get("canonical_decision_reason_codes")
+        or _canonical_reason_codes(legacy_decision_reason_codes, triggers=dict(trace.get("trigger_booleans") or {}))
+    )
+    reason_aliases = list(trace.get("reason_aliases") or _reason_aliases(legacy_decision_reason_codes, triggers=dict(trace.get("trigger_booleans") or {})))
+    expected_edge_semantics = dict(
+        trace.get("expected_edge_semantics")
+        or _expected_edge_trace_semantics(
+            decision_type=decision,
+            triggers=dict(trace.get("trigger_booleans") or {}),
+            legacy_reason_codes=legacy_decision_reason_codes,
+            canonical_reason_codes=canonical_decision_reason_codes,
+        )
+    )
     return {
         "decision_id": f"pm-{str(row.get('target_date') or '')}-{symbol}-{decision.lower()}",
         "business_date": str(row.get("target_date") or ""),
@@ -612,6 +678,13 @@ def _decision_payload(
         "reduce_score": _float(row.get("reduce_score")),
         "selected_action_score": confidence,
         "decision_reason_codes": decision_reason_codes,
+        "legacy_decision_reason_codes": legacy_decision_reason_codes,
+        "canonical_decision_reason_codes": canonical_decision_reason_codes,
+        "reason_aliases": reason_aliases,
+        "reason_semantics_contract_version": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+        "expected_edge_semantics": expected_edge_semantics,
+        "expected_edge_status": str(expected_edge_semantics.get("expected_edge_status") or ""),
+        "expected_edge_contract_status": str(expected_edge_semantics.get("expected_edge_contract_status") or ""),
         "dominant_cause": str(trace.get("dominant_cause") or ""),
         "secondary_causes": list(trace.get("secondary_causes") or []),
         "decision_trace_contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
@@ -694,10 +767,20 @@ def _build_decision_trace_records(
         triggers = _decision_trigger_booleans(scored_row=scored_row, scores=score_components, decision_type=decision_type)
         dominant_cause, secondary_causes = _dominant_cause(decision_type=decision_type, triggers=triggers)
         reason = str(row.get("exit_reason") or row.get("action_reason") or decision_type)
+        legacy_reason_codes = _reason_codes(reason)
+        canonical_reason_codes = _canonical_reason_codes(legacy_reason_codes, triggers=triggers)
+        reason_aliases = _reason_aliases(legacy_reason_codes, triggers=triggers)
+        expected_edge_semantics = _expected_edge_trace_semantics(
+            decision_type=decision_type,
+            triggers=triggers,
+            legacy_reason_codes=legacy_reason_codes,
+            canonical_reason_codes=canonical_reason_codes,
+        )
         feature_copy = dict(feature_copies.get(symbol) or {})
         records.append(
             {
                 "contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+                "reason_semantics_contract_version": PM_REASON_SEMANTICS_CONTRACT_VERSION,
                 "symbol": symbol,
                 "business_date": business_date,
                 "feature_business_date": feature_date,
@@ -743,15 +826,25 @@ def _build_decision_trace_records(
                     "decision_type": decision_type,
                     "dominant_cause": dominant_cause,
                     "secondary_causes": secondary_causes,
-                    "decision_reason_codes": _reason_codes(reason),
+                    "decision_reason_codes": legacy_reason_codes,
+                    "legacy_decision_reason_codes": legacy_reason_codes,
+                    "canonical_decision_reason_codes": canonical_reason_codes,
+                    "reason_aliases": reason_aliases,
                     "legacy_reason": reason,
+                    "expected_edge_semantics": expected_edge_semantics,
                     "selected_action_score": _confidence(row, decision_type),
                     "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
                 },
+                "expected_edge_semantics": expected_edge_semantics,
+                "expected_edge_status": str(expected_edge_semantics.get("expected_edge_status") or ""),
+                "expected_edge_contract_status": str(expected_edge_semantics.get("expected_edge_contract_status") or ""),
                 "decision_type": decision_type,
                 "dominant_cause": dominant_cause,
                 "secondary_causes": secondary_causes,
-                "decision_reason_codes": _reason_codes(reason),
+                "decision_reason_codes": legacy_reason_codes,
+                "legacy_decision_reason_codes": legacy_reason_codes,
+                "canonical_decision_reason_codes": canonical_reason_codes,
+                "reason_aliases": reason_aliases,
             }
         )
     return tuple(records)
@@ -943,6 +1036,8 @@ def _decision_trace_artifact_payload(
         "feature_date": feature_date,
         "generated_at": generated_at,
         "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
+        "reason_semantics_contract_version": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+        "reason_semantics_action_effect": "NONE",
         "threshold_change_performed": False,
         "score_formula_change_performed": False,
         "decision_order_change_performed": False,
@@ -961,6 +1056,127 @@ def _decision_trace_artifact_payload(
 def _reason_codes(reason: str) -> list[str]:
     normalized = str(reason or "").replace(";", "|")
     return [part.strip() for part in normalized.split("|") if part.strip()]
+
+
+def _canonical_reason_codes(reason_codes: list[str], *, triggers: dict[str, bool] | None = None) -> list[str]:
+    canonical: list[str] = []
+    for reason in reason_codes:
+        canonical.append(_canonical_reason_code(reason, triggers=triggers))
+    return list(dict.fromkeys(canonical))
+
+
+def _canonical_reason_code(reason_code: str, *, triggers: dict[str, bool] | None = None) -> str:
+    reason = str(reason_code or "").strip()
+    if not reason:
+        return "UNKNOWN"
+    if reason == "risk_increased_but_trend_not_broken":
+        return _canonical_risk_increase_reason(triggers=triggers or {})
+    contract = PM_REASON_ALIAS_CONTRACT.get(reason)
+    if contract:
+        return contract["canonical_reason_code"]
+    return f"UNKNOWN:{reason}"
+
+
+def _canonical_risk_increase_reason(*, triggers: dict[str, bool]) -> str:
+    if triggers.get("high_downside_risk"):
+        return "downside_risk_increased"
+    if triggers.get("peak_drawdown_warning"):
+        return "peak_drawdown_risk_increased"
+    if triggers.get("weak_hold_score_threshold"):
+        return "expected_edge_weakening_risk_increased"
+    if triggers.get("reduce_score_threshold"):
+        return "expected_edge_risk_deterioration"
+    return "expected_edge_risk_deterioration"
+
+
+def _reason_aliases(reason_codes: list[str], *, triggers: dict[str, bool] | None = None) -> list[dict[str, str]]:
+    aliases: list[dict[str, str]] = []
+    for reason in reason_codes:
+        contract = PM_REASON_ALIAS_CONTRACT.get(reason)
+        canonical = _canonical_reason_code(reason, triggers=triggers)
+        compatibility_status = str((contract or {}).get("compatibility_status") or ("DEPRECATED_READABLE" if canonical.startswith("UNKNOWN:") else "CANONICAL"))
+        aliases.append(
+            {
+                "legacy_reason_code": reason,
+                "canonical_reason_code": canonical,
+                "compatibility_status": compatibility_status,
+                "semantic_change": str((contract or {}).get("semantic_change") or "UNKNOWN_REASON_PRESERVED"),
+                "action_effect": "NONE",
+                "effective_from": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+                "consumer_behavior": str((contract or {}).get("consumer_behavior") or "preserve_as_unknown; review_required_for_semantic_interpretation"),
+            }
+        )
+    return aliases
+
+
+def _expected_edge_trace_semantics(
+    *,
+    decision_type: str,
+    triggers: dict[str, bool],
+    legacy_reason_codes: list[str],
+    canonical_reason_codes: list[str],
+) -> dict[str, Any]:
+    action = str(decision_type or "").upper()
+    trigger_names = [name for name, enabled in triggers.items() if enabled]
+    if action == "ADD":
+        expected_edge_status = "IMPROVED"
+        contract_status = "D5_PARTIAL_COMPATIBILITY"
+        assessment = "Legacy ADD branch indicates strong continuation/rank/risk evidence, but incremental investment value is not separately proven."
+        rationale = "Existing action branch classified ADD; trace records partial Expected Edge compatibility under the legacy trigger contract."
+    elif action == "HOLD":
+        expected_edge_status = "ADEQUATE"
+        contract_status = "D5_PARTIAL_COMPATIBILITY" if "expected_edge_adequate" in canonical_reason_codes else "D5_CONFORMANT"
+        assessment = "Expected Edge remains adequate for the current HOLD action under the legacy trigger contract."
+        rationale = "Expected Edge remains adequate; continuation evidence and/or risk containment supports continued campaign exposure."
+    elif action == "REDUCE":
+        expected_edge_status = "DETERIORATING"
+        contract_status = "D5_PARTIAL_COMPATIBILITY"
+        assessment = "Expected Edge or risk/reward has deteriorated enough to reduce exposure while preserving campaign optionality."
+        rationale = "REDUCE preserves campaign optionality while risk or weakening evidence is present."
+    elif action == "EXIT":
+        if "hard_stop_current_return" in canonical_reason_codes:
+            expected_edge_status = "RISK_OVERRIDE"
+        else:
+            expected_edge_status = "INSUFFICIENT"
+        contract_status = "D5_PARTIAL_COMPATIBILITY" if "peak_drawdown_profit_retention_risk" in canonical_reason_codes else "D5_CONFORMANT"
+        assessment = "Expected Edge is insufficient, continuation is broken, or severe risk evidence requires full close."
+        rationale = "EXIT closes the campaign due to Expected Edge deterioration, continuation break, or full-close risk evidence."
+    else:
+        expected_edge_status = "NOT_ASSESSED"
+        contract_status = "INSUFFICIENT_EVIDENCE"
+        assessment = "Expected Edge status was not assessed for this action."
+        rationale = "No D5 Expected Edge action rationale is available."
+    risk_review_status = "REVIEW" if any(
+        code in canonical_reason_codes
+        for code in {
+            "peak_drawdown_profit_retention_risk",
+            "peak_drawdown_warning",
+            "peak_drawdown_risk_increased",
+            "downside_risk_increased",
+            "expected_edge_risk_deterioration",
+            "expected_edge_weakening_risk_increased",
+            "hard_stop_current_return",
+        }
+    ) else "NOT_TRIGGERED"
+    continuation_status = "BROKEN" if "trend_and_expected_edge_broken" in canonical_reason_codes else (
+        "CONTINUING" if triggers.get("trend_continuation") or action in {"ADD", "HOLD"} else "WEAKENING_OR_UNKNOWN"
+    )
+    return {
+        "contract_version": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+        "expected_edge_assessment": assessment,
+        "expected_edge_status": expected_edge_status,
+        "expected_edge_evidence": {
+            "legacy_reason_codes": legacy_reason_codes,
+            "canonical_reason_codes": canonical_reason_codes,
+            "trigger_booleans_true": trigger_names,
+        },
+        "risk_review_status": risk_review_status,
+        "continuation_status": continuation_status,
+        "action_rationale": rationale,
+        "expected_edge_contract_status": contract_status,
+        "reason_codes_are_action_authority": False,
+        "action_effect": "NONE",
+    }
 
 
 def _json_scalar(value: Any) -> Any:
@@ -1039,6 +1255,20 @@ def _artifact_payload(
         "summary_path": str(summary_path),
         "audit_path": str(audit_path),
         "decision_trace_contract_version": PM_DECISION_TRACE_CONTRACT_VERSION,
+        "reason_semantics_contract_version": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+        "reason_semantics_action_effect": "NONE",
+        "reason_alias_contract": {
+            legacy: {
+                "legacy_reason_code": legacy,
+                "canonical_reason_code": contract["canonical_reason_code"],
+                "compatibility_status": contract["compatibility_status"],
+                "semantic_change": contract["semantic_change"],
+                "action_effect": "NONE",
+                "effective_from": PM_REASON_SEMANTICS_CONTRACT_VERSION,
+                "consumer_behavior": contract["consumer_behavior"],
+            }
+            for legacy, contract in PM_REASON_ALIAS_CONTRACT.items()
+        },
         "decision_trace_path": str(decision_trace_path or ""),
         "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
         "decision_count": len(decisions),

@@ -381,6 +381,16 @@ def classify_position_action(row: pd.Series) -> dict[str, str]:
     if drawdown_from_peak <= -0.07:
         risk_reasons.append("peak_drawdown_warning")
 
+    expected_edge_adequate = expected_edge > 0
+    profit_retention_only_exit = exit_reasons == ["profit_retention_break"]
+    high_downside_risk = "high_downside_risk_score" in risk_reasons
+    if profit_retention_only_exit and expected_edge_adequate and not high_downside_risk and exit_score < 0.80:
+        return {
+            "action": "HOLD",
+            "action_reason": "positive_expected_edge|profit_retention_break",
+            "exit_reason": "",
+        }
+
     if exit_reasons or exit_score >= 0.80:
         if not exit_reasons:
             exit_reasons.append("exit_score_high")

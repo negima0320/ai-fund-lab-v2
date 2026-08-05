@@ -348,6 +348,157 @@ def test_phase23_bk_runtime_owned_current_position_zero_delta_maps_to_no_action(
     assert "unresolved_mapping:portfolio_membership_unresolved" not in result.payload["reason_codes"]
 
 
+def test_phase27_d2e_runtime_planning_maps_canonical_quantity_delta_to_runtime_action(tmp_path: Path) -> None:
+    position_sizing_plan_path = _write_position_sizing_plan(
+        tmp_path,
+        {
+            "6758": {"source_pm_intent": "ADD", "current_quantity": 100, "target_quantity_candidate": 150, "quantity_delta_candidate": 50},
+            "7203": {"source_pm_intent": "HOLD", "current_quantity": 100, "target_quantity_candidate": 100, "quantity_delta_candidate": 0},
+            "8306": {"source_pm_intent": "REDUCE", "current_quantity": 100, "target_quantity_candidate": 60, "quantity_delta_candidate": -40},
+            "9432": {"source_pm_intent": "EXIT", "current_quantity": 100, "target_quantity_candidate": 0, "quantity_delta_candidate": -100},
+        },
+    )
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(
+            tmp_path,
+            {
+                "6758": ("RETAIN", True),
+                "7203": ("RETAIN", True),
+                "8306": ("RETAIN", True),
+                "9432": ("RETAIN", True),
+            },
+        ),
+        capital_deployment_artifact_path=None,
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(
+            tmp_path,
+            {"6758": "ADD", "7203": "HOLD", "8306": "REDUCE", "9432": "EXIT"},
+        ),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(
+            tmp_path,
+            "position",
+            rows=(
+                _runtime_owned_current_position_row("6758", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),
+                _runtime_owned_current_position_row("7203", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),
+                _runtime_owned_current_position_row("8306", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),
+                _runtime_owned_current_position_row("9432", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),
+            ),
+        ),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_plan_artifact_path=position_sizing_plan_path,
+    )
+
+    plans = {plan["security_code"]: plan for plan in payload["plans"]}
+    assert payload["producer_result_status"] == "PASS"
+    assert payload["canonical_quantity_source"] == "CANONICAL_POSITION_SIZING_PLAN"
+    assert payload["canonical_quantity_delta_priority"] is True
+    assert plans["6758"]["planning_intent"] == "BUY_ADD"
+    assert plans["6758"]["quantity_authority"] == runtime_planning.CANONICAL_QUANTITY_AUTHORITY
+    assert plans["6758"]["planned_quantity"] == 50
+    assert plans["7203"]["planning_intent"] == "NO_ACTION"
+    assert plans["7203"]["quantity_delta_candidate"] == 0
+    assert plans["8306"]["planning_intent"] == "SELL_REDUCE"
+    assert plans["8306"]["planned_quantity"] == 40
+    assert plans["9432"]["planning_intent"] == "SELL_EXIT"
+    assert plans["9432"]["planned_quantity"] == 100
+    assert all(plan["pm_fallback_used"] is False for plan in payload["plans"])
+    assert validate_runtime_planning_artifact(payload)["status"] == "PASS"
+
+
+def test_phase27_d2e_canonical_delta_disables_pm_fallback(tmp_path: Path) -> None:
+    position_sizing_plan_path = _write_position_sizing_plan(
+        tmp_path,
+        {"6758": {"source_pm_intent": "ADD", "current_quantity": 100, "target_quantity_candidate": 100, "quantity_delta_candidate": 0}},
+    )
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(tmp_path, {"6758": ("RETAIN", True)}),
+        capital_deployment_artifact_path=None,
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {"6758": "ADD"}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(
+            tmp_path,
+            "position",
+            rows=(_runtime_owned_current_position_row("6758", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),),
+        ),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_plan_artifact_path=position_sizing_plan_path,
+    )
+
+    plan = payload["plans"][0]
+    assert payload["producer_result_status"] == "PASS"
+    assert plan["planning_intent"] == "NO_ACTION"
+    assert plan["pm_fallback_used"] is False
+    assert plan["pm_fallback_scope"] == "NOT_USED"
+    assert "pm_add_maps_to_buy_add" not in plan["reason_codes"]
+    assert "canonical_zero_quantity_delta_maps_to_no_action" in plan["reason_codes"]
+
+
+def test_phase27_d2e_legacy_pm_fallback_allowed_when_canonical_missing(tmp_path: Path) -> None:
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(tmp_path, {"6758": ("RETAIN", True)}),
+        capital_deployment_artifact_path=None,
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {"6758": "ADD"}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(
+            tmp_path,
+            "position",
+            rows=(_runtime_owned_current_position_row("6758", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),),
+        ),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+    )
+
+    plan = payload["plans"][0]
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert payload["canonical_quantity_source"] == "LEGACY_POSITION_SIZING"
+    assert plan["planning_intent"] == "BUY_ADD"
+    assert plan["pm_fallback_used"] is True
+    assert plan["pm_fallback_scope"] == "LEGACY_COMPATIBILITY"
+    assert "pm_add_maps_to_buy_add" in plan["reason_codes"]
+
+
+def test_phase27_d2e_canonical_row_without_delta_blocks_duplicate_pm_authority(tmp_path: Path) -> None:
+    position_sizing_plan_path = _write_position_sizing_plan(
+        tmp_path,
+        {"6758": {"source_pm_intent": "ADD", "current_quantity": 100, "target_quantity_candidate": 150, "quantity_delta_candidate": None}},
+    )
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(tmp_path, {"6758": ("RETAIN", True)}),
+        capital_deployment_artifact_path=None,
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {"6758": "ADD"}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(
+            tmp_path,
+            "position",
+            rows=(_runtime_owned_current_position_row("6758", quantity=100, as_of="2026-07-15", source="runtime_owned_execution_ledger"),),
+        ),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_plan_artifact_path=position_sizing_plan_path,
+    )
+
+    plan = payload["plans"][0]
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert plan["planning_intent"] == "UNRESOLVED"
+    assert plan["pm_fallback_used"] is False
+    assert "planning_conflict_review:canonical_delta_missing_pm_fallback_disabled:6758" in plan["reason_codes"]
+    assert "pm_add_maps_to_buy_add" not in plan["reason_codes"]
+
+
 @pytest.mark.parametrize(
     ("as_of", "valuation_as_of", "expected_membership"),
     [
@@ -1083,6 +1234,77 @@ def _write_position_sizing(tmp_path: Path, positions: dict[str, dict[str, object
         "source_hashes": [{"role": "position_sizing", "path": str(source), "sha256": _sha256_file(source)}],
     }
     path = tmp_path / "position_sizing.json"
+    _write_json(path, payload)
+    return path
+
+
+def _write_position_sizing_plan(tmp_path: Path, positions: dict[str, dict[str, object]]) -> Path:
+    source = _write_source(tmp_path, "position_sizing_plan_source")
+
+    def status_for(item: dict[str, object]) -> str:
+        delta = item.get("quantity_delta_candidate")
+        if delta is None:
+            return str(item.get("sizing_status") or "ADD_NOT_SIZED")
+        return str(item.get("sizing_status") or "SIZED")
+
+    payload = {
+        "schema_version": "position_sizing_plan.v1",
+        "artifact_status": "PASS",
+        "business_date": "2026-07-15",
+        "authority_mode": "SHADOW",
+        "decision_effect": "NONE",
+        "positions": [
+            {
+                "position_sizing_plan_id": f"psp-{code}",
+                "symbol": code,
+                "source_position_intent": item.get("source_pm_intent", "HOLD"),
+                "source_pm_intent": item.get("source_pm_intent", "HOLD"),
+                "current_quantity": item.get("current_quantity", 100),
+                "target_quantity_candidate": item.get("target_quantity_candidate"),
+                "quantity_delta_candidate": item.get("quantity_delta_candidate"),
+                "orderable_quantity_delta": item.get("quantity_delta_candidate"),
+                "lot_rounding_result": "UNCHANGED",
+                "sizing_status": status_for(item),
+                "reason_codes": ["fixture"],
+                "lineage": {
+                    "authority": "PHASE27_D2D_POSITION_SIZING_PLAN",
+                    "source_target_portfolio_decision_id": f"tpd-{code}",
+                    "source_position_intent_id": f"pi-{code}",
+                    "decision_effect": "NONE",
+                },
+                "reference_price": item.get("reference_price", 1000.0),
+                "reference_price_authority": item.get(
+                    "reference_price_authority",
+                    {
+                        "authority_type": "REFERENCE_PRICE_AUTHORITY",
+                        "business_date": "2026-07-15",
+                        "canonical_field": "reference_price",
+                        "latest_fallback_used": False,
+                        "price_date": "2026-07-15",
+                        "price_type": "planning_reference_close",
+                        "PIT_status": "PASS",
+                        "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+                        "source_field": "close",
+                        "symbol": code,
+                    },
+                ),
+                "reference_price_resolution": item.get(
+                    "reference_price_resolution",
+                    {
+                        "status": "PASS",
+                        "reason": "reference_price_resolved",
+                        "resolved_price": item.get("reference_price", 1000.0),
+                        "review_reason": "",
+                    },
+                ),
+                "reference_price_type": item.get("reference_price_type", "planning_reference_close"),
+                "reference_price_date": item.get("reference_price_date", "2026-07-15"),
+            }
+            for code, item in sorted(positions.items())
+        ],
+        "source_hashes": [{"role": "position_sizing_plan", "path": str(source), "sha256": _sha256_file(source)}],
+    }
+    path = tmp_path / "position_sizing_plan.json"
     _write_json(path, payload)
     return path
 
