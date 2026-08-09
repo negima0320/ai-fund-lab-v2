@@ -38,12 +38,37 @@ def test_phase17_bj_previous_empty_pending_resolves_daily_historical_neutral_saf
     assert result.payload["safety_authority_type"] == "HISTORICAL_DAILY_NEUTRAL"
     assert result.payload["safety_authority_business_date"] == BUSINESS_DATE
     safety = result.payload["components"]["safety"]
-    assert safety["pending_safety_authority"]["status"] == "REVIEW_REQUIRED"
+    assert safety["pending_safety_authority"]["status"] == "READY"
+    assert safety["pending_safety_authority"]["reason"] == "historical_no_action_pending_safety_authority_ready"
+    assert safety["pending_safety_authority"]["empty_terminal_contract"] == (
+        "EMPTY_NO_ACTION_TERMINAL_NO_SAFETY_BINDING_REQUIRED"
+    )
     assert safety["pending_safety_authority"]["target_session_date"] == PREVIOUS_DATE
     assert safety["historical_safety_temporal_authority"] == "historical_initial_no_external_effect"
     assert safety["broker_write"] is False
     assert safety["external_delivery"] is False
     assert safety["runtime_test_run_id"] == RUN_ID
+
+
+def test_phase28_d63_empty_no_action_terminal_without_safety_binding_is_ready(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, mode="historical", pending=_empty_pending_without_safety_binding())
+
+    result = _evaluate(tmp_path, root, mode="historical", broker_environment="historical_simulated")
+
+    pending_authority = result.payload["components"]["pending"]["historical_pending_safety_authority"]
+    safety_authority = result.payload["components"]["safety"]["pending_safety_authority"]
+    assert result.status == "READY"
+    assert result.payload["pending_status"] == "READY"
+    assert result.payload["safety_status"] == "READY"
+    assert pending_authority["status"] == "READY"
+    assert pending_authority["reason"] == "historical_no_action_pending_safety_authority_ready"
+    assert pending_authority["mismatched_fields"] == []
+    assert pending_authority["pending_lifecycle_state"] == "EMPTY"
+    assert pending_authority["pending_consumed"] is False
+    assert pending_authority["no_action_terminal"] is True
+    assert pending_authority["failed_attempt_pending_retry"]["retry_input_ineligible"] is False
+    assert pending_authority["sell_continuation_allowed"] is False
+    assert safety_authority["status"] == "READY"
 
 
 def test_phase17_bj_same_day_empty_pending_context_still_authorizes_same_day_no_action(tmp_path: Path) -> None:
@@ -137,6 +162,19 @@ def test_phase24_ih_blocked_pending_with_items_remains_fail_closed(tmp_path: Pat
     assert result.status == "REVIEW_REQUIRED"
     assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
     assert result.payload["components"]["safety"]["historical_neutral_authority_generated_or_resolved"] is False
+
+
+def test_phase28_d63_future_empty_terminal_evidence_remains_fail_closed(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path, mode="historical", pending=_empty_pending(target_date="2026-07-09"))
+
+    result = _evaluate(tmp_path, root, mode="historical", broker_environment="historical_simulated")
+
+    pending_authority = result.payload["components"]["pending"]["historical_pending_safety_authority"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert pending_authority["status"] == "REVIEW_REQUIRED"
+    assert pending_authority["reason"] == "historical_pending_safety_authority_mismatch"
+    assert "target_session_date" in pending_authority["mismatched_fields"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
 
 
 def test_phase17_bj_production_and_demo_missing_safety_still_review_required(tmp_path: Path) -> None:
@@ -274,6 +312,17 @@ def _empty_pending(*, target_date: str, mode: str = "historical") -> dict[str, A
         "no_action_reason": "NO_SIGNAL:exit_ai_no_sell_signal",
         "items": [],
         "safety_context": _safety_context(target_date),
+    }
+
+
+def _empty_pending_without_safety_binding() -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "state": "EMPTY",
+        "status": "EMPTY",
+        "active_pending": False,
+        "items": [],
+        "safety_context": {},
     }
 
 

@@ -32,7 +32,18 @@ class BrokerIssueCodeNormalizationResult:
         return asdict(self)
 
 
-ORDINARY_STOCK_PRODUCT_CATEGORIES = frozenset({"011"})
+@dataclass(frozen=True)
+class BrokerSecurityClassification:
+    tradable: bool
+    broker_security_type: str
+    normalization_mode: str
+    reason: str
+    authority: str
+
+
+BROKER_CASH_EQUITY_PRODUCT_CATEGORIES = frozenset({"011"})
+BROKER_UNSUPPORTED_PRODUCT_CATEGORIES = frozenset({"021"})
+ORDINARY_STOCK_PRODUCT_CATEGORIES = BROKER_CASH_EQUITY_PRODUCT_CATEGORIES
 TACHIBANA_TSE_MARKET_CODE = "00"
 TSE_MARKET_NAMES = frozenset(
     {
@@ -62,10 +73,9 @@ def normalize_broker_issue_code(
         raise BrokerIssueCodeNormalizationError("listed_info_code_mismatch")
     if not info.current_listed:
         raise BrokerIssueCodeNormalizationError("listed_info_not_current")
-    if not info.product_category:
-        raise BrokerIssueCodeNormalizationError("product_category_missing")
-    if info.product_category not in ORDINARY_STOCK_PRODUCT_CATEGORIES:
-        raise BrokerIssueCodeNormalizationError("product_category_not_allowed")
+    classification = classify_broker_security(info)
+    if not classification.tradable:
+        raise BrokerIssueCodeNormalizationError(classification.reason)
     if not info.security_type:
         raise BrokerIssueCodeNormalizationError("security_type_missing")
     broker_market_code = _broker_market_code(info.market)
@@ -90,6 +100,50 @@ def normalize_broker_issue_code(
         market=info.market,
         product_category=info.product_category,
         security_type=info.security_type,
+    )
+
+
+def classify_broker_security(listed_info: ListedIssueInfo | dict[str, Any] | None) -> BrokerSecurityClassification:
+    info = _coerce_listed_info(listed_info)
+    authority = "tachibana_e_shiten_cash_equity_product_contract"
+    if info is None:
+        return BrokerSecurityClassification(
+            tradable=False,
+            broker_security_type="UNKNOWN",
+            normalization_mode="FAIL_CLOSED",
+            reason="listed_info_missing",
+            authority=authority,
+        )
+    if not info.product_category:
+        return BrokerSecurityClassification(
+            tradable=False,
+            broker_security_type="UNKNOWN",
+            normalization_mode="FAIL_CLOSED",
+            reason="product_category_missing",
+            authority=authority,
+        )
+    if info.product_category in BROKER_CASH_EQUITY_PRODUCT_CATEGORIES:
+        return BrokerSecurityClassification(
+            tradable=True,
+            broker_security_type="TACHIBANA_CASH_EQUITY_LISTED_STOCK",
+            normalization_mode="NORMALIZE_ISSUE_CODE_ONLY",
+            reason="BROKER_PRODUCT_CATEGORY_SUPPORTED",
+            authority=authority,
+        )
+    if info.product_category in BROKER_UNSUPPORTED_PRODUCT_CATEGORIES:
+        return BrokerSecurityClassification(
+            tradable=False,
+            broker_security_type="UNSUPPORTED_FOREIGN_LISTED_STOCK",
+            normalization_mode="FAIL_CLOSED",
+            reason="BROKER_PRODUCT_CATEGORY_UNSUPPORTED",
+            authority=authority,
+        )
+    return BrokerSecurityClassification(
+        tradable=False,
+        broker_security_type="UNKNOWN",
+        normalization_mode="FAIL_CLOSED",
+        reason="BROKER_PRODUCT_CATEGORY_UNKNOWN",
+        authority=authority,
     )
 
 

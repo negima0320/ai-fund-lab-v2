@@ -2311,15 +2311,43 @@ def _historical_pending_safety_authority(
         business_date=business_date,
         mode="historical",
     )
+    pending_retry = _same_day_failed_attempt_pending_retry_ineligible(
+        pending_payload=pending_payload,
+        business_date=business_date,
+    )
+    no_action_terminal_without_safety_binding_required = _historical_no_action_terminal_without_safety_binding_required(
+        pending_payload=pending_payload,
+        business_date=business_date,
+        no_action_terminal=no_action_terminal,
+        consumed=consumed,
+        buy_item_scoped_sell_continuation=buy_item_scoped_sell_continuation,
+        pending_retry=pending_retry,
+    )
+    if no_action_terminal_without_safety_binding_required:
+        return {
+            "status": "READY",
+            "reason": "historical_no_action_pending_safety_authority_ready",
+            "mismatched_fields": [],
+            "authority": str(safety_context.get("safety_authority") or ""),
+            "pending_lifecycle_state": state,
+            "pending_consumed": consumed,
+            "no_action_terminal": no_action_terminal,
+            "target_session_date": target_session_date,
+            "safety_business_date_expected": expected_safety_business_date,
+            "consumed_prior_session_carry_forward": consumed_prior_session,
+            "buy_item_scoped_sell_continuation_ready": buy_item_scoped_sell_continuation,
+            "review_scope": str(payload.get("review_scope") or ""),
+            "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
+            "safety_context": safety_context,
+            "failed_attempt_pending_retry": pending_retry,
+            "empty_terminal_contract": "EMPTY_NO_ACTION_TERMINAL_NO_SAFETY_BINDING_REQUIRED",
+        }
     if (
         state not in {"APPROVED", "CONSUMED"}
         and not consumed
         and not no_action_terminal
         and not buy_item_scoped_sell_continuation
-        and not _same_day_failed_attempt_pending_retry_ineligible(
-            pending_payload=pending_payload,
-            business_date=business_date,
-        )["retry_input_ineligible"]
+        and not pending_retry["retry_input_ineligible"]
     ):
         mismatched.append("pending_lifecycle_state")
     expected = {
@@ -2389,11 +2417,34 @@ def _historical_pending_safety_authority(
         "review_scope": str(payload.get("review_scope") or ""),
         "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
         "safety_context": safety_context,
-        "failed_attempt_pending_retry": _same_day_failed_attempt_pending_retry_ineligible(
-            pending_payload=pending_payload,
-            business_date=business_date,
-        ),
+        "failed_attempt_pending_retry": pending_retry,
     }
+
+
+def _historical_no_action_terminal_without_safety_binding_required(
+    *,
+    pending_payload: dict[str, Any],
+    business_date: str,
+    no_action_terminal: bool,
+    consumed: bool,
+    buy_item_scoped_sell_continuation: bool,
+    pending_retry: dict[str, Any],
+) -> bool:
+    payload = dict(pending_payload.get("payload") or {})
+    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
+    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
+    if not no_action_terminal or active_pending or consumed:
+        return False
+    if buy_item_scoped_sell_continuation or bool(payload.get("sell_continuation_allowed")):
+        return False
+    if pending_retry["retry_input_ineligible"]:
+        return False
+    if pending_retry["incomplete_blocked_failed_attempt"] or pending_retry["review_required_empty_unscoped_failed_attempt"]:
+        return False
+    return _pending_allows_daily_neutral_safety(
+        pending_payload=pending_payload,
+        business_date=business_date,
+    )
 
 
 def _pending_buy_item_scoped_sell_continuation_ready(

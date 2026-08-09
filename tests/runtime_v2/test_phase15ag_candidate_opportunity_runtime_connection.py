@@ -61,6 +61,20 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
     assert opportunity["schema_version"] == OPPORTUNITY_ARTIFACT_SCHEMA_VERSION
     assert candidate["rows"][0]["symbol"] == "7203"
     assert opportunity["rankings"][0]["symbol"] == "7203"
+    assert candidate["rows"][0]["product_category"] == "011"
+    assert candidate["rows"][0]["security_type"] == "011"
+    assert candidate["rows"][0]["market_name"] == "プライム"
+    assert candidate["rows"][0]["listed_info"] == {
+        "code": "7203",
+        "current_listed": True,
+        "market": "プライム",
+        "product_category": "011",
+        "security_type": "011",
+    }
+    assert opportunity["rankings"][0]["product_category"] == "011"
+    assert opportunity["rankings"][0]["security_type"] == "011"
+    assert opportunity["rankings"][0]["market_name"] == "プライム"
+    assert opportunity["rankings"][0]["listed_info"] == candidate["rows"][0]["listed_info"]
     assert signals[0].source_ai == "opportunity_ai"
     assert signals[0].symbol == "7203"
 
@@ -373,6 +387,9 @@ def _feature_row(code: str, momentum: float, price: float) -> dict:
         "missing_flags_insufficient_history": False,
         "missing_flags_price": False,
         "missing_flags_volume": False,
+        "market_name": "プライム",
+        "product_category": "011",
+        "is_current_listed": True,
         "price": price,
     }
 

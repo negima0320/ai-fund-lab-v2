@@ -127,28 +127,68 @@ def test_phase17_bv9_demo_sell_still_requires_broker_readonly(tmp_path: Path) ->
     assert evidence["sell_quantity_guard_status"] == "BROKER_AVAILABLE_MISSING"
 
 
+def test_phase28_d48_historical_sell_unsupported_broker_category_fails_closed(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_sell_fixture(
+        tmp_path,
+        owned_quantity=700,
+        sell_quantity=100,
+        listed_info={
+            "code": "93990",
+            "market": "スタンダード",
+            "product_category": "021",
+            "security_type": "021",
+            "current_listed": True,
+        },
+        symbol="93990",
+    )
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+
+    evidence = result.item_results[0].guard_evidence
+    assert result.status in {"BLOCKED", "REVIEW_REQUIRED"}
+    assert result.submitted_count == 0
+    assert evidence["current_quantity"] == 700
+    assert evidence["quantity"] == 100
+    assert evidence["broker_available_quantity"] is None
+    assert evidence["broker_available_quantity_source"] == "historical_simulated_broker_authority"
+    assert evidence["broker_available_quantity_reason"] == "BROKER_PRODUCT_CATEGORY_UNSUPPORTED"
+    assert evidence["sell_quantity_guard_status"] == "BROKER_AVAILABLE_MISSING"
+
+
 def _runtime_sell_fixture(
     tmp_path: Path,
     *,
     owned_quantity: float,
     sell_quantity: float,
     environment: str = "historical",
+    listed_info: dict | None = None,
+    symbol: str = SYMBOL,
 ) -> tuple[Path, Path, HistoricalSubmitAdapter]:
     runtime_root = tmp_path / ".runtime"
     runtime_root.mkdir()
-    _write_market_data(tmp_path)
+    _write_market_data(tmp_path, symbol=symbol)
     policy_path = runtime_root / "runtime_state" / "policy" / "capital_deployment.json"
     _write_policy(policy_path)
     _write_safety(runtime_root, decision="ALLOW")
-    _write_current(runtime_root, owned_quantity=owned_quantity)
+    _write_current(runtime_root, owned_quantity=owned_quantity, symbol=symbol)
     pending = _pending(environment, side="SELL", policy_path=policy_path)
     item = replace(
         pending.items[0],
-        symbol=SYMBOL,
+        symbol=symbol,
         quantity=float(sell_quantity),
         estimated_amount=float(sell_quantity) * 3000.0,
         capital_allocation_amount=float(sell_quantity) * 3000.0,
-        listed_info={"code": SYMBOL, "market": "東証", "product_category": "011", "security_type": "011", "current_listed": True},
+        listed_info=listed_info
+        or {"code": symbol, "market": "東証", "product_category": "011", "security_type": "011", "current_listed": True},
     )
     approval = replace(
         pending.approval,
@@ -158,7 +198,7 @@ def _runtime_sell_fixture(
                 "target_session": BUSINESS_DATE,
                 "quantity": float(sell_quantity),
                 "side": "SELL",
-                "issue_code": SYMBOL,
+                "issue_code": symbol,
                 "limit_price": None,
                 "time_in_force": "DAY",
                 "price_condition": "MARKET",
@@ -179,13 +219,13 @@ def _runtime_sell_fixture(
     return runtime_root, policy_path, adapter
 
 
-def _write_current(runtime_root: Path, *, owned_quantity: float) -> None:
+def _write_current(runtime_root: Path, *, owned_quantity: float, symbol: str = SYMBOL) -> None:
     payload = {
         "cash": 1_000_000.0,
         "buying_power": 1_000_000.0,
         "positions": [
             {
-                "symbol": SYMBOL,
+                "symbol": symbol,
                 "quantity": float(owned_quantity),
                 "average_price": 2500.0,
                 "market_value": float(owned_quantity) * 3000.0,
@@ -220,12 +260,12 @@ def _append_order(runtime_root: Path, *, symbol: str, side: str, quantity: float
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def _write_market_data(root: Path) -> None:
+def _write_market_data(root: Path, symbol: str = SYMBOL) -> None:
     import pandas as pd
 
-    ohlcv = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL, "Open": 3000.0}])
-    raw = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL, "AdjFactor": 1.0}])
-    listed = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": SYMBOL}])
+    ohlcv = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol, "Open": 3000.0}])
+    raw = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol, "AdjFactor": 1.0}])
+    listed = pd.DataFrame([{"Date": BUSINESS_DATE, "Code": symbol}])
     ohlcv.to_parquet(root / "ohlcv.parquet", index=False)
     raw.to_parquet(root / "raw_ohlcv.parquet", index=False)
     listed.to_parquet(root / "listed.parquet", index=False)

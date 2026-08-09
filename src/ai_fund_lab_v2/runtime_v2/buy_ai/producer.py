@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 import numpy as np
@@ -765,6 +765,20 @@ def _produce_candidate_artifact(
         scores,
         model_version=str(model_payload.get("model_version") or "phase4bf_formal_candidate_model"),
     )
+    feature_rows_by_code = {
+        str(row.get("code") or ""): row
+        for row in latest.to_dict("records")
+        if str(row.get("code") or "")
+    }
+    rows = [
+        {
+            **row,
+            **_candidate_listed_info_metadata(
+                feature_rows_by_code.get(str(row.get("code") or ""), {})
+            ),
+        }
+        for row in rows
+    ]
     rows = sorted(rows, key=lambda row: (-float(row["candidate_score"]), str(row["code"])))
     for index, row in enumerate(rows, start=1):
         row["candidate_rank"] = index
@@ -981,11 +995,13 @@ def _produce_opportunity_artifact(
         result_summary=result_summary,
     )
     model_version = str(model_authority.get("model_version") or result_summary.get("model_version") or "")
+    candidate_listed_info_by_code = _candidate_listed_info_by_code(candidate_artifact_path)
     rows = []
     for row in output.sort_values(["buy_rank", "code"]).to_dict("records"):
         expected_edge_score = _required_float(row.get("expected_edge_score"), field_name="expected_edge_score")
         buy_rank = _required_rank(row.get("buy_rank"), field_name="buy_rank")
         downside_risk_score = _required_float(row.get("downside_risk_score"), field_name="downside_risk_score")
+        code = str(row.get("code") or "")
         rows.append(
             {
                 "schema_name": OPPORTUNITY_ARTIFACT_SCHEMA_NAME,
@@ -995,8 +1011,8 @@ def _produce_opportunity_artifact(
                 "runtime_id": runtime_id,
                 "model_version": model_version,
                 "feature_date": feature_date,
-                "code": str(row.get("code") or ""),
-                "symbol": str(row.get("code") or ""),
+                "code": code,
+                "symbol": code,
                 "expected_edge_score": expected_edge_score,
                 "opportunity_score": expected_edge_score,
                 "buy_rank": buy_rank,
@@ -1012,6 +1028,7 @@ def _produce_opportunity_artifact(
                 "candidate_score": float(row.get("candidate_score") or 0.0),
                 "candidate_rank": int(row.get("candidate_rank") or 0),
                 "downside_risk_score": downside_risk_score,
+                **candidate_listed_info_by_code.get(code, {}),
             }
         )
     payload = {
@@ -1337,6 +1354,84 @@ def _nested_value(payload: dict[str, Any], *keys: str) -> Any:
     return current
 
 
+def _candidate_listed_info_by_code(candidate_artifact_path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        payload = _read_json(candidate_artifact_path)
+    except FileNotFoundError:
+        return {}
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("code") or row.get("symbol") or ""): _candidate_listed_info_metadata(row)
+        for row in rows
+        if isinstance(row, Mapping) and _candidate_listed_info_metadata(row)
+    }
+
+
+def _candidate_listed_info_metadata(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, Mapping):
+        return {}
+    nested = row.get("listed_info")
+    if isinstance(nested, Mapping):
+        nested_info = _listed_info_payload(row, nested)
+        if nested_info is not None:
+            return _listed_info_metadata_fields(nested_info)
+    info = _listed_info_payload(row, row)
+    if info is None:
+        return {}
+    return _listed_info_metadata_fields(info)
+
+
+def _listed_info_metadata_fields(info: Mapping[str, Any]) -> dict[str, Any]:
+    market = str(info.get("market") or "").strip()
+    product_category = str(info.get("product_category") or "").strip()
+    security_type = str(info.get("security_type") or product_category).strip()
+    current_listed = bool(info.get("current_listed", True))
+    listed_info = {
+        "code": str(info.get("code") or "").strip(),
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
+    }
+    return {
+        "market": market,
+        "market_name": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
+        "is_current_listed": current_listed,
+        "listed_info": listed_info,
+    }
+
+
+def _listed_info_payload(parent: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
+    product_category = str(row.get("product_category") or row.get("ProdCat") or "").strip()
+    security_type = str(row.get("security_type") or row.get("SecType") or row.get("Type") or product_category).strip()
+    market = str(row.get("market") or row.get("MktNm") or row.get("market_name") or "").strip()
+    if not product_category and not security_type and not market:
+        return None
+    code = str(
+        row.get("code")
+        or row.get("Code")
+        or row.get("security_code")
+        or row.get("symbol")
+        or parent.get("code")
+        or parent.get("symbol")
+        or ""
+    ).strip()
+    current_raw = row.get("current_listed", row.get("is_current_listed", True))
+    current_listed = str(current_raw).lower() not in {"false", "0", "no", "nan", "none", ""}
+    return {
+        "code": code,
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
+    }
+
+
 def _candidate_payload(
     *,
     business_date: str,
@@ -1374,6 +1469,7 @@ def _candidate_payload(
             "candidate_reason": str(row.get("candidate_reason") or ""),
             "reason": str(row.get("candidate_reason") or ""),
             "confidence": _confidence_from_rank(int(row.get("candidate_rank") or 999999)),
+            **_candidate_listed_info_metadata(row),
         }
         for row in rows
     ]

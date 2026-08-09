@@ -374,6 +374,37 @@ def build_position_management_payload(
         {"role": "model", "path": accepted_generation_reference.model_reference, "required": True, "status": generation_validation["model_hash_status"]},
         {"role": "scaler", "path": accepted_generation_reference.scaler_reference, "required": True, "status": generation_validation["scaler_hash_status"]},
     ]
+    pm_decision_source_path = str(next((row.get("_source_artifact_path") for row in existing_decision_rows if row.get("_source_artifact_path")), ""))
+    pm_decision_source_hash = str(next((row.get("_source_artifact_hash") for row in existing_decision_rows if row.get("_source_artifact_hash")), ""))
+    pm_decision_business_date = str(next((row.get("_source_business_date") for row in existing_decision_rows if row.get("_source_business_date")), ""))
+    if pm_decision_source_path:
+        pm_business_date_status = "PASS" if pm_decision_business_date == business_date else "DATE_MISMATCH"
+        if pm_business_date_status != "PASS":
+            producer_status = "BLOCK"
+            reason_codes.append("position_management_decisions_date_mismatch")
+            source_status = "AUTHORITY_CONFLICT"
+        source_artifacts.append(
+            {
+                "role": "position_management_decisions",
+                "path": pm_decision_source_path,
+                "required": True,
+                "status": pm_business_date_status,
+                "business_date": pm_decision_business_date,
+                "decision_count": len(existing_decision_rows),
+                "pm_decision_ids": [
+                    str(row.get("pm_decision_id") or row.get("decision_id") or "")
+                    for row in existing_decision_rows
+                    if row.get("pm_decision_id") or row.get("decision_id")
+                ],
+                "decision_types": sorted(
+                    {
+                        str(row.get("decision_type") or row.get("decision") or row.get("action") or "").upper()
+                        for row in existing_decision_rows
+                        if row.get("decision_type") or row.get("decision") or row.get("action")
+                    }
+                ),
+            }
+        )
     source_hashes = [
         {"role": "position_lifecycle", "path": position_lifecycle_summary.source_ref, "sha256": _strip_sha256(position_lifecycle_summary.source_hash)},
         {"role": "technical_features", "path": technical_feature_summary.source_ref, "sha256": _strip_sha256(technical_feature_summary.source_hash)},
@@ -382,6 +413,14 @@ def build_position_management_payload(
         {"role": "model", "path": accepted_generation_reference.model_reference, "sha256": _strip_sha256(accepted_generation_reference.model_hash)},
         {"role": "scaler", "path": accepted_generation_reference.scaler_reference, "sha256": _strip_sha256(accepted_generation_reference.scaler_hash)},
     ]
+    if pm_decision_source_path:
+        source_hashes.append(
+            {
+                "role": "position_management_decisions",
+                "path": pm_decision_source_path,
+                "sha256": _strip_sha256(pm_decision_source_hash),
+            }
+        )
     required_hash_roles = {item["role"] for item in source_artifacts if item["required"]}
     if not all(item["sha256"] for item in source_hashes if item["role"] in required_hash_roles):
         if producer_status != "BLOCK":
@@ -1223,6 +1262,37 @@ def _int_value(value: Any, default: int) -> int:
     return int(value)
 
 
+def _normalized_pm_action(decision: Mapping[str, Any]) -> str:
+    for field in ("action", "decision", "decision_type"):
+        value = _normalized_text(decision.get(field))
+        if value:
+            return value
+    return "UNRESOLVED"
+
+
+def _normalized_pm_decision_ref(decision: Mapping[str, Any]) -> str:
+    return str(decision.get("decision_id") or decision.get("pm_decision_id") or "")
+
+
+def _pm_action_field_conflicts(decision: Mapping[str, Any]) -> list[str]:
+    values = {
+        field: value
+        for field in ("action", "decision", "decision_type")
+        if (value := _normalized_text(decision.get(field)))
+    }
+    supported = {field: value for field, value in values.items() if value in PM_ACTIONS}
+    if len(set(supported.values())) <= 1:
+        return []
+    return [
+        "pm_action_field_conflict:"
+        + ",".join(f"{field}={value}" for field, value in supported.items())
+    ]
+
+
+def _normalized_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
 def _positions_from_existing_decisions(
     decisions: Iterable[Mapping[str, Any]],
     *,
@@ -1231,16 +1301,19 @@ def _positions_from_existing_decisions(
     positions: list[dict[str, Any]] = []
     reasons: list[str] = []
     for index, decision in enumerate(decisions, start=1):
-        action = str(decision.get("action") or decision.get("decision") or "").upper()
+        action = _normalized_pm_action(decision)
+        action_conflicts = _pm_action_field_conflicts(decision)
         security_code = str(decision.get("security_code") or decision.get("symbol") or decision.get("code") or "").strip()
-        position_id = str(decision.get("position_id") or decision.get("decision_id") or f"phase22-d-shadow-{business_date}-{security_code or index}")
+        decision_ref = _normalized_pm_decision_ref(decision)
+        position_id = str(decision.get("position_id") or decision_ref or f"phase22-d-shadow-{business_date}-{security_code or index}")
         intensity = str(decision.get("intensity") or decision.get("reduce_intensity") or ("NONE" if action in {"HOLD", "EXIT"} else "UNRESOLVED")).upper()
         if action not in PM_ACTIONS:
             reasons.append(f"invalid_action:{security_code or index}")
-            action = action or "HOLD"
+            action = "UNRESOLVED"
         if intensity not in PM_INTENSITIES:
             reasons.append(f"invalid_intensity:{security_code or index}")
             intensity = "UNRESOLVED"
+        reason_codes = [*_reason_codes(decision), *action_conflicts]
         position = {
             "position_id": position_id,
             "security_code": security_code,
@@ -1248,14 +1321,14 @@ def _positions_from_existing_decisions(
             "intensity": intensity,
             "confidence": _confidence(decision),
             "uncertainty": str(decision.get("uncertainty") or "UPSTREAM_REVIEW_REQUIRED"),
-            "reason_codes": _reason_codes(decision),
+            "reason_codes": reason_codes,
             "lifecycle_reference": str(decision.get("lifecycle_reference") or decision.get("decision_trace_path") or ""),
             "opportunity_reference": str(decision.get("opportunity_reference") or decision.get("opportunity_path") or ""),
             "market_context_reference": str(decision.get("market_context_reference") or ""),
             "corporate_event_reference": str(decision.get("corporate_event_reference") or ""),
             "portfolio_policy_reference": str(decision.get("portfolio_policy_reference") or ""),
             "feature_vector_hash": str(decision.get("feature_vector_hash") or ""),
-            "source_pm_decision_ref": str(decision.get("decision_id") or ""),
+            "source_pm_decision_ref": decision_ref,
         }
         positions.append(position)
     return positions, reasons
@@ -1285,7 +1358,8 @@ def _positions_from_runtime_current(
             reasons.append(f"runtime_current_non_positive_quantity:{symbol}")
             continue
         decision = decisions_by_symbol.get(symbol, {})
-        action = str(decision.get("action") or decision.get("decision") or "UNRESOLVED").upper()
+        action = _normalized_pm_action(decision)
+        action_conflicts = _pm_action_field_conflicts(decision)
         intensity = str(decision.get("intensity") or decision.get("reduce_intensity") or ("NONE" if action in {"HOLD", "EXIT"} else "UNRESOLVED")).upper()
         if action not in PM_ACTIONS:
             reasons.append(f"invalid_action:{symbol}")
@@ -1301,7 +1375,7 @@ def _positions_from_runtime_current(
             or row.get("acquired_at")
             or position_id
         )
-        reason_codes = _reason_codes(decision) if decision else ["runtime_current_position_requires_strategy_pm_evaluation"]
+        reason_codes = [*_reason_codes(decision), *action_conflicts] if decision else ["runtime_current_position_requires_strategy_pm_evaluation"]
         positions.append(
             {
                 "position_id": position_id,
@@ -1318,7 +1392,7 @@ def _positions_from_runtime_current(
                 "corporate_event_reference": str(decision.get("corporate_event_reference") or ""),
                 "portfolio_policy_reference": str(decision.get("portfolio_policy_reference") or ""),
                 "feature_vector_hash": str(decision.get("feature_vector_hash") or row.get("technical_feature_hash") or ""),
-                "source_pm_decision_ref": str(decision.get("decision_id") or ""),
+                "source_pm_decision_ref": _normalized_pm_decision_ref(decision),
                 "adapter_source": "runtime_current_position_adapter",
                 "adapter_contract_version": "runtime_current_holdings_to_strategy_pm.v1",
                 "adapter_source_contract": {

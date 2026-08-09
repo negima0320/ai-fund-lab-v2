@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 
 from ai_fund_lab_v2.strategy.shadow_runtime import (
+    ARTIFACT_FILENAMES,
     _ai_output_summary,
+    _existing_pm_decisions,
     _optional_opportunity_artifact_path,
+    _supply_add_expected_edge_baseline,
     _resolve_strategy_source_authority,
     _runtime_current_position_rows,
     generate_strategy_shadow_for_day,
@@ -54,7 +57,7 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
         materialization_role="IMMUTABLE_MORNING_PLANNING_SNAPSHOT",
     )
 
-    assert summary["artifact_count"] == 9
+    assert summary["artifact_count"] == 11
     assert summary["runtime_mutation_performed"] is False
     assert summary["broker_connection_performed"] is False
     assert summary["broker_write_performed"] is False
@@ -68,6 +71,11 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
     assert (strategy_dir / "input_manifest.json").is_file()
     assert (strategy_dir / "strategy_decision_trace.json").is_file()
     assert (strategy_dir / "portfolio_policy.json").is_file()
+    assert (strategy_dir / "portfolio_construction_draft.json").is_file()
+    assert (strategy_dir / "position_sizing_preflight.json").is_file()
+    assert (strategy_dir / "portfolio_construction.json").is_file()
+    assert (strategy_dir / "position_sizing.json").is_file()
+    assert (strategy_dir / "add_baseline_supply_evidence.json").is_file()
     assert not (strategy_dir / "dynamic_position_count.json").exists()
     assert not (strategy_dir / "dynamic_cash_exposure.json").exists()
     assert not (strategy_dir / "capital_deployment.json").exists()
@@ -75,6 +83,199 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
     validation = validate_run_strategy_shadow(run_dir=run_dir, business_date="2022-09-15")
     assert validation["structural_validity"] == "PASS"
     assert validation["policy_acceptance"] == "NOT_REQUESTED"
+
+
+def test_phase28_d55_c_strategy_artifact_sequence_materializes_draft_preflight_and_final() -> None:
+    assert ARTIFACT_FILENAMES["portfolio_construction_draft"] == "portfolio_construction_draft.json"
+    assert ARTIFACT_FILENAMES["position_sizing_preflight"] == "position_sizing_preflight.json"
+    assert ARTIFACT_FILENAMES["portfolio_construction"] == "portfolio_construction.json"
+    assert ARTIFACT_FILENAMES["position_sizing"] == "position_sizing.json"
+
+
+def test_phase28_d55_c_same_campaign_baseline_supply_uses_latest_prior_strategy_evidence(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    prior_pc = run_dir / "daily" / "2026-07-14" / "strategy" / "portfolio_construction.json"
+    _write_json(
+        prior_pc,
+        {
+            "schema_version": "portfolio_construction.v1",
+            "business_date": "2026-07-14",
+            "portfolio_members": [
+                {
+                    "security_code": "11110",
+                    "current_position": True,
+                    "position_campaign_id": "campaign-11110",
+                    "runtime_opportunity_score": 0.70,
+                }
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "daily" / "2026-07-15" / "strategy" / "portfolio_construction.json",
+        {
+            "schema_version": "portfolio_construction.v1",
+            "business_date": "2026-07-15",
+            "portfolio_members": [
+                {
+                    "security_code": "11110",
+                    "current_position": True,
+                    "position_campaign_id": "campaign-11110",
+                    "runtime_opportunity_score": 0.99,
+                }
+            ],
+        },
+    )
+    opportunity = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110", "expected_edge_score": 0.82},),
+    }
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110", "position_campaign_id": "campaign-11110"},),
+    }
+
+    result = _supply_add_expected_edge_baseline(
+        run_dir=run_dir,
+        business_date="2026-07-15",
+        opportunity=opportunity,
+        current=current,
+    )
+
+    row = result["opportunity"]["rows"][0]
+    evidence = result["evidence"]
+    assert row["expected_edge_baseline_score"] == 0.70
+    assert row["expected_edge_baseline_business_date"] == "2026-07-14"
+    assert row["expected_edge_baseline_campaign_id"] == "campaign-11110"
+    assert row["add_baseline_source_artifact_path"] == str(prior_pc)
+    assert evidence["supplied_count"] == 1
+    assert evidence["future_baseline_used"] is False
+    assert evidence["symbol_only_baseline_used"] is False
+    assert evidence["missing_baseline_behavior"] == "UNKNOWN_FAIL_CLOSED"
+
+
+def test_phase28_d55_c_same_campaign_baseline_supply_fails_closed_without_valid_prior_campaign(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "daily" / "2026-07-14" / "strategy" / "portfolio_construction.json",
+        {
+            "schema_version": "portfolio_construction.v1",
+            "business_date": "2026-07-14",
+            "portfolio_members": [
+                {
+                    "security_code": "11110",
+                    "current_position": True,
+                    "position_campaign_id": "campaign-other",
+                    "runtime_opportunity_score": 0.70,
+                }
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "daily" / "2026-07-16" / "strategy" / "portfolio_construction.json",
+        {
+            "schema_version": "portfolio_construction.v1",
+            "business_date": "2026-07-16",
+            "portfolio_members": [
+                {
+                    "security_code": "11110",
+                    "current_position": True,
+                    "position_campaign_id": "campaign-11110",
+                    "runtime_opportunity_score": 0.99,
+                }
+            ],
+        },
+    )
+    opportunity = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110", "expected_edge_score": 0.82},),
+    }
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110", "position_campaign_id": "campaign-11110"},),
+    }
+
+    result = _supply_add_expected_edge_baseline(
+        run_dir=run_dir,
+        business_date="2026-07-15",
+        opportunity=opportunity,
+        current=current,
+    )
+
+    row = result["opportunity"]["rows"][0]
+    assert "expected_edge_baseline_score" not in row
+    assert result["evidence"]["supplied_count"] == 0
+    assert result["evidence"]["missing_count"] == 1
+    assert result["evidence"]["future_baseline_used"] is False
+    assert result["evidence"]["missing_baseline_behavior"] == "UNKNOWN_FAIL_CLOSED"
+
+
+def test_phase28_d58_baseline_supply_uses_pm_current_position_campaign_authority(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    prior_pc = run_dir / "daily" / "2026-07-14" / "strategy" / "portfolio_construction.json"
+    _write_json(
+        prior_pc,
+        {
+            "schema_version": "portfolio_construction.v1",
+            "business_date": "2026-07-14",
+            "portfolio_members": [
+                {
+                    "security_code": "11110",
+                    "current_position": True,
+                    "position_management_reference": "runtime-current-11110",
+                    "runtime_opportunity_score": 0.70,
+                }
+            ],
+        },
+    )
+    opportunity = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110", "expected_edge_score": 0.82},),
+    }
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": ({"security_code": "11110"},),
+    }
+    position_management = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "rows": (
+            {
+                "security_code": "11110",
+                "action": "ADD",
+                "position_id": "runtime-current-11110",
+                "current_position_reference": "runtime-current-11110",
+                "lifecycle_reference": "runtime-current-11110",
+            },
+        ),
+    }
+
+    result = _supply_add_expected_edge_baseline(
+        run_dir=run_dir,
+        business_date="2026-07-15",
+        opportunity=opportunity,
+        current=current,
+        position_management=position_management,
+    )
+
+    row = result["opportunity"]["rows"][0]
+    evidence = result["evidence"]
+    assert row["position_campaign_id"] == "runtime-current-11110"
+    assert row["expected_edge_baseline_score"] == 0.70
+    assert row["expected_edge_baseline_business_date"] == "2026-07-14"
+    assert row["expected_edge_baseline_campaign_id"] == "runtime-current-11110"
+    assert row["add_baseline_source_artifact_path"] == str(prior_pc)
+    assert evidence["campaign_identity_authority"] == "strategy_position_management_current_position_lifecycle_reference"
+    assert evidence["current_campaign_count"] == 1
+    assert evidence["supplied_count"] == 1
+    assert evidence["missing_count"] == 0
+    assert evidence["future_baseline_used"] is False
+    assert evidence["symbol_only_baseline_used"] is False
 
 
 def test_phase26_hr2_post_runtime_shadow_uses_non_authoritative_subdir(tmp_path: Path) -> None:
@@ -138,6 +339,34 @@ def test_phase23_e_strategy_shadow_adapts_runtime_current_rows_for_pm_input() ->
             "source": "runtime_current_position_adapter_input",
         }
     ]
+
+
+def test_phase28_d19_existing_pm_decisions_lookup_preserves_same_day_source_hash(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    pm_path = runtime_root / "runtime_state" / "position_management" / "2026-07-15" / "position_management_decisions.json"
+    _write_json(
+        pm_path,
+        {
+            "schema_version": "runtime_v2_position_management_decision_v1",
+            "business_date": "2026-07-15",
+            "decisions": [
+                {
+                    "symbol": "94320",
+                    "decision_type": "ADD",
+                    "pm_decision_id": "pm-2026-07-15-94320-add",
+                }
+            ],
+        },
+    )
+
+    rows = _existing_pm_decisions(runtime_root=runtime_root, business_date="2026-07-15")
+
+    assert len(rows) == 1
+    assert rows[0]["decision_type"] == "ADD"
+    assert rows[0]["pm_decision_id"] == "pm-2026-07-15-94320-add"
+    assert rows[0]["_source_artifact_path"] == str(pm_path)
+    assert rows[0]["_source_artifact_hash"] == _sha256_file(pm_path)
+    assert rows[0]["_source_business_date"] == "2026-07-15"
 
 
 def test_phase23_f_strategy_shadow_adapts_candidate_rows_for_downstream_membership(tmp_path: Path) -> None:

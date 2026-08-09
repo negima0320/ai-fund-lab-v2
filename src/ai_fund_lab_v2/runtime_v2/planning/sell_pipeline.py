@@ -19,7 +19,12 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import (
 )
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan, PendingPlanState
-from ai_fund_lab_v2.runtime_v2.pending.composition import compose_with_existing_buy_pending, read_active_buy_pending
+from ai_fund_lab_v2.runtime_v2.pending.composition import (
+    active_pending_snapshot,
+    compose_with_existing_buy_pending,
+    read_active_buy_pending,
+    reconcile_with_existing_sell_pending,
+)
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import materialize_empty_pending_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
@@ -32,6 +37,10 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import CapitalDeploymen
 from ai_fund_lab_v2.runtime_v2.planning.add_consumer import AddConsumerResult, build_add_pending_items
 from ai_fund_lab_v2.runtime_v2.planning.models import AIPlanningSignal, CapitalAllocationSignal, PlanningInput, RuntimeSafetyContext
 from ai_fund_lab_v2.runtime_v2.planning.planner import build_order_plan
+from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import (
+    _canonical_listed_info_from_strategy_source_authority,
+    _strategy_source_authority_from_input_manifest,
+)
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
     RuntimeSafetyDecision,
     load_runtime_safety_decision,
@@ -40,6 +49,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
 )
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
 from ai_fund_lab_v2.runtime_v2.symbol_identity import same_symbol_identity
+from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
 
 
 @dataclass(frozen=True)
@@ -58,11 +68,6 @@ class SellExitDecision:
 REDUCE_QUANTITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_quantity_v1"
 DEFAULT_TRADABLE_UNIT = 100.0
 REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
-REDUCE_INTENSITY_RATIOS: dict[str, float] = {
-    "LIGHT": 0.25,
-    "MEDIUM": 0.33,
-    "STRONG": 0.50,
-}
 
 
 @dataclass(frozen=True)
@@ -382,24 +387,6 @@ def run_sell_planning_pending_pipeline(
             add_result=add_result,
         )
 
-    pending_conflict = _pending_sell_conflict(
-        runtime_root=runtime_root_path,
-        symbols=tuple(decision.symbol for decision in selected_decisions),
-    )
-    if pending_conflict:
-        return _write_no_signal_pending(
-            runtime_root=runtime_root_path,
-            business_date=business_date,
-            target_session_date=target_session_date,
-            environment=mode,
-            environment_capability_context=environment_capability_context,
-            reason="REVIEW_REQUIRED_REDUCE_PENDING_SELL_CONFLICT:" + ",".join(pending_conflict),
-            current_position_count=len(current_positions),
-            current_exposure=current_exposure,
-            status="REVIEW_REQUIRED",
-            safety_decision=runtime_safety_decision,
-        )
-
     quantity_decisions = tuple(
         _quantity_contract_decision(
             decision=decision,
@@ -480,14 +467,25 @@ def run_sell_planning_pending_pipeline(
     if add_result.requested_count:
         order_plan_payload["pm_add_consumer"] = add_result.to_evidence()
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
+    sell_candidate_listed_info_by_symbol = _canonical_sell_candidate_listed_info_by_symbol(
+        symbols=tuple(decision.symbol for decision in executable_quantity_decisions),
+        business_date=business_date,
+        environment_capability_context=environment_capability_context,
+    )
     sell_pending_items = tuple(
-        _pending_item(item)
+        _pending_item_with_sell_candidate_listed_info(
+            item=_pending_item(item),
+            listed_info_by_symbol=sell_candidate_listed_info_by_symbol,
+        )
         for item in planning_result.order_plan.items
         if not item.blocked and not item.review_required and item.quantity > 0
     )
     pending_items = tuple(
         _pending_item_with_accepted_generation_binding(
-            item=_pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context),
+            item=_pending_item_with_sell_decision_lineage(
+                item=_pending_item_with_submit_policy_context(item=item, submit_policy_context=canonical_submit_policy_context),
+                decision_by_symbol={decision.symbol: decision for decision in executable_quantity_decisions},
+            ),
             accepted_generation_binding=accepted_generation_binding,
         )
         for item in sell_pending_items + add_result.accepted_items
@@ -519,6 +517,49 @@ def run_sell_planning_pending_pipeline(
         safety_decision=runtime_safety_decision,
         environment_capability_context=environment_capability_context,
     )
+    reconciliation = reconcile_with_existing_sell_pending(
+        runtime_root=runtime_root_path,
+        pending=pending,
+        business_date=business_date,
+        target_session_date=target_session_date,
+        environment=mode,
+        artifact_dir=artifact_dir,
+    )
+    if reconciliation.review_required:
+        original = reconciliation.existing_pending
+        pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
+        _write_pending_continuity_evidence(
+            artifact_dir=artifact_dir,
+            reason=reconciliation.reason,
+            status="REVIEW_REQUIRED",
+            evidence=reconciliation.evidence,
+        )
+        return SellPlanningPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=reconciliation.reason,
+            current_position_count=len(current_positions),
+            selected_count=0,
+            blocked_count=0,
+            pending_path=str(pending_path),
+            pending_plan_id=original.pending_plan_id if original else pending.pending_plan_id,
+            approval_artifact_path=str(approval_path),
+            order_plan_artifact_path=str(order_plan_path),
+            target_session_date=target_session_date,
+            selected_symbols=tuple(item.symbol for item in (original.items if original else ()) if item.side.upper() == "SELL"),
+            current_exposure=current_exposure,
+            pending_composition_model="EXISTING_PLAN_SELL_RECONCILIATION",
+            pending_composition_status="REVIEW_REQUIRED",
+            preserved_existing_buy_pending=bool(
+                reconciliation.evidence.get("opposite_side_preserved")
+            ),
+            composite_pending=False,
+            add_consumer_status=add_result.status,
+            add_consumer_reason=add_result.reason,
+            add_accepted_count=add_result.accepted_count,
+            add_rejected_count=add_result.rejected_count,
+            **_result_safety_fields(runtime_safety_decision),
+        )
+    pending = reconciliation.pending
     approved_item_ids = tuple(item.pending_item_id for item in pending.items)
     if approved_item_ids:
         request = build_approval_request(
@@ -637,6 +678,67 @@ def _write_no_signal_pending(
         order_plan_payload["pm_add_consumer"] = add_result.to_evidence()
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
     approval_path.write_text(_json_dumps({"status": "NO_SIGNAL", "reason": reason}), encoding="utf-8")
+    if status in {"REVIEW_REQUIRED", "BLOCKED"}:
+        active_pending, active_reason, snapshot = active_pending_snapshot(
+            runtime_root=runtime_root,
+            environment=environment,
+            business_date=business_date,
+            target_session_date=target_session_date,
+        )
+        if active_pending is not None:
+            preservation_evidence = {
+                "status": status,
+                "reason": reason,
+                "active_pending_snapshot_status": active_reason,
+                "existing_pending_plan_id": active_pending.pending_plan_id,
+                "existing_pending_plan_hash": snapshot.get("pending_plan_hash") or "",
+                "existing_pending_state": active_pending.state.value,
+                "existing_pending_item_ids": [item.pending_item_id for item in active_pending.items],
+                "preserved_item_ids": [item.pending_item_id for item in active_pending.items],
+                "business_date": business_date,
+                "target_session_date": target_session_date,
+                "reason_codes": [
+                    "PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED",
+                    "PENDING_PLAN_NO_SIGNAL_DID_NOT_OVERWRITE_ACTIVE",
+                ],
+                "review_required": status == "REVIEW_REQUIRED",
+                "no_signal_overwrite_prevented": True,
+                "opposite_side_preserved": bool(snapshot.get("buy_item_count") or snapshot.get("sell_item_count")),
+            }
+            (artifact_dir / "no_signal_preservation_evidence.json").write_text(
+                _json_dumps(preservation_evidence),
+                encoding="utf-8",
+            )
+            _write_pending_continuity_evidence(
+                artifact_dir=artifact_dir,
+                reason=reason,
+                status=status,
+                evidence=preservation_evidence,
+            )
+            pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+            return SellPlanningPipelineResult(
+                status=status,
+                reason=reason,
+                current_position_count=current_position_count,
+                selected_count=0,
+                blocked_count=0,
+                pending_path=str(pending_path),
+                pending_plan_id=active_pending.pending_plan_id,
+                approval_artifact_path=str(approval_path),
+                order_plan_artifact_path=str(order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=tuple(item.symbol for item in active_pending.items),
+                current_exposure=current_exposure,
+                pending_composition_model="PRESERVE_ACTIVE_PENDING_ON_NO_SIGNAL",
+                pending_composition_status=status,
+                preserved_existing_buy_pending=bool(snapshot.get("buy_item_count")),
+                composite_pending=False,
+                add_consumer_status=add_result.status if add_result is not None else "",
+                add_consumer_reason=add_result.reason if add_result is not None else active_reason,
+                add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+                add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                **_result_safety_fields(safety_decision),
+            )
     if existing_buy_pending is None and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
         existing_buy_pending, existing_buy_pending_reason = read_active_buy_pending(
             runtime_root=runtime_root,
@@ -1022,6 +1124,126 @@ def _pending_item(item) -> PendingOrderItem:
     )
 
 
+def _pending_item_with_sell_candidate_listed_info(
+    *,
+    item: PendingOrderItem,
+    listed_info_by_symbol: Mapping[str, Mapping[str, Any]],
+) -> PendingOrderItem:
+    listed_info = _listed_info_for_symbol(listed_info_by_symbol, item.symbol)
+    if listed_info is None:
+        return item
+    return replace(item, listed_info=dict(listed_info))
+
+
+def _canonical_sell_candidate_listed_info_by_symbol(
+    *,
+    symbols: tuple[str, ...],
+    business_date: str,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    strategy_authority_context = _strategy_source_authority_context_for_sell_candidate(
+        business_date=business_date,
+        environment_capability_context=environment_capability_context,
+    )
+    if not strategy_authority_context:
+        return {}
+    listed_info_by_symbol: dict[str, dict[str, Any]] = {}
+    for symbol in symbols:
+        normalized_symbol = str(symbol or "").strip()
+        if not normalized_symbol:
+            continue
+        listed_info, _reason = _canonical_listed_info_from_strategy_source_authority(
+            symbol=normalized_symbol,
+            business_date=business_date,
+            strategy_authority_context=strategy_authority_context,
+        )
+        if listed_info is not None:
+            listed_info_by_symbol[normalized_symbol] = listed_info
+    return listed_info_by_symbol
+
+
+def _strategy_source_authority_context_for_sell_candidate(
+    *,
+    business_date: str,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    context = dict(environment_capability_context or {})
+    direct_authority = context.get("strategy_source_authority")
+    if isinstance(direct_authority, Mapping) and direct_authority:
+        return {"strategy_source_authority": dict(direct_authority)}
+    input_manifest_path = str(context.get("strategy_input_manifest_path") or "")
+    if input_manifest_path:
+        authority = _strategy_source_authority_from_manifest_path(Path(input_manifest_path))
+        if authority:
+            return {"strategy_source_authority": authority}
+    evidence_root = str(context.get("runtime_test_evidence_root") or "")
+    if evidence_root:
+        authority = _strategy_source_authority_from_manifest_path(
+            Path(evidence_root) / "daily" / business_date / "strategy" / "input_manifest.json"
+        )
+        if authority:
+            return {"strategy_source_authority": authority}
+    return {}
+
+
+def _strategy_source_authority_from_manifest_path(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = _read_json_object(path)
+    direct = payload.get("strategy_source_authority")
+    if isinstance(direct, Mapping) and direct:
+        return dict(direct)
+    return _strategy_source_authority_from_input_manifest(payload)
+
+
+def _listed_info_for_symbol(
+    listed_info_by_symbol: Mapping[str, Mapping[str, Any]],
+    symbol: str,
+) -> Mapping[str, Any] | None:
+    for key, listed_info in listed_info_by_symbol.items():
+        if same_symbol_identity(str(key), str(symbol)):
+            return listed_info
+    return None
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON object expected: {path}")
+    return payload
+
+
+def _pending_item_with_sell_decision_lineage(
+    *,
+    item: PendingOrderItem,
+    decision_by_symbol: Mapping[str, SellExitDecision],
+) -> PendingOrderItem:
+    decision = _decision_for_symbol(decision_by_symbol, item.symbol)
+    if decision is None:
+        return item
+    contract = dict(item.quantity_contract or decision.quantity_contract or {})
+    if decision.source_decision_id and "source_decision_id" not in contract:
+        contract["source_decision_id"] = decision.source_decision_id
+    return replace(
+        item,
+        quantity_contract=contract,
+        source_decision_type=str(decision.source_decision or ""),
+        source_pm_decision_id=str(decision.source_decision_id or ""),
+        source_pm_business_date=str(contract.get("business_date") or ""),
+        source_position_symbol=str(decision.symbol or item.symbol),
+    )
+
+
+def _decision_for_symbol(
+    decision_by_symbol: Mapping[str, SellExitDecision],
+    symbol: str,
+) -> SellExitDecision | None:
+    for key, decision in decision_by_symbol.items():
+        if same_symbol_identity(str(key), str(symbol)):
+            return decision
+    return None
+
+
 def _submit_policy_context(
     payload: Mapping[str, Any] | None,
     *,
@@ -1190,8 +1412,9 @@ def calculate_reduce_quantity_contract(
     restricted_quantity: float = 0.0,
     tradable_unit: float | None = DEFAULT_TRADABLE_UNIT,
 ) -> dict[str, Any]:
-    intensity = str(reduce_intensity or "").upper()
-    target_reduce_ratio = REDUCE_INTENSITY_RATIOS.get(intensity)
+    intensity_resolution = resolve_reduce_intensity_authority(reduce_intensity)
+    intensity = str(intensity_resolution["reduce_intensity"])
+    target_reduce_ratio = intensity_resolution["reduce_fraction"]
     position_quantity_value = float(position_quantity)
     tradable_unit_value = float(tradable_unit) if tradable_unit is not None else 0.0
     sellable_quantity_value = float(sellable_quantity if sellable_quantity is not None else position_quantity_value)
@@ -1201,6 +1424,7 @@ def calculate_reduce_quantity_contract(
         "source_decision": "REDUCE",
         "reduce_intensity": intensity,
         "target_reduce_ratio": target_reduce_ratio,
+        "reduce_fraction_authority": intensity_resolution["authority"],
         "position_quantity_before": position_quantity_value,
         "sellable_quantity": effective_sellable_quantity,
         "sellable_quantity_source": sellable_quantity_source,
@@ -1576,6 +1800,27 @@ def _result_safety_fields(decision: RuntimeSafetyDecision | None) -> dict[str, A
         "safety_block_sell": bool(fields.get("safety_block_sell")),
         "safety_halt_runtime": bool(fields.get("safety_halt_runtime")),
     }
+
+
+def _write_pending_continuity_evidence(
+    *,
+    artifact_dir: Path,
+    reason: str,
+    status: str,
+    evidence: Mapping[str, Any],
+) -> None:
+    payload = {
+        "status": status,
+        "reason": reason,
+        "pending_reconciliation": dict(evidence),
+        "original_pending_preserved": bool(evidence.get("no_signal_overwrite_prevented") or evidence.get("review_required")),
+        "reason_codes": list(evidence.get("reason_codes") or ()),
+    }
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "pending_continuity_evidence.json").write_text(
+        _json_dumps(payload),
+        encoding="utf-8",
+    )
 
 
 def _runtime_safety_context(decision: RuntimeSafetyDecision) -> RuntimeSafetyContext:

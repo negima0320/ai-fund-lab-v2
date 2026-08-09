@@ -9,7 +9,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ai_fund_lab_v2.broker.issue_code_normalizer import classify_broker_security
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import opportunity_no_buy_reason_blocks_buy
+from ai_fund_lab_v2.strategy.add_investment_evidence import resolve_add_investment_evidence
 from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     INCOMPATIBLE_DATE,
     INCOMPATIBLE_HASH,
@@ -22,6 +24,7 @@ from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     validate_market_context_compatibility,
 )
 from ai_fund_lab_v2.strategy import position_management
+from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
 from ai_fund_lab_v2.strategy.target_weight_precision import (
     TARGET_WEIGHT_ABSOLUTE_TOLERANCE,
@@ -40,6 +43,9 @@ SOURCE_AUTHORITY_STATUSES = {"VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTH
 PRODUCER_RESULT_STATUSES = {"PASS", "REVIEW_REQUIRED", "BLOCK"}
 ARTIFACT_LIFECYCLE_STATUSES = {"DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED"}
 RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED", "BLOCKED"}
+BROKER_ELIGIBILITY_GATING_OWNER = "PORTFOLIO_CONSTRUCTION"
+BROKER_ELIGIBILITY_AUTHORITY_TYPE = "BROKER_PRODUCT_CLASSIFICATION_EXECUTION_ELIGIBILITY"
+LOT_AWARE_REALLOCATION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION"
 BLOCKING_UPSTREAM_STATUSES = {INCOMPATIBLE_SCHEMA, INCOMPATIBLE_DATE, INCOMPATIBLE_HASH, SOURCE_BLOCKED, SOURCE_MISSING}
 REVIEW_UPSTREAM_STATUSES = {SOURCE_REVIEW_REQUIRED, SOURCE_NOT_ELIGIBLE}
 FORBIDDEN_CONCRETE_FIELDS = {
@@ -245,7 +251,9 @@ def build_portfolio_construction_payload(
         pm_rows=_pm_rows(position_management_artifact_path),
     )
     members = _attach_buy_quality(members, buy_quality_summary)
+    members, broker_eligibility_reasons = _apply_broker_eligibility_to_new_exposure(members)
     reason_codes.extend(reconciliation_reasons)
+    reason_codes.extend(broker_eligibility_reasons)
     weight_contract = _resolve_target_weight_contract(
         business_date=business_date,
         members=members,
@@ -365,9 +373,18 @@ def build_portfolio_construction_payload(
         "member_count": len(members),
         "target_weight_method": weight_contract["method"],
         "portfolio_policy_allocation_authority": weight_contract["portfolio_policy_allocation_authority"],
+        "broker_eligibility_gating_owner": BROKER_ELIGIBILITY_GATING_OWNER,
+        "broker_eligibility_authority_type": BROKER_ELIGIBILITY_AUTHORITY_TYPE,
         "target_gross_exposure": weight_contract["target_gross_exposure"],
         "resolved_target_member_count": weight_contract["resolved_target_member_count"],
         "single_name_weight_cap": weight_contract["single_name_weight_cap"],
+        "incremental_budget_reconciliation": weight_contract["incremental_budget_reconciliation"],
+        "baseline_existing_required_weight": weight_contract["incremental_budget_reconciliation"][
+            "baseline_existing_required_weight"
+        ],
+        "available_incremental_budget": weight_contract["incremental_budget_reconciliation"][
+            "available_incremental_budget"
+        ],
         "total_target_weight": weight_contract["total_target_weight"],
         "target_weight_sum_tolerance": weight_contract["target_weight_sum_tolerance"],
         "membership_intent_taxonomy": sorted(MEMBERSHIP_INTENTS),
@@ -724,6 +741,7 @@ def _reconcile_members(
                 candidate=candidate,
                 opportunity=opportunity,
                 pm=pm,
+                current=current_by_code.get(code),
                 reason_codes=[f"pm_action:{action}", *([f"candidate_duplicate_reconciled:{code}"] if candidate or opportunity else [])],
             )
         )
@@ -760,6 +778,7 @@ def _reconcile_members(
                 candidate=candidate,
                 opportunity=row,
                 pm=None,
+                current=None,
                 reason_codes=["opportunity_rank_preserved", eligibility_reason],
             )
         )
@@ -784,6 +803,7 @@ def _reconcile_members(
                 candidate=row,
                 opportunity=None,
                 pm=None,
+                current=None,
                 reason_codes=["candidate_without_opportunity_rank" if eligible else "candidate_ineligible"],
             )
         )
@@ -802,8 +822,10 @@ def _member(
     candidate: Mapping[str, Any] | None,
     opportunity: Mapping[str, Any] | None,
     pm: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
     reason_codes: list[str],
 ) -> dict[str, Any]:
+    broker_listed_info = _broker_listed_info_payload(security_code, opportunity, candidate, current, pm)
     return {
         "member_id": f"phase22-e-{business_date}-{security_code}",
         "security_code": security_code,
@@ -829,19 +851,149 @@ def _member(
         "candidate_reference": str((candidate or {}).get("candidate_id") or (candidate or {}).get("source_ref") or ""),
         "opportunity_reference": str((opportunity or {}).get("opportunity_id") or (opportunity or {}).get("source_ref") or ""),
         "position_management_reference": str((pm or {}).get("position_id") or (pm or {}).get("source_pm_decision_ref") or ""),
+        "source_pm_decision_ref": str((pm or {}).get("source_pm_decision_ref") or (pm or {}).get("position_id") or ""),
+        "source_pm_reason_codes": list((pm or {}).get("reason_codes") or (pm or {}).get("decision_reason_codes") or []),
+        "current_position_reference": str((current or {}).get("position_id") or (current or {}).get("current_position_reference") or ""),
+        "current_position_campaign_id": str((current or {}).get("position_campaign_id") or (current or {}).get("campaign_id") or ""),
+        "pm_position_campaign_id": str((pm or {}).get("position_campaign_id") or (pm or {}).get("campaign_id") or (pm or {}).get("lifecycle_reference") or ""),
+        "opportunity_position_campaign_id": str((opportunity or {}).get("position_campaign_id") or (opportunity or {}).get("campaign_id") or ""),
         "portfolio_policy_reference": "",
         "input_candidate_order": _candidate_order(candidate or {}),
         "input_opportunity_rank": _canonical_opportunity_rank(opportunity or {}),
         **_opportunity_rank_authority_payload(opportunity or {}),
         "input_score": _score(opportunity or candidate or {}),
         **_score_authority_payload(business_date=business_date, candidate=candidate, opportunity=opportunity),
+        **_add_allocation_evidence_payload(opportunity=opportunity, pm=pm, current=current),
         "pm_action": str((pm or {}).get("action") or ""),
         "pm_intensity": str((pm or {}).get("intensity") or ""),
+        "reduce_intensity": str((pm or {}).get("reduce_intensity") or (pm or {}).get("intensity") or ""),
         "membership_reason": ";".join(sorted(set(reason_codes))),
         "weight_reason": "target_weight_authority_not_resolved",
         "confidence": _confidence(opportunity or candidate or pm or {}),
         "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
         "reason_codes": sorted(set(reason_codes)),
+        **({"broker_listed_info": broker_listed_info} if broker_listed_info is not None else {}),
+        **_current_position_weight_payload(current_row=current if current_position else None),
+    }
+
+
+def _apply_broker_eligibility_to_new_exposure(members: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    updated: list[dict[str, Any]] = []
+    payload_reasons: list[str] = []
+    for member in members:
+        classified = _broker_eligibility_payload(member)
+        if classified is None:
+            updated.append(member)
+            continue
+        reasons = list(member.get("reason_codes") or [])
+        patched = {
+            **member,
+            "broker_eligibility": classified,
+            "broker_eligibility_status": classified["status"],
+            "broker_eligibility_reason": classified["reason"],
+            "broker_eligibility_gating_owner": BROKER_ELIGIBILITY_GATING_OWNER,
+        }
+        reason = str(classified["reason"])
+        if classified["status"] == "PASS":
+            reasons.append(reason)
+            patched["reason_codes"] = sorted(set(reasons))
+            patched["membership_reason"] = ";".join(sorted(set(reasons)))
+            updated.append(patched)
+            continue
+        if not patched.get("current_position") and patched.get("membership_intent") == "ADD_CANDIDATE":
+            reasons.extend([reason, "broker_eligibility_buy_new_excluded"])
+            payload_reasons.append(f"broker_eligibility_buy_new_excluded:{patched.get('security_code')}:{reason}")
+            patched.update(
+                {
+                    "membership_intent": "EXCLUDE",
+                    "target_membership": False,
+                    "weight_intent": "AVOID",
+                    "membership_reason": ";".join(sorted(set(reasons))),
+                    "reason_codes": sorted(set(reasons)),
+                }
+            )
+        elif patched.get("current_position") and str(patched.get("pm_action") or "").upper() == "ADD":
+            reasons.extend([reason, "broker_eligibility_buy_add_excluded_existing_position_visible"])
+            payload_reasons.append(f"broker_eligibility_buy_add_excluded:{patched.get('security_code')}:{reason}")
+            patched.update(
+                {
+                    "weight_intent": "MAINTAIN",
+                    "membership_reason": ";".join(sorted(set(reasons))),
+                    "reason_codes": sorted(set(reasons)),
+                }
+            )
+        elif patched.get("current_position"):
+            reasons.append("broker_eligibility_existing_position_visibility_preserved")
+            patched["reason_codes"] = sorted(set(reasons))
+            patched["membership_reason"] = ";".join(sorted(set(reasons)))
+        updated.append(patched)
+    return updated, sorted(set(payload_reasons))
+
+
+def _broker_eligibility_payload(member: Mapping[str, Any]) -> dict[str, Any] | None:
+    listed_info = member.get("broker_listed_info")
+    if not isinstance(listed_info, Mapping):
+        return None
+    classification = classify_broker_security(dict(listed_info))
+    code = str(listed_info.get("code") or "")
+    member_code = str(member.get("security_code") or member.get("symbol") or "")
+    current_listed = bool(listed_info.get("current_listed", True))
+    reason = classification.reason
+    tradable = classification.tradable
+    if member_code and code and code != member_code:
+        tradable = False
+        reason = "listed_info_code_mismatch"
+    elif not current_listed:
+        tradable = False
+        reason = "listed_info_not_current"
+    status = "PASS" if tradable else "FAIL_CLOSED"
+    return {
+        "authority_type": BROKER_ELIGIBILITY_AUTHORITY_TYPE,
+        "gating_owner": BROKER_ELIGIBILITY_GATING_OWNER,
+        "status": status,
+        "tradable": tradable,
+        "broker_security_type": classification.broker_security_type,
+        "normalization_mode": classification.normalization_mode,
+        "reason": reason,
+        "authority": classification.authority,
+        "code": code,
+        "product_category": str(listed_info.get("product_category") or ""),
+        "security_type": str(listed_info.get("security_type") or ""),
+        "market": str(listed_info.get("market") or ""),
+        "current_listed": current_listed,
+    }
+
+
+def _broker_listed_info_payload(security_code: str, *rows: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    for row in rows:
+        if not row:
+            continue
+        nested = row.get("listed_info")
+        if isinstance(nested, Mapping):
+            info = _normalize_broker_listed_info(security_code, nested)
+            if info is not None:
+                return info
+        info = _normalize_broker_listed_info(security_code, row)
+        if info is not None:
+            return info
+    return None
+
+
+def _normalize_broker_listed_info(security_code: str, row: Mapping[str, Any]) -> dict[str, Any] | None:
+    product_category = str(row.get("product_category") or row.get("ProdCat") or "").strip()
+    security_type = str(row.get("security_type") or row.get("SecType") or row.get("Type") or product_category).strip()
+    market = str(row.get("market") or row.get("MktNm") or row.get("market_name") or "").strip()
+    code = str(row.get("code") or row.get("Code") or row.get("security_code") or row.get("symbol") or security_code).strip()
+    if not product_category and not security_type and not market:
+        return None
+    current_raw = row.get("current_listed", row.get("is_current_listed", True))
+    current_listed = str(current_raw).lower() not in {"false", "0", "no", "nan", "none", ""}
+    return {
+        "code": code,
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
     }
 
 
@@ -880,7 +1032,6 @@ def _resolve_target_weight_contract(
     base_weight = 0.0
     if status == "PASS" and effective_count > 0:
         base_weight = min(float(target_gross_exposure) / float(effective_count), float(single_name_cap))
-    total_weight = 0.0
     weighted: list[dict[str, Any]] = []
     for row in members:
         selected = row["security_code"] in selected_codes and status == "PASS" and effective_count > 0
@@ -889,6 +1040,10 @@ def _resolve_target_weight_contract(
         review_reason = ""
         reason = "target_weight_resolved"
         weight = round(base_weight, TARGET_WEIGHT_DECIMALS) if selected else 0.0
+        target_membership_override: bool | None = None
+        reduce_member_fields: dict[str, Any] = {}
+        reduce_authority_fields: dict[str, Any] = {}
+        reduce_adjustments: list[dict[str, Any]] = []
         quality_adjustment = _optional_ratio(row.get("quality_allocation_adjustment"))
         quality_action = str(row.get("quality_action") or "")
         if status != "PASS":
@@ -910,9 +1065,70 @@ def _resolve_target_weight_contract(
         elif row.get("membership_intent") in {"EXCLUDE", "UNRESOLVED"}:
             zero_reason = "opportunity_not_selected"
             reason = "member_not_selected"
-        elif row.get("membership_intent") in {"REDUCE_CANDIDATE", "REMOVE_CANDIDATE"}:
-            zero_reason = "existing_position_reduce_or_exit"
-            reason = "existing_position_reduce_or_exit"
+        elif row.get("membership_intent") == "REDUCE_CANDIDATE":
+            current_weight = _optional_ratio(row.get("current_weight"))
+            intensity_resolution = resolve_reduce_intensity_authority(
+                row.get("reduce_intensity") or row.get("pm_intensity"),
+                business_date=business_date,
+                source_pm_decision_ref=str(row.get("source_pm_decision_ref") or row.get("position_management_reference") or ""),
+            )
+            if current_weight is None or current_weight <= 0:
+                if status != "BLOCK":
+                    status = "REVIEW_REQUIRED"
+                zero_reason = "reduce_current_weight_missing"
+                review_reason = "reduce_current_weight_missing"
+                reason = "reduce_current_weight_missing"
+                weight = 0.0
+                reason_codes.append("reduce_current_weight_missing_fail_closed")
+            elif intensity_resolution["status"] != "PASS":
+                if status != "BLOCK":
+                    status = "REVIEW_REQUIRED"
+                zero_reason = str(intensity_resolution["reason"])
+                review_reason = str(intensity_resolution["reason"])
+                reason = str(intensity_resolution["reason"])
+                weight = 0.0
+                reason_codes.append(f"reduce_intensity_review_required:{intensity_resolution['reason']}")
+            else:
+                reduce_fraction = float(intensity_resolution["reduce_fraction"])
+                remaining_weight = round(current_weight * (1.0 - reduce_fraction), TARGET_WEIGHT_DECIMALS)
+                released_weight = round(current_weight - remaining_weight, TARGET_WEIGHT_DECIMALS)
+                if not (0.0 < remaining_weight < current_weight):
+                    if status != "BLOCK":
+                        status = "REVIEW_REQUIRED"
+                    zero_reason = "reduce_partial_target_invalid"
+                    review_reason = "reduce_partial_target_invalid"
+                    reason = "reduce_partial_target_invalid"
+                    weight = 0.0
+                    reason_codes.append("reduce_partial_target_invalid_fail_closed")
+                else:
+                    weight = remaining_weight
+                    reason = "reduce_partial_target_resolved"
+                    zero_reason = ""
+                    target_membership_override = True
+                    reduce_authority_fields = {
+                        "reduce_fraction_authority": intensity_resolution["authority"],
+                    }
+                    reduce_member_fields = {
+                        "reduce_intensity": intensity_resolution["reduce_intensity"],
+                        "reduce_fraction": reduce_fraction,
+                        "reduce_fraction_authority": intensity_resolution["authority"],
+                        "remaining_target_weight": remaining_weight,
+                        "released_reduce_capacity": released_weight,
+                    }
+                    reduce_adjustments = [
+                        {
+                            "authority": "CANONICAL_REDUCE_INTENSITY_AUTHORITY",
+                            "source_pm_decision_ref": str(row.get("source_pm_decision_ref") or row.get("position_management_reference") or ""),
+                            "reduce_intensity": intensity_resolution["reduce_intensity"],
+                            "reduce_fraction": reduce_fraction,
+                            "current_weight": current_weight,
+                            "remaining_target_weight": remaining_weight,
+                            "released_reduce_capacity": released_weight,
+                        }
+                    ]
+        elif row.get("membership_intent") == "REMOVE_CANDIDATE":
+            zero_reason = "existing_position_exit"
+            reason = "existing_position_exit"
         elif target_gross_exposure == 0:
             zero_reason = "policy_zero_exposure"
             reason = "policy_zero_exposure"
@@ -924,7 +1140,7 @@ def _resolve_target_weight_contract(
             zero_reason = "opportunity_not_selected"
             reason = "opportunity_not_selected"
         cap_applied = selected and status == "PASS" and target_gross_exposure is not None and effective_count > 0 and float(target_gross_exposure) / float(effective_count) > float(single_name_cap)
-        target_membership = selected
+        target_membership = target_membership_override if target_membership_override is not None else selected
         authority = {
             "authority_type": "TARGET_WEIGHT_AUTHORITY",
             "method_id": method["method_id"],
@@ -973,6 +1189,30 @@ def _resolve_target_weight_contract(
             ]
         if weight == 0 and not zero_reason and status == "PASS":
             resolution["zero_weight_reason"] = "other_explicit_contract_reason"
+        add_bridge = _resolve_canonical_add_allocation_bridge(
+            row=row,
+            selected=selected,
+            candidate_target_weight=weight,
+            single_name_cap=single_name_cap,
+            target_gross_exposure=target_gross_exposure,
+            members=members,
+            business_date=business_date,
+        )
+        if add_bridge:
+            weight = add_bridge["post_add_target_weight"]
+            target_membership = weight > 0.0 or bool(row.get("target_membership"))
+            reason = str(add_bridge["target_weight_reason"])
+            zero_reason = str(add_bridge["zero_weight_reason"])
+            review_reason = str(add_bridge["review_reason"])
+            resolution = {
+                **resolution,
+                "reason": reason,
+                "resolved_weight": weight,
+                "zero_weight_reason": zero_reason,
+                "review_reason": review_reason,
+                "add_allocation_bridge": add_bridge["trace"],
+            }
+            authority = {**authority, "add_allocation_bridge_authority": add_bridge["authority"]}
         updated = {
             **row,
             "target_membership": target_membership,
@@ -980,11 +1220,41 @@ def _resolve_target_weight_contract(
             "target_weight_authority": authority,
             "target_weight_resolution": resolution,
             "weight_reason": reason,
+            **reduce_member_fields,
+            **(add_bridge["member_fields"] if add_bridge else {}),
         }
+        if reduce_authority_fields:
+            updated["target_weight_authority"] = {**dict(updated["target_weight_authority"]), **reduce_authority_fields}
+        if reduce_adjustments:
+            updated["target_weight_resolution"] = {
+                **dict(updated["target_weight_resolution"]),
+                "adjustments": list(updated["target_weight_resolution"].get("adjustments") or []) + reduce_adjustments,
+            }
         weighted.append(updated)
-        total_weight += weight
+    reconciliation = _reconcile_incremental_budget(
+        members=weighted,
+        target_gross_exposure=target_gross_exposure,
+        target_weight_sum_tolerance=_target_weight_sum_tolerance(effective_count),
+    )
+    weighted = reconciliation["members"]
+    total_weight = reconciliation["final_target_weight_sum"]
     target_weight_sum_tolerance = _target_weight_sum_tolerance(effective_count)
-    if target_gross_exposure is not None and total_weight > float(target_gross_exposure) + target_weight_sum_tolerance:
+    reason_codes.extend(reconciliation["reason_codes"])
+    invalid_positive_increment_over_target = _positive_increment_over_target(
+        final_target_weight_sum=total_weight,
+        target_gross_exposure=target_gross_exposure,
+        tolerance=target_weight_sum_tolerance,
+        accepted_add=float(reconciliation["evidence"].get("accepted_add_increment") or 0.0),
+        accepted_buy_new=float(reconciliation["evidence"].get("accepted_buy_new_weight") or 0.0),
+    )
+    if invalid_positive_increment_over_target:
+        status = "BLOCK"
+        reason_codes.append("positive_increment_over_target_gross_exposure")
+    elif (
+        target_gross_exposure is not None
+        and total_weight > float(target_gross_exposure) + target_weight_sum_tolerance
+        and reconciliation["evidence"].get("aggregate_exposure_state") != "OVER_TARGET_EXISTING_BASELINE"
+    ):
         status = "BLOCK"
         reason_codes.append("total_target_weight_above_target_gross_exposure")
     return {
@@ -998,7 +1268,781 @@ def _resolve_target_weight_contract(
         "total_target_weight": round(total_weight, 6),
         "target_weight_sum_tolerance": target_weight_sum_tolerance,
         "portfolio_policy_allocation_authority": policy_authority,
+        "incremental_budget_reconciliation": reconciliation["evidence"],
     }
+
+
+def _reconcile_incremental_budget(
+    *,
+    members: list[dict[str, Any]],
+    target_gross_exposure: float | None,
+    target_weight_sum_tolerance: float,
+) -> dict[str, Any]:
+    if target_gross_exposure is None:
+        total = round(sum(float(member.get("target_weight") or 0.0) for member in members), TARGET_WEIGHT_DECIMALS)
+        return {
+            "members": members,
+            "final_target_weight_sum": total,
+            "reason_codes": [],
+            "evidence": {
+                "status": "NOT_APPLICABLE",
+                "reason": "target_gross_exposure_unresolved",
+                "target_gross_exposure": None,
+                "baseline_existing_required_weight": 0.0,
+                "available_incremental_budget": 0.0,
+                "requested_add_increment": 0.0,
+                "accepted_add_increment": 0.0,
+                "requested_buy_new_weight": 0.0,
+                "accepted_buy_new_weight": 0.0,
+                "released_reduce_capacity": 0.0,
+                "trimmed_incremental_weight": 0.0,
+                "final_target_weight_sum": total,
+            },
+        }
+
+    baseline_total = 0.0
+    requested_add = 0.0
+    requested_buy_new = 0.0
+    released_reduce = 0.0
+    participant_requests: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
+    reason_codes: list[str] = []
+    for index, member in enumerate(members):
+        current_weight = _optional_ratio(member.get("current_weight"))
+        original_target = round(float(member.get("target_weight") or 0.0), TARGET_WEIGHT_DECIMALS)
+        pm_action = str(member.get("pm_action") or "").upper()
+        membership = str(member.get("membership_intent") or "").upper()
+        current_position = bool(member.get("current_position"))
+        baseline = 0.0
+        request = 0.0
+        participant_type = "NONE"
+        if current_position and membership in {"REDUCE_CANDIDATE", "REMOVE_CANDIDATE", "EXCLUDE"}:
+            baseline = original_target
+            if current_weight is not None:
+                released_reduce += round(max(current_weight - baseline, 0.0), TARGET_WEIGHT_DECIMALS)
+        elif current_position and pm_action in {"HOLD", "ADD"}:
+            baseline = current_weight if current_weight is not None else original_target
+            if pm_action == "ADD" and current_weight is not None:
+                request = round(max(original_target - baseline, 0.0), TARGET_WEIGHT_DECIMALS)
+                requested_add += request
+                participant_type = "ADD_INCREMENT"
+            elif pm_action == "HOLD" and current_weight is not None and original_target > baseline:
+                reason_codes.append("hold_equal_weight_increase_reconciled_to_current_weight")
+        elif current_position:
+            baseline = original_target
+        elif membership == "ADD_CANDIDATE":
+            request = original_target
+            requested_buy_new += request
+            participant_type = "BUY_NEW"
+        baseline = round(baseline, TARGET_WEIGHT_DECIMALS)
+        baseline_total += baseline
+        prepared.append(
+            {
+                "index": index,
+                "baseline": baseline,
+                "request": request,
+                "participant_type": participant_type,
+                "original_target": original_target,
+            }
+        )
+        if request > 0:
+            participant_requests.append(
+                {
+                    "index": index,
+                    "request": request,
+                    "participant_type": participant_type,
+                    "priority": _positive_int(member.get("construction_priority"), 999999),
+                    "security_code": str(member.get("security_code") or ""),
+                }
+            )
+
+    baseline_total = round(baseline_total, TARGET_WEIGHT_DECIMALS)
+    available_budget = round(max(float(target_gross_exposure) - baseline_total, 0.0), TARGET_WEIGHT_DECIMALS)
+    allocation_budget = round(
+        max(float(target_gross_exposure) + target_weight_sum_tolerance - baseline_total, 0.0),
+        TARGET_WEIGHT_DECIMALS,
+    )
+    if baseline_total > float(target_gross_exposure) + target_weight_sum_tolerance and _is_passive_convergence_baseline(
+        members=members,
+        prepared=prepared,
+    ):
+        reason_codes.append("existing_baseline_over_dynamic_target_passive_convergence")
+        if requested_add > 0 or requested_buy_new > 0:
+            reason_codes.append("positive_increment_suppressed_while_over_target")
+        final_members = [
+            _member_with_budget_reconciliation(
+                member=member,
+                prepared=prepared_item,
+                accepted_increment=0.0,
+                available_budget=available_budget,
+                target_gross_exposure=target_gross_exposure,
+                reason="existing_baseline_over_dynamic_target_passive_convergence",
+            )
+            for member, prepared_item in zip(members, prepared)
+        ]
+        final_sum = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
+        return {
+            "members": final_members,
+            "final_target_weight_sum": final_sum,
+            "reason_codes": sorted(set(reason_codes)),
+            "evidence": {
+                "status": "PASS",
+                "reason": "existing_baseline_over_dynamic_target_passive_convergence",
+                "transition_mode": "PASSIVE_CONVERGENCE",
+                "aggregate_exposure_state": "OVER_TARGET_EXISTING_BASELINE",
+                "positive_increment_allowed": False,
+                "target_gross_exposure": target_gross_exposure,
+                "baseline_existing_required_weight": baseline_total,
+                "available_incremental_budget": available_budget,
+                "requested_add_increment": round(requested_add, TARGET_WEIGHT_DECIMALS),
+                "accepted_add_increment": 0.0,
+                "requested_buy_new_weight": round(requested_buy_new, TARGET_WEIGHT_DECIMALS),
+                "accepted_buy_new_weight": 0.0,
+                "released_reduce_capacity": round(released_reduce, TARGET_WEIGHT_DECIMALS),
+                "trimmed_incremental_weight": round(requested_add + requested_buy_new, TARGET_WEIGHT_DECIMALS),
+                "final_target_weight_sum": final_sum,
+            },
+        }
+    if baseline_total > float(target_gross_exposure) + target_weight_sum_tolerance:
+        reason_codes.append("baseline_existing_required_weight_above_target_gross_exposure")
+        final_members = [
+            _member_with_budget_reconciliation(
+                member=member,
+                prepared=prepared_item,
+                accepted_increment=0.0,
+                available_budget=available_budget,
+                target_gross_exposure=target_gross_exposure,
+                reason="baseline_existing_required_weight_above_target_gross_exposure",
+            )
+            for member, prepared_item in zip(members, prepared)
+        ]
+        final_sum = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
+        return {
+            "members": final_members,
+            "final_target_weight_sum": final_sum,
+            "reason_codes": sorted(set(reason_codes)),
+            "evidence": {
+                "status": "BLOCK",
+                "reason": "baseline_existing_required_weight_above_target_gross_exposure",
+                "target_gross_exposure": target_gross_exposure,
+                "baseline_existing_required_weight": baseline_total,
+                "available_incremental_budget": available_budget,
+                "requested_add_increment": round(requested_add, TARGET_WEIGHT_DECIMALS),
+                "accepted_add_increment": 0.0,
+                "requested_buy_new_weight": round(requested_buy_new, TARGET_WEIGHT_DECIMALS),
+                "accepted_buy_new_weight": 0.0,
+                "released_reduce_capacity": round(released_reduce, TARGET_WEIGHT_DECIMALS),
+                "trimmed_incremental_weight": round(requested_add + requested_buy_new, TARGET_WEIGHT_DECIMALS),
+                "final_target_weight_sum": final_sum,
+            },
+        }
+
+    total_requested_incremental = round(requested_add + requested_buy_new, TARGET_WEIGHT_DECIMALS)
+    accepted_by_index: dict[int, float] = {}
+    remaining = allocation_budget if total_requested_incremental <= allocation_budget else available_budget
+    for request in sorted(participant_requests, key=lambda item: (item["priority"], item["security_code"])):
+        accepted = min(float(request["request"]), remaining)
+        accepted = round(max(accepted, 0.0), TARGET_WEIGHT_DECIMALS)
+        accepted_by_index[int(request["index"])] = accepted
+        remaining = round(max(remaining - accepted, 0.0), TARGET_WEIGHT_DECIMALS)
+    accepted_add = 0.0
+    accepted_buy_new = 0.0
+    for item in participant_requests:
+        accepted = accepted_by_index.get(int(item["index"]), 0.0)
+        if item["participant_type"] == "ADD_INCREMENT":
+            accepted_add += accepted
+        elif item["participant_type"] == "BUY_NEW":
+            accepted_buy_new += accepted
+    accepted_add = round(accepted_add, TARGET_WEIGHT_DECIMALS)
+    accepted_buy_new = round(accepted_buy_new, TARGET_WEIGHT_DECIMALS)
+    trimmed = round(max(requested_add + requested_buy_new - accepted_add - accepted_buy_new, 0.0), TARGET_WEIGHT_DECIMALS)
+    if trimmed > 0:
+        reason_codes.append("incremental_budget_trimmed_to_target_gross_exposure")
+    final_members = [
+        _member_with_budget_reconciliation(
+            member=member,
+            prepared=prepared_item,
+            accepted_increment=accepted_by_index.get(int(prepared_item["index"]), 0.0),
+            available_budget=available_budget,
+            target_gross_exposure=target_gross_exposure,
+            reason="incremental_budget_reconciled",
+        )
+        for member, prepared_item in zip(members, prepared)
+    ]
+    final_sum = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
+    return {
+        "members": final_members,
+        "final_target_weight_sum": final_sum,
+        "reason_codes": sorted(set(reason_codes)),
+        "evidence": {
+            "status": "PASS",
+            "reason": "incremental_budget_reconciled",
+            "target_gross_exposure": target_gross_exposure,
+            "baseline_existing_required_weight": baseline_total,
+            "available_incremental_budget": available_budget,
+            "requested_add_increment": round(requested_add, TARGET_WEIGHT_DECIMALS),
+            "accepted_add_increment": accepted_add,
+            "requested_buy_new_weight": round(requested_buy_new, TARGET_WEIGHT_DECIMALS),
+            "accepted_buy_new_weight": accepted_buy_new,
+            "released_reduce_capacity": round(released_reduce, TARGET_WEIGHT_DECIMALS),
+            "trimmed_incremental_weight": trimmed,
+            "final_target_weight_sum": final_sum,
+        },
+    }
+
+
+def apply_lot_aware_final_reallocation(
+    *,
+    members: list[dict[str, Any]],
+    lot_feasibility_rows: list[Mapping[str, Any]],
+    target_gross_exposure: float | None,
+    single_name_cap: float | None,
+) -> dict[str, Any]:
+    feasibility_by_symbol = {
+        str(row.get("symbol") or row.get("security_code") or ""): dict(row)
+        for row in lot_feasibility_rows
+        if str(row.get("symbol") or row.get("security_code") or "")
+    }
+    if target_gross_exposure is None:
+        return {
+            "members": members,
+            "evidence": {"status": "NOT_APPLICABLE", "reason": "target_gross_exposure_unresolved"},
+            "reason_codes": [],
+        }
+    prepared: list[dict[str, Any]] = []
+    baseline_total = 0.0
+    reason_codes: list[str] = []
+    for index, member in enumerate(members):
+        current_weight = _optional_ratio(member.get("current_weight"))
+        target = round(float(member.get("target_weight") or 0.0), TARGET_WEIGHT_DECIMALS)
+        pm_action = str(member.get("pm_action") or "").upper()
+        membership = str(member.get("membership_intent") or "").upper()
+        current_position = bool(member.get("current_position"))
+        baseline = 0.0
+        participant_type = "NONE"
+        if current_position and pm_action in {"HOLD", "ADD"}:
+            baseline = current_weight if current_weight is not None else target
+            participant_type = "BUY_ADD" if pm_action == "ADD" and target > baseline else "NONE"
+        elif current_position:
+            baseline = target
+        elif membership == "ADD_CANDIDATE":
+            participant_type = "BUY_NEW" if target > 0 else "NONE"
+        baseline = round(baseline, TARGET_WEIGHT_DECIMALS)
+        baseline_total += baseline
+        prepared.append({"index": index, "baseline": baseline, "draft_target": target, "participant_type": participant_type})
+    baseline_total = round(baseline_total, TARGET_WEIGHT_DECIMALS)
+    if baseline_total > float(target_gross_exposure) + _target_weight_sum_tolerance(len(members)) and _is_passive_convergence_baseline(members=members, prepared=[{"baseline": item["baseline"]} for item in prepared]):
+        return {
+            "members": members,
+            "evidence": {
+                "status": "PASS",
+                "reason": "passive_convergence_preserved_no_lot_reallocation",
+                "positive_increment_allowed": False,
+                "baseline_existing_required_weight": baseline_total,
+            },
+            "reason_codes": ["lot_aware_reallocation_skipped_passive_convergence"],
+        }
+    remaining = round(max(float(target_gross_exposure) - baseline_total, 0.0), TARGET_WEIGHT_DECIMALS)
+    accepted_by_index: dict[int, float] = {}
+    skipped: list[dict[str, Any]] = []
+    skipped_by_index: dict[int, str] = {}
+    promoted: list[dict[str, Any]] = []
+    candidates = []
+    for item in prepared:
+        if item["participant_type"] == "NONE":
+            accepted_by_index[item["index"]] = 0.0
+            continue
+        member = members[item["index"]]
+        symbol = str(member.get("security_code") or member.get("symbol") or "")
+        feasibility = feasibility_by_symbol.get(symbol)
+        request = round(max(float(item["draft_target"]) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
+        candidates.append(
+            {
+                **item,
+                "symbol": symbol,
+                "request": request,
+                "priority": _positive_int(member.get("construction_priority"), 999999),
+                "score": _finite_number(member.get("runtime_opportunity_score")) or 0.0,
+                "feasibility": feasibility,
+            }
+        )
+    for item in sorted(candidates, key=lambda value: (value["priority"], value["symbol"])):
+        feasibility = item["feasibility"]
+        member = members[item["index"]]
+        min_weight = _optional_ratio((feasibility or {}).get("minimum_executable_weight"))
+        lot_feasible = bool((feasibility or {}).get("lot_feasible"))
+        broker_eligible = (feasibility or {}).get("broker_eligible") is not False and str(member.get("broker_eligibility_status") or "") != "FAIL_CLOSED"
+        required = item["request"]
+        if not lot_feasible:
+            if min_weight is not None and required < min_weight:
+                required = min_weight
+            else:
+                required = 0.0
+        if not broker_eligible or required <= 0:
+            accepted_by_index[item["index"]] = 0.0
+            skipped_by_index[item["index"]] = "lot_or_broker_infeasible"
+            skipped.append({"symbol": item["symbol"], "reason": "lot_or_broker_infeasible", "feasibility": feasibility})
+            continue
+        if single_name_cap is not None:
+            max_increment = round(max(float(single_name_cap) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
+            if required > max_increment:
+                accepted_by_index[item["index"]] = 0.0
+                skipped_by_index[item["index"]] = "minimum_lot_exceeds_concentration_cap"
+                skipped.append({"symbol": item["symbol"], "reason": "minimum_lot_exceeds_concentration_cap", "required_weight": required, "max_increment": max_increment})
+                continue
+        if required > remaining:
+            accepted_by_index[item["index"]] = 0.0
+            skipped_by_index[item["index"]] = "minimum_lot_exceeds_remaining_budget"
+            skipped.append({"symbol": item["symbol"], "reason": "minimum_lot_exceeds_remaining_budget", "required_weight": required, "remaining_budget": remaining})
+            continue
+        accepted_by_index[item["index"]] = required
+        remaining = round(max(remaining - required, 0.0), TARGET_WEIGHT_DECIMALS)
+        if required > item["request"]:
+            promoted.append({"symbol": item["symbol"], "from_weight": item["request"], "to_weight": required, "reason": "minimum_executable_lot_authorized_by_pc"})
+    final_members = []
+    for member, item in zip(members, prepared):
+        accepted = accepted_by_index.get(item["index"], 0.0)
+        final_weight = round(float(item["baseline"]) + accepted, TARGET_WEIGHT_DECIMALS)
+        resolution = dict(member.get("target_weight_resolution") or {})
+        if final_weight == 0.0 and resolution.get("status") == "PASS" and not resolution.get("zero_weight_reason"):
+            resolution["zero_weight_reason"] = skipped_by_index.get(item["index"], "lot_aware_zero_weight_preserved")
+        adjustments = list(resolution.get("adjustments") or [])
+        adjustments.append(
+            {
+                "authority": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
+                "pre_lot_target_weight": item["draft_target"],
+                "post_lot_target_weight": final_weight,
+                "accepted_lot_increment_weight": accepted,
+            }
+        )
+        final_members.append(
+            {
+                **member,
+                "target_weight": final_weight,
+                "target_membership": final_weight > 0 if not member.get("current_position") else bool(member.get("target_membership")) and final_weight > 0,
+                "target_weight_authority": {
+                    **dict(member.get("target_weight_authority") or {}),
+                    "lot_aware_final_reallocation_authority": {
+                        "authority_type": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
+                        "ps_preflight_decides_economic_allocation": False,
+                    },
+                },
+                "target_weight_resolution": {
+                    **resolution,
+                    "resolved_weight": final_weight,
+                    "reason": "lot_aware_final_reallocation",
+                    "adjustments": adjustments,
+                    "lot_aware_final_reallocation": {
+                        "authority_type": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
+                        "pre_lot_target_weight": item["draft_target"],
+                        "post_lot_target_weight": final_weight,
+                        "accepted_lot_increment_weight": accepted,
+                    },
+                },
+                "lot_aware_final_target_weight": final_weight,
+                "lot_aware_accepted_incremental_weight": accepted if item["participant_type"] == "BUY_ADD" else 0.0,
+                "lot_aware_accepted_buy_new_weight": accepted if item["participant_type"] == "BUY_NEW" else 0.0,
+            }
+        )
+    total = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
+    if skipped:
+        reason_codes.append("lot_aware_infeasible_allocations_reallocated_or_cash")
+    if promoted:
+        reason_codes.append("lot_aware_minimum_executable_lot_authorized")
+    return {
+        "members": final_members,
+        "reason_codes": sorted(set(reason_codes)),
+        "evidence": {
+            "status": "PASS",
+            "authority_type": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
+            "target_gross_exposure": target_gross_exposure,
+            "baseline_existing_required_weight": baseline_total,
+            "final_target_weight_sum": total,
+            "remaining_cash_weight": remaining,
+            "skipped": skipped,
+            "promoted": promoted,
+            "ps_preflight_decides_economic_allocation": False,
+            "pc_remains_target_weight_authority": True,
+        },
+    }
+
+
+def _positive_increment_over_target(
+    *,
+    final_target_weight_sum: float,
+    target_gross_exposure: float | None,
+    tolerance: float,
+    accepted_add: float,
+    accepted_buy_new: float,
+) -> bool:
+    if target_gross_exposure is None:
+        return False
+    if round(max(float(accepted_add), 0.0) + max(float(accepted_buy_new), 0.0), TARGET_WEIGHT_DECIMALS) <= 0:
+        return False
+    return float(final_target_weight_sum) > float(target_gross_exposure) + float(tolerance)
+
+
+def _is_passive_convergence_baseline(*, members: list[dict[str, Any]], prepared: list[dict[str, Any]]) -> bool:
+    for member, prepared_item in zip(members, prepared):
+        baseline = round(float(prepared_item.get("baseline") or 0.0), TARGET_WEIGHT_DECIMALS)
+        if baseline <= 0:
+            continue
+        if not member.get("current_position"):
+            return False
+        pm_action = str(member.get("pm_action") or "").upper()
+        membership = str(member.get("membership_intent") or "").upper()
+        if membership in {"REDUCE_CANDIDATE", "REMOVE_CANDIDATE", "EXCLUDE"}:
+            continue
+        current_weight = _optional_ratio(member.get("current_weight"))
+        if pm_action in {"HOLD", "ADD"} and current_weight is not None and baseline == round(current_weight, TARGET_WEIGHT_DECIMALS):
+            continue
+        return False
+    return True
+
+
+def _member_with_budget_reconciliation(
+    *,
+    member: dict[str, Any],
+    prepared: Mapping[str, Any],
+    accepted_increment: float,
+    available_budget: float,
+    target_gross_exposure: float,
+    reason: str,
+) -> dict[str, Any]:
+    baseline = round(float(prepared.get("baseline") or 0.0), TARGET_WEIGHT_DECIMALS)
+    request = round(float(prepared.get("request") or 0.0), TARGET_WEIGHT_DECIMALS)
+    accepted_increment = round(float(accepted_increment or 0.0), TARGET_WEIGHT_DECIMALS)
+    final_weight = round(baseline + accepted_increment, TARGET_WEIGHT_DECIMALS)
+    trimmed = round(max(request - accepted_increment, 0.0), TARGET_WEIGHT_DECIMALS)
+    participant_type = str(prepared.get("participant_type") or "NONE")
+    reconciliation = {
+        "authority_type": "PORTFOLIO_CONSTRUCTION_INCREMENTAL_BUDGET_RECONCILIATION",
+        "target_gross_exposure": target_gross_exposure,
+        "available_incremental_budget": available_budget,
+        "participant_type": participant_type,
+        "baseline_existing_weight": baseline,
+        "requested_incremental_weight": request if participant_type == "ADD_INCREMENT" else 0.0,
+        "accepted_incremental_weight": accepted_increment if participant_type == "ADD_INCREMENT" else 0.0,
+        "requested_buy_new_weight": request if participant_type == "BUY_NEW" else 0.0,
+        "accepted_buy_new_weight": accepted_increment if participant_type == "BUY_NEW" else 0.0,
+        "trimmed_incremental_weight": trimmed,
+        "final_target_weight": final_weight,
+        "reason": reason,
+    }
+    resolution = dict(member.get("target_weight_resolution") or {})
+    adjustments = list(resolution.get("adjustments") or [])
+    original_target = round(float(prepared.get("original_target") or 0.0), TARGET_WEIGHT_DECIMALS)
+    if final_weight != original_target or request > 0:
+        adjustments.append(
+            {
+                "authority": "PORTFOLIO_CONSTRUCTION_INCREMENTAL_BUDGET_RECONCILIATION",
+                "pre_reconciliation_target_weight": original_target,
+                "post_reconciliation_target_weight": final_weight,
+                "baseline_existing_weight": baseline,
+                "requested_incremental_weight": request,
+                "accepted_incremental_weight": accepted_increment,
+                "trimmed_incremental_weight": trimmed,
+            }
+        )
+    zero_reason = str(resolution.get("zero_weight_reason") or "")
+    if final_weight == 0.0 and not zero_reason:
+        zero_reason = "incremental_budget_zero_allocation"
+    review_reason = str(resolution.get("review_reason") or "")
+    if trimmed > 0:
+        review_reason = ",".join(part for part in (review_reason, "incremental_budget_trimmed_or_deferred") if part)
+    return {
+        **member,
+        "target_membership": final_weight > 0.0 if not member.get("current_position") else bool(member.get("target_membership")) and final_weight > 0.0,
+        "target_weight": final_weight,
+        "weight_reason": reason if final_weight != original_target or trimmed > 0 else member.get("weight_reason", reason),
+        "target_weight_authority": {
+            **dict(member.get("target_weight_authority") or {}),
+            "incremental_budget_reconciliation_authority": {
+                "authority_type": "PORTFOLIO_CONSTRUCTION_INCREMENTAL_BUDGET_RECONCILIATION",
+                "target_gross_exposure": target_gross_exposure,
+                "available_incremental_budget": available_budget,
+            },
+        },
+        "target_weight_resolution": {
+            **resolution,
+            "reason": reason if final_weight != original_target or trimmed > 0 else resolution.get("reason", reason),
+            "resolved_weight": final_weight,
+            "adjustments": adjustments,
+            "normalization_applied": bool(resolution.get("normalization_applied")) or final_weight != original_target or trimmed > 0,
+            "zero_weight_reason": zero_reason,
+            "review_reason": review_reason,
+            "incremental_budget_reconciliation": reconciliation,
+        },
+        "baseline_existing_weight": baseline,
+        "requested_incremental_weight": request if participant_type == "ADD_INCREMENT" else 0.0,
+        "accepted_incremental_weight": accepted_increment if participant_type == "ADD_INCREMENT" else 0.0,
+        "requested_buy_new_weight": request if participant_type == "BUY_NEW" else 0.0,
+        "accepted_buy_new_weight": accepted_increment if participant_type == "BUY_NEW" else 0.0,
+        "trimmed_incremental_weight": trimmed,
+        "incremental_budget_reconciliation": reconciliation,
+    }
+
+
+def _resolve_canonical_add_allocation_bridge(
+    *,
+    row: Mapping[str, Any],
+    selected: bool,
+    candidate_target_weight: float,
+    single_name_cap: float | None,
+    target_gross_exposure: float | None,
+    members: list[dict[str, Any]],
+    business_date: str,
+) -> dict[str, Any] | None:
+    if not row.get("current_position") or str(row.get("pm_action") or "").upper() != "ADD":
+        return None
+    current_weight = _optional_ratio(row.get("current_weight"))
+    reason_codes: list[str] = []
+    add_evidence = resolve_add_investment_evidence(row=row, members=members, business_date=business_date)
+    expected_edge = dict(add_evidence["expected_edge"])
+    incremental_value = dict(add_evidence["incremental_value"])
+    opportunity_cost = dict(add_evidence["opportunity_cost"])
+    campaign_evidence = dict(add_evidence["campaign_continuation"])
+    no_loss = dict(add_evidence["no_loss_averaging"])
+    campaign = str(campaign_evidence.get("status") or "FAIL_CLOSED")
+    no_loss_status = str(no_loss.get("status") or "FAIL_CLOSED")
+    concentration = _explicit_pass_or_default(row, ("concentration_status", "add_concentration_status"), default="PASS")
+    capital = _explicit_pass_or_default(row, ("capital_availability_status", "add_capital_availability_status"), default="PASS")
+    execution = _execution_feasibility_state(row)
+    if current_weight is None:
+        reason_codes.append("ADD_REQUIRED_EVIDENCE_MISSING")
+        current_weight = float(candidate_target_weight)
+        current_weight_observed = False
+    else:
+        current_weight_observed = True
+    add_increment_request = round(max(float(candidate_target_weight), 0.0), TARGET_WEIGHT_DECIMALS)
+    desired_increment = round(max(float(candidate_target_weight) - current_weight, 0.0), TARGET_WEIGHT_DECIMALS)
+    broker_status = str(row.get("broker_eligibility_status") or "")
+    if broker_status == "FAIL_CLOSED":
+        broker_reason = str(row.get("broker_eligibility_reason") or "broker_eligibility_fail_closed")
+        reason_codes.extend([broker_reason, "broker_eligibility_buy_add_excluded_existing_position_visible", "ADD_TARGET_WEIGHT_UNCHANGED"])
+        review_reason = ",".join(sorted(set(reason_codes)))
+        trace = {
+            "status": "FAIL_CLOSED",
+            "business_date": business_date,
+            "current_weight_observed": current_weight_observed,
+            "eligibility_checks": {"pm_add": "PASS", "broker_execution_eligibility": "FAIL_CLOSED"},
+            "broker_eligibility": dict(row.get("broker_eligibility") or {}),
+            "expected_edge_improvement": {"status": "NOT_EVALUATED", "state": "BROKER_ELIGIBILITY_FAIL_CLOSED"},
+            "incremental_investment_value": {"status": "NOT_EVALUATED", "state": "BROKER_ELIGIBILITY_FAIL_CLOSED"},
+            "opportunity_cost": {"status": "NOT_EVALUATED", "state": "BROKER_ELIGIBILITY_FAIL_CLOSED"},
+            "add_investment_evidence": {**add_evidence, "producer_result_status": "NOT_EVALUATED_BROKER_FAIL_CLOSED"},
+        }
+        return {
+            "post_add_target_weight": current_weight,
+            "target_weight_reason": "add_target_weight_unchanged",
+            "zero_weight_reason": "ADD_TARGET_WEIGHT_UNCHANGED",
+            "review_reason": review_reason,
+            "trace": trace,
+            "authority": {
+                "authority_type": "CANONICAL_ADD_ALLOCATION_BRIDGE_AUTHORITY",
+                "business_date": business_date,
+                "decision_scope": "portfolio_construction_target_weight_existing_position_add",
+                "pm_quantity_authority_used": False,
+                "legacy_add_executable_used": False,
+            },
+            "member_fields": {
+                "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+                "current_target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+                "desired_incremental_weight": desired_increment,
+                "add_increment_request_weight": add_increment_request,
+                "post_add_target_weight": current_weight,
+                "normalized_target_weight": current_weight,
+                "target_weight_change": 0.0,
+                "target_weight_reason_codes": sorted(set(reason_codes)),
+                "add_allocation_eligibility_status": "FAIL_CLOSED",
+                "expected_edge_improvement_state": "BROKER_ELIGIBILITY_FAIL_CLOSED",
+                "incremental_investment_value_state": "BROKER_ELIGIBILITY_FAIL_CLOSED",
+                "opportunity_cost_status": "NOT_EVALUATED",
+                "no_loss_averaging_status": "NOT_EVALUATED",
+                "add_investment_evidence": trace["add_investment_evidence"],
+            },
+        }
+    post_add_target = current_weight
+    target_reason = "add_target_weight_unchanged"
+    zero_reason = "ADD_TARGET_WEIGHT_UNCHANGED"
+    review_reason = ""
+    eligibility_checks = {
+        "pm_add": "PASS",
+        "expected_edge_improvement": expected_edge["status"],
+        "incremental_investment_value": incremental_value["status"],
+        "opportunity_cost": opportunity_cost["status"],
+        "campaign_continuation": campaign,
+        "no_loss_averaging": no_loss_status,
+        "concentration": concentration,
+        "capital_availability": capital,
+        "execution_feasibility": execution,
+    }
+    if not selected:
+        reason_codes.append("ADD_TARGET_WEIGHT_UNCHANGED")
+    if not current_weight_observed:
+        review_reason = "ADD_REQUIRED_EVIDENCE_MISSING"
+    if expected_edge["status"] != "PASS":
+        reason_codes.append("ADD_EXPECTED_EDGE_UNKNOWN_FAIL_CLOSED" if expected_edge["state"] == "UNKNOWN" else f"ADD_EXPECTED_EDGE_{expected_edge['state']}")
+    if incremental_value["status"] != "PASS":
+        reason_codes.append(f"ADD_INCREMENTAL_VALUE_{incremental_value['state']}")
+    if opportunity_cost["status"] != "PASS":
+        reason_codes.append("ADD_OPPORTUNITY_COST_FAIL")
+    if campaign != "PASS":
+        reason_codes.append("ADD_CAMPAIGN_CONTINUATION_FAIL")
+    if no_loss_status != "PASS":
+        reason_codes.append("ADD_NO_LOSS_AVERAGING_FAIL")
+    if concentration != "PASS":
+        reason_codes.append("ADD_CONCENTRATION_CONSTRAINT")
+    if capital != "PASS":
+        reason_codes.append("ADD_CAPITAL_UNAVAILABLE")
+    if execution == "BLOCK":
+        reason_codes.append("ADD_EXECUTION_FEASIBILITY_BLOCK")
+    eligible = (
+        selected
+        and current_weight_observed
+        and expected_edge["status"] == "PASS"
+        and incremental_value["status"] == "PASS"
+        and opportunity_cost["status"] == "PASS"
+        and campaign == "PASS"
+        and no_loss_status == "PASS"
+        and concentration == "PASS"
+        and capital == "PASS"
+        and execution != "BLOCK"
+        and add_increment_request > 0
+    )
+    if eligible:
+        cap = single_name_cap if single_name_cap is not None else 1.0
+        exposure_cap = target_gross_exposure if target_gross_exposure is not None else 1.0
+        max_add_target = min(float(cap), float(exposure_cap))
+        post_add_target = round(min(current_weight + add_increment_request, max_add_target), TARGET_WEIGHT_DECIMALS)
+        if post_add_target > current_weight:
+            target_reason = "canonical_add_allocation_bridge_pass"
+            zero_reason = ""
+            reason_codes.append("ADD_TARGET_WEIGHT_INCREASED")
+        else:
+            reason_codes.append("ADD_TARGET_WEIGHT_UNCHANGED")
+            zero_reason = "ADD_TARGET_WEIGHT_UNCHANGED"
+    target_change = round(post_add_target - current_weight, TARGET_WEIGHT_DECIMALS) if current_weight_observed else 0.0
+    if target_change <= 0 and not review_reason:
+        review_reason = ",".join(sorted(set(reason_codes))) if reason_codes else ""
+    trace = {
+        "status": "PASS" if target_change > 0 else "FAIL_CLOSED",
+        "business_date": business_date,
+        "current_weight_observed": current_weight_observed,
+        "eligibility_checks": eligibility_checks,
+        "expected_edge_improvement": expected_edge,
+        "incremental_investment_value": incremental_value,
+        "opportunity_cost": opportunity_cost,
+        "no_loss_averaging": no_loss,
+        "add_investment_evidence": add_evidence,
+    }
+    return {
+        "post_add_target_weight": post_add_target,
+        "target_weight_reason": target_reason,
+        "zero_weight_reason": zero_reason,
+        "review_reason": review_reason,
+        "trace": trace,
+        "authority": {
+            "authority_type": "CANONICAL_ADD_ALLOCATION_BRIDGE_AUTHORITY",
+            "business_date": business_date,
+            "decision_scope": "portfolio_construction_target_weight_existing_position_add",
+            "pm_quantity_authority_used": False,
+            "legacy_add_executable_used": False,
+            "add_investment_evidence_schema_version": add_evidence["schema_version"],
+            "add_investment_evidence_producer_version": add_evidence["producer_version"],
+        },
+        "member_fields": {
+            "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+            "current_target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+            "desired_incremental_weight": desired_increment,
+            "add_increment_request_weight": add_increment_request,
+            "post_add_target_weight": post_add_target,
+            "normalized_target_weight": post_add_target,
+            "target_weight_change": target_change,
+            "target_weight_reason_codes": sorted(set(reason_codes)),
+            "add_allocation_eligibility_status": "PASS" if target_change > 0 else "FAIL_CLOSED",
+            "expected_edge_improvement_state": expected_edge["state"],
+            "incremental_investment_value_state": incremental_value["state"],
+            "opportunity_cost_status": opportunity_cost["status"],
+            "no_loss_averaging_status": no_loss.get("state"),
+            "add_investment_evidence": add_evidence,
+        },
+    }
+
+
+def _resolve_expected_edge_improvement(row: Mapping[str, Any], *, business_date: str) -> dict[str, Any]:
+    explicit_state = str(row.get("expected_edge_improvement_state") or row.get("add_expected_edge_improvement_state") or "").upper()
+    current_score = _finite_number(row.get("runtime_opportunity_score"))
+    baseline_score = _finite_number(
+        row.get("expected_edge_baseline_score", row.get("previous_expected_edge_score", row.get("entry_expected_edge_baseline_score")))
+    )
+    if explicit_state in {"IMPROVING", "STABLE_ADEQUATE", "WEAKENING", "INSUFFICIENT", "UNKNOWN"}:
+        state = explicit_state
+    elif current_score is not None and baseline_score is not None:
+        state = "IMPROVING" if current_score > baseline_score else ("STABLE_ADEQUATE" if current_score == baseline_score else "WEAKENING")
+    else:
+        state = "UNKNOWN"
+    baseline_type = str(row.get("expected_edge_baseline_type") or ("same_campaign_latest_accepted_pm_decision" if baseline_score is not None else "UNKNOWN"))
+    pass_state = state == "IMPROVING" or (state == "STABLE_ADEQUATE" and str(row.get("stable_adequate_opportunity_cost_superior") or "").upper() == "PASS")
+    return {
+        "status": "PASS" if pass_state else "FAIL_CLOSED",
+        "state": state,
+        "current_score": current_score,
+        "baseline_score": baseline_score,
+        "baseline_type": baseline_type,
+        "business_date": business_date,
+        "unknown_fail_closed": state == "UNKNOWN",
+    }
+
+
+def _resolve_incremental_investment_value(row: Mapping[str, Any], *, expected_edge: Mapping[str, Any]) -> dict[str, Any]:
+    explicit_state = str(row.get("incremental_investment_value_state") or row.get("add_incremental_investment_value_state") or "").upper()
+    if explicit_state in {"POSITIVE", "NEUTRAL", "NEGATIVE", "UNKNOWN"}:
+        state = explicit_state
+    elif expected_edge.get("status") == "PASS":
+        state = "POSITIVE"
+    else:
+        state = "UNKNOWN"
+    return {"status": "PASS" if state == "POSITIVE" else "FAIL_CLOSED", "state": state}
+
+
+def _resolve_add_opportunity_cost(*, row: Mapping[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
+    explicit = str(row.get("opportunity_cost_status") or row.get("add_opportunity_cost_status") or "").upper()
+    if explicit in {"PASS", "FAIL", "UNKNOWN"}:
+        return {"status": "PASS" if explicit == "PASS" else "FAIL_CLOSED", "state": explicit}
+    score = _finite_number(row.get("runtime_opportunity_score"))
+    new_scores = [
+        _finite_number(member.get("runtime_opportunity_score"))
+        for member in members
+        if not member.get("current_position") and str(member.get("membership_intent") or "") == "ADD_CANDIDATE"
+    ]
+    comparable = [value for value in new_scores if value is not None]
+    if score is None:
+        return {"status": "FAIL_CLOSED", "state": "UNKNOWN"}
+    if comparable and max(comparable) > score:
+        return {"status": "FAIL_CLOSED", "state": "NEW_BUY_SUPERIOR", "best_new_buy_score": max(comparable)}
+    return {"status": "PASS", "state": "PASS", "best_new_buy_score": max(comparable) if comparable else None}
+
+
+def _explicit_pass_or_unknown(row: Mapping[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = str(row.get(field) or "").upper()
+        if value in {"PASS", "FAIL", "UNKNOWN", "BLOCK"}:
+            return "PASS" if value == "PASS" else "FAIL_CLOSED"
+    return "FAIL_CLOSED"
+
+
+def _explicit_pass_or_default(row: Mapping[str, Any], fields: tuple[str, ...], *, default: str) -> str:
+    for field in fields:
+        value = str(row.get(field) or "").upper()
+        if value in {"PASS", "FAIL", "UNKNOWN", "BLOCK"}:
+            return "PASS" if value == "PASS" else "FAIL_CLOSED"
+    return default
+
+
+def _execution_feasibility_state(row: Mapping[str, Any]) -> str:
+    value = str(row.get("execution_feasibility_status") or row.get("add_execution_feasibility_status") or "").upper()
+    return "BLOCK" if value == "BLOCK" else "PASS"
 
 
 def _target_weight_sum_tolerance(selected_member_count: int) -> float:
@@ -1483,6 +2527,71 @@ def _score_authority_payload(
                 "business_date": business_date,
                 "pit_status": "PIT",
             }
+    return payload
+
+
+def _add_allocation_evidence_payload(
+    *,
+    opportunity: Mapping[str, Any] | None,
+    pm: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    sources = (opportunity or {}, pm or {}, current or {})
+    for field in (
+        "expected_edge_baseline_score",
+        "expected_edge_current_score",
+        "expected_edge_baseline_business_date",
+        "previous_expected_edge_business_date",
+        "entry_expected_edge_baseline_business_date",
+        "add_expected_edge_baseline_business_date",
+        "expected_edge_baseline_campaign_id",
+        "previous_expected_edge_score",
+        "entry_expected_edge_baseline_score",
+        "expected_edge_baseline_type",
+        "expected_edge_improvement_state",
+        "add_expected_edge_improvement_state",
+        "stable_adequate_opportunity_cost_superior",
+        "incremental_investment_value_state",
+        "add_incremental_investment_value_state",
+        "opportunity_cost_status",
+        "add_opportunity_cost_status",
+        "campaign_continuation_status",
+        "add_campaign_continuation_status",
+        "no_loss_averaging_status",
+        "add_no_loss_averaging_status",
+        "concentration_status",
+        "add_concentration_status",
+        "capital_availability_status",
+        "add_capital_availability_status",
+        "execution_feasibility_status",
+        "add_execution_feasibility_status",
+        "position_campaign_id",
+        "campaign_id",
+    ):
+        for source in sources:
+            if field in source:
+                payload[field] = source.get(field)
+                break
+    return payload
+
+
+def _current_position_weight_payload(*, current_row: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not current_row:
+        return {}
+    current_weight = _optional_ratio(current_row.get("current_weight", current_row.get("weight")))
+    if current_weight is None:
+        market_value = _finite_number(current_row.get("market_value", current_row.get("value", current_row.get("current_notional"))))
+        total_equity = _finite_number(current_row.get("portfolio_total_equity", current_row.get("portfolio_value")))
+        if market_value is not None and total_equity is not None and total_equity > 0:
+            current_weight = market_value / total_equity
+    payload: dict[str, Any] = {}
+    if current_weight is not None and 0 <= current_weight <= 1:
+        payload["current_weight"] = round(current_weight, TARGET_WEIGHT_DECIMALS)
+    if "quantity" in current_row or "current_quantity" in current_row:
+        quantity = _finite_number(current_row.get("current_quantity", current_row.get("quantity")))
+        if quantity is not None and quantity >= 0:
+            payload["current_quantity"] = int(quantity)
     return payload
 
 

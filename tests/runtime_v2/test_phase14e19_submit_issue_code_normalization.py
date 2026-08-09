@@ -56,6 +56,26 @@ def test_phase14e19_demo_adapter_dry_run_blocks_missing_listed_info_before_broke
     assert "broker issue code normalization failed" in result.reason
 
 
+def test_phase28_d48_runtime_v2_command_blocks_unsupported_broker_category_before_broker_api():
+    adapter = RuntimeV2TachibanaDemoSubmitAdapter(settings=_demo_settings())
+    command = _command(
+        "48750",
+        listed_info={
+            "code": "48750",
+            "market": "スタンダード",
+            "product_category": "021",
+            "security_type": "021",
+            "current_listed": True,
+        },
+    )
+
+    result = adapter.submit(command)
+
+    assert result.status == "BLOCKED"
+    assert result.broker_api_called is False
+    assert result.reason == "broker issue code normalization failed: BROKER_PRODUCT_CATEGORY_UNSUPPORTED"
+
+
 def test_phase14e19_demo_9000_block_and_production_capability_still_allows_9000():
     demo_adapter = RuntimeV2TachibanaDemoSubmitAdapter(settings=_demo_settings())
 

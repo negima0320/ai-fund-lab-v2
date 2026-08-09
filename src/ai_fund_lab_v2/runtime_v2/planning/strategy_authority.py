@@ -470,6 +470,15 @@ def _pending_item_from_strategy_plan(
     pending_item_id = "strategy-" + hashlib.sha256(
         f"{business_date}|{symbol}|{intent}|{side}|{plan.get('planning_id')}".encode("utf-8")
     ).hexdigest()[:20]
+    listed_info, listed_info_reason = _listed_info_for_strategy_pending(
+        symbol=symbol,
+        business_date=business_date,
+        side=side,
+        plan=plan,
+        strategy_authority_context=strategy_authority_context,
+    )
+    if side == "SELL" and listed_info is None:
+        return None, f"{listed_info_reason or 'strategy_sell_canonical_listed_info_missing'}:{symbol}"
     return PendingOrderItem(
         pending_item_id=pending_item_id,
         symbol=symbol,
@@ -480,12 +489,7 @@ def _pending_item_from_strategy_plan(
         estimated_amount=round(float(planned_quantity) * price, 2),
         approved=False,
         state="CREATED",
-        listed_info=_listed_info_from_opportunity_authority(
-            symbol=symbol,
-            business_date=business_date,
-            opportunity_authority=plan.get("opportunity_authority") if isinstance(plan.get("opportunity_authority"), Mapping) else {},
-            plan=plan,
-        ),
+        listed_info=listed_info,
         price_source="jquants_raw_normalized_daily_quotes_close",
         price_as_of=str(price_resolution.get("price_date") or business_date),
         price_confidence="PIT",
@@ -772,10 +776,14 @@ def _strategy_authority_context(
     position_sizing_authority.setdefault("source_hashes", source_hashes)
     position_sizing_authority["producer"] = "strategy.position_sizing"
     position_sizing_authority["consumer"] = "runtime_v2.planning.strategy_authority.activate_strategy_planning_authority"
+    input_manifest_path = strategy_path / "input_manifest.json"
+    input_manifest_payload = _read_json(input_manifest_path) if input_manifest_path.is_file() else {}
     return {
         "position_count_authority": position_count_authority,
         "cash_exposure_authority": cash_exposure_authority,
         "position_sizing_authority": position_sizing_authority,
+        "input_manifest_path": str(input_manifest_path),
+        "strategy_source_authority": _strategy_source_authority_from_input_manifest(input_manifest_payload),
         "source_artifacts": source_artifacts,
         "source_hashes": source_hashes,
     }
@@ -898,6 +906,228 @@ def _resolve_plan_price_authority(*, plan: Mapping[str, Any], symbol: str, busin
         "authority": dict(authority),
         "resolution": dict(resolution),
     }
+
+
+def _listed_info_for_strategy_pending(
+    *,
+    symbol: str,
+    business_date: str,
+    side: str,
+    plan: Mapping[str, Any],
+    strategy_authority_context: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str]:
+    opportunity = _listed_info_from_opportunity_authority(
+        symbol=symbol,
+        business_date=business_date,
+        opportunity_authority=plan.get("opportunity_authority") if isinstance(plan.get("opportunity_authority"), Mapping) else {},
+        plan=plan,
+    )
+    if side != "SELL":
+        return opportunity, ""
+    canonical, reason = _canonical_listed_info_from_strategy_source_authority(
+        symbol=symbol,
+        business_date=business_date,
+        strategy_authority_context=strategy_authority_context,
+    )
+    if canonical is None:
+        return None, reason
+    conflict_reason = _canonical_listed_info_opportunity_conflict_reason(
+        canonical=canonical,
+        opportunity_authority=plan.get("opportunity_authority") if isinstance(plan.get("opportunity_authority"), Mapping) else {},
+    )
+    if conflict_reason:
+        return None, conflict_reason
+    return canonical, ""
+
+
+def _canonical_listed_info_from_strategy_source_authority(
+    *,
+    symbol: str,
+    business_date: str,
+    strategy_authority_context: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str]:
+    authority_context = strategy_authority_context if isinstance(strategy_authority_context, Mapping) else {}
+    authority = authority_context.get("strategy_source_authority")
+    if not isinstance(authority, Mapping) or not authority:
+        return None, "strategy_sell_canonical_listed_info_authority_missing"
+    if str(authority.get("status") or "") != "PASS":
+        return None, "strategy_sell_canonical_listed_info_authority_not_pass"
+    if str(authority.get("business_date") or business_date) != business_date:
+        return None, "strategy_sell_canonical_listed_info_business_date_mismatch"
+    paths = authority.get("paths") if isinstance(authority.get("paths"), Mapping) else {}
+    source_records = authority.get("source_records") if isinstance(authority.get("source_records"), Mapping) else {}
+    record = source_records.get("listed_issues") if isinstance(source_records.get("listed_issues"), Mapping) else {}
+    source_path_text = str(record.get("path") or paths.get("listed_issues") or "")
+    if not source_path_text:
+        return None, "strategy_sell_canonical_listed_info_source_path_missing"
+    source_path = Path(source_path_text)
+    if not source_path.is_file():
+        return None, "strategy_sell_canonical_listed_info_source_missing"
+    if record and bool(record.get("exists")) is False:
+        return None, "strategy_sell_canonical_listed_info_source_record_missing"
+    if record and str(record.get("pit_status") or "") != "PASS":
+        return None, "strategy_sell_canonical_listed_info_pit_not_pass"
+    source_hash = _file_hash(source_path)
+    expected_hash = str(record.get("sha256") or "")
+    if expected_hash and expected_hash != source_hash:
+        return None, "strategy_sell_canonical_listed_info_source_hash_mismatch"
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return None, "strategy_sell_canonical_listed_info_source_unreadable"
+    required_columns = {"Code"}
+    if not required_columns.issubset(set(str(column) for column in frame.columns)):
+        return None, "strategy_sell_canonical_listed_info_code_column_missing"
+    rows = frame[frame["Code"].map(_canonical_listed_symbol) == symbol].copy()
+    if rows.empty:
+        return None, "strategy_sell_canonical_listed_info_no_row"
+    if "Date" in rows.columns:
+        rows["_authority_date"] = rows["Date"].map(lambda value: str(value)[:10])
+        if any(str(value) > business_date for value in rows["_authority_date"]):
+            return None, "strategy_sell_canonical_listed_info_future_dated"
+        rows = rows[rows["_authority_date"] <= business_date]
+        if rows.empty:
+            return None, "strategy_sell_canonical_listed_info_no_pit_row"
+        latest_date = max(str(value) for value in rows["_authority_date"])
+        rows = rows[rows["_authority_date"] == latest_date]
+    else:
+        latest_date = business_date
+    if len(rows) != 1:
+        return None, "strategy_sell_canonical_listed_info_multiple_rows"
+    row = rows.iloc[0].to_dict()
+    listed_info = _listed_info_from_canonical_row(
+        row=row,
+        symbol=symbol,
+        business_date=business_date,
+        source_path=source_path,
+        source_hash=source_hash,
+        source_record=record,
+        authority=authority,
+        row_date=latest_date,
+    )
+    if listed_info is None:
+        return None, "strategy_sell_canonical_listed_info_validation_failed"
+    return listed_info, ""
+
+
+def _strategy_source_authority_from_input_manifest(input_manifest: Mapping[str, Any]) -> dict[str, Any]:
+    direct = input_manifest.get("strategy_source_authority")
+    if isinstance(direct, Mapping):
+        return dict(direct)
+    sources = input_manifest.get("strategy_input_sources")
+    if isinstance(sources, Mapping):
+        nested = sources.get("strategy_source_authority")
+        if isinstance(nested, Mapping):
+            return dict(nested)
+    return {}
+
+
+def _listed_info_from_canonical_row(
+    *,
+    row: Mapping[str, Any],
+    symbol: str,
+    business_date: str,
+    source_path: Path,
+    source_hash: str,
+    source_record: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    row_date: str,
+) -> dict[str, Any] | None:
+    code = _canonical_listed_symbol(row.get("Code"))
+    market = _first_text(row.get("MktNm"), row.get("MarketCodeName"), row.get("MarketSegment"), row.get("market"))
+    product_category = _first_text(row.get("ProdCat"), row.get("ProductCategory"), row.get("product_category"))
+    security_type = _first_text(row.get("SecType"), row.get("Type"), row.get("security_type"), product_category)
+    current_listed = _current_listed_from_canonical_row(row)
+    if code != symbol:
+        return None
+    if not (market and product_category and security_type):
+        return None
+    if current_listed is not True:
+        return None
+    if row_date > business_date:
+        return None
+    return {
+        "code": code,
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": True,
+        "listed_info_authority": "canonical_pit_listed_issues",
+        "listed_info_source": str(source_path),
+        "listed_info_source_artifact": str(source_path),
+        "listed_info_source_hash": source_hash,
+        "listed_info_expected_source_hash": str(source_record.get("sha256") or ""),
+        "listed_info_business_date": business_date,
+        "listed_info_row_date": row_date,
+        "listed_info_row_id": f"canonical_listed_issues:{row_date}:{code}",
+        "listed_info_resolution_status": "PASS",
+        "listed_info_resolution_reason": "canonical_pit_listed_issues_row_authority_bound",
+        "listed_info_pit_status": str(source_record.get("pit_status") or "PASS"),
+        "strategy_source_authority": str(authority.get("authority") or ""),
+        "strategy_source_authority_status": str(authority.get("status") or ""),
+        "strategy_source_resolution_source": str(authority.get("resolution_source") or ""),
+        "strategy_source_manifest_path": str(authority.get("source_manifest_path") or ""),
+        "strategy_source_manifest_hash": str(authority.get("source_manifest_hash") or ""),
+        "run_scoped_historical_authority_used": bool(authority.get("run_scoped_historical_authority_used")),
+        "operations_latest_fallback_used": bool(authority.get("operations_latest_fallback_used")),
+    }
+
+
+def _canonical_listed_info_opportunity_conflict_reason(
+    *,
+    canonical: Mapping[str, Any],
+    opportunity_authority: Mapping[str, Any],
+) -> str:
+    if not opportunity_authority:
+        return ""
+    opportunity_symbol = str(opportunity_authority.get("opportunity_symbol") or opportunity_authority.get("symbol") or "").strip()
+    if opportunity_symbol and opportunity_symbol != str(canonical.get("code") or ""):
+        return "strategy_sell_canonical_listed_info_opportunity_symbol_mismatch"
+    if opportunity_authority.get("current_listed") is False:
+        return "strategy_sell_canonical_listed_info_opportunity_current_listed_conflict"
+    for source_field, canonical_field, reason in (
+        ("market", "market", "strategy_sell_canonical_listed_info_opportunity_market_mismatch"),
+        ("product_category", "product_category", "strategy_sell_canonical_listed_info_opportunity_product_category_mismatch"),
+        ("security_type", "security_type", "strategy_sell_canonical_listed_info_opportunity_security_type_mismatch"),
+    ):
+        explicit = str(opportunity_authority.get(source_field) or "").strip()
+        if explicit and explicit != str(canonical.get(canonical_field) or ""):
+            return reason
+    return ""
+
+
+def _canonical_listed_symbol(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "nan":
+            return text
+    return ""
+
+
+def _current_listed_from_canonical_row(row: Mapping[str, Any]) -> bool | None:
+    for field in ("current_listed", "CurrentListed", "IsListed", "Listed"):
+        if field not in row:
+            continue
+        value = row.get(field)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "y", "listed"}:
+            return True
+        if text in {"false", "0", "no", "n", "delisted"}:
+            return False
+    return True
 
 
 def _listed_info_from_opportunity_authority(

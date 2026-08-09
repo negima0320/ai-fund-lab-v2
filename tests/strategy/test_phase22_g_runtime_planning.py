@@ -146,6 +146,14 @@ def test_phase23_aa_runtime_planning_maps_position_sizing_zero_to_no_order(tmp_p
                 "incremental_buy_notional": 0.0,
             }
         },
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "76470",
+                quantity=6900,
+                as_of="2026-07-15",
+                source="runtime_v2_runtime_owned_fill_projection",
+            ),
+        ),
     )
     payload, _ = build_runtime_planning_payload(
         business_date="2026-07-15",
@@ -207,7 +215,7 @@ def test_phase23_ai_runtime_planning_keeps_sized_buy_candidate_as_buy_new(tmp_pa
     assert all(item["planning_intent"] != "NO_ORDER" for item in payload["plans"])
 
 
-def test_phase23_ar_runtime_planning_maps_negative_quantity_delta_to_sell_exit(tmp_path: Path) -> None:
+def test_phase28_d25_runtime_planning_blocks_target_zero_sell_exit_without_pm_exit_authority(tmp_path: Path) -> None:
     position_sizing_path = _write_position_sizing(
         tmp_path,
         {
@@ -235,12 +243,164 @@ def test_phase23_ar_runtime_planning_maps_negative_quantity_delta_to_sell_exit(t
     )
 
     plan = payload["plans"][0]
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert plan["planning_intent"] == "UNRESOLVED"
+    assert plan["order_side_intent"] == "UNRESOLVED"
+    assert plan["pending_eligibility"] == "REVIEW_REQUIRED"
+    assert plan["quantity_required"] is False
+    assert plan["planned_quantity"] == 0
+    assert plan["source_pm_action"] == "HOLD"
+    assert plan["full_liquidation_authority_present"] is False
+    assert plan["full_liquidation_authority_source"] == "NONE"
+    assert "planning_conflict_review:full_liquidation_authority_missing:7203" in plan["reason_codes"]
+
+
+def test_phase28_d25_runtime_planning_preserves_pm_exit_to_sell_exit(tmp_path: Path) -> None:
+    position_sizing_path = _write_position_sizing(
+        tmp_path,
+        {
+            "9432": {
+                "sizing_status": "SIZED",
+                "target_notional": 0.0,
+                "target_quantity_candidate": 0,
+                "quantity_delta_candidate": -100,
+                "quantity_status": "RESOLVED_CANDIDATE",
+            }
+        },
+    )
+    payload, _ = build_runtime_planning_payload(
+        business_date="2026-07-15",
+        portfolio_construction_artifact_path=_write_portfolio_construction(tmp_path, {"9432": ("REMOVE_CANDIDATE", True)}),
+        capital_deployment_artifact_path=None,
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, {"9432": "EXIT"}),
+        current_portfolio_summary=_summary(tmp_path, "portfolio"),
+        current_cash_summary=_summary(tmp_path, "cash"),
+        current_position_summary=_summary(tmp_path, "position", rows=({"security_code": "9432"},)),
+        pending_summary=_summary(tmp_path, "pending"),
+        planning_config_summary=_summary(tmp_path, "planning_config"),
+        position_sizing_artifact_path=position_sizing_path,
+    )
+
+    plan = payload["plans"][0]
     assert payload["producer_result_status"] == "PASS"
     assert plan["planning_intent"] == "SELL_EXIT"
     assert plan["order_side_intent"] == "SELL"
     assert plan["planned_quantity"] == 100
+    assert plan["source_pm_action"] == "EXIT"
+    assert plan["full_liquidation_authority_present"] is True
+    assert plan["full_liquidation_authority_source"] == "PM_EXIT"
+    assert "full_liquidation_authority:PM_EXIT" in plan["reason_codes"]
     assert plan["reference_price"] == 1000.0
     assert plan["reference_price_resolution"]["status"] == "PASS"
+
+
+def test_phase28_d25_runtime_planning_maps_pm_reduce_to_sell_reduce_not_exit(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"8306": "REDUCE"},
+        pc_members={"8306": ("REDUCE_CANDIDATE", True)},
+        current_codes=("8306",),
+        position_sizing_positions={
+            "8306": {
+                "sizing_status": "SIZED",
+                "target_quantity_candidate": 60,
+                "quantity_delta_candidate": -40,
+                "quantity_status": "RESOLVED_CANDIDATE",
+            }
+        },
+    )
+
+    plan = result.payload["plans"][0]
+    assert result.payload["producer_result_status"] == "PASS"
+    assert plan["planning_intent"] == "SELL_REDUCE"
+    assert plan["order_side_intent"] == "SELL"
+    assert plan["planned_quantity"] == 40
+    assert plan["source_pm_action"] == "REDUCE"
+    assert plan["full_liquidation_authority_present"] is False
+    assert plan["full_liquidation_authority_source"] == "NONE"
+
+
+def test_phase28_d36_runtime_planning_maps_existing_add_zero_delta_to_no_action(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"76470": "ADD"},
+        pc_members={"76470": ("RETAIN", True)},
+        current_codes=("76470",),
+        position_sizing_positions={
+            "76470": {
+                "sizing_status": "SIZED",
+                "target_quantity_candidate": 6900,
+                "quantity_delta_candidate": 0,
+                "quantity_status": "RESOLVED_ZERO_DELTA",
+            }
+        },
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "76470",
+                quantity=6900,
+                as_of="2026-07-15",
+                source="runtime_v2_runtime_owned_fill_projection",
+            ),
+        ),
+    )
+
+    plan = result.payload["plans"][0]
+    assert result.payload["producer_result_status"] == "PASS"
+    assert plan["planning_intent"] == "NO_ACTION"
+    assert plan["planned_quantity"] == 0
+    assert plan["source_pm_action"] == "ADD"
+    assert "current_position_zero_delta_maps_to_no_action" in plan["reason_codes"]
+
+
+def test_phase28_d25_pm_reduce_rounding_zero_does_not_silently_escalate_to_sell_exit(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"8306": "REDUCE"},
+        pc_members={"8306": ("REDUCE_CANDIDATE", True)},
+        current_codes=("8306",),
+        position_sizing_positions={
+            "8306": {
+                "sizing_status": "SIZED",
+                "target_quantity_candidate": 0,
+                "quantity_delta_candidate": -100,
+                "quantity_status": "RESOLVED_CANDIDATE",
+            }
+        },
+    )
+
+    plan = result.payload["plans"][0]
+    assert result.payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert plan["planning_intent"] == "UNRESOLVED"
+    assert plan["pending_eligibility"] == "REVIEW_REQUIRED"
+    assert plan["source_pm_action"] == "REDUCE"
+    assert plan["full_liquidation_authority_present"] is False
+    assert "planning_conflict_review:full_liquidation_authority_missing:8306" in plan["reason_codes"]
+
+
+def test_phase28_d25_pm_unresolved_target_zero_does_not_generate_sell_exit(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"31330": "UNRESOLVED"},
+        pc_members={"31330": ("UNRESOLVED", True)},
+        current_codes=("31330",),
+        position_sizing_positions={
+            "31330": {
+                "sizing_status": "SIZED",
+                "target_quantity_candidate": 0,
+                "quantity_delta_candidate": -100,
+                "quantity_status": "RESOLVED_CANDIDATE",
+            }
+        },
+    )
+
+    plan = result.payload["plans"][0]
+    assert result.payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert plan["planning_intent"] == "UNRESOLVED"
+    assert plan["source_pm_action"] == "UNRESOLVED"
+    assert plan["full_liquidation_authority_present"] is False
+    assert plan["full_liquidation_authority_source"] == "NONE"
+    assert "planning_conflict_review:full_liquidation_authority_missing:31330" in plan["reason_codes"]
 
 
 def test_phase23_bo_runtime_planning_requires_price_authority_for_executable_plan(tmp_path: Path) -> None:
@@ -1176,7 +1336,12 @@ def _write_source(tmp_path: Path, name: str) -> Path:
     return path
 
 
-def _write_position_sizing(tmp_path: Path, positions: dict[str, dict[str, object]]) -> Path:
+def _write_position_sizing(
+    tmp_path: Path,
+    positions: dict[str, dict[str, object]],
+    *,
+    current_position_rows: tuple[dict[str, object], ...] | None = None,
+) -> Path:
     source = _write_source(tmp_path, "position_sizing_source")
     def canonical(item: dict[str, object]) -> dict[str, object]:
         if "target_quantity_candidate" in item and "quantity_delta_candidate" in item and "quantity_status" in item:
@@ -1231,6 +1396,7 @@ def _write_position_sizing(tmp_path: Path, positions: dict[str, dict[str, object
             }
             for code, item in sorted(positions.items())
         ],
+        "current_position_rows": list(current_position_rows or ()),
         "source_hashes": [{"role": "position_sizing", "path": str(source), "sha256": _sha256_file(source)}],
     }
     path = tmp_path / "position_sizing.json"

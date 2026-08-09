@@ -52,7 +52,7 @@ ADD Expected Edge and Capital Efficiency Improvement
 Phase28 status:
 
 ```text
-READY_TO_START
+PHASE28_D0_COMPLETE_PHASE28_D_100BD_OPERATOR_APPROVED
 ```
 
 Phase28 purpose:
@@ -77,6 +77,669 @@ Phase28 entry rule:
 
 ```text
 1 Performance Change = 1 Experiment = 1 user-run 100BD Acceptance
+```
+
+Phase28-A result:
+
+```text
+Task: ADD Baseline and Incremental Investment Evidence Audit
+Primary Judgment: PHASE28_A_ADD_BASELINE_AUDIT_COMPLETE_WITH_EVIDENCE_GAPS_PHASE28_B_CONDITIONAL
+Phase28-B Entry Decision: CONDITIONAL
+Implementation Changed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-A evidence summary:
+
+```text
+Source run: runtime-test-historical-smoke-20260804T074611098414Z
+Business days: 100
+Existing-position rows: 364
+PM ADD intent: 145
+Runtime Planning BUY_ADD: 0
+ADD submit observed: 0
+ADD fill observed: 0
+ADD zero delta: 145
+ADD zero quantity: 145
+Rank1 existing-position rows: 86
+Rank1 PM ADD intent rows: 76
+Rank1 BUY_ADD rows: 0
+Average cash ratio: 50.108%
+Final cash ratio: 65.965%
+Average invested ratio: 49.892%
+Final invested ratio: 34.035%
+```
+
+Phase28-A conclusion:
+
+```text
+PM ADD intent is observable, but executable canonical BUY_ADD was not observed.
+All observed PM ADD rows were zero-delta / zero-quantity and mapped to Runtime Planning NO_ACTION.
+The canonical BUY_ADD path is defined, but PM ADD reaching Portfolio Construction target weight and Position Sizing positive delta is not proven in the baseline evidence.
+Expected Edge Improvement and Incremental Investment Value are not explicit current ADD inputs.
+```
+
+Phase28-B conditional entry scope:
+
+```text
+Phase28-B may start as design-only work.
+First design items:
+- Expected Edge Improvement
+- Incremental Investment Value
+- Portfolio Opportunity Cost
+- Concentration Risk
+- Capital Efficiency
+- PM ADD to Portfolio Construction target-weight bridge
+- ADD Decision Trace and campaign attribution requirements
+
+No performance implementation is approved by Phase28-A alone.
+```
+
+Phase28-A deliverables:
+
+```text
+docs/phase_reports/phase28_a_add_baseline_and_incremental_investment_evidence_audit.md
+reports/phase_reports/phase28_a_add_baseline_and_incremental_investment_evidence_audit.json
+reports/phase28_a_add_baseline_and_incremental_investment_evidence_audit/
+```
+
+Phase28-B result:
+
+```text
+Task: Incremental Investment Eligibility and Canonical ADD Allocation Design
+Task Type: DESIGN_ONLY
+Primary Judgment: PHASE28_B_INCREMENTAL_INVESTMENT_ELIGIBILITY_DESIGN_COMPLETE_PHASE28_C_READY
+Phase28-C Entry Decision: APPROVED
+Implementation Changed: false
+Long Historical Executed by Codex: false
+Contract Status: DESIGNED_NOT_IMPLEMENTED
+```
+
+Phase28-B design summary:
+
+```text
+Expected Edge Improvement:
+same-campaign current decision-time Expected Edge evidence is stronger than
+the most recent accepted PM decision baseline, with PIT comparability required.
+Missing / stale / invalid / future-dated evidence fails closed.
+
+Incremental Investment Value:
+additional notional improves Portfolio Expected Value after marginal edge,
+risk, opportunity cost, execution feasibility, cash, and concentration constraints.
+
+Portfolio Opportunity Cost:
+Existing Position ADD, New Candidate BUY, and Cash Retention compete on a
+common PIT portfolio allocation value evidence scale inside Portfolio Construction.
+Cash retention remains valid when incremental value is not positive.
+```
+
+Phase28-C primary recommendation:
+
+```text
+Implement exactly one performance change:
+
+Connect ADD Expected Edge Improvement + Incremental Investment Value PASS
+to Portfolio Construction target_weight increase for existing positions,
+so Position Sizing can emit positive quantity_delta_candidate and Runtime Planning
+can emit BUY_ADD through the existing canonical mapping.
+```
+
+Phase28-C must not include:
+
+```text
+BUY Quality threshold changes
+Market Context threshold changes
+Portfolio Fit formula redesign
+Corporate Event gate changes
+HOLD / REDUCE / EXIT changes
+cash deployment rule changes
+new concentration cap
+new position-count rule
+fixed exposure rule
+legacy ADD executable revival
+model retraining
+```
+
+Phase28-B deliverables:
+
+```text
+docs/phase_reports/phase28_b_incremental_investment_eligibility_and_canonical_add_allocation_design.md
+reports/phase_reports/phase28_b_incremental_investment_eligibility_and_canonical_add_allocation_design.json
+reports/phase28_b_incremental_investment_eligibility_and_canonical_add_allocation_design/
+```
+
+Phase28-C result:
+
+```text
+Task: Canonical ADD Allocation Bridge Implementation
+Task Type: IMPLEMENTATION / SHORT VALIDATION ONLY
+Primary Judgment: PHASE28_C_CANONICAL_ADD_ALLOCATION_BRIDGE_IMPLEMENTED_SHORT_VALIDATION_PASS_PHASE28_D_READY
+Phase28-D Entry Decision: APPROVED
+Implementation Changed: true
+Config Changed: false
+Schema Changed: false
+Threshold Changed: false
+Runtime Planning Mapping Changed: false
+Legacy ADD Executable Revived: false
+Long Historical Executed by Codex: false
+Short Validation: py_compile PASS, focused Phase28-C 6 passed, short regression 102 passed
+```
+
+Phase28-C implementation summary:
+
+```text
+Portfolio Construction now owns the canonical ADD allocation bridge for existing
+PM ADD rows. Expected Edge Improvement, Incremental Investment Value,
+Opportunity Cost, Campaign Continuation, Concentration, Capital Availability,
+and Execution Feasibility must pass before target_weight increases above
+current_weight.
+
+Position Sizing continues to own target_notional, target_quantity_candidate,
+current_quantity, and quantity_delta_candidate. Runtime Planning mapping was
+not recomputed or redesigned.
+```
+
+Phase28-C deliverables:
+
+```text
+docs/phase_reports/phase28_c_canonical_add_allocation_bridge_implementation.md
+reports/phase_reports/phase28_c_canonical_add_allocation_bridge_implementation.json
+reports/phase28_c_canonical_add_allocation_bridge_implementation/
+```
+
+Phase28-D0 result:
+
+```text
+Task: 100BD Operator Execution and Evidence Collection Readiness Review
+Task Type: READ_ONLY_EXECUTION_CONTRACT_REVIEW
+Primary Judgment: PHASE28_D0_READY_WITH_NON_BLOCKING_EVIDENCE_LIMITATIONS
+100BD Operator Entry Decision: APPROVED
+Implementation Changed: false
+Config Changed: false
+Schema Changed: false
+Threshold Changed: false
+Runtime Planning Mapping Changed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D0 execution contract:
+
+```text
+Baseline run: runtime-test-historical-smoke-20260804T074611098414Z
+After profile: historical-smoke
+After period: 2023-01-04 through 2023-05-31
+After business days: 100
+After initial cash: 1,000,000 JPY
+Operator fresh-run command approved: true
+Operator resume command approved: true
+Preflight / monitoring / performance / ADD evidence / attachment contracts documented.
+```
+
+Phase28-D0 known non-blocking limitations:
+
+```text
+Baseline source_dirty is true and must be disclosed in Phase28-D.
+Baseline close/strategy-shadow review limitations must be disclosed in Phase28-D.
+Dedicated ADD funnel extraction CLI was not confirmed; raw artifacts and existing summarize scopes are required.
+```
+
+Phase28-D0 deliverables:
+
+```text
+docs/phase_reports/phase28_d0_100bd_operator_execution_and_evidence_collection_readiness_review.md
+docs/phase_reports/phase28_d0_100bd_operator_runbook.md
+reports/phase_reports/phase28_d0_100bd_operator_execution_and_evidence_collection_readiness_review.json
+reports/phase28_d0_100bd_operator_execution_and_evidence_collection_readiness_review/
+```
+
+Phase28-D HALT:
+
+```text
+After run: runtime-test-historical-smoke-20260805T124145808243Z
+Profile: historical-smoke
+Planned business days: 100
+Completed business days: 9
+HALT business date: 2023-01-18
+HALT stage: sell_planning
+Runtime CLI error: Runtime CLI stopped at 2023-01-18:sell_planning with exit code 20
+Phase28-D status: PAUSED_FOR_D1_DIAGNOSIS
+```
+
+Phase28-D1 result:
+
+```text
+Task: 2023-01-18 Sell Planning HALT Causal Diagnosis
+Task Type: READ_ONLY_DIAGNOSIS
+Primary Judgment: PHASE28_D1_SELL_PLANNING_HALT_ROOT_CAUSE_CONFIRMED_PHASE28_C_UNRELATED
+Resume Decision: FRESH_RUN_REQUIRED_AFTER_REPAIR
+Phase28-D Status: RESTART_REQUIRED
+Implementation Changed: false
+Resume Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D1 causal summary:
+
+```text
+Direct halt cause: sell planning pipeline review required: REVIEW_REQUIRED_REDUCE_PENDING_SELL_CONFLICT:76470
+Authority producer: Runtime Sell Planning pending pipeline
+Affected symbol: 76470
+Affected side: SELL
+First causally stopping state: sell_planning_pending_pipeline REVIEW_REQUIRED
+BUY / SELL independence violation: false
+Phase28-C direct causality: false
+Phase28-C indirect trigger: false
+Runtime defect: true
+Safety / Data Readiness defect: false
+Current halted run reusable for 100BD comparison: false
+```
+
+Phase28-D1 repair boundary:
+
+```text
+Repair required in Runtime/Sell Planning pending orchestration.
+Do not repair Portfolio Construction, Position Sizing, ADD bridge, thresholds, PM, or Market Context for this HALT.
+After repair, Phase28-D requires a fresh 100BD After run to preserve comparability.
+```
+
+Phase28-D1 deliverables:
+
+```text
+docs/phase_reports/phase28_d1_20230118_sell_planning_halt_causal_diagnosis.md
+reports/phase_reports/phase28_d1_20230118_sell_planning_halt_causal_diagnosis.json
+reports/phase28_d1_20230118_sell_planning_halt_causal_diagnosis/
+```
+
+Phase28-D2 result:
+
+```text
+Task: Runtime Sell Planning Pending Conflict Repair Design
+Task Type: DESIGN_ONLY
+Primary Judgment: PHASE28_D2_PENDING_CONFLICT_REPAIR_DESIGN_COMPLETE_PHASE28_D3_READY
+Phase28-D3 Entry Decision: APPROVED
+Implementation Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D2 design summary:
+
+```text
+Current defect:
+Sell Planning treats same-symbol active SELL pending as conflict before
+classifying same lineage / compatible update / submitted state / true duplicate
+risk, then no-signal review handling can overwrite the active pending slot.
+
+Pending executable authority:
+.runtime/pending_order_plan/pending_order_plan.json after approval and
+Submit Guard validation.
+
+Recommended Phase28-D3 model:
+Option C - Existing plan reconciliation.
+
+Phase28-D3 minimal repair:
+Replace the coarse same-symbol SELL conflict gate with a Pending SELL
+reconciliation classifier and add no-signal active-pending preservation.
+
+Phase28-D3 must not change:
+Phase28-C ADD bridge, Expected Edge, PM thresholds, REDUCE / EXIT criteria,
+Safety / Data Readiness gates, Broker Submit behavior, cash / exposure /
+concentration logic, or BUY logic beyond side-preserving composition
+interfaces if unavoidable.
+```
+
+Phase28-D2 fresh restart requirement:
+
+```text
+Do not resume runtime-test-historical-smoke-20260805T124145808243Z.
+After Phase28-D3 repair and focused validation, Phase28-D requires a fresh
+100BD historical runtime run. The D1 halted run is not reusable because the
+active pending slot was overwritten by an empty no-signal plan during the
+review-required halt path.
+```
+
+Phase28-D2 deliverables:
+
+```text
+docs/phase_reports/phase28_d2_runtime_sell_planning_pending_conflict_repair_design.md
+reports/phase_reports/phase28_d2_runtime_sell_planning_pending_conflict_repair_design.json
+reports/phase28_d2_runtime_sell_planning_pending_conflict_repair_design/
+```
+
+Phase28-D3 result:
+
+```text
+Task: Runtime Sell Pending Reconciliation Implementation
+Task Type: IMPLEMENTATION / SHORT VALIDATION ONLY
+Primary Judgment: PHASE28_D3_RUNTIME_SELL_PENDING_RECONCILIATION_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+Phase28-D Restart Entry Decision: APPROVED
+Implementation Changed: true
+Config Changed: false
+Schema Changed: false
+Threshold Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D3 implementation summary:
+
+```text
+Implemented the single approved Runtime repair:
+Sell Planning now reconciles active same-symbol SELL pending with new Sell
+Planning SELL intent before deciding conflict.
+
+same-intent duplicate:
+existing SELL pending is preserved idempotently.
+
+compatible update:
+same-day compatible SELL pending is preserved/reconciled with one SELL item.
+
+true conflict / submitted / partial fill / generation mismatch / unknown:
+REVIEW_REQUIRED, original active pending preserved, no empty no-signal
+overwrite.
+
+BUY / SELL independence:
+SELL reconciliation preserves BUY pending through existing side-aware
+composition and does not clear the opposite side.
+```
+
+Phase28-D3 validation:
+
+```text
+py_compile: PASS
+D3 focused fixtures: 5 passed
+existing pending composition regression: 13 passed
+short regression: 115 passed, 60 warnings
+Phase28-C ADD regression: PASS
+Runtime Authority violation: false
+Performance change mixed in: false
+```
+
+Phase28-D fresh 100BD restart entry:
+
+```text
+APPROVED.
+Do not resume runtime-test-historical-smoke-20260805T124145808243Z.
+The next Phase28-D validation must be a fresh 100BD historical runtime run
+started after the Phase28-D3 repair.
+```
+
+Phase28-D3 deliverables:
+
+```text
+docs/phase_reports/phase28_d3_runtime_sell_pending_reconciliation_implementation.md
+reports/phase_reports/phase28_d3_runtime_sell_pending_reconciliation_implementation.json
+reports/phase28_d3_runtime_sell_pending_reconciliation_implementation/
+```
+
+Phase28-D4 result:
+
+```text
+Task: Submit Exit Code 20 Root Cause Confirmation
+Task Type: READ_ONLY_DIAGNOSIS
+Implementation Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D4 diagnosis:
+
+```text
+Target run: runtime-test-historical-smoke-20260805T204551337825Z
+HALT date: 2023-03-15
+HALT stage: submit
+Runtime CLI exit code: 20
+
+First exit20 code location:
+src/ai_fund_lab_v2/runtime_v2/cli/run_daily_operation.py:915-917
+
+First authority producer:
+runtime_v2_corporate_action_adjustment_authority via Submit Guard
+
+Affected symbol: 76920
+Affected side: SELL
+Affected intent: SELL_EXIT
+Affected pending item: strategy-3065ae70fb016c7cc2c9
+Affected decision/planning id: rp-2023-03-15-76920-sell_exit-b7a0cb7f9a04b8dd
+
+Direct reason:
+corporate_action_event_not_resolved / corporate_action_type_unresolved
+with unresolved adjusted quantity evidence.
+
+Producer artifact:
+.runtime/runtime_state/corporate_action_adjustments/2023-03-15/76920.json
+```
+
+Phase28-D4 causality:
+
+```text
+Phase28-C direct causality: false
+Phase28-D3 direct causality: false
+Wi-Fi causality: false
+Repair required: true
+Repair scope: Corporate Action Adjustment Authority / planning-stage
+corporate action blocking for SELL_EXIT pending
+Next phase: Phase28-D5
+```
+
+Phase28-D4 deliverables:
+
+```text
+docs/phase_reports/phase28_d4_submit_exit20_root_cause_confirmation.md
+reports/phase_reports/phase28_d4_submit_exit20_root_cause_confirmation.json
+```
+
+Phase28-D5 result:
+
+```text
+Task: 2023-04-10 Submit HALT Root Cause Diagnosis
+Task Type: READ_ONLY_DIAGNOSIS
+Implementation Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D5 diagnosis:
+
+```text
+Target run: runtime-test-historical-smoke-20260805T231619492537Z
+Start date: 2023-04-03
+HALT date: 2023-04-10
+HALT stage: submit
+Runtime CLI exit code: 20
+
+First exit20 code location:
+src/ai_fund_lab_v2/runtime_v2/cli/run_daily_operation.py:915-917
+
+First authority producer:
+historical_simulated_broker_authority via Submit Guard broker_available_quantity check
+
+Affected symbol: 43880
+Affected side: SELL
+Affected intent: SELL_EXIT
+Affected pending item: strategy-d3ca3c09c7e90609497b
+Affected decision/planning id: rp-2023-04-10-43880-sell_exit-721a37484a2e69ca
+
+Direct reason:
+sell broker available quantity missing
+
+Underlying evidence reason:
+listed_info_missing
+
+Corporate Action: false
+```
+
+Phase28-D5 causality:
+
+```text
+Phase28-C direct causality: false
+Phase28-D3 direct causality: false
+Evaluation period change exposed a new 2023-04-10 / 43880 case: true
+Repair required: true
+Repair scope: Historical SELL pending listed_info authority / broker
+issue-code normalization evidence for SELL_EXIT pending
+Next phase: Phase28-D6 historical SELL pending listed_info authority repair design
+```
+
+Phase28-D5 deliverables:
+
+```text
+docs/phase_reports/phase28_d5_20230410_submit_halt_root_cause.md
+reports/phase_reports/phase28_d5_20230410_submit_halt_root_cause.json
+```
+
+Phase28-D6 result:
+
+```text
+Task: SELL Pending listed_info Authority Trace Audit
+Task Type: READ_ONLY_DIAGNOSIS
+Implementation Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D6 diagnosis:
+
+```text
+Target run: runtime-test-historical-smoke-20260805T231619492537Z
+Target date: 2023-04-10
+Target symbol: 43880
+Target side / intent: SELL / SELL_EXIT
+Target pending item: strategy-d3ca3c09c7e90609497b
+Target decision/planning id: rp-2023-04-10-43880-sell_exit-721a37484a2e69ca
+
+First null location:
+strategy_authority pending item generation for strategy-d3ca3c09c7e90609497b
+
+Initial listed_info producer:
+strategy_authority._listed_info_from_opportunity_authority
+
+Initial producer result for 43880:
+No listed_info generated because the Runtime Planning plan had no opportunity
+authority: opportunity_artifact_path="", opportunity_row_id="",
+quality_decision_id="", quality_status=REVIEW_REQUIRED.
+
+Later Sell Planning PM producer result:
+sell_pipeline._pending_item generated basic listed_info for
+opi-sell-exit-pm-43880-001.
+
+Why null remained:
+Pending SELL reconciliation classified the PM EXIT item as a compatible update
+and preserved the existing strategy item:
+PENDING_SELL_COMPATIBLE_UPDATE_MERGED / PRESERVE_EXISTING.
+The valid listed_info on the new PM item was not copied into the preserved item.
+```
+
+Phase28-D6 causality:
+
+```text
+43880-only: observed only 43880 on 2023-04-10, but mechanism is not symbol-specific.
+SELL_EXIT-only: observed on SELL_EXIT; preservation/drop risk is SELL reconciliation-specific.
+Producer defect: partial, strategy pending listed_info source is opportunity-only.
+Consumer defect: yes, Submit requires listed_info for broker normalization.
+Copy defect: yes, compatible SELL reconciliation did not merge listed_info.
+Phase28-C direct causality: false
+Phase28-D3 relation: directly related to D3 compatible SELL pending preserve behavior.
+Repair required: true
+Minimal repair scope: merge/preserve required submit authority fields during
+compatible SELL pending reconciliation, especially listed_info; add a
+non-opportunity listed-info authority for executable SELL strategy pending.
+Next phase: Phase28-D7 SELL pending authority merge repair design
+```
+
+Phase28-D6 deliverables:
+
+```text
+docs/phase_reports/phase28_d6_sell_pending_listed_info_authority_trace.md
+reports/phase_reports/phase28_d6_sell_pending_listed_info_authority_trace.json
+```
+
+Phase28-D7 result:
+
+```text
+Task: SELL Pending Required Authority Merge Repair Design
+Task Type: DESIGN_ONLY
+Primary Judgment: PHASE28_D7_SELL_PENDING_AUTHORITY_MERGE_DESIGN_COMPLETE_PHASE28_D8_READY
+Phase28-D8 Entry Decision: APPROVED
+Implementation Changed: false
+Resume Executed: false
+Fresh Runtime Executed: false
+Long Historical Executed by Codex: false
+```
+
+Phase28-D7 design summary:
+
+```text
+Current defect:
+Compatible SELL reconciliation can preserve existing pending identity while
+discarding required submit authority fields from a valid new compatible PM SELL
+item.
+
+Target halt class:
+Existing strategy SELL pending strategy-d3ca3c09c7e90609497b had listed_info=null.
+New PM SELL item opi-sell-exit-pm-43880-001 had valid listed_info.
+D3 compatible reconciliation preserved the existing item and did not merge the
+new required authority field.
+
+D8 Primary Recommendation:
+Option A only: compatible SELL pending required-authority merge.
+
+D8 repair boundary:
+Preserve existing pending identity but validate and merge required submit
+authority fields, starting with listed_info, from a compatible new PM SELL item.
+
+Blind copy is prohibited.
+Conflicts fail closed to REVIEW_REQUIRED before Approval / Submit.
+Submit Guard remains final defensive fail-closed.
+```
+
+Phase28-D7 authority contract:
+
+```text
+listed_info Primary Authority for D8:
+validated listed_info from the new compatible PM SELL item.
+
+Long-term Primary Authority:
+canonical PIT listed-issue metadata independent of Opportunity ranking.
+
+Approval prevalidation:
+Executable and approved pending items must not carry listed_info missing.
+
+Hash / lineage:
+pending identity preserved, previous/new content hash recorded, atomic write
+required, post-approval merge prohibited unless reapproval is forced.
+
+Phase28-C direct causality: false
+Phase28-D3 relation: directly related to compatible SELL pending preserve behavior.
+BUY / SELL independence: preserved.
+```
+
+Phase28-D7 D8 entry:
+
+```text
+APPROVED.
+D8 must implement exactly one Runtime repair:
+compatible SELL pending required-authority merge.
+
+D8 must not change:
+Strategy producer, Submit Guard, Broker adapter, BUY logic, Phase28-C ADD bridge,
+performance conditions, config, thresholds, or long historical execution.
+
+After D8 short validation, user/operator must run a fresh 100BD.
+Do not resume runtime-test-historical-smoke-20260805T231619492537Z.
+```
+
+Phase28-D7 deliverables:
+
+```text
+docs/phase_reports/phase28_d7_sell_pending_required_authority_merge_repair_design.md
+reports/phase_reports/phase28_d7_sell_pending_required_authority_merge_repair_design.json
+reports/phase28_d7_sell_pending_required_authority_merge_repair_design/
 ```
 
 Phase28 non-goals:
@@ -7151,4 +7814,5416 @@ docs/phase_reports/phase25_to_phase26_chatgpt_handoff.md
 reports/phase_reports/phase25_final_summary_and_phase26_handoff.json
 reports/phase_reports/phase25_final_architecture_conformance_gap_snapshot.json
 reports/phase25_final_summary_and_phase26_handoff/
+```
+
+## 2026-08-06 Phase28-D8 Compatible SELL Pending Required Authority Merge Implementation
+
+Phase28-D8 implemented the compatible SELL preserve-path required authority merge in Runtime Pending Composition only.
+
+Completion judgment:
+
+```text
+PHASE28_D8_SELL_PENDING_AUTHORITY_MERGE_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Scope:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/pending/composition.py
+tests/runtime_v2/test_phase28_d8_sell_pending_authority_merge.py
+```
+
+Validation:
+
+```text
+compile PASS
+Phase28-D8 + Phase28-D3 focused regression: 12 passed
+Phase28-C focused ADD regression: 4 passed
+fresh/resume/long historical: not run by task constraint
+```
+
+Next phase:
+
+```text
+Phase28-D9 fresh 100BD operator validation
+```
+
+## 2026-08-06 Phase28-D10 PM ADD to Canonical BUY_ADD Runtime Conversion and Attribution Audit
+
+Phase28-D10 completed a read-only audit of run:
+
+```text
+runtime-test-historical-smoke-20260806T005408544432Z
+```
+
+Evidence cutoff:
+
+```text
+audit_started_at: 2026-08-06T03:16:35Z
+latest_complete_business_date: 2023-06-13
+completed_business_days: 49
+partial date excluded: 2023-06-14
+run status at cutoff: HALT / next_job 2023-06-14:submit
+```
+
+Judgment:
+
+```text
+PHASE28_D10_PHASE28_C_RUNTIME_CONVERSION_GAP_CONFIRMED
+```
+
+Key findings:
+
+```text
+PM ADD count: 21
+actual BUY_ADD plan count: 0
+BUY_ADD Pending / Approval / Submit / Fill: 0 / 0 / 0 / 0
+BUY_ADD token occurrences: 98, all ALLOWED_INTENT_METADATA
+first stop: PM_ADD_NOT_PROPAGATED_TO_STRATEGY_POSITION_MANAGEMENT = 21
+Summary observability gap: confirmed
+```
+
+D10 did not implement, configure, resume, fresh-run, long-run, or mutate the active 100BD run.
+
+Next recommended task:
+
+```text
+Phase28-D11 PM ADD strategy artifact propagation and Summary BUY_ADD observability repair design
+```
+
+## 2026-08-06 Phase28-D11 PM ADD Strategy Artifact Propagation Repair Design
+
+Phase28-D11 completed a read-only repair design for the D10 PM ADD propagation failure.
+
+Judgment:
+
+```text
+PHASE28_D11_PM_ADD_STRATEGY_PM_ADAPTER_PROPAGATION_REPAIR_DESIGNED
+```
+
+Key findings:
+
+```text
+ADD Producer: Runtime Position Management producer
+ADD Consumer: Strategy Position Management runtime_current_position_adapter
+First UNRESOLVED Producer: src/ai_fund_lab_v2/strategy/position_management.py::_positions_from_runtime_current
+Root cause: Runtime PM emits decision_type=ADD / pm_decision_id, while Strategy PM consumes action/decision / decision_id only.
+Portfolio Construction: innocent; ADD maps to RETAIN / INCREASE if received.
+Phase28-C direct causality: false; ADD bridge is never reached because pm_action is already UNRESOLVED.
+```
+
+Primary recommendation:
+
+```text
+Option A: preserve PM ADD in Strategy Position Management.
+```
+
+D12 single target:
+
+```text
+src/ai_fund_lab_v2/strategy/position_management.py
+```
+
+D12 repair contract:
+
+```text
+Normalize inbound Runtime PM decision_type into Strategy PM action.
+Preserve pm_decision_id into source_pm_decision_ref when decision_id is absent.
+Do not change Portfolio Construction, Position Sizing, Runtime Planning, Pending, Approval, Submit, Broker, Config, Schema, Threshold, or Phase28-C.
+```
+
+Phase28-D11 did not implement, configure, change schema/threshold, resume, fresh-run, or run long historical.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d11_pm_add_strategy_artifact_propagation_repair_design.md
+reports/phase_reports/phase28_d11_pm_add_strategy_artifact_propagation_repair_design.json
+reports/phase28_d11_pm_add_strategy_artifact_propagation_repair_design/
+```
+
+Next recommended task:
+
+```text
+Phase28-D12 PM ADD Strategy Position Management Adapter Repair Implementation
+```
+
+## 2026-08-06 Phase28-D12 PM ADD Strategy Position Management Adapter Repair Implementation
+
+Phase28-D12 implemented the single approved D11 repair in Strategy Position Management only.
+
+Primary Judgment:
+
+```text
+PHASE28_D12_PM_ADD_STRATEGY_PM_ADAPTER_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Phase28-C Chain Judgment:
+
+```text
+PM_ADD_TO_BUY_ADD_FOCUSED_CHAIN_CONFIRMED
+```
+
+Implemented repair:
+
+```text
+Strategy PM inbound action normalization:
+action -> decision -> decision_type -> UNRESOLVED
+
+Strategy PM decision reference normalization:
+decision_id -> pm_decision_id -> empty
+```
+
+Changed code/test scope:
+
+```text
+src/ai_fund_lab_v2/strategy/position_management.py
+tests/strategy/test_phase22_d_position_management.py
+```
+
+Confirmed:
+
+```text
+Runtime PM decision_type=ADD now propagates to Strategy PM action=ADD.
+Runtime PM pm_decision_id is preserved as source_pm_decision_ref when decision_id is absent.
+Portfolio Construction receives pm_action=ADD in focused chain.
+Phase28-C target_weight increase remains valid.
+Position Sizing positive quantity_delta remains valid.
+Runtime Planning existing position + positive delta maps to BUY_ADD.
+HOLD / REDUCE / EXIT regression passed.
+```
+
+Validation:
+
+```text
+Position Management full regression: 21 passed
+Portfolio Construction Phase28-C: 2 passed
+Position Sizing Phase28-C: 2 passed
+Runtime Planning BUY_ADD focused: 1 passed
+compile: PASS with PYTHONPYCACHEPREFIX=/private/tmp/ai_fund_lab_v2_pycache
+```
+
+D12 did not change:
+
+```text
+Portfolio Construction
+Position Sizing
+Runtime Planning
+Pending
+Approval
+Submit
+Broker
+Summary CLI
+Config
+Schema
+Threshold
+Performance conditions
+```
+
+Known remaining gap:
+
+```text
+2023-06-14 submit HALT
+symbol = 30410
+side = SELL
+reason = listed_info_missing
+```
+
+Fresh 100BD contract:
+
+```text
+Do not run fresh 100BD yet.
+Repair the 30410 SELL listed_info gap first.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d12_pm_add_strategy_position_management_adapter_repair_implementation.md
+reports/phase_reports/phase28_d12_pm_add_strategy_position_management_adapter_repair_implementation.json
+reports/phase28_d12_pm_add_strategy_position_management_adapter_repair_implementation/
+```
+
+Next recommended task:
+
+```text
+Phase28-D13 Strategy Executable SELL Non-Opportunity listed_info Authority Repair
+```
+
+## 2026-08-06 Phase28-D13 Strategy Executable SELL Non-Opportunity listed_info Authority Repair Design
+
+Phase28-D13 completed a read-only design for the remaining 30410 SELL listed_info gap.
+
+Primary Judgment:
+
+```text
+PHASE28_D13_NON_OPPORTUNITY_LISTED_INFO_AUTHORITY_DESIGN_COMPLETE_PHASE28_D14_READY
+```
+
+Phase28-D14 Entry Decision:
+
+```text
+APPROVED
+```
+
+Current defect:
+
+```text
+Strategy executable SELL pending uses Opportunity-only listed_info production.
+When Opportunity Authority is absent, Strategy pending listed_info becomes null
+even though canonical PIT listed-issue metadata exists.
+```
+
+Primary Authority:
+
+```text
+Canonical PIT Listed Issues / Listed Info Artifact via Strategy Source Authority
+```
+
+30410 authority evidence:
+
+```text
+business_date: 2023-06-14
+symbol: 30410
+listed_issues row: Date=2023-06-14, Code=30410, MktNm=スタンダード, ProdCat=011
+source hash: e4af094fb0d1a034ac325473c4c34d179f0b82021c16f0b25927e70dac84d0e0
+historical as-of status: PASS
+```
+
+D14 Primary Recommendation:
+
+```text
+Option A: Strategy SELL Producer canonical listed-info lookup
+```
+
+D14 single repair target:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/planning/strategy_authority.py
+```
+
+D14 must not change:
+
+```text
+Submit Guard
+Broker issue-code normalizer
+Portfolio Construction
+Position Sizing
+Strategy Position Management
+Pending Composition D8 merge behavior
+Phase28-C ADD bridge
+Phase28-D12 PM ADD propagation
+Config
+Schema
+Threshold
+```
+
+Fresh 100BD contract:
+
+```text
+Do not run fresh 100BD yet.
+Run fresh 100BD only after D14 implementation and short validation pass.
+Do not resume the halted run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d13_strategy_executable_sell_non_opportunity_listed_info_authority_repair_design.md
+reports/phase_reports/phase28_d13_strategy_executable_sell_non_opportunity_listed_info_authority_repair_design.json
+reports/phase28_d13_strategy_executable_sell_non_opportunity_listed_info_authority_repair_design/
+```
+
+Next recommended task:
+
+```text
+Phase28-D14 Strategy SELL Producer Canonical listed_info Lookup Implementation
+```
+
+---
+
+## Phase28-D14 Closure: Strategy SELL Canonical listed_info Authority Implementation
+
+Primary Judgment:
+
+```text
+PHASE28_D14_STRATEGY_SELL_CANONICAL_LISTED_INFO_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Restart Entry Decision:
+
+```text
+APPROVED
+```
+
+Implemented repair:
+
+```text
+Strategy executable SELL pending now resolves listed_info from Canonical PIT Listed Issues
+through Strategy Source Authority before PendingOrderItem materialization.
+```
+
+Validation summary:
+
+```text
+30410 reproduction: PASS
+D8 SELL merge regression: PASS
+D12 PM ADD propagation regression: PASS
+Phase28-C ADD regression: PASS
+ordinary BUY / SELL regression: PASS
+compile: PASS
+JSON validation: PASS
+```
+
+Guardrails:
+
+```text
+Submit Guard changed: NO
+Broker changed: NO
+Approval changed: NO
+Pending Composition D8 changed: NO
+Phase28-C changed: NO
+Phase28-D12 changed: NO
+Config / Schema / Threshold changed: NO
+Resume executed: NO
+Fresh run executed: NO
+Long Historical executed: NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d14_strategy_sell_canonical_listed_info_authority_implementation.md
+reports/phase_reports/phase28_d14_strategy_sell_canonical_listed_info_authority_implementation.json
+reports/phase28_d14_strategy_sell_canonical_listed_info_authority_implementation/
+```
+
+Next recommended task:
+
+```text
+Phase28-D15 Fresh 100BD Restart Entry Execution and Evidence Collection
+```
+
+---
+
+## Phase28-D15 Closure: SELL listed_info Authority Precedence and Market Semantics Repair Design
+
+Primary Judgment:
+
+```text
+PHASE28_D15_SELL_LISTED_INFO_AUTHORITY_PRECEDENCE_DESIGN_COMPLETE_PHASE28_D16_READY
+```
+
+Phase28-D16 Entry Decision:
+
+```text
+APPROVED
+```
+
+Current defect:
+
+```text
+D8 compatible SELL reconciliation compares Canonical PIT listed_issues market segment
+and PM SELL basic execution venue as same-authority market values.
+```
+
+43880 evidence:
+
+```text
+existing Strategy pending:
+  listed_info_authority = canonical_pit_listed_issues
+  market = グロース
+
+new PM SELL item:
+  authority = PM_BASIC_EXECUTION_METADATA
+  market = 東証
+
+matching:
+  code/product_category/security_type/current_listed
+
+current result:
+  PENDING_SELL_LISTED_INFO_AUTHORITY_CONFLICT
+  PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED
+```
+
+D15 Contract:
+
+```text
+Canonical PIT Listed Issues > PM basic metadata
+Core identity conflicts remain fail-closed
+Canonical-vs-canonical market mismatch remains true conflict
+Existing canonical listed_info is preserved over PM basic market metadata
+```
+
+Primary Recommendation:
+
+```text
+Option A: D8 listed_info conflict evaluator Authority precedence only
+```
+
+D16 single repair target:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/pending/composition.py
+```
+
+Guardrails:
+
+```text
+D14 Strategy SELL canonical lookup changed: NO
+D12 PM ADD propagation changed: NO
+Phase28-C ADD bridge changed: NO
+Submit Guard / Broker / Approval changed: NO
+Config / Schema / Threshold changed: NO
+Implementation changed in D15: NO
+Resume executed: NO
+Fresh run executed: NO
+Long Historical executed: NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d15_sell_listed_info_authority_precedence_and_market_semantics_repair_design.md
+reports/phase_reports/phase28_d15_sell_listed_info_authority_precedence_and_market_semantics_repair_design.json
+reports/phase28_d15_sell_listed_info_authority_precedence_and_market_semantics_repair_design/
+```
+
+Fresh 100BD:
+
+```text
+Do not resume runtime-test-historical-smoke-20260806T041925026284Z.
+Run a new fresh 100BD only after Phase28-D16 implementation and short validation PASS.
+```
+
+Next recommended task:
+
+```text
+Phase28-D16 D8 SELL listed_info Authority Precedence Implementation
+```
+
+---
+
+## Phase28-D16 Closure: D8 listed_info Authority Precedence Implementation
+
+Primary Judgment:
+
+```text
+PHASE28_D16_LISTED_INFO_AUTHORITY_PRECEDENCE_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Restart Entry:
+
+```text
+APPROVED
+```
+
+Implemented repair:
+
+```text
+D8 compatible SELL listed_info conflict evaluator now preserves existing
+Canonical PIT listed_info over new PM Basic market metadata when core identity matches.
+```
+
+43880 result:
+
+```text
+existing canonical market = グロース
+new PM basic market = 東証
+merge_action = PRESERVE_EXISTING_CANONICAL
+conflict_status = NO_CONFLICT_AUTHORITY_PRECEDENCE
+review_required = false
+canonical_preserved = true
+```
+
+True conflict maintained:
+
+```text
+Canonical vs Canonical market mismatch remains REVIEW_REQUIRED.
+Unknown authority remains REVIEW_REQUIRED.
+Core identity mismatch remains REVIEW_REQUIRED.
+Submitted / partial-fill guards remain REVIEW_REQUIRED.
+```
+
+Validation summary:
+
+```text
+compile: PASS
+43880 / D8 regression: PASS
+D14 regression: PASS
+D12 regression: PASS
+Phase28-C regression: PASS
+ordinary BUY / SELL regression: PASS
+JSON validation: PASS
+```
+
+Guardrails:
+
+```text
+D14 Strategy SELL Producer changed: NO
+D12 PM ADD propagation changed: NO
+Phase28-C changed: NO
+Portfolio Construction changed: NO
+Position Sizing changed: NO
+Runtime Planning changed: NO
+Submit Guard changed: NO
+Broker normalizer changed: NO
+Approval changed: NO
+Pending identity changed: NO
+Config / Schema / Threshold changed: NO
+Resume executed: NO
+Fresh run executed: NO
+Long Historical executed: NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d16_d8_listed_info_authority_precedence_implementation.md
+reports/phase_reports/phase28_d16_d8_listed_info_authority_precedence_implementation.json
+reports/phase28_d16_d8_listed_info_authority_precedence_implementation/
+```
+
+Next recommended task:
+
+```text
+Phase28-D17 Fresh 100BD Restart Entry Execution and Evidence Collection
+```
+
+## Phase28-D17 Fresh 100BD Canonical BUY_ADD Acceptance and Runtime Conformance Audit
+
+Status:
+
+```text
+COMPLETED_READ_ONLY_AUDIT
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D17_PHASE28_C_RUNTIME_CONVERSION_GAP_REMAINS
+```
+
+Target run:
+
+```text
+runtime-test-historical-smoke-20260806T053322547871Z
+```
+
+Key findings:
+
+```text
+run completion = COMPLETED 100/100
+runtime judgment = PASS
+close judgment = REVIEW_REQUIRED
+close direct reason = strategy_shadow_review_required_non_blocking
+PM ADD decisions = 51
+Strategy PM ADD actions = 0
+BUY_ADD plans/pending/submit/fills = 0
+Phase28-C run acceptance = NOT_ACCEPTED_FOR_THIS_RUN_BUY_ADD_RUNTIME_CHAIN_ZERO
+performance adoption = NOT_ADOPTED_FOR_BUY_ADD_PERFORMANCE_BECAUSE_BUY_ADD_COUNT_ZERO
+runtime mutation by D17 = false
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d17_fresh_100bd_canonical_buy_add_acceptance_and_runtime_conformance_audit.md
+reports/phase_reports/phase28_d17_fresh_100bd_canonical_buy_add_acceptance_and_runtime_conformance_audit.json
+reports/phase28_d17_fresh_100bd_canonical_buy_add_acceptance_and_runtime_conformance_audit/
+```
+
+Next recommended task:
+
+```text
+Phase28-D18 PM ADD Strategy PM Propagation Runtime-Run Mismatch Root Cause Diagnosis
+```
+
+## Phase28-D18 PM ADD Strategy PM Runtime-Run Mismatch Root Cause Diagnosis
+
+Status:
+
+```text
+COMPLETED_READ_ONLY_ROOT_CAUSE_DIAGNOSIS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D18_D12_RUNTIME_WIRING_GAP_CONFIRMED_D19_READY
+```
+
+Root Cause:
+
+```text
+Formal morning Strategy PM generation runs before same-day sell_planning PM producer.
+Strategy PM input selection looks for same-day runtime PM artifacts.
+existing_pm_decisions is empty when Strategy PM is produced.
+D12 helper is present but receives an empty decision mapping, not the PM ADD row.
+```
+
+Key findings:
+
+```text
+PM ADD count = 51
+Strategy PM ADD count = 0
+First ADD loss point = STRATEGY_JOB_INPUT_SELECTION
+All 51 same root cause = YES
+BUY_ADD zero direct causality = CONFIRMED
+Phase28-C defect = NO
+D12 defect = PARTIAL fixture coverage gap, not normalizer defect
+Runtime wiring defect = YES
+Cash utilization relation = LIKELY
+Re-entry relation = INDIRECT_RELATION_POSSIBLE
+Implementation / Config / Schema / Threshold changed = false
+Resume / Fresh / Long Historical / Runtime mutation = false
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d18_pm_add_strategy_pm_runtime_run_mismatch_root_cause_diagnosis.md
+reports/phase_reports/phase28_d18_pm_add_strategy_pm_runtime_run_mismatch_root_cause_diagnosis.json
+reports/phase28_d18_pm_add_strategy_pm_runtime_run_mismatch_root_cause_diagnosis/
+```
+
+Next recommended task:
+
+```text
+Phase28-D19 PM ADD actual Runtime path minimal repair
+```
+
+## Phase28-D19 PM ADD Actual Runtime Path Minimal Repair
+
+Status:
+
+```text
+COMPLETED_IMPLEMENTATION_SHORT_VALIDATION_PASS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D19_PM_ADD_ACTUAL_RUNTIME_PATH_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Chain Judgment:
+
+```text
+SAME_DAY_PM_ADD_TO_BUY_ADD_CONFIRMED_BY_FOCUSED_CHAIN_VALIDATION
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+D19 repaired the D18 runtime wiring gap by materializing the existing same-day Runtime Position Management producer during `morning`, after capability PASS and before formal Strategy artifact generation. Strategy PM input lookup now reaches same-day PM decision artifacts and records PM decision source path/hash/date evidence.
+
+Scope:
+
+```text
+Strategy job PM input selection / Runtime execution ordering only
+```
+
+Non-changes:
+
+```text
+Portfolio Construction unchanged
+Position Sizing unchanged
+Runtime Planning unchanged
+Pending / Approval / Submit / Broker unchanged
+Phase28-C ADD bridge unchanged
+D12 action normalization semantics unchanged
+Config / Schema / Threshold unchanged
+Resume / Fresh / Long Historical not executed by Codex
+```
+
+Validation:
+
+```text
+D19 focused Strategy PM/runtime lookup tests: 35 passed
+Phase28-C / D14 / D16 / D8 / D3 focused regression: 21 passed
+Compile: PASS
+JSON validation: PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d19_pm_add_actual_runtime_path_minimal_repair.md
+reports/phase_reports/phase28_d19_pm_add_actual_runtime_path_minimal_repair.json
+reports/phase28_d19_pm_add_actual_runtime_path_minimal_repair/
+```
+
+Next recommended task:
+
+```text
+Phase28-D20 fresh runtime acceptance / re-entry and BUY_ADD evidence collection
+```
+
+## Phase28-D20 Re-entry Root Cause and PnL Impact Audit
+
+Status:
+
+```text
+COMPLETED_READ_ONLY_DIAGNOSIS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D20_REENTRY_LOSS_CONCENTRATION_CONFIRMED_D21_READY
+```
+
+D21 Entry Decision:
+
+```text
+READY
+```
+
+Target run:
+
+```text
+runtime-test-historical-smoke-20260806T053322547871Z
+```
+
+Re-entry definition:
+
+```text
+previous campaign for same symbol CLOSED
+↓
+subsequent BUY_NEW opens a new campaign
+```
+
+Key findings:
+
+```text
+Re-entry count = 93
+<=1BD count = 68
+<=3BD count = 78
+<=5BD count = 83
+<=10BD count = 89
+Re-entry net PnL = -105,800
+Non-re-entry PnL = +164,000
+Total run PnL = +58,200
+Second-half re-entry PnL by close date = -113,630
+loss -> <=5BD re-entry -> loss count = 16
+loss -> <=5BD re-entry -> loss PnL = -181,240
+Contradictory EXIT/Re-entry count = 31
+Valid momentum recovery count = 33
+Existing active re-entry guard = NO
+BUY_ADD zero relation = PARTIAL_RELATION_SUPPORTED
+```
+
+Root cause:
+
+```text
+BUY_NEW path does not consume previous campaign close date, exit reason, recent-loss state, or cooldown/state-change evidence.
+Same-symbol closed campaigns are treated as ordinary new candidates once Opportunity / BUY Quality / Portfolio Construction / Position Sizing / Runtime Planning pass.
+```
+
+D21 minimal repair scope:
+
+```text
+Campaign-aware state-change gated re-entry eligibility only.
+```
+
+D21 must not mix:
+
+```text
+Cash reserve
+Target exposure
+BUY_ADD allocation
+ADD thresholds
+Exit thresholds
+Position count
+BUY Quality thresholds
+```
+
+Post-D21 follow-up:
+
+```text
+D22 must re-audit Cash Utilization because re-entry suppression can reduce BUY count and increase cash.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d20_reentry_root_cause_and_pnl_impact_audit.md
+reports/phase_reports/phase28_d20_reentry_root_cause_and_pnl_impact_audit.json
+reports/phase28_d20_reentry_root_cause_and_pnl_impact_audit/
+```
+
+Next recommended task:
+
+```text
+Phase28-D21 Campaign-aware state-change gated re-entry repair design
+```
+
+## Phase28-D21 Campaign-Aware State-Change Gated Re-entry Repair Design
+
+Status:
+
+```text
+COMPLETED_DESIGN_ONLY
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D21_CAMPAIGN_AWARE_STATE_CHANGE_REENTRY_DESIGN_COMPLETE_IMPLEMENTATION_READY
+```
+
+Implementation Entry Decision:
+
+```text
+READY
+```
+
+Canonical re-entry definition:
+
+```text
+same-symbol previous CLOSED campaign
+↓
+candidate BUY_NEW opens a new campaign
+```
+
+Previous campaign authority:
+
+```text
+Position Campaign history / persistent ledger
+```
+
+Required design:
+
+```text
+Campaign-aware state-change gated re-entry eligibility
+```
+
+Runtime integration point:
+
+```text
+Portfolio Construction conflict policy
+```
+
+D20 93-event replay under D21 contract:
+
+```text
+ALLOW = 44, PnL = -6,750
+BLOCK = 34, PnL = -123,240
+REVIEW = 15, PnL = +24,190
+```
+
+Special focus:
+
+```text
+loss -> <=5BD re-entry -> loss cases = 16
+blocked by D21 replay = 12
+
+Contradictory EXIT/Re-entry cases = 31
+blocked by D21 replay = 31
+
+Valid momentum recovery cases = 33
+preserved by D21 replay = 33
+```
+
+Design boundaries:
+
+```text
+BUYADD / OPEN campaign ADD unaffected
+Cash Policy unchanged
+BUY Quality thresholds unchanged
+ADD thresholds unchanged
+EXIT thresholds unchanged
+Target exposure unchanged
+Position count unchanged
+Runtime Planning / Pending / Submit / Broker unchanged
+Implementation / Config / Schema / Threshold changed = false
+Resume / Fresh / Long Historical = false
+Runtime mutation = false
+```
+
+Minimal implementation scope:
+
+```text
+Campaign-aware re-entry eligibility resolver only.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d21_campaign_aware_state_change_gated_reentry_repair_design.md
+reports/phase_reports/phase28_d21_campaign_aware_state_change_gated_reentry_repair_design.json
+reports/phase28_d21_campaign_aware_state_change_gated_reentry_repair_design/
+```
+
+Next recommended task:
+
+```text
+Phase28-D21 implementation task or Phase28-D22, depending on phase numbering.
+```
+
+## Phase28-D22 Premature EXIT and EXIT-Reentry Oscillation Audit
+
+Status:
+
+```text
+COMPLETED_READ_ONLY_DIAGNOSIS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D22_EXIT_REENTRY_OSCILLATION_CONFIRMED
+```
+
+Target run:
+
+```text
+runtime-test-historical-smoke-20260806T053322547871Z
+```
+
+Audit status:
+
+```text
+93 / 93 re-entry preceding EXIT pairs audited
+1BD re-entry pairs = 68
+```
+
+Key metrics:
+
+```text
+EXIT -> <=1BD BUY_NEW = 68
+EXIT -> <=3BD BUY_NEW = 78
+EXIT -> <=5BD BUY_NEW = 83
+
+BUY_NEW -> <=1BD EXIT = 77
+BUY_NEW -> <=3BD EXIT = 82
+BUY_NEW -> <=5BD EXIT = 88
+
+full EXIT -> BUY_NEW -> EXIT cycles = 93
+repeated oscillation symbol count = 9
+```
+
+Responsibility classification:
+
+```text
+BOTH_BOUNDARIES_TOO_SENSITIVE = 37
+EXIT_PREMATURE_REENTRY_REASONABLE = 33
+EXIT_VALID_REENTRY_TOO_AGGRESSIVE = 7
+VALID_EXIT_VALID_REENTRY = 2
+INSUFFICIENT_EVIDENCE = 14
+```
+
+Derived judgment counts:
+
+```text
+EXIT valid count = 9
+Premature EXIT count = 70
+Both-boundary oscillation count = 37
+Re-entry-aggressive-only count = 7
+Valid lifecycle count = 2
+Insufficient evidence count = 14
+```
+
+Existing guard status:
+
+```text
+NO_ACTIVE_GENERAL_HOLD_EXIT_HYSTERESIS_GUARD
+```
+
+BUY_ADD relation:
+
+```text
+PARTIAL_RELATION_SUPPORTED_PRE_D19
+```
+
+Cash utilization relation:
+
+```text
+LIKELY_CONTRIBUTOR
+```
+
+D21 design implementation decision:
+
+```text
+MODIFY
+```
+
+Reason:
+
+```text
+Re-entry defect is real, but previous EXIT side also shows premature / oscillating behavior.
+Implementing only the D21 re-entry gate may block symptoms while leaving the sensitive EXIT boundary unresolved.
+```
+
+Next recommended task:
+
+```text
+Phase28-D23C EXIT-Re-entry Hysteresis Unified Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d22_premature_exit_and_exit_reentry_oscillation_audit.md
+reports/phase_reports/phase28_d22_premature_exit_and_exit_reentry_oscillation_audit.json
+reports/phase28_d22_premature_exit_and_exit_reentry_oscillation_audit/
+```
+
+## Phase28-D23 Current SELL / EXIT Decision Authority End-to-End Audit
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D23_CURRENT_SELL_EXIT_AUTHORITY_AUDIT_COMPLETE_D21_MODIFY_REQUIRED
+```
+
+D23 was read-only. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Key authority findings:
+
+```text
+SELL_EXIT final producer = Strategy Runtime Planning
+PM EXIT == Runtime SELL_EXIT = NO for D17 evidence
+General HOLD/EXIT hysteresis = NO
+Immediate/hard EXIT authority = PARTIAL
+Strong/Weak EXIT existing definition = NO
+Existing evidence distinguishability = PARTIAL
+```
+
+93-pair PM to Runtime SELL_EXIT matrix:
+
+```text
+PM ADD -> SELL_EXIT = 22
+PM HOLD -> SELL_EXIT = 61
+PM EXIT -> SELL_EXIT = 7
+PM REDUCE -> SELL_EXIT = 3
+```
+
+First divergence distribution:
+
+```text
+Strategy PM action loss / UNRESOLVED = 86
+PM direct EXIT = 7
+```
+
+Risk separation:
+
+```text
+D22 RISK category = 61
+PM EXIT risk authority = 7
+PM REDUCE risk authority = 1
+diagnostic non-PM-EXIT risk category = 53
+valid loss-cut count = 7
+```
+
+D19 effect separation:
+
+```text
+Expected D19-resolved contamination = 22 PM ADD -> SELL_EXIT cases
+Remaining SELL defect = HOLD/REDUCE/EXIT strength semantics, target-zero translation, and hysteresis/re-entry composition
+```
+
+D21 decision:
+
+```text
+MODIFY / HOLD until SELL authority design completes
+```
+
+Next recommended phase:
+
+```text
+Phase28-D24 SELL/EXIT Authority Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d23_current_sell_exit_decision_authority_end_to_end_audit.md
+reports/phase_reports/phase28_d23_current_sell_exit_decision_authority_end_to_end_audit.json
+reports/phase28_d23_current_sell_exit_decision_authority_end_to_end_audit/
+```
+
+## Phase28-D24 PM HOLD / ADD / REDUCE / EXIT Authority-Preserving SELL Repair Design
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D24_PM_INTENT_PRESERVING_SELL_AUTHORITY_REPAIR_DESIGN_COMPLETE_D25_READY
+```
+
+D24 was design-only and read-only. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Single design contract:
+
+```text
+FULL_LIQUIDATION_ALLOWED =
+PM_EXIT
+OR
+EXPLICIT_HIGHER_PRIORITY_LIQUIDATION_AUTHORITY
+```
+
+Desired mapping:
+
+```text
+PM HOLD      -> no implicit SELL_EXIT
+PM ADD       -> BUY_ADD or no executable add; no SELL_EXIT from ADD alone
+PM REDUCE    -> SELL_REDUCE or review/no-order; no silent EXIT escalation
+PM EXIT      -> SELL_EXIT
+PM UNRESOLVED -> review/no-order/preserve; not full liquidation
+```
+
+D19 separation:
+
+```text
+pre-D19 ADD->SELL_EXIT = 22 is expected D19-resolved contamination
+do not treat it as current unrepaired ADD-specific defect
+```
+
+Valid PM EXIT preservation:
+
+```text
+PM EXIT -> SELL_EXIT valid loss-cut7 must be protected
+```
+
+Primary Recommendation:
+
+```text
+Option D:
+one PM-intent-preserving Full Liquidation Authority Contract across
+Strategy PM lineage,
+Portfolio Construction existing-position membership,
+Position Sizing target-zero protection,
+Runtime Planning final SELL_EXIT guard
+```
+
+D21 status:
+
+```text
+HOLD / MODIFY
+```
+
+Hysteresis:
+
+```text
+DEFER
+```
+
+Next recommended phase:
+
+```text
+Phase28-D25 PM Intent-Preserving SELL Authority Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d24_pm_intent_preserving_sell_authority_repair_design.md
+reports/phase_reports/phase28_d24_pm_intent_preserving_sell_authority_repair_design.json
+reports/phase28_d24_pm_intent_preserving_sell_authority_repair_design/
+```
+
+## Phase28-D25 PM Intent-Preserving SELL Authority Implementation
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D25_PM_INTENT_PRESERVING_SELL_AUTHORITY_IMPLEMENTED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgments:
+
+```text
+PM_HOLD_TO_NO_SELL_CONFIRMED
+PM_ADD_TO_BUY_ADD_CONFIRMED
+PM_REDUCE_TO_SELL_REDUCE_CONFIRMED
+PM_EXIT_TO_SELL_EXIT_CONFIRMED
+PM_UNRESOLVED_TO_NO_SELL_EXIT_CONFIRMED
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Implemented repair:
+
+```text
+Runtime Planning Full Liquidation Authority guard requiring PM_EXIT before SELL_EXIT when target_quantity==0 and quantity_delta<0
+```
+
+Contract:
+
+```text
+FULL_LIQUIDATION_ALLOWED =
+PM_EXIT
+OR
+EXPLICIT_HIGHER_PRIORITY_LIQUIDATION_AUTHORITY
+```
+
+Changed files:
+
+```text
+src/ai_fund_lab_v2/strategy/runtime_planning.py
+tests/strategy/test_phase22_g_runtime_planning.py
+tests/runtime_v2/test_phase23_i_strategy_planning_authority.py
+```
+
+Short validation:
+
+```text
+Runtime Planning focused tests = 43 passed
+D19 / Phase28-C / D14 / D16 / D8 / D3 regression set = 97 passed
+Compile = PASS
+JSON validation = PASS
+```
+
+Mutation flags:
+
+```text
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_authority_violation=false
+performance_semantics_changed=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D26 Fresh Runtime Acceptance Audit
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d25_pm_intent_preserving_sell_authority_implementation.md
+reports/phase_reports/phase28_d25_pm_intent_preserving_sell_authority_implementation.json
+reports/phase28_d25_pm_intent_preserving_sell_authority_implementation/
+```
+
+## Phase28-D26 Historical Morning Safety Ordering Regression Root Cause Diagnosis
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D26_D19_MORNING_ORDERING_REGRESSION_CONFIRMED
+```
+
+Regression confirmed:
+
+```text
+YES
+```
+
+Key finding:
+
+```text
+The 2023-04-04 failure is not a Historical Safety ordering regression.
+Both old and current runs evaluate safety_operation_guard against missing
+latest_safety_decision first, then bind historical_safety_authority PASS
+from Data Readiness for downstream planning.
+```
+
+Direct halt:
+
+```text
+phase23_i_strategy_planning_authority_pipeline
+reason = strategy_runtime_planning_blocked
+```
+
+Root blocking producer:
+
+```text
+portfolio_construction
+reason = total_target_weight_above_target_gross_exposure
+```
+
+First regression point:
+
+```text
+D19 inserted position_management_ai_runtime_producer before
+phase22_strategy_artifact_generation.
+```
+
+Observed current PM input:
+
+```text
+43880 = HOLD
+83060 = ADD
+94320 = ADD
+```
+
+Effect:
+
+```text
+previous total_target_weight = 0.36
+current total_target_weight = 0.731271
+target_gross_exposure = 0.72
+```
+
+Causality:
+
+```text
+D19 direct causality = YES
+D25 direct causality = NO
+BASELINE_CURRENT_SEMANTICS_MISMATCH = PARALLEL_REVIEW_NON_BLOCKING_DIAGNOSTIC
+```
+
+Minimal repair scope:
+
+```text
+Strategy Portfolio Construction / same-day PM exposure allocation semantics.
+Preserve D19 PM wiring, D25 SELL authority guard, and historical safety authority override.
+```
+
+Mutation flags:
+
+```text
+implementation_changed=false
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_mutated=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D27 D19 Same-day PM Portfolio Exposure Allocation Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d26_historical_morning_safety_ordering_regression_root_cause.md
+reports/phase_reports/phase28_d26_historical_morning_safety_ordering_regression_root_cause.json
+reports/phase28_d26_historical_morning_safety_ordering_regression_root_cause/
+```
+
+## Phase28-D27 Same-day PM Portfolio Exposure Allocation Repair Design
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D27_INCREMENTAL_BUDGET_RECONCILIATION_DESIGN_COMPLETE_D28_READY
+```
+
+Implementation Entry Decision:
+
+```text
+READY
+```
+
+Root cause:
+
+```text
+Portfolio Construction performs row-local equal-weight / ADD bridge decisions
+and only checks aggregate exposure after, so existing baseline and BUY_NEW
+allocations are not reconciled into a single target_gross_exposure budget.
+```
+
+2023-04-04 reconstruction:
+
+```text
+target_gross_exposure = 0.72
+current total_target_weight = 0.731271
+overage = 0.011271
+```
+
+Contributions:
+
+```text
+43880 HOLD = 0.144
+83060 ADD baseline = 0.17231
+94320 ADD baseline = 0.126961
+67310 BUY_NEW = 0.144
+59350 BUY_NEW = 0.144
+```
+
+Selected repair option:
+
+```text
+Option B - Incremental budget allocator
+```
+
+Contract:
+
+```text
+baseline_existing_required_weight first
+available_incremental_budget =
+target_gross_exposure - baseline_existing_required_weight
+
+accepted ADD increments and BUY_NEW compete within the same budget
+```
+
+2023-04-04 design replay:
+
+```text
+baseline_existing_required_weight = 0.42255
+available_incremental_budget = 0.29745
+accepted ADD increment = 0.0
+accepted BUY_NEW = 0.288
+final target weight sum = 0.71055
+```
+
+Compatibility:
+
+```text
+D19 preserved = YES
+D25 preserved = YES
+Phase28-C preserved = YES
+cash reserve preserved = YES
+threshold changed = false
+```
+
+Mutation flags:
+
+```text
+implementation_changed=false
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_mutated=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D28 Portfolio Construction Incremental Budget Reconciliation Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d27_same_day_pm_portfolio_exposure_allocation_repair_design.md
+reports/phase_reports/phase28_d27_same_day_pm_portfolio_exposure_allocation_repair_design.json
+reports/phase28_d27_same_day_pm_portfolio_exposure_allocation_repair_design/
+```
+
+## Phase28-D28 Portfolio Construction Incremental Budget Reconciliation Implementation
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D28_INCREMENTAL_BUDGET_RECONCILIATION_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Fresh Test Entry Decision:
+
+```text
+APPROVED
+```
+
+Implemented repair:
+
+```text
+Portfolio Construction now computes baseline_existing_required_weight before
+allocating incremental exposure. HOLD and ADD preserve current_weight as
+baseline, REDUCE uses remaining target, EXIT uses zero, and eligible ADD
+increments plus BUY_NEW compete inside available_incremental_budget.
+```
+
+2023-04-04 reproduction:
+
+```text
+target_gross_exposure = 0.72
+baseline_existing_required_weight = 0.42255
+available_incremental_budget = 0.29745
+accepted ADD increment = 0.0
+accepted BUY_NEW = 0.288
+final target weight sum = 0.71055
+producer_result_status != BLOCK
+```
+
+Short validation:
+
+```text
+Portfolio Construction focused tests: 34 passed
+Runtime authority regression: 73 passed
+Strategy boundary regression: 73 passed
+py_compile: PASS
+JSON validation: PASS
+```
+
+Compatibility:
+
+```text
+Phase28-C ADD bridge preserved = YES
+D19 PM ADD runtime path preserved = YES
+D25 PM intent-preserving SELL authority preserved = YES
+Position Sizing unchanged = YES
+Runtime Planning unchanged = YES
+Submit Guard unchanged = YES
+Broker unchanged = YES
+```
+
+Mutation flags:
+
+```text
+implementation_changed=true
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_authority_violation=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D29 fresh 100BD runtime acceptance and evidence audit
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d28_portfolio_construction_incremental_budget_reconciliation_implementation.md
+reports/phase_reports/phase28_d28_portfolio_construction_incremental_budget_reconciliation_implementation.json
+reports/phase28_d28_portfolio_construction_incremental_budget_reconciliation_implementation/
+```
+
+## Phase28-D29 Position Sizing Canonical Target-Weight Consumption Root Cause Diagnosis
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D29_MULTIPLE_POSITION_SIZING_DEFECTS_CONFIRMED
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D29_POSITION_SIZING_CANONICAL_TARGET_CONSUMPTION_GAP_CONFIRMED
+PHASE28_D29_HOLD_BASELINE_PRESERVATION_DEFECT_CONFIRMED
+PHASE28_D29_ADD_MINIMUM_NOTIONAL_BASELINE_ERASURE_DEFECT_CONFIRMED
+```
+
+Duplicate row hypothesis:
+
+```text
+Wrong row selection confirmed = NO
+Portfolio Construction row count for 83060 = 1
+Portfolio Construction row count for 94320 = 1
+Position Sizing row count for 83060 = 1
+Position Sizing row count for 94320 = 1
+```
+
+Root cause:
+
+```text
+Position Sizing consumes the correct canonical Portfolio Construction row, but
+then applies BUY Quality as a second target-weight modifier for existing
+HOLD/ADD baseline rows.
+
+83060:
+PC target_weight = 0.085181
+PS effective target_weight = 0.0
+cause = quality REJECT multiplier 0.0 applied after canonical target resolution
+
+94320:
+PC target_weight = 0.047587
+PS effective target_weight = 0.033893
+cause = quality REDUCED_ALLOCATION_ONLY multiplier 0.712227 applied after
+canonical target resolution, then minimum_meaningful_notional_unmet zeroes
+target quantity
+```
+
+D29 causality:
+
+```text
+D28 direct causality = PARTIAL
+D19 direct causality = PARTIAL
+D25 direct causality = NO
+```
+
+Interpretation:
+
+```text
+D28 and D19 exposed the consumer mismatch by making PM HOLD/ADD baseline target
+weights visible in the canonical chain.
+D25 correctly blocked accidental full liquidation when Position Sizing emitted
+target-zero / negative-delta rows without PM EXIT authority.
+```
+
+Mutation flags:
+
+```text
+implementation_changed=false
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_mutated=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D30 Position Sizing Canonical Target-Weight Consumption and Existing Baseline Preservation Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d29_position_sizing_canonical_target_weight_consumption_root_cause.md
+reports/phase_reports/phase28_d29_position_sizing_canonical_target_weight_consumption_root_cause.json
+reports/phase28_d29_position_sizing_canonical_target_weight_consumption_root_cause/
+```
+
+## Phase28-D30 Position Sizing Canonical Target-Weight Consumption and Existing Baseline Preservation Repair Design
+
+Status:
+
+```text
+COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D30_EXISTING_POSITION_BASELINE_TRANSACTION_DELTA_REPAIR_DESIGN_COMPLETE_D31_READY
+```
+
+Implementation Entry Decision:
+
+```text
+APPROVED
+```
+
+Core architecture answer:
+
+```text
+After Portfolio Construction emits canonical target_weight, Position Sizing
+does not have authority to modify existing HOLD / ADD baseline target_weight
+with BUY Quality.
+```
+
+Selected repair option:
+
+```text
+Option D - Combined minimum repair
+
+remove duplicate quality modification for existing baseline
+preserve existing baseline quantity for HOLD / ADD zero-increment
+apply minimum meaningful notional and lot rules only to transaction delta
+```
+
+Existing-position contract:
+
+```text
+HOLD:
+target_quantity_candidate = current_quantity
+quantity_delta_candidate = 0
+
+ADD with accepted_incremental_weight = 0:
+target_quantity_candidate = current_quantity
+quantity_delta_candidate = 0
+
+ADD with accepted_incremental_weight > 0:
+baseline_quantity = current_quantity
+incremental_quantity = lot-rounded accepted incremental transaction
+quantity_delta_candidate = incremental_quantity
+
+REDUCE:
+explicit PM/PC lower target may produce partial negative delta
+
+EXIT:
+PM EXIT + PC target zero may produce full negative delta; D25 guard preserved
+```
+
+Minimum meaningful notional contract:
+
+```text
+For existing HOLD / ADD retention, minimum_meaningful_notional applies to
+incremental transaction notional, not to erasing existing baseline quantity.
+```
+
+Weight drift decision:
+
+```text
+For existing HOLD and ADD zero-increment rows, current_quantity has baseline
+precedence over mechanical target-weight-to-lot conversion.
+```
+
+D31 scope:
+
+```text
+Primary file: src/ai_fund_lab_v2/strategy/position_sizing.py
+Repair: Position Sizing existing-position baseline and transaction-delta sizing
+
+Portfolio Construction change required = false
+Runtime Planning change required = false
+Config / Schema / Threshold change required = false
+```
+
+Mutation flags:
+
+```text
+implementation_changed=false
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+runtime_mutated=false
+```
+
+Next recommended phase:
+
+```text
+Phase28-D31 Position Sizing Existing-Position Baseline and Transaction-Delta Repair Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d30_position_sizing_canonical_target_weight_consumption_and_existing_baseline_preservation_repair_design.md
+reports/phase_reports/phase28_d30_position_sizing_canonical_target_weight_consumption_and_existing_baseline_preservation_repair_design.json
+reports/phase28_d30_position_sizing_canonical_target_weight_consumption_and_existing_baseline_preservation_repair_design/
+```
+
+## Phase28-D31 Position Sizing Existing-Position Baseline and Transaction-Delta Repair Implementation
+
+Phase28-D31 implemented the approved D30 Option D repair in Position Sizing only.
+
+Primary Judgment:
+
+```text
+PHASE28_D31_POSITION_SIZING_EXISTING_BASELINE_TRANSACTION_DELTA_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Restart Entry:
+
+```text
+APPROVED
+```
+
+Implemented repair:
+
+```text
+Existing HOLD / ADD baseline quantity is preserved.
+BUY Quality no longer modifies existing HOLD / ADD zero-increment baseline.
+minimum_meaningful_notional / lot constraints apply to ADD transaction delta, not baseline.
+BUY_NEW behavior is unchanged.
+REDUCE / EXIT / UNRESOLVED semantics are preserved.
+```
+
+Short validation:
+
+```text
+Position Sizing unit file: 44 passed
+D12 / D19 / D25 / D28 / Phase28-C selected regression: 13 passed
+D8 / D3 pending regression: 14 passed
+Compile: PASS
+```
+
+Mutation flags:
+
+```text
+implementation_changed=true
+config_changed=false
+schema_changed=false
+threshold_changed=false
+resume_executed=false
+fresh_run_executed=false
+long_historical_executed=false
+```
+
+Next:
+
+```text
+Fresh 100BD re-entry validation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d31_position_sizing_existing_position_baseline_and_transaction_delta_repair_implementation.md
+reports/phase_reports/phase28_d31_position_sizing_existing_position_baseline_and_transaction_delta_repair_implementation.json
+reports/phase28_d31_position_sizing_existing_position_baseline_and_transaction_delta_repair_implementation/
+```
+
+## Phase28-D32 Portfolio Construction REDUCE Partial-Target Semantics Root Cause Diagnosis
+
+Phase28-D32 was read-only. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D32_PC_REDUCE_PARTIAL_TARGET_AUTHORITY_GAP_CONFIRMED
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D32_REDUCE_DESIGN_GAP_REQUIRES_D33_DESIGN
+PHASE28_D32_EXISTING_REDUCE_SCALE_AUTHORITY_FOUND
+PHASE28_D32_D28_REDUCE_BASELINE_ZERO_PROPAGATION_CONFIRMED
+```
+
+77760 trace:
+
+```text
+PM action = REDUCE
+PM reason = risk_increased_but_trend_not_broken
+current_weight = 0.053147
+current_quantity = 100
+PC membership_intent = REDUCE_CANDIDATE
+PC weight_intent = DECREASE
+PC target_weight = 0.0
+PC baseline_existing_weight = 0.0
+PS target_quantity_candidate = 0
+PS quantity_delta_candidate = -100
+Runtime Planning intent = UNRESOLVED
+```
+
+First divergence:
+
+```text
+Portfolio Construction _resolve_target_weight_contract
+src/ai_fund_lab_v2/strategy/portfolio_construction.py:925-927
+
+REDUCE_CANDIDATE and REMOVE_CANDIDATE are grouped into:
+existing_position_reduce_or_exit
+
+The row remains target_weight = 0.0.
+```
+
+D28 relation:
+
+```text
+PARTIAL
+D28 did not first create the zero target, but consumed original_target=0.0
+as REDUCE baseline_existing_weight=0.0.
+```
+
+D31 relation:
+
+```text
+false
+D31 correctly consumed the upstream PC target.
+```
+
+D25 relation:
+
+```text
+false
+D25 correctly blocked silent SELL_EXIT because PM EXIT authority was absent.
+```
+
+Existing REDUCE scale/fraction authority:
+
+```text
+YES_PARTIAL
+PM emits reduce_intensity=LIGHT.
+Sell Planning has REDUCE_INTENSITY_RATIOS LIGHT=0.25, MEDIUM=0.33, STRONG=0.50.
+Portfolio Construction does not consume this authority today.
+```
+
+Other REDUCE cases in target run:
+
+```text
+2 total
+2 -> PC target_weight 0.0 -> PS full negative delta -> Runtime UNRESOLVED
+0 -> partial SELL_REDUCE
+```
+
+Next:
+
+```text
+Phase28-D33 Portfolio Construction REDUCE Partial-Target Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d32_portfolio_construction_reduce_partial_target_semantics_root_cause.md
+reports/phase_reports/phase28_d32_portfolio_construction_reduce_partial_target_semantics_root_cause.json
+reports/phase28_d32_portfolio_construction_reduce_partial_target_semantics_root_cause/
+```
+
+## Phase28-D33 Portfolio Construction REDUCE Partial-Target Repair Design
+
+Phase28-D33 was design-only and read-only. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D33_CANONICAL_REDUCE_PARTIAL_TARGET_DESIGN_COMPLETE_D34_READY
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D33_EXISTING_REDUCE_INTENSITY_AUTHORITY_REUSE_APPROVED
+PHASE28_D33_SHARED_REDUCE_AUTHORITY_REFACTOR_REQUIRED
+```
+
+Selected option:
+
+```text
+Option B - Shared canonical REDUCE quantity / intensity contract
+```
+
+Canonical REDUCE contract:
+
+```text
+reduce_fraction = canonical_reduce_fraction(reduce_intensity)
+remaining_target_weight = current_weight * (1 - reduce_fraction)
+released_reduce_capacity = current_weight - remaining_target_weight
+```
+
+Existing ratios reused without change:
+
+```text
+LIGHT  = 0.25
+MEDIUM = 0.33
+STRONG = 0.50
+```
+
+Ownership:
+
+```text
+PM = REDUCE intent + reduce_intensity evidence
+Portfolio Construction = remaining target_weight
+Position Sizing = target_weight -> quantity delta and feasibility
+Sell Planning = execution order construction using shared authority
+```
+
+Single-lot REDUCE behavior:
+
+```text
+If partial REDUCE rounds to zero executable shares, retain baseline and emit
+NO_ORDER or REVIEW_REQUIRED. Do not convert to EXIT.
+```
+
+Design replay:
+
+```text
+77760 current_weight=0.053147 LIGHT -> remaining_target_weight=0.039860 released=0.013287
+43880 current_weight=0.127745 LIGHT -> remaining_target_weight=0.095809 released=0.031936
+
+Both are 100-share single-lot cases, so executable sell quantity is 0 under tradable_unit=100.
+Expected behavior: no forced EXIT; no SELL_EXIT.
+```
+
+D34:
+
+```text
+Phase28-D34 Canonical REDUCE Intensity Authority Integration Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d33_portfolio_construction_reduce_partial_target_repair_design.md
+reports/phase_reports/phase28_d33_portfolio_construction_reduce_partial_target_repair_design.json
+reports/phase28_d33_portfolio_construction_reduce_partial_target_repair_design/
+```
+
+## Phase28-D34 Canonical REDUCE Intensity Authority Integration Implementation
+
+Phase28-D34 implemented the D33-approved shared canonical REDUCE intensity authority. No config change, schema change, threshold change, resume, fresh run, or long historical run was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D34_CANONICAL_REDUCE_INTENSITY_AUTHORITY_INTEGRATED_SHORT_VALIDATION_PASS
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Implemented contract:
+
+```text
+LIGHT  = 0.25
+MEDIUM = 0.33
+STRONG = 0.50
+```
+
+Runtime chain:
+
+```text
+PM REDUCE + reduce_intensity
+Portfolio Construction positive remaining target_weight
+Position Sizing partial sell transaction quantity or explicit no-order
+Runtime Planning SELL_REDUCE / NO_ACTION, not SELL_EXIT
+Sell Planning shared canonical reduce authority
+```
+
+Short validation:
+
+```text
+77760 PASS
+43880 PASS
+LIGHT/MEDIUM/STRONG partial SELL_REDUCE PASS
+single-lot REDUCE no forced EXIT PASS
+unknown intensity fail-closed PASS
+D19/D25/D28/D31/Phase28-C representative regressions PASS
+compile PASS
+git diff --check PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d34_canonical_reduce_intensity_authority_integration_implementation.md
+reports/phase_reports/phase28_d34_canonical_reduce_intensity_authority_integration_implementation.json
+reports/phase28_d34_canonical_reduce_intensity_authority_integration_implementation/
+```
+
+## Phase28-D35 Position Sizing Shadow Generation Error Root Cause Diagnosis
+
+Phase28-D35 was read-only root cause diagnosis. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D35_POSITION_SIZING_EXISTING_BASELINE_CAP_VALIDATION_ROOT_CAUSE_CONFIRMED_D36_READY
+```
+
+Recovered exception:
+
+```text
+PositionSizingSchemaError: target_weight_above_position_cap:1
+```
+
+Failing row:
+
+```text
+symbol = 76470
+row_index = 1
+pm_action = ADD
+current_weight = target_weight = 0.182844
+accepted_incremental_weight = 0.0
+maximum_position_weight = 0.18
+quantity_delta_candidate = 0
+```
+
+Root cause:
+
+```text
+Position Sizing final validation rejects an authoritative existing-position retained baseline
+after market movement pushes current/target weight above the strategy max cap.
+```
+
+Key last-good difference:
+
+```text
+2023-05-08 76470 target_weight = 0.173881 <= 0.18 PASS
+2023-05-09 76470 target_weight = 0.182844 > 0.18 BLOCK
+```
+
+Causality:
+
+```text
+D31: PARTIAL - quantity semantics succeeded, final cap validation was not aligned with retained baseline.
+D34: NO - failing row is ADD, no REDUCE authority path involved.
+```
+
+D36:
+
+```text
+Position Sizing existing-position retained-baseline cap validation repair
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d35_position_sizing_shadow_generation_error_root_cause.md
+reports/phase_reports/phase28_d35_position_sizing_shadow_generation_error_root_cause.json
+reports/phase28_d35_position_sizing_shadow_generation_error_root_cause/
+```
+
+## Phase28-D36 Position Sizing Existing-Position Retained-Baseline Cap Validation Repair Implementation
+
+Phase28-D36 implemented the D35-confirmed retained-baseline cap validation repair. No config change, schema change, threshold change, resume, fresh run, or long historical run was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D36_EXISTING_BASELINE_CAP_VALIDATION_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgment:
+
+```text
+PHASE28_D36_CAP_DIRECTIONALITY_CONTRACT_RESTORED_FRESH_100BD_READY
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Cap directionality:
+
+```text
+maximum_position_weight constrains new/incremental exposure.
+It is not forced-liquidation authority for retained existing baseline drift.
+```
+
+76470 result:
+
+```text
+current_weight = target_weight = 0.182844
+maximum_position_weight = 0.18
+accepted_incremental_weight = 0
+quantity_delta_candidate = 0
+Position Sizing PASS
+Runtime Planning NO_ACTION
+```
+
+Short validation:
+
+```text
+76470 PASS
+HOLD above cap PASS
+ADD zero increment above cap PASS
+positive ADD above cap remains blocked
+BUY_NEW cap enforcement preserved
+artificial target increase remains blocked
+REDUCE above-cap risk-reducing target PASS
+EXIT above cap PASS
+D31/D34/D25/D28/Phase28-C regressions PASS
+compile PASS
+git diff --check PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d36_position_sizing_existing_position_retained_baseline_cap_validation_repair_implementation.md
+reports/phase_reports/phase28_d36_position_sizing_existing_position_retained_baseline_cap_validation_repair_implementation.json
+reports/phase28_d36_position_sizing_existing_position_retained_baseline_cap_validation_repair_implementation/
+```
+
+## Phase28-D37 Dynamic Gross Exposure Target Transition and Existing Baseline Authority Contract Audit
+
+Phase28-D37 completed a read-only authority contract audit for the 2023-06-01 Portfolio Construction BLOCK in run `runtime-test-historical-smoke-20260807T033803941091Z`. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D37_DYNAMIC_GROSS_EXPOSURE_TRANSITION_CONTRACT_GAP_CONFIRMED
+```
+
+Supporting Judgments:
+
+```text
+PC_DYNAMIC_TARGET_TRANSITION_CONTRACT_MISSING
+PC_EXISTING_BASELINE_OVER_TARGET_DIRECTIONALITY_DEFECT
+POLICY_TO_PM_DERISK_AUTHORITY_GAP
+```
+
+Direct failure:
+
+```text
+Producer = Portfolio Construction
+Reason = baseline_existing_required_weight_above_target_gross_exposure
+business_date = 2023-06-01
+target_gross_exposure = 0.54
+current_existing_weight_sum = 0.693506
+baseline_existing_required_weight = 0.677443
+total_target_weight = 0.677443
+gap_after_pm_reduce = 0.137443
+```
+
+Policy transition:
+
+```text
+2023-05-31 target_gross_exposure = 0.72
+2023-06-01 target_gross_exposure = 0.54
+cause = CORRECTION trend + WEAK breadth + low_opportunity_capacity inside Portfolio Policy internal Dynamic Cash / Exposure resolver
+```
+
+Authority judgment:
+
+```text
+Portfolio Policy may set target_gross_exposure.
+Portfolio Policy may not directly sell or select sell symbols.
+Position Management may emit HOLD / ADD / REDUCE / EXIT.
+Portfolio Construction may execute PM REDUCE / EXIT target semantics.
+Portfolio Construction may not override HOLD / ADD into REDUCE / EXIT under the current contract.
+```
+
+Selected transition option:
+
+```text
+Passive convergence for existing retained baseline:
+positive BUY_NEW / BUY_ADD while over target = BLOCKED
+existing HOLD / ADD zero-increment baseline while over target = PRESERVE
+PM REDUCE / EXIT while over target = EXECUTE
+PC forced sell override = FORBIDDEN unless a new authority contract is designed
+```
+
+D28 / D34 / D36 causality:
+
+```text
+D28 = PARTIAL_EXPOSURE; it exposed the missing transition contract through baseline reconciliation.
+D34 = NO_DIRECT_CAUSE; REDUCE intensity worked for 93990 and released 0.016063.
+D36 = NO_DIRECT_CAUSE; the halt is produced in Portfolio Construction before Position Sizing.
+```
+
+Next Phase:
+
+```text
+Phase28-D38 Dynamic Gross Exposure Existing-Baseline Transition Contract Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d37_dynamic_gross_exposure_target_transition_existing_baseline_authority_contract_audit.md
+reports/phase_reports/phase28_d37_dynamic_gross_exposure_target_transition_existing_baseline_authority_contract_audit.json
+reports/phase28_d37_dynamic_gross_exposure_target_transition_existing_baseline_authority_contract_audit/
+```
+
+## Phase28-D38 Dynamic Gross Exposure Existing-Baseline Transition Contract Design
+
+Phase28-D38 completed the read-only design for the D37 missing contract. No implementation, config change, schema change, threshold change, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D38_PASSIVE_CONVERGENCE_TRANSITION_CONTRACT_DESIGN_COMPLETE_D39_READY
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D38_EXISTING_BASELINE_OVER_TARGET_DIRECTIONALITY_DESIGN_COMPLETE
+PHASE28_D38_ACTIVE_POLICY_DERISK_DEFERRED
+```
+
+Implementation Entry Decision:
+
+```text
+READY
+```
+
+Selected transition mode:
+
+```text
+PASSIVE_CONVERGENCE
+```
+
+Formal over-target state:
+
+```text
+OVER_TARGET_EXISTING_BASELINE
+```
+
+Core contract:
+
+```text
+baseline_existing_required_weight > target_gross_exposure
+does not automatically imply Portfolio Construction BLOCK
+when the over-target exposure is retained existing baseline
+and no positive increment is accepted.
+```
+
+Behavior:
+
+```text
+available_incremental_budget = max(target_gross_exposure - baseline_existing_required_weight, 0)
+baseline > target => available_incremental_budget = 0
+BUY_NEW => accepted allocation 0
+PM ADD => retained baseline preserved, accepted increment 0, downstream NO_ACTION
+PM HOLD => retained baseline preserved
+PM REDUCE => canonical D34 partial reduction executes, even if aggregate remains over target
+PM EXIT => SELL_EXIT authority preserved
+positive increment while over target => BLOCK / fail-closed
+```
+
+2023-06-01 replay:
+
+```text
+target_gross_exposure = 0.54
+baseline_existing_required_weight = 0.677443
+expected state = OVER_TARGET_EXISTING_BASELINE
+expected total_target_weight = 0.677443
+expected result = PASS in design; not BLOCK solely because retained baseline remains above target
+```
+
+Compatibility:
+
+```text
+D25 PASS in design
+D28 PASS in design
+D31 PASS in design
+D34 PASS in design
+D36 PASS in design
+BUY / SELL independence preserved
+Active Policy -> PM aggregate de-risk deferred
+```
+
+D39 implementation scope:
+
+```text
+src/ai_fund_lab_v2/strategy/portfolio_construction.py
+tests/strategy/test_phase22_e_portfolio_construction.py
+```
+
+Avoid:
+
+```text
+Portfolio Policy
+Position Management
+Position Sizing
+Runtime Planning
+Sell Planning
+Config
+Schema
+Thresholds
+Pending
+Approval
+Submit
+Broker
+```
+
+Next Phase:
+
+```text
+Phase28-D39 Portfolio Construction Existing-Baseline Over-Target Passive Convergence Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d38_dynamic_gross_exposure_existing_baseline_transition_contract_design.md
+reports/phase_reports/phase28_d38_dynamic_gross_exposure_existing_baseline_transition_contract_design.json
+reports/phase28_d38_dynamic_gross_exposure_existing_baseline_transition_contract_design/
+```
+
+## Phase28-D39 Portfolio Construction Existing-Baseline Over-Target Passive Convergence Implementation
+
+Phase28-D39 implemented the D38-approved Passive Convergence repair in Portfolio Construction. No config change, schema change, threshold change, resume, fresh run, or long historical run was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D39_PASSIVE_CONVERGENCE_IMPLEMENTED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D39_EXISTING_BASELINE_OVER_TARGET_DIRECTIONALITY_REPAIRED
+PHASE28_D39_BUY_SELL_INDEPENDENCE_PRESERVED
+PHASE28_D39_SELECTED_REGRESSIONS_PASS_WITH_OPEN_NON_D39_FULL_FILE_FAILURES
+```
+
+Fresh Test Entry Decision:
+
+```text
+CONDITIONAL
+```
+
+Implemented repair:
+
+```text
+baseline_existing_required_weight > target_gross_exposure
++
+valid retained existing lifecycle baseline
+→ OVER_TARGET_EXISTING_BASELINE
+→ transition_mode = PASSIVE_CONVERGENCE
+→ available_incremental_budget = 0
+→ positive_increment_allowed = false
+→ Portfolio Construction does not globally BLOCK
+```
+
+2023-06-01 focused replay:
+
+```text
+target_gross_exposure = 0.54
+baseline_existing_required_weight = 0.677443
+available_incremental_budget = 0
+total_target_weight = 0.677443
+aggregate_exposure_state = OVER_TARGET_EXISTING_BASELINE
+Portfolio Construction != BLOCK
+```
+
+Behavior:
+
+```text
+BUY_NEW accepted allocation = 0 while over target
+PM ADD baseline preserved, accepted increment = 0
+PM HOLD baseline preserved
+PM REDUCE canonical D34 partial reduction executes even if aggregate remains over target
+PM EXIT zero target preserved
+positive accepted increment over target remains fail-closed
+BUY / SELL independence preserved
+Active Policy -> PM aggregate de-risk remains DEFERRED
+```
+
+Short validation:
+
+```text
+D39 focused PC tests = 7 passed
+D28 / D34 selected PC regressions = 6 passed
+D25 / D31 / D36 selected regressions = 8 passed
+compile = PASS
+git diff --check = PASS
+```
+
+Open validation gap:
+
+```text
+Full tests/strategy/test_phase22_e_portfolio_construction.py attempt:
+40 passed
+3 failed
+
+The 3 failures are recorded as non-D39 default fixture / producer-status selection expectations.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d39_portfolio_construction_existing_baseline_over_target_passive_convergence_implementation.md
+reports/phase_reports/phase28_d39_portfolio_construction_existing_baseline_over_target_passive_convergence_implementation.json
+reports/phase28_d39_portfolio_construction_existing_baseline_over_target_passive_convergence_implementation/
+```
+
+## Phase28-D40 Portfolio Construction Full-File Regression Failure Triage and Resolution
+
+Phase28-D40 triaged and resolved the 3 full-file Portfolio Construction test failures left after D39. No production code, config, schema, threshold, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D40_PC_FULL_FILE_REGRESSION_CLEAN_FRESH_100BD_READY
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Initial failures:
+
+```text
+test_phase23_ao_target_weight_authority_equal_weight_and_cap
+test_phase23_ao_negative_new_opportunity_is_not_forced_into_target_membership
+test_phase26_a_no_buy_reason_opportunity_is_excluded_without_target_count_slot_limit
+```
+
+Classifications:
+
+```text
+Failure 1 = INVALID_DEFAULT_FIXTURE
+Failure 2 = INVALID_DEFAULT_FIXTURE
+Failure 3 = INVALID_DEFAULT_FIXTURE
+D39_REAL_REGRESSION count = 0
+```
+
+Resolution:
+
+```text
+Test-only fixture repair.
+The failing tests now use explicit normal-under-target fixtures instead of the obsolete default PM/current fixture that produced PM REVIEW_REQUIRED and REDUCE current_weight missing.
+```
+
+Validation:
+
+```text
+Full tests/strategy/test_phase22_e_portfolio_construction.py = 43 passed
+Selected D39/D28/D34/D25/D31/D36 regressions = 10 passed
+compile = PASS
+git diff --check = PASS
+JSON validation = PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d40_portfolio_construction_full_file_regression_failure_triage_and_resolution.md
+reports/phase_reports/phase28_d40_portfolio_construction_full_file_regression_failure_triage_and_resolution.json
+reports/phase28_d40_portfolio_construction_full_file_regression_failure_triage_and_resolution/
+```
+
+## Phase28-D41 Position Sizing Post-Passive-Convergence Generation Error Root Cause
+
+Phase28-D41 confirmed the 2023-06-01 Position Sizing `strategy_shadow_generation_error` root cause for run `runtime-test-historical-smoke-20260807T075946923450Z`. Diagnosis only; no implementation, config, schema, threshold, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D41_PS_PASSIVE_CONVERGENCE_STATE_NOT_SUPPORTED_ROOT_CAUSE_CONFIRMED
+```
+
+Direct exception:
+
+```text
+PositionSizingSchemaError: aggregate_target_weight_above_exposure_cap
+```
+
+First failure:
+
+```text
+src/ai_fund_lab_v2/strategy/position_sizing.py:510-512
+src/ai_fund_lab_v2/strategy/position_sizing.py:541
+```
+
+Root Cause:
+
+```text
+Position Sizing still enforces total_target_weight <= target_gross_exposure_ratio unconditionally.
+It does not consume D39 Portfolio Construction passive convergence state:
+OVER_TARGET_EXISTING_BASELINE / PASSIVE_CONVERGENCE / positive_increment_allowed=false.
+```
+
+D39 causality:
+
+```text
+EXPECTED_EXPOSURE
+```
+
+Next Phase:
+
+```text
+Phase28-D42
+Position Sizing aggregate passive-convergence validation repair.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d41_position_sizing_post_passive_convergence_generation_error_root_cause.md
+reports/phase_reports/phase28_d41_position_sizing_post_passive_convergence_generation_error_root_cause.json
+reports/phase28_d41_position_sizing_post_passive_convergence_generation_error_root_cause/
+```
+
+## Phase28-D42 Position Sizing Passive-Convergence Aggregate Validation Integration
+
+Phase28-D42 repaired the Position Sizing aggregate validation gap identified in D41. Position Sizing now consumes structured Portfolio Construction passive-convergence authority and allows aggregate target weight above dynamic gross exposure only when PC proves `OVER_TARGET_EXISTING_BASELINE / PASSIVE_CONVERGENCE` with zero accepted positive increments.
+
+Primary Judgment:
+
+```text
+PHASE28_D42_PS_PASSIVE_CONVERGENCE_AGGREGATE_VALIDATION_INTEGRATED_SHORT_VALIDATION_PASS
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Implemented repair:
+
+```text
+Build-phase aggregate validation and final schema validation now share the same PC passive-convergence predicate.
+Invalid positive increment, missing authority, and ordinary unauthorized aggregate overweight remain fail-closed.
+```
+
+2023-06-01 replay:
+
+```text
+run_id = runtime-test-historical-smoke-20260807T075946923450Z
+producer_result_status = PASS
+schema validation = PASS
+target_gross_exposure_ratio = 0.54
+total_target_weight = 0.677443
+positions_materialized = 50
+```
+
+Short validation:
+
+```text
+Position Sizing focused D42/D31/D34/D36 aggregate regressions = 17 passed
+Full tests/strategy/test_phase22_j_position_sizing.py = 57 passed
+D39 Portfolio Construction compatibility = 7 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d42_position_sizing_passive_convergence_aggregate_validation_integration.md
+reports/phase_reports/phase28_d42_position_sizing_passive_convergence_aggregate_validation_integration.json
+reports/phase28_d42_position_sizing_passive_convergence_aggregate_validation_integration/
+```
+
+## Phase28-D43 SELL Pending Listed-Info Authority Conflict Root Cause
+
+Phase28-D43 diagnosed the 2023-06-02 sell_planning HALT in run `runtime-test-historical-smoke-20260807T110037147037Z`. Diagnosis only; no implementation, config, schema, threshold, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D43_SELL_PENDING_LISTED_INFO_CORE_IDENTITY_CONFLICT_ROOT_CAUSE_CONFIRMED
+```
+
+Direct HALT Producer:
+
+```text
+runtime_v2.pending.composition.reconcile_with_existing_sell_pending
+```
+
+Direct Reason:
+
+```text
+PENDING_SELL_LISTED_INFO_AUTHORITY_CONFLICT;
+PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED
+```
+
+Conflicting symbol:
+
+```text
+93990
+```
+
+Root Cause:
+
+```text
+Existing pending listed_info is Canonical PIT Listed Issues:
+product_category/security_type = 021
+
+New sell-planning candidate listed_info is PM Basic metadata from sell_pipeline._pending_item:
+product_category/security_type = 011
+
+D16 authority precedence only permits market semantics mismatch after core identity fields match.
+93990 is a core identity mismatch, so reconciliation correctly fails closed.
+```
+
+Causality:
+
+```text
+D39 = INDIRECT
+D42 = INDIRECT
+D3 = PARTIAL
+```
+
+Next Phase:
+
+```text
+Phase28-D44
+SELL pending candidate listed_info authority repair.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d43_sell_pending_listed_info_authority_conflict_root_cause.md
+reports/phase_reports/phase28_d43_sell_pending_listed_info_authority_conflict_root_cause.json
+reports/phase28_d43_sell_pending_listed_info_authority_conflict_root_cause/
+```
+
+## Phase28-D44 SELL Pending Candidate Canonical Listed-Info Authority Repair
+
+Phase28-D44 implemented the minimal repair for the D43 93990 SELL pending listed-info core identity conflict. SELL pending candidates now resolve Canonical PIT Listed Issues before `PendingOrderItem` materialization, while retaining PM basic metadata only as fallback when canonical authority is unavailable.
+
+Primary Judgment:
+
+```text
+PHASE28_D44_SELL_CANDIDATE_CANONICAL_LISTED_INFO_AUTHORITY_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgment:
+
+```text
+PHASE28_D44_SELL_PENDING_CORE_IDENTITY_REPAIR_FRESH_100BD_READY
+```
+
+Implemented repair:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/planning/sell_pipeline.py
+
+SELL PM candidate
+↓
+strategy_source_authority / strategy input_manifest
+↓
+Canonical PIT Listed Issues
+↓
+candidate listed_info core identity
+```
+
+Validation:
+
+```text
+93990 focused replay = PASS
+D3 / D8 / D16 focused regression = 15 passed
+D14 / D12 / Phase28-C focused regression = 8 passed
+REDUCE / EXIT selected semantics = 8 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution constraints:
+
+```text
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Submit Guard change = NO
+Broker change = NO
+Pending Composition change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Fresh Test Entry:
+
+```text
+READY
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d44_sell_pending_candidate_canonical_listed_info_authority_repair.md
+reports/phase_reports/phase28_d44_sell_pending_candidate_canonical_listed_info_authority_repair.json
+reports/phase28_d44_sell_pending_candidate_canonical_listed_info_authority_repair/
+```
+
+## Phase28-D45 SELL Candidate Canonical Listed-Info Runtime Propagation Gap Root Cause
+
+Phase28-D45 diagnosed why the D44 focused reproduction passed while the target real Runtime run still produced PM Basic SELL candidate listed-info for 93990. Diagnosis only; no implementation, config, schema, threshold, resume, fresh run, long historical run, or runtime mutation was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D45_D44_NOT_ON_TARGET_RUN_AND_REAL_CONTEXT_MANIFEST_FALLBACK_DEFECT_CONFIRMED
+```
+
+D44 causality classification:
+
+```text
+D44_IMPLEMENTATION_NOT_ON_ACTIVE_RUNTIME_PATH
+```
+
+Supporting current-workspace classification:
+
+```text
+D44_FALLBACK_ELIGIBILITY_DEFECT
+```
+
+Confirmed:
+
+```text
+Target run source_commit = cd1b47a44234bb66c3a773fe7c0324fe11123000
+D44 helper present in target source_commit = NO
+D44 helper called in recorded target run = NO
+
+Canonical availability = YES
+Direct canonical resolver result for 93990 = 021 / 021
+
+Real candidate producer = sell_pipeline._pending_item
+Real candidate = opi-sell-exit-pm-93990-002
+Real candidate listed_info = PM_BASIC_EXECUTION_METADATA
+```
+
+Focused-vs-real divergence:
+
+```text
+D44 focused replay injected strategy_source_authority directly.
+Real Runtime provides runtime_test_evidence_root but no direct strategy_source_authority or strategy_input_manifest_path.
+Current D44 manifest fallback calls undefined _read_json in sell_pipeline.py, catches the exception, and returns empty authority.
+```
+
+59550 / 76470 / 93990:
+
+```text
+59550 new_authority_type = PM_BASIC_EXECUTION_METADATA, core identity PASS
+76470 new_authority_type = PM_BASIC_EXECUTION_METADATA, core identity PASS
+93990 new_authority_type = PM_BASIC_EXECUTION_METADATA, core identity MISMATCH
+```
+
+Next Phase:
+
+```text
+Phase28-D46
+Fix active PM SELL Planning candidate canonical authority resolution from runtime_test_evidence_root / strategy_input_manifest_path and prove 93990 candidate receives canonical 021/021 before reconciliation.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d45_sell_candidate_canonical_listed_info_runtime_propagation_gap_root_cause.md
+reports/phase_reports/phase28_d45_sell_candidate_canonical_listed_info_runtime_propagation_gap_root_cause.json
+reports/phase28_d45_sell_candidate_canonical_listed_info_runtime_propagation_gap_root_cause/
+```
+
+## Phase28-D46 Active PM SELL Planning Canonical Listed-Info Runtime Context Repair
+
+Phase28-D46 implemented the D45 repair target. Active PM SELL Planning now resolves canonical listed-info from the real Runtime `runtime_test_evidence_root` manifest path instead of silently falling back to PM Basic metadata.
+
+Primary Judgment:
+
+```text
+PHASE28_D46_ACTIVE_PM_SELL_CANONICAL_CONTEXT_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgment:
+
+```text
+PHASE28_D46_REAL_RUNTIME_LISTED_INFO_PROPAGATION_REPAIRED_FRESH_100BD_READY
+```
+
+Fresh Test Entry Decision:
+
+```text
+READY
+```
+
+Implemented repair:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/planning/sell_pipeline.py
+
+_strategy_source_authority_from_manifest_path
+before: undefined _read_json + broad exception -> {}
+after: strict _read_json_object; malformed/non-object JSON is not silently converted to unavailable authority
+```
+
+Validation:
+
+```text
+real-context runtime_test_evidence_root manifest load = PASS
+93990 canonical 021/021 candidate = PASS
+59550 canonical authority = PASS
+76470 canonical authority = PASS
+canonical unavailable PM Basic fallback = PASS
+malformed manifest not silent = PASS
+D3 / D8 / D16 focused regression = 19 passed
+D14 / D12 / Phase28-C focused regression = 8 passed
+REDUCE / EXIT selected semantics = 8 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution constraints:
+
+```text
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Fresh-run provenance contract:
+
+```text
+Next fresh-run must be accepted only if subprocess_trace/source provenance corresponds to a source state containing D44/D46 helpers:
+_canonical_sell_candidate_listed_info_by_symbol
+_read_json_object
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d46_active_pm_sell_planning_canonical_listed_info_runtime_context_repair.md
+reports/phase_reports/phase28_d46_active_pm_sell_planning_canonical_listed_info_runtime_context_repair.json
+reports/phase28_d46_active_pm_sell_planning_canonical_listed_info_runtime_context_repair/
+```
+
+## Phase28-D47 Broker Available Quantity Product-Category Authority Root Cause
+
+Phase28-D47 diagnosed the 2023-06-01 submit HALT in run `runtime-test-historical-smoke-20260807T181131555434Z`. Diagnosis only; no implementation, config change, schema change, threshold change, resume, fresh run, long historical run, runtime mutation, broker write, or runtime replay was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D47_BROKER_PRODUCT_CATEGORY_NORMALIZATION_GAP_CONFIRMED
+```
+
+Root scope:
+
+```text
+BROKER_PRODUCT_CATEGORY_NORMALIZATION_GAP
+CANONICAL_LISTED_INFO_TO_BROKER_CLASSIFICATION_CONTRACT_GAP
+LEGACY_PRODUCT_CATEGORY_ASSUMPTION
+```
+
+Direct HALT:
+
+```text
+business_date = 2023-06-01
+stage = submit
+exit_code = 20
+symbol = 93990
+side = SELL
+pending_item_id = opi-sell-reduce-pm-93990-001
+decision_id = pm-2023-06-01-93990-reduce
+```
+
+Submit Guard evidence:
+
+```text
+guard_decision = BLOCKED
+submit_item_status = REVIEW_REQUIRED
+guard_reason = sell broker available quantity missing
+violated_policy = broker_available_quantity
+violated_policy_source = historical_simulated_broker_authority
+broker_available_quantity = null
+broker_available_quantity_reason = product_category_not_allowed
+```
+
+First rejecting producer:
+
+```text
+src/ai_fund_lab_v2/broker/issue_code_normalizer.py
+normalize_broker_issue_code(...)
+
+ORDINARY_STOCK_PRODUCT_CATEGORIES = {"011"}
+93990 canonical product_category = 021
+```
+
+Confirmed flow:
+
+```text
+Submit Guard
+↓
+historical_simulated_broker_authority
+↓
+_broker_issue_code_for_item
+↓
+normalize_broker_issue_code
+↓
+product_category_not_allowed
+↓
+broker_available_quantity = null
+↓
+sell broker available quantity missing
+↓
+REVIEW_REQUIRED / exit 20
+```
+
+Key conclusions:
+
+```text
+93990 canonical listed_info = current listed, market=スタンダード, product_category=021, security_type=021
+021 was rejected because the broker normalizer allows only 011.
+The SELL quantity contract passed: current_quantity=700, sell_quantity=100, expected_remaining_quantity=600.
+Submit feasibility and Safety passed.
+This is not historical-only in code: non-historical readonly quantity and Tachibana request construction use the same normalizer.
+True unsupported security is NOT_CONFIRMED because no local production broker response proves Tachibana rejects 93990/021.
+D44/D46 causality = EXPOSURE_ONLY; they correctly propagated canonical 021/021 and exposed the downstream broker classification gap.
+D34/D39/D42 causality = NO_CAUSE.
+```
+
+Repair Required:
+
+```text
+YES
+```
+
+Minimal D48 Scope:
+
+```text
+Define and implement a broker product-category classification/normalization contract.
+Do not blindly add 021, blindly convert 021 to 011, bypass broker available quantity,
+substitute ledger quantity unconditionally, or add a historical-only special case.
+```
+
+Next Phase:
+
+```text
+Phase28-D48
+Broker product-category classification / normalization contract repair.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d47_broker_available_quantity_product_category_authority_root_cause.md
+reports/phase_reports/phase28_d47_broker_available_quantity_product_category_authority_root_cause.json
+reports/phase28_d47_broker_available_quantity_product_category_authority_root_cause/
+```
+
+## Phase28-D48 Broker Product Classification / Issue-Code Normalization Contract Repair
+
+Phase28-D48 implemented the D47 repair target. Broker issue-code normalization now consumes an explicit broker product classification contract instead of using J-Quants PIT `product_category` directly as broker eligibility.
+
+Primary Judgment:
+
+```text
+PHASE28_D48_BROKER_PRODUCT_CLASSIFICATION_CONTRACT_REPAIRED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgments:
+
+```text
+PHASE28_D48_BROKER_SUPPORT_AUTHORITY_CONFIRMS_93990_UNSUPPORTED_FAIL_CLOSED
+PHASE28_D48_SHORT_REGRESSION_PASS
+```
+
+Fresh Test Entry Decision:
+
+```text
+BLOCKED
+```
+
+Implemented repair:
+
+```text
+src/ai_fund_lab_v2/broker/issue_code_normalizer.py
+
+classify_broker_security(...)
+```
+
+Broker classification contract:
+
+```text
+011 -> TACHIBANA_CASH_EQUITY_LISTED_STOCK -> BROKER_PRODUCT_CATEGORY_SUPPORTED
+021 -> UNSUPPORTED_FOREIGN_LISTED_STOCK -> BROKER_PRODUCT_CATEGORY_UNSUPPORTED
+other/unknown -> UNKNOWN -> BROKER_PRODUCT_CATEGORY_UNKNOWN
+```
+
+Authority:
+
+```text
+Canonical Listed Info authority = J-Quants PIT Listed Issues
+Broker classification authority = Tachibana/e-shiten cash equity product contract
+```
+
+93990:
+
+```text
+canonical category = 021
+broker support = UNSUPPORTED
+broker classification = UNSUPPORTED_FOREIGN_LISTED_STOCK
+normalization result = FAIL_CLOSED
+reason = BROKER_PRODUCT_CATEGORY_UNSUPPORTED
+```
+
+Common path:
+
+```text
+Historical simulated broker authority uses normalize_broker_issue_code.
+Production/demo Tachibana request construction uses normalize_broker_issue_code.
+Non-historical readonly available quantity uses normalize_broker_issue_code.
+Historical-only logic = NO.
+```
+
+Validation:
+
+```text
+broker normalizer + Runtime v2 submit issue-code + historical SELL quantity = 19 passed
+D3 / D8 / D16 focused regression = 19 passed
+D14 / D12 / Phase28-C focused regression = 8 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution constraints:
+
+```text
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+Broker write = NO
+```
+
+Fresh entry remains blocked because 93990 is now explicitly unsupported for current Tachibana/e-shiten cash equity handling. The next phase must prevent unsupported broker classes from reaching Pending / Submit as executable orders.
+
+Next Phase:
+
+```text
+Phase28-D49
+Broker eligibility planning/universe exclusion.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d48_broker_product_classification_normalization_contract_repair.md
+reports/phase_reports/phase28_d48_broker_product_classification_normalization_contract_repair.json
+reports/phase28_d48_broker_product_classification_normalization_contract_repair/
+```
+
+---
+
+## Phase28-D49 Broker Eligibility Upstream Planning / Universe Exclusion Repair
+
+Status:
+
+```text
+IMPLEMENTED
+SHORT VALIDATION PASS
+FRESH 100BD READY
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D49_BROKER_ELIGIBILITY_UPSTREAM_EXCLUSION_IMPLEMENTED_SHORT_VALIDATION_PASS
+```
+
+Supporting Judgment:
+
+```text
+PHASE28_D49_UNSUPPORTED_SECURITY_NEW_EXPOSURE_PREVENTED_FRESH_100BD_READY
+```
+
+Authoritative gating owner:
+
+```text
+Portfolio Construction
+```
+
+Implemented repair:
+
+```text
+Portfolio Construction now reuses classify_broker_security(...)
+from the D48 broker product classification contract.
+
+Unsupported/unknown broker classes are excluded from executable
+BUY_NEW and BUY_ADD exposure before target weight allocation.
+
+Existing unsupported holdings remain visible to PM/HOLD/REDUCE/EXIT.
+```
+
+93990 causality:
+
+```text
+original BUY date = 2023-05-29
+original decision type = BUY_NEW
+original rank = 6
+product_category = 021
+broker classification = UNSUPPORTED_FOREIGN_LISTED_STOCK
+reason = BROKER_PRODUCT_CATEGORY_UNSUPPORTED
+```
+
+D49 prevention:
+
+```text
+ADD_CANDIDATE
+↓
+EXCLUDE
+↓
+target_weight = 0
+↓
+no Pending BUY
+↓
+no Submit BUY
+↓
+no fill
+```
+
+Existing holding asymmetry:
+
+```text
+BUY_NEW = prohibited
+BUY_ADD = prohibited
+HOLD = visible
+REDUCE = visible
+EXIT = visible
+SELL broker unsupported = D48 fail-closed / manual-review path
+```
+
+Validation:
+
+```text
+D49 focused = 3 passed
+Portfolio Construction full file = 46 passed
+D48 broker/submit/historical SELL = 19 passed
+D44/D46 = 4 passed
+D8 = 9 passed
+D14 = 1 passed
+D39/D42 = 5 passed
+Phase28-C = 4 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution constraints:
+
+```text
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d49_broker_eligibility_upstream_planning_universe_exclusion_repair.md
+reports/phase_reports/phase28_d49_broker_eligibility_upstream_planning_universe_exclusion_repair.json
+reports/phase28_d49_broker_eligibility_upstream_planning_universe_exclusion_repair/
+```
+
+---
+
+## Phase28-D50 Broker Eligibility Listed-Info Runtime Propagation Root Cause
+
+Status:
+
+```text
+READ_ONLY ROOT CAUSE DIAGNOSIS COMPLETE
+```
+
+Primary Judgment:
+
+```text
+D49_GATE_CORRECT_BUT_REQUIRED_AUTHORITY_NOT_PROPAGATED
+```
+
+Target:
+
+```text
+run_id = runtime-test-historical-smoke-20260807T202512386120Z
+business_date = 2023-05-29
+symbol = 93990
+```
+
+Canonical listed-info availability:
+
+```text
+YES
+
+listed_issues parquet:
+Code = 93990
+ProdCat = 021
+MktNm = スタンダード
+
+candidate_features parquet:
+product_category = 021
+market_name = スタンダード
+is_current_listed = true
+```
+
+Observed propagation:
+
+```text
+Candidate feature input = product_category 021 present
+Candidate decision row = product_category null
+Opportunity ranking row = product_category null
+Buy Quality row = product_category null
+Portfolio Construction member = product_category null / listed_info null / broker_eligibility null
+```
+
+First loss point:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/buy_ai/producer.py
+_candidate_payload(...)
+
+The candidate output projection emits score/rank/identity fields but omits
+listed-info-compatible product_category and market metadata already present in
+candidate_features.parquet.
+```
+
+Active vs shadow:
+
+```text
+active strategy:
+93990 current_position = false
+membership_intent = ADD_CANDIDATE
+target_weight = 0.085179
+
+strategy_eod_shadow:
+93990 current_position = true
+membership_intent = UNRESOLVED
+target_weight = 0.0
+
+Both paths lack listed_info/product_category at PC member level.
+The divergence is position-state timing, not listed-info availability.
+```
+
+D49 causality:
+
+```text
+D49 gate called = YES
+D49 classification called for 93990 = NO
+
+Reason:
+member.broker_listed_info absent
+↓
+_broker_eligibility_payload returns None
+↓
+classify_broker_security(...) not called
+```
+
+Minimal D51 scope:
+
+```text
+Propagate canonical listed-info-compatible fields from candidate feature rows
+into runtime candidate_decisions row materialization.
+
+Owner:
+src/ai_fund_lab_v2/runtime_v2/buy_ai/producer.py
+_candidate_payload / candidate row materialization
+
+Do not duplicate D48 broker classification mapping.
+Do not inject historical-only metadata.
+```
+
+Execution constraints:
+
+```text
+Implementation change = NO
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D51
+Candidate row listed-info metadata propagation repair.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d50_broker_eligibility_listed_info_runtime_propagation_root_cause.md
+reports/phase_reports/phase28_d50_broker_eligibility_listed_info_runtime_propagation_root_cause.json
+reports/phase28_d50_broker_eligibility_listed_info_runtime_propagation_root_cause/
+```
+
+## Phase28-D51 Closure: Candidate Listed-Info Metadata Propagation Repair
+
+Status:
+
+```text
+PHASE28_D51_CANDIDATE_LISTED_INFO_METADATA_PROPAGATION_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+D51 implemented the D50 minimal repair scope. Runtime BUY AI candidate materialization now propagates canonical listed-info-compatible fields from candidate feature rows into `candidate_decisions.json`, reattaches them into `opportunity_rankings.json`, and preserves them in BUY Quality decision rows. D48 broker classification, D49 Portfolio Construction broker eligibility, Position Sizing, Runtime Planning, Submit Guard, Broker normalizer, config, schema, and thresholds were not changed.
+
+Validated result:
+
+```text
+93990 product_category = 021
+broker classification = UNSUPPORTED_FOREIGN_LISTED_STOCK
+membership_intent = EXCLUDE
+target_membership = false
+target_weight = 0.0
+BUY_NEW exposure = 0.0
+```
+
+Execution constraints:
+
+```text
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D52
+Fresh 100BD runtime conformance run for 93990 broker eligibility exclusion and overall Phase28 runtime conformance.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d51_candidate_listed_info_metadata_propagation_repair.md
+reports/phase_reports/phase28_d51_candidate_listed_info_metadata_propagation_repair.json
+reports/phase28_d51_candidate_listed_info_metadata_propagation_repair/
+```
+
+## Phase28-D53 Closure: Compounding / Capital Deployment End-to-End 100BD Audit
+
+Status:
+
+```text
+PHASE28_D53_CAPITAL_BASE_CORRECT_DEPLOYMENT_CONVERSION_GAP_CONFIRMED
+```
+
+D53 audited completed 100BD run `runtime-test-historical-smoke-20260808T015847315534Z` in read-only mode. The run is valid and completed 100 business days with `final_runtime_judgment = PASS`; the top-level `strategy_shadow_review_required_non_blocking` condition remains non-blocking.
+
+Compounding judgment:
+
+```text
+Compounding Classification = FULL_COMPOUNDING_CONFIRMED
+Current total equity active authority = YES_WITH_NEXT_DAY_VALUATION_LAG
+Active fixed 1,000,000 capital authority = NO
+Compounding reaches PC = YES
+Compounding reaches PS = YES
+Compounding reaches Runtime Planning = YES
+Compounding reaches Submit = YES_RECEIVES_NOTIONAL
+```
+
+Capital deployment audit:
+
+```text
+Final Equity = 1,179,240
+Return Rate = 17.924%
+Average actual gross exposure = 0.504346
+Average target gross exposure = 0.730300
+Average exposure gap = 0.225954
+Largest exposure gap = 0.493716 on 2023-04-14
+Days gap >= 20pp = 56
+```
+
+Unused capital classification:
+
+```text
+Mixture:
+- JUSTIFIED_OPPORTUNITY_SHORTAGE
+- BUY_ADD_CONVERSION_GAP
+- POSITION_SIZING_CONVERSION_GAP
+```
+
+Key funnel evidence:
+
+```text
+PM ADD = 191
+PC positive ADD increment = 0
+PS positive ADD delta = 0
+Runtime BUY_ADD = 0
+Filled BUY_ADD = 0
+
+BUY_NEW PC positive weights = 132
+PS positive BUY_NEW quantities = 22
+Runtime BUY_NEW = 22
+Filled BUY_NEW = 22
+BUY_NEW lot/min-notional blocks = 110
+```
+
+D53 conclusion:
+
+```text
+Capital base compounding is not the blocker.
+Primary repair candidates are BUY_ADD eligibility evidence availability and
+lot-size-aware capital conversion, not a D53 threshold or exposure-policy change.
+```
+
+Execution constraints:
+
+```text
+Implementation change = NO
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D54
+DESIGN_ONLY repair design for BUY_ADD eligibility evidence availability and
+lot-size-aware capital conversion.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d53_compounding_capital_deployment_end_to_end_100bd_audit.md
+reports/phase_reports/phase28_d53_compounding_capital_deployment_end_to_end_100bd_audit.json
+reports/phase28_d53_compounding_capital_deployment_end_to_end_audit/
+```
+
+## Phase28-D54 Closure: BUY_ADD Evidence Availability and Lot-Aware Capital Conversion Design
+
+Status:
+
+```text
+PHASE28_D54_BUY_ADD_EVIDENCE_AND_LOT_AWARE_CONVERSION_DESIGN_COMPLETE
+```
+
+D54 accepted the D53 finding that capital-base compounding is correct and that the remaining deployment gap is a conversion problem, not a fixed-capital, threshold, or exposure-policy problem.
+
+Supporting judgments:
+
+```text
+BUY_ADD_EVIDENCE_GAP_REQUIRES_NEW_PRODUCER_OR_EXPLICIT_ADD_EVIDENCE_RESOLVER
+LOT_AWARE_PC_PS_FEEDBACK_CONTRACT_DESIGNED
+D55_SPLIT_RECOMMENDED
+```
+
+BUY_ADD design conclusion:
+
+```text
+Root Cause = REQUIRED_PC_ADD_AUTHORITY_MISSING_OR_INCOMPATIBLE
+PM ADD semantic authority = INTENT_ONLY
+PC positive ADD increment = 0 / 191
+Preferred design = Unified ADD Investment Evidence Resolver / artifact consumed by Portfolio Construction
+```
+
+The preferred BUY_ADD design keeps Portfolio Construction as target-weight authority and keeps PM ADD as intent only. The missing authority is explicit campaign continuation, expected-edge baseline/improvement, incremental investment value, and compatible opportunity-cost evidence. Missing, stale, future-dated, or incompatible evidence remains fail-closed.
+
+Lot-aware capital conversion conclusion:
+
+```text
+Root Cause = PC continuous weights are allocated before PS lot/min-notional feasibility is known
+BUY_NEW PC positive weights = 132
+PS positive BUY_NEW quantities = 22
+Lot/min-notional blocks = 110
+Preferred design = Two-pass PC economic draft -> PS lot feasibility preflight -> PC final reallocation -> PS final sizing
+```
+
+The preferred lot-aware design preserves ownership: Portfolio Construction owns economic desirability, target weights, opportunity cost, and reallocation; Position Sizing owns price, trading-unit, minimum-notional feasibility, and final quantity. It does not force one-lot purchases or forced cash utilization.
+
+Compatibility:
+
+```text
+Passive convergence compatibility = PASS
+Broker eligibility compatibility = PASS
+SELL independence compatibility = PASS
+Historical/Production common path = YES
+Training leakage risk = NONE
+```
+
+Execution constraints:
+
+```text
+Implementation change = NO
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Resume = NO
+Fresh run = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D55-A
+Implement BUY_ADD evidence availability repair first.
+
+Phase28-D55-B
+Implement lot-aware capital conversion repair separately after D55-A.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d54_buy_add_evidence_and_lot_aware_capital_conversion_design.md
+reports/phase_reports/phase28_d54_buy_add_evidence_and_lot_aware_capital_conversion_design.json
+reports/phase28_d54_buy_add_evidence_and_lot_aware_capital_conversion_design/
+```
+
+## Phase28-D55-A Closure: Unified BUY_ADD Investment Evidence Resolver Implementation
+
+Status:
+
+```text
+PHASE28_D55_A_BUY_ADD_AUTHORITY_AVAILABLE_PC_INTEGRATED_D55_B_READY
+```
+
+D55-A implemented the D54-approved Production-common BUY_ADD investment evidence resolver. PM ADD remains intent-only, Portfolio Construction remains target-weight authority, Position Sizing remains quantity authority, and Runtime Planning remains order-intent mapping authority. D55-A did not implement the D55-B lot-aware PC/PS capital conversion repair.
+
+Implementation summary:
+
+```text
+Resolver module = src/ai_fund_lab_v2/strategy/add_investment_evidence.py
+PC consumer = src/ai_fund_lab_v2/strategy/portfolio_construction.py
+Evidence schema = add_investment_evidence.v1
+Artifact schema = add_investment_evidence_artifact.v1
+Producer = phase28_d55_a_add_investment_evidence_resolver.v1
+```
+
+Authority implementation:
+
+```text
+Campaign continuation authority = IMPLEMENTED
+Expected-edge baseline authority = IMPLEMENTED_WITH_REQUIRED_INPUT
+Expected-edge comparison = IMPLEMENTED
+Incremental investment value = IMPLEMENTED
+Opportunity cost integration = IMPLEMENTED
+No-loss-averaging integration = IMPLEMENTED
+Temporal authority = PASS
+Future-data protection = PASS
+Training leakage = NONE
+```
+
+Validation:
+
+```text
+Representative valid ADD = PASS
+PC positive ADD increment = YES
+PS receives positive ADD delta when lot-feasible = YES
+Passive convergence regression = PASS
+Broker eligibility regression = PASS
+SELL independence = PASS
+BUY_NEW regression = PASS
+PC + PS regression = 108 passed
+PM regression = 22 passed
+Broker + SELL regression = 17 passed
+Combined relevant regression = 147 passed
+py_compile = PASS
+git diff --check = PASS
+```
+
+Existing D53 run read-only ADD classification:
+
+```text
+Source run = runtime-test-historical-smoke-20260808T015847315534Z
+Total PM ADD = 191
+Resolver PASS = 96
+Resolver FAIL = 95
+Resolver UNKNOWN = 0
+Counterfactual return calculated = NO
+Counterfactual BUY_ADD count claimed = NO
+```
+
+Execution constraints:
+
+```text
+Schema changed = YES, additive only
+Config change = NO
+Threshold change = NO
+Runtime Authority violation = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Known non-D55-A validation note:
+
+```text
+Two unrelated runtime tests in the already dirty worktree still fail outside
+D55-A files and are documented in D55-A evidence 23.
+```
+
+Next Phase:
+
+```text
+Phase28-D55-B
+Implement lot-aware PC/PS capital conversion repair.
+
+Fresh 100BD Entry = NOT_YET
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d55_a_buy_add_investment_evidence_resolver_implementation.md
+reports/phase_reports/phase28_d55_a_buy_add_investment_evidence_resolver_implementation.json
+reports/phase28_d55_a_buy_add_investment_evidence_resolver_implementation/
+```
+
+## Phase28-D55-B Closure: Lot-Aware PC/PS Capital Conversion Implementation
+
+Status:
+
+```text
+PHASE28_D55_B_LOT_AWARE_PC_PS_CONTRACT_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_BLOCKED_BY_ACTIVE_BASELINE_SUPPLY
+```
+
+D55-B implemented the D54-approved lot-aware PC/PS capital conversion contract as additive Production-common contracts and helpers. It did not run fresh, resume, long historical, or any runtime-mutating command.
+
+Implementation summary:
+
+```text
+PS lot-feasibility owner = Position Sizing
+PC final-reallocation owner = Portfolio Construction
+Production-common = YES
+Two-pass flow implemented = YES
+PS preflight decides economic allocation = NO
+PC remains target-weight authority = YES
+PS remains quantity authority = YES
+```
+
+Implemented contracts:
+
+```text
+PS preflight schema = ps_lot_feasibility_preflight.v1
+PC final reallocation authority = PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION
+No forced one-lot behavior = PRESERVED
+Cash valid endpoint = PRESERVED
+Deterministic tie-break = construction_priority then symbol
+```
+
+Validation:
+
+```text
+Valid BUY_NEW one-lot conversion = PASS
+Invalid BUY_NEW forced-lot prevention = PASS
+Lower-ranked reallocation = PASS
+Cash valid endpoint = PASS
+Valid BUY_ADD lot conversion = PASS
+Invalid BUY_ADD forced-lot prevention = PASS
+Passive convergence = PASS
+Broker eligibility = PASS
+SELL independence = PASS
+Determinism = PASS
+PC + PS regression = 115 passed
+Relevant combined regression = 154 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Existing D53 run read-only lot-block reclassification:
+
+```text
+Total prior lot/min-notional blocks = 110
+EXECUTABLE_AFTER_REALLOCATION = 37
+STILL_INFEASIBLE = 73
+REALLOCATED_TO_OTHER_BUY_NEW = 0
+REALLOCATED_TO_ADD = 0
+CASH_VALID = 73
+UNKNOWN = 0
+Counterfactual PnL calculated = NO
+```
+
+Fresh 100BD entry gate:
+
+```text
+D55-A resolver active runtime integration = FAIL
+Same-campaign baseline active runtime supply = FAIL
+Fresh 100BD Entry = BLOCKED
+```
+
+Blocking reason:
+
+```text
+The Production-common D55-B contracts are implemented, but the active runtime path
+has not been proven to supply same-campaign expected-edge baseline evidence to the
+D55-A resolver, nor to execute/prove the second PC pass consuming PS preflight.
+```
+
+Execution constraints:
+
+```text
+Schema changed = YES, additive only
+Config change = NO
+Threshold change = NO
+Runtime Authority violation = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D55-C
+Active runtime wiring / same-campaign baseline supply gate repair before fresh 100BD.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d55_b_lot_aware_pc_ps_capital_conversion_implementation.md
+reports/phase_reports/phase28_d55_b_lot_aware_pc_ps_capital_conversion_implementation.json
+reports/phase28_d55_b_lot_aware_pc_ps_capital_conversion_implementation/
+```
+
+## Phase28-D55-C Closure: Active Runtime BUY_ADD Baseline Supply and Two-Pass PC/PS Wiring
+
+Phase28-D55-C implemented the active Runtime Strategy wiring repair for D55-A and D55-B. The Strategy orchestration now supplies same-campaign expected-edge baseline evidence from latest prior same-campaign Strategy Portfolio Construction evidence before Portfolio Construction consumes the D55-A resolver, and it executes the required PC draft -> PS preflight -> PC final reallocation -> PS final sizing -> Runtime Planning sequence.
+
+Primary Judgment:
+
+```text
+PHASE28_D55_C_ACTIVE_RUNTIME_BASELINE_AND_TWO_PASS_WIRING_IMPLEMENTED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Implemented repair:
+
+```text
+Baseline supply producer = latest_prior_same_campaign_strategy_portfolio_construction
+Baseline artifact = daily/<prior_business_date>/strategy/portfolio_construction.json
+Baseline field path = portfolio_members[].runtime_opportunity_score
+Campaign identity field = position_campaign_id
+Missing baseline = UNKNOWN_FAIL_CLOSED
+Future baseline = FAIL_CLOSED
+Symbol-only baseline = NOT USED
+```
+
+Two-pass active Strategy sequence:
+
+```text
+portfolio_construction_draft.json
+position_sizing_preflight.json
+portfolio_construction.json
+position_sizing.json
+runtime_planning.json
+```
+
+Validation:
+
+```text
+py_compile = PASS
+D55-A / D55-B / D55-C core regression = 131 passed
+PM / Runtime Planning / SELL / broker representative regression = 88 passed
+Candidate / Buy Quality representative regression = 20 passed
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution flags:
+
+```text
+Implementation changed = YES
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Runtime Authority violation = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D56
+Fresh 100BD runtime conformance run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d55_c_active_runtime_buy_add_and_two_pass_pc_ps_wiring.md
+reports/phase_reports/phase28_d55_c_active_runtime_buy_add_and_two_pass_pc_ps_wiring.json
+reports/phase28_d55_c_active_runtime_buy_add_and_two_pass_wiring/
+```
+
+## Phase28-D55-D Closure: Lot-Aware Zero-Weight Reason Contract Repair
+
+Phase28-D55-D repaired the Portfolio Construction final-pass schema contract violation exposed by fresh entry run `runtime-test-historical-smoke-20260808T223705253100Z` on `2023-04-03`.
+
+Primary Judgment:
+
+```text
+PHASE28_D55_D_LOT_AWARE_ZERO_WEIGHT_REASON_CONTRACT_REPAIRED_SHORT_REGRESSION_PASS_FRESH_100BD_READY
+```
+
+Root cause:
+
+```text
+portfolio_construction.json final pass
+schema_version = portfolio_construction_shadow_error.v1
+producer_result_status = BLOCK
+error = missing_zero_weight_reason:3
+
+PC final lot-aware reallocation zeroed a PASS member without
+target_weight_resolution.zero_weight_reason.
+```
+
+Target case:
+
+```text
+symbol = 59350
+draft target_weight = 0.18
+PS preflight lot_feasible = false
+minimum_executable_weight = 0.45849
+final target_weight = 0.0
+required zero_weight_reason = minimum_lot_exceeds_concentration_cap
+```
+
+Implemented repair:
+
+```text
+Portfolio Construction final lot-aware reallocation now materializes
+zero_weight_reason when final target_weight is 0 and resolution status is PASS.
+```
+
+Validation:
+
+```text
+py_compile = PASS
+D55-B focused lot-aware regression = 4 passed
+D55-A / D55-B / D55-C core regression = 131 passed
+Runtime Planning / SELL / broker representative regression = 66 passed
+Target run artifact reproduction using /private/tmp output = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution flags:
+
+```text
+Implementation changed = YES
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Runtime Authority violation = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D56
+Fresh 100BD runtime conformance run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d55_d_lot_aware_zero_weight_reason_contract_repair.md
+reports/phase_reports/phase28_d55_d_lot_aware_zero_weight_reason_contract_repair.json
+reports/phase28_d55_d_lot_aware_zero_weight_reason_contract_repair/
+```
+
+## Phase28-D57 Closure: BUY_ADD Same-Campaign Baseline Supply Runtime Root Cause Audit
+
+Phase28-D57 completed a read-only root cause audit for run `runtime-test-historical-smoke-20260808T232727106824Z`. No implementation, config change, schema change, threshold change, runtime mutation, resume, fresh run, or long historical run was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D57_ACTIVE_ADD_BASELINE_CAMPAIGN_AUTHORITY_PROPAGATION_GAP_CONFIRMED
+```
+
+Funnel:
+
+```text
+PM ADD count = 25
+PC positive ADD increment = 0
+PS positive BUY_ADD delta = 0
+Runtime BUY_ADD = 0
+BUY_ADD Fill = 0
+```
+
+Baseline supply:
+
+```text
+D55-C supplier invoked = YES
+supplied_count total = 0
+missing_count total = 0
+future_baseline_used = false
+symbol_only_baseline_used = false
+```
+
+Root cause:
+
+```text
+D55-C supplier builds current_campaign_by_symbol from current_summary only.
+Runtime current/current-summary authority reaching PC lacks canonical position_campaign_id.
+PM later materializes runtime-current-* as pm_position_campaign_id, and D55-A sees it,
+but D55-C supplier does not consume PM campaign authority.
+Therefore no opportunity row receives expected_edge_baseline_* fields.
+```
+
+Classification:
+
+```text
+D55-A defect = NO
+D55-C defect = YES
+D55-D relevance = unrelated
+Historical-only defect = NO
+Production path affected = YES
+Repair required = YES
+Fresh 100BD rerun required after repair = YES
+```
+
+Minimal D58 scope:
+
+```text
+Production-common campaign identity propagation into Strategy current-position baseline supply,
+aligned with D55-A campaign authority.
+No symbol-only fallback, future evidence, historical-only hack, or fail-open baseline.
+```
+
+Validation:
+
+```text
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d57_buy_add_same_campaign_baseline_runtime_root_cause.md
+reports/phase_reports/phase28_d57_buy_add_same_campaign_baseline_runtime_root_cause.json
+reports/phase28_d57_buy_add_same_campaign_baseline_runtime_root_cause/
+```
+
+## Phase28-D58 Closure: Production-Common BUY_ADD Campaign Identity Baseline Supply Repair
+
+Phase28-D58 implemented the minimal Production-common repair for the D57-confirmed D55-C campaign authority propagation gap. No fresh run, resume, long historical run, runtime mutation, config change, threshold change, broker semantic change, SELL semantic change, Submit Guard change, D55-A semantic change, D55-B lot-feasibility semantic change, D55-C orchestration order change, or D55-D zero-weight reason semantic change was performed.
+
+Primary Judgment:
+
+```text
+PHASE28_D58_PRODUCTION_COMMON_ADD_CAMPAIGN_BASELINE_SUPPLY_REPAIRED_SHORT_VALIDATION_PASS_FRESH_100BD_READY
+```
+
+Changed files:
+
+```text
+src/ai_fund_lab_v2/strategy/shadow_runtime.py
+tests/runtime_v2/test_phase22_p_strategy_shadow_wiring.py
+```
+
+Implemented repair:
+
+```text
+D55-C supplier now consumes Strategy Position Management current-position
+lifecycle/reference authority after PM artifact generation.
+
+D55-C campaign authority after repair:
+strategy_position_management_current_position_lifecycle_reference
+
+D55-A campaign authority:
+current_position_campaign_id / pm_position_campaign_id / position_campaign_id
+plus opportunity_position_campaign_id for opportunity side
+
+Authority alignment status = PASS
+```
+
+Representative evidence:
+
+```text
+Before D58 supplied_count total = 0
+Before D58 missing_count total = 0
+
+After D58 2023-05-02:
+current_campaign_count = 3
+supplied_count = 2
+missing_count = 1
+
+After D58 2023-05-08:
+current_campaign_count = 3
+supplied_count = 3
+missing_count = 0
+
+Representative subsequent ADD:
+symbol = 76470
+business_date = 2023-05-08
+baseline_business_date = 2023-05-02
+baseline_campaign_id = runtime-current-76470
+baseline_score = 0.16913658
+D55-A campaign_continuation = PASS
+D55-A expected_edge = PASS
+D55-A incremental_value = PASS
+```
+
+Contract preservation:
+
+```text
+PM ADD remains intent-only
+PC remains target-weight authority
+PS remains quantity authority
+Runtime Planning remains final PS consumer
+First ADD missing baseline remains fail-closed
+Future evidence used = NO
+Symbol-only fallback used = NO
+Training leakage = NONE
+```
+
+Validation:
+
+```text
+py_compile = PASS
+D55-A / D55-B / D55-C / D58 core regression = 132 passed
+PM / Runtime Planning / SELL / broker representative regression = 88 passed
+Candidate / Buy Quality representative regression = 20 passed
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Execution flags:
+
+```text
+Implementation changed = YES
+Config change = NO
+Schema change = NO
+Threshold change = NO
+Runtime Authority violation = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+Runtime mutation = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D59
+Fresh 100BD runtime conformance run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d58_production_common_add_campaign_baseline_supply_repair.md
+reports/phase_reports/phase28_d58_production_common_add_campaign_baseline_supply_repair.json
+reports/phase28_d58_production_common_add_campaign_baseline_supply_repair/
+```
+
+## Phase28-D59 Closure: ADD Conversion Funnel / Exposure Gap Root Cause Audit
+
+Status:
+
+```text
+CLOSED
+READ_ONLY ROOT CAUSE AUDIT COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D59_MULTI_CAUSAL_EXPOSURE_GAP_CONFIRMED
+```
+
+Target Run:
+
+```text
+runtime-test-historical-smoke-20260809T010010445473Z
+```
+
+Confirmed active Runtime funnel:
+
+```text
+PM ADD rows in active PC = 142
+D55-A final PASS = 69
+PC positive existing-position ADD = 11
+PS positive BUY_ADD delta = 4
+Runtime BUY_ADD = 4
+Runtime BUY_ADD fills = 3
+```
+
+Root Cause:
+
+```text
+D58 baseline supply is effective, but ADD exposure conversion remains multi-causal:
+1. D55-A PASS rows mostly request zero due to target/current collision.
+2. Positive accepted increments are often zeroed by lot-aware conversion.
+3. Some PC-positive ADD rows become zero quantity in Position Sizing.
+Runtime Planning / Submit / Fill are not the dominant loss producers.
+```
+
+Evidence:
+
+```text
+A_TARGET_CURRENT_COLLISION_REQUEST_ZERO = 46
+B_LOT_AWARE_ZERO_OR_FINAL_NOT_ABOVE_CURRENT = 12
+C_PS_ZERO_AFTER_PC_POSITIVE = 7
+E_RUNTIME_BUY_ADD_NO_FILL = 1
+F_RUNTIME_BUY_ADD_FILL = 3
+D55A_FAIL = 73
+```
+
+Execution flags:
+
+```text
+Implementation changed = NO
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D60
+Design the minimal production-common ADD capital conversion repair for
+dynamic target/current-position collision, lot-aware incremental conversion,
+and PC-positive to PS-zero quantity realization.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d59_add_conversion_exposure_gap_root_cause_audit.md
+reports/phase_reports/phase28_d59_add_conversion_exposure_gap_root_cause_audit.json
+reports/phase28_d59_add_conversion_exposure_gap_root_cause_audit/
+```
+
+## Phase28-D60 Closure: Production-Common ADD Capital Conversion Repair Design
+
+Status:
+
+```text
+CLOSED
+DESIGN ONLY COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D60_ADD_CAPITAL_CONVERSION_REPAIR_DESIGN_COMPLETE_D61_READY
+```
+
+Design decisions:
+
+```text
+target/current collision repair =
+OPTION_C_ADD_INCREMENT_AUTHORITY_ON_TOP_OF_CURRENT_BASELINE_WITH_PORTFOLIO_COMPETITION
+
+lot-aware repair =
+REUSE_D55B_TWO_PASS_LOT_AWARE_PRIMITIVE_WITH_ADD_INCREMENT_BASIS_AND_SAFE_MINIMUM_LOT_PROMOTION
+
+PC -> PS repair =
+SHARED_LOT_RESOLUTION_LINEAGE_CONSUMPTION_BY_PS_FOR_ADD_TRANSACTION_DELTA
+```
+
+Root design conclusion:
+
+```text
+Current ADD bridge incorrectly derives incremental request from ordinary base target
+minus current_weight. PM ADD + D55-A PASS is therefore zeroed when current_weight
+already exceeds the ordinary base target. This is an Architecture Gap.
+```
+
+D61 minimal scope:
+
+```text
+src/ai_fund_lab_v2/strategy/portfolio_construction.py
+src/ai_fund_lab_v2/strategy/position_sizing.py
+tests/strategy/test_phase22_e_portfolio_construction.py
+tests/strategy/test_phase22_j_position_sizing.py
+```
+
+Unchanged contracts:
+
+```text
+D55-A resolver semantics = unchanged
+Runtime Planning mapping = unchanged
+Submit Guard = unchanged
+SELL path = unchanged
+Broker eligibility semantics = unchanged
+BUY_NEW behavior = unchanged
+Config / Schema / Threshold = unchanged
+```
+
+Execution flags:
+
+```text
+Implementation changed = NO
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D61
+Implement Production-common ADD capital conversion repair with short regression validation.
+Fresh 100BD only after D61 short validation passes.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d60_add_capital_conversion_repair_design.md
+reports/phase_reports/phase28_d60_add_capital_conversion_repair_design.json
+reports/phase28_d60_add_capital_conversion_repair_design/
+```
+
+## Phase28-D62 Closure: Historical Pending Safety REVIEW_REQUIRED Root Cause Audit
+
+Status:
+
+```text
+CLOSED
+READ_ONLY ROOT CAUSE AUDIT COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D62_HISTORICAL_PENDING_SAFETY_FALSE_POSITIVE_CONFIRMED
+```
+
+Target Run:
+
+```text
+runtime-test-historical-smoke-20260809T010010445473Z
+```
+
+Direct Root Cause:
+
+```text
+_historical_pending_safety_authority applies active/carry-forward historical
+safety binding comparisons to normal EMPTY / No-Action terminal Pending slots.
+Runtime v2 EMPTY contract says environment, target_session_date, safety_context,
+and Runtime Test identity are not required for EMPTY terminal slots.
+```
+
+Producer:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/data_readiness.py::_historical_pending_safety_authority
+```
+
+100BD classification:
+
+```text
+logical events = 57
+file occurrences = 342
+CASE_A_NORMAL_EMPTY_TERMINAL_CANDIDATE = 57
+CASE_B_ACTIVE_OR_CONSUMED = 0
+CASE_C_FAILED_OR_INCOMPLETE_ATTEMPT = 0
+CASE_D_SELL_CONTINUATION_REQUIRES_SAFETY = 0
+manifest copy duplication = confirmed
+```
+
+Final REVIEW_REQUIRED propagation:
+
+```text
+Final Runtime judgment = PASS
+Runtime execution judgment = PASS
+Block rule = NO_BLOCKING_CLOSE_RULE_TRIGGERED
+Direct final REVIEW_REQUIRED reason = strategy_shadow_review_required_non_blocking
+
+historical_pending_safety_authority_mismatch is nested observability evidence,
+not an active Pending Safety execution blocker in this run.
+```
+
+Separated finding:
+
+```text
+BASELINE_CURRENT_SEMANTICS_MISMATCH remains a separate strategy/evaluation
+review family and is not repaired in D62.
+```
+
+Repair gate:
+
+```text
+D63 = APPROVED
+```
+
+Next Phase:
+
+```text
+Phase28-D63 Production-common Pending Safety EMPTY-terminal Judgment Repair
+```
+
+Execution flags:
+
+```text
+Implementation changed = NO
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d62_historical_pending_safety_authority_mismatch_root_cause_audit.md
+reports/phase_reports/phase28_d62_historical_pending_safety_authority_mismatch_root_cause_audit.json
+reports/phase28_d62_historical_pending_safety_authority_mismatch_root_cause_audit/
+```
+
+## Phase28-D61 Closure: Production-common ADD Capital Conversion Repair Implementation
+
+Status:
+
+```text
+CLOSED
+IMPLEMENTATION + SHORT REGRESSION VALIDATION PASS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D61_ADD_CAPITAL_CONVERSION_REPAIR_IMPLEMENTED_SHORT_VALIDATION_PASS
+```
+
+Implemented repairs:
+
+```text
+Target/current collision:
+PM ADD + D55-A PASS now creates ADD incremental request on top of current
+baseline rather than requiring base_target > current_weight.
+
+Lot-aware conversion:
+Existing D55-B two-pass lot-aware primitive is reused; no new lot resolver and
+no forced one-lot path added.
+
+PC -> PS lineage:
+Position Sizing now prefers PC final lot-aware accepted ADD increment when
+computing ADD transaction_delta_weight.
+```
+
+Changed files:
+
+```text
+src/ai_fund_lab_v2/strategy/portfolio_construction.py
+src/ai_fund_lab_v2/strategy/position_sizing.py
+tests/strategy/test_phase22_e_portfolio_construction.py
+tests/strategy/test_phase22_j_position_sizing.py
+```
+
+Unchanged contracts:
+
+```text
+D55-A resolver semantics = unchanged
+Runtime Planning mapping = unchanged
+Submit Guard = unchanged
+SELL path = unchanged
+Broker execution = unchanged
+Config / Schema / Threshold = unchanged
+Phase28-D62 pending safety false-positive = unchanged, D63 scope
+BASELINE_CURRENT_SEMANTICS_MISMATCH = unchanged
+```
+
+Validation:
+
+```text
+Focused PC/PS regression = 8 passed
+Full PC/PS regression = 117 passed
+Runtime mapping regression = 2 passed
+py_compile = PASS
+git diff --check = PASS
+```
+
+Execution flags:
+
+```text
+Implementation changed = YES
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D63
+Production-common Pending Safety EMPTY-terminal Judgment Repair.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d61_add_capital_conversion_repair_implementation.md
+reports/phase_reports/phase28_d61_add_capital_conversion_repair_implementation.json
+reports/phase28_d61_add_capital_conversion_repair_implementation/
+```
+
+## Phase28-D63 Closure: Production-common Pending Safety EMPTY-terminal Judgment Repair
+
+Status:
+
+```text
+CLOSED
+IMPLEMENTATION + SHORT REGRESSION VALIDATION PASS
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D63_PENDING_SAFETY_EMPTY_TERMINAL_JUDGMENT_REPAIR_IMPLEMENTED_SHORT_VALIDATION_PASS
+```
+
+Implemented repair:
+
+```text
+Normal EMPTY / No-Action terminal Pending slots are classified as READY before
+active/carry-forward historical Pending safety binding comparisons are applied.
+```
+
+Repair location:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/data_readiness.py::_historical_pending_safety_authority
+src/ai_fund_lab_v2/runtime_v2/data_readiness.py::_historical_no_action_terminal_without_safety_binding_required
+```
+
+Preserved fail-closed cases:
+
+```text
+Active Pending = preserved
+Consumed / carry-forward Pending = preserved
+failed / incomplete attempts = preserved
+pending retry ineligible = preserved
+SELL continuation required = preserved
+wrong safety authority / run id / profile / evidence root = preserved
+future EMPTY target evidence = preserved
+UNKNOWN / malformed dangerous states = fail-closed
+```
+
+D62 impact:
+
+```text
+D62 logical events = 57
+D63 normal EMPTY terminal classification = 57
+D63 non-normal events = 0
+historical_pending_safety_authority_mismatch false-positive removed for
+normal EMPTY / No-Action terminal only.
+```
+
+Validation:
+
+```text
+Focused Pending Safety / data_readiness / morning-runtime / lifecycle regression = 52 passed
+py_compile = PASS
+JSON validation = PASS
+git diff --check = PASS
+```
+
+Unchanged contracts:
+
+```text
+D61 ADD capital conversion repair = unchanged
+Portfolio Construction = unchanged
+Position Sizing = unchanged
+Runtime Planning = unchanged
+Submit Guard = unchanged
+SELL lifecycle = unchanged
+Broker execution = unchanged
+Config / Schema / Threshold = unchanged
+BASELINE_CURRENT_SEMANTICS_MISMATCH = unchanged separate gap
+```
+
+Execution flags:
+
+```text
+Implementation changed = YES
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+```
+
+Next Phase Gate:
+
+```text
+Fresh 100BD re-entry is allowed from the D63 Pending Safety side.
+BASELINE_CURRENT_SEMANTICS_MISMATCH remains a separate audit scope if it
+surfaces again.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d63_pending_safety_empty_terminal_judgment_repair.md
+reports/phase_reports/phase28_d63_pending_safety_empty_terminal_judgment_repair.json
+reports/phase28_d63_pending_safety_empty_terminal_judgment_repair/
+```
+
+## Phase28-D64 Closure: BASELINE_CURRENT_SEMANTICS_MISMATCH Root Cause Audit
+
+Status:
+
+```text
+CLOSED
+READ_ONLY ROOT CAUSE AUDIT
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D64_BASELINE_CURRENT_SEMANTICS_MISMATCH_ROOT_CAUSE_CONFIRMED
+```
+
+Mismatch classification:
+
+```text
+EVALUATION_SHADOW_DEFECT
+```
+
+Root cause:
+
+```text
+AI lifecycle drift comparator compares unlike monitoring contracts:
+
+Baseline:
+standardized_score
+runtime_baseline_expected_output_schema
+calibration_applied = true
+CandidateTop50_validation_window_aggregate
+
+Current Runtime:
+runtime_opportunity_score
+accepted_generation_bound_imputer_scaler_model
+calibration_applied = false
+CandidateTop50_single_business_day
+```
+
+Impact:
+
+```text
+Production Strategy affected = NO
+Candidate Ranking affected = NO
+PM decision affected = NO
+D61 ADD repair affected = NO
+```
+
+Fresh 100BD Gate:
+
+```text
+CONDITIONAL
+```
+
+The next fresh 100BD may be used to evaluate D61 production ADD-capital effects
+if known non-blocking AI lifecycle baseline/current semantics review noise is
+kept separate from active Runtime PASS/BLOCK judgment.
+
+Repair boundary:
+
+```text
+AI lifecycle baseline/current drift evidence normalization or comparator
+boundary only. Do not change Candidate/Opportunity inference, BUY Quality
+thresholds, Portfolio Construction, Position Sizing, PM, D61, Accepted
+Generation artifacts, schema, config, or thresholds.
+```
+
+Execution flags:
+
+```text
+Implementation changed = NO
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+100BD rerun = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d64_baseline_current_semantics_mismatch_root_cause_audit.md
+reports/phase_reports/phase28_d64_baseline_current_semantics_mismatch_root_cause_audit.json
+reports/phase28_d64_baseline_current_semantics_mismatch_root_cause_audit/
+```
+
+## Phase28-D65 Closure: Post-Repair Fresh 100BD Re-entry Gate
+
+Status:
+
+```text
+CLOSED
+READ_ONLY RE-ENTRY GATE COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D65_POST_REPAIR_FRESH_100BD_REENTRY_APPROVED_D66_MEASUREMENT_CONTRACT_FROZEN
+```
+
+Secondary judgments:
+
+```text
+D61_IMPLEMENTATION_PRESENT
+D63_PENDING_SAFETY_REPAIR_PRESENT
+D64_EVALUATION_SHADOW_DEFECT_ISOLATED
+FRESH_100BD_COMPARISON_CONDITIONS_FROZEN
+D66_POST_RUN_EFFECT_ATTRIBUTION_READY
+```
+
+Fresh 100BD Re-entry Gate:
+
+```text
+APPROVED
+```
+
+Comparison baseline:
+
+```text
+run_id = runtime-test-historical-smoke-20260809T010010445473Z
+profile = historical-smoke
+start_date = 2023-04-03
+business_days = 100
+initial_cash = 1000000
+```
+
+D61/D63/D64 gate findings:
+
+```text
+D61 implementation present = YES
+D61 targeted regression = PASS
+D63 repair present = YES
+D63 fail-closed regression = PASS
+D64 evaluation-shadow defect isolated = YES
+D64 repair required before fresh 100BD = NO
+resume allowed for D61 effect comparison = NO
+fresh-run required = YES
+```
+
+D66 measurement contract:
+
+```text
+Priority 1: ADD conversion funnel Before/After
+Priority 2: Exposure / Cash utilization Before/After
+Priority 3: Capital deployment / regression attribution
+
+Primary success axis:
+D59 category A/B/C reduction, D55-A PASS -> PC/PS/Runtime BUY_ADD conversion
+improvement, BUY_ADD fills above baseline, exposure/invested-ratio improvement,
+and no Safety / SELL / Pending / Runtime Planning regression.
+
+Performance alone is not sufficient.
+```
+
+Known review-noise handling:
+
+```text
+BASELINE_CURRENT_SEMANTICS_MISMATCH is a known D64 evaluation-shadow /
+observability defect and must be separated from active Runtime PASS/BLOCK
+judgment. New unknown REVIEW_REQUIRED reasons must still be classified.
+```
+
+User command:
+
+```text
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-smoke \
+  --start-date 2023-04-03 \
+  --business-days 100 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Execution flags:
+
+```text
+Implementation changed = NO
+Config changed = NO
+Schema changed = NO
+Threshold changed = NO
+Model changed = NO
+Accepted Generation mutated = NO
+Runtime mutated = NO
+Fresh run = NO
+Resume = NO
+Long Historical = NO
+100BD rerun = NO
+```
+
+Next Phase:
+
+```text
+Phase28-D66
+POST-D61 100BD EFFECT ATTRIBUTION after the user supplies the new fresh-run id.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d65_post_repair_fresh_100bd_reentry_gate.md
+reports/phase_reports/phase28_d65_post_repair_fresh_100bd_reentry_gate.json
+reports/phase28_d65_post_repair_fresh_100bd_reentry_gate/
+```
+
+## Phase28-D66 Status: Waiting for Post-Repair Fresh 100BD Completion
+
+Status:
+
+```text
+WAITING
+READ_ONLY COMPLETION CHECK COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D66_WAITING_FOR_FRESH_100BD_COMPLETION
+```
+
+Target Post-repair run:
+
+```text
+runtime-test-historical-smoke-20260809T065457596902Z
+```
+
+Completion evidence:
+
+```text
+final_summary.json exists = false
+close_summary.json exists = false
+run_state.status = RUNNING
+plan.requested_business_days = 100
+plan.resolved_business_day_count = 100
+completed_business_day_count = 22
+daily_directory_count = 23
+next_job = 2023-05-08:market_refresh
+```
+
+D66 audit status:
+
+```text
+D61 ADD Conversion Effect Attribution = NOT_EVALUATED_RUN_INCOMPLETE
+Cash / Exposure Effect Attribution = NOT_EVALUATED_RUN_INCOMPLETE
+Dynamic Position Count Audit = NOT_EVALUATED_RUN_INCOMPLETE
+Low Exposure Root Cause Audit = NOT_EVALUATED_RUN_INCOMPLETE
+BUY_NEW Lot / Capital Reallocation Audit = NOT_EVALUATED_RUN_INCOMPLETE
+Re-entry / Excessive EXIT Follow-up = NOT_EVALUATED_RUN_INCOMPLETE
+Performance Comparison = NOT_EVALUATED_RUN_INCOMPLETE
+```
+
+Classification:
+
+```text
+ADD Repair = NOT_MEASURABLE
+Cash / Exposure = NOT_MEASURABLE
+Position Count Authority = INSUFFICIENT_EVIDENCE
+Low Exposure Root Cause = INSUFFICIENT_EVIDENCE
+```
+
+Instruction compliance:
+
+```text
+Partial evidence was not used for final effect attribution.
+No implementation, config, schema, threshold, model, Accepted Generation,
+Runtime artifact, fresh-run, resume, long historical, 100BD rerun, or Runtime
+state mutation was performed by Codex.
+```
+
+Next step:
+
+```text
+Complete the existing user-owned fresh 100BD run, then rerun D66 after
+final_summary.json exists and confirms 100 completed business days.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d66_post_repair_100bd_effect_attribution_and_position_count_audit.md
+reports/phase_reports/phase28_d66_post_repair_100bd_effect_attribution_and_position_count_audit.json
+reports/phase28_d66_post_repair_100bd_effect_attribution_and_position_count_audit/
+```
+
+## Phase28-D67 Status: Fresh 100BD 2023-05-09 Morning HALT Root Cause Confirmed
+
+Status:
+
+```text
+READ_ONLY DIAGNOSIS COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D67_PC_PS_ADD_TARGET_WEIGHT_CHANGE_CONTRACT_MISMATCH_CONFIRMED
+```
+
+Target run:
+
+```text
+runtime-test-historical-smoke-20260809T065457596902Z
+```
+
+HALT:
+
+```text
+2023-05-09 morning
+Runtime CLI exit code 20
+```
+
+Root cause:
+
+```text
+76470 PM ADD reached Portfolio Construction with current_weight = 0.182409
+and post_add_target_weight = 0.18, producing target_weight_change = -0.002409.
+Position Sizing consumed target_weight_change through a non-negative ratio
+validator and blocked with "ratio out of range"; Runtime Planning then emitted
+BUY_ADD with unresolved quantity, and Strategy Planning Authority returned
+strategy_plan_quantity_unresolved:76470.
+```
+
+Regression classification:
+
+```text
+D61 causality = CONTRIBUTING
+D63 causality = UNRELATED
+D3 pending reconciliation regression = NO
+BUY / SELL independence violation = NO
+Historical-only defect = NO
+Production Runtime defect = YES
+```
+
+Execution decision:
+
+```text
+Repair required = YES
+Resume allowed after repair = YES
+Fresh run required after repair = NO
+D66 status = WAITING
+```
+
+Next Phase:
+
+```text
+Phase28-D68 PC/PS ADD target_weight_change signed-delta contract repair design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d67_fresh_100bd_20230509_morning_halt_root_cause_audit.md
+reports/phase_reports/phase28_d67_fresh_100bd_20230509_morning_halt_root_cause_audit.json
+reports/phase28_d67_fresh_100bd_20230509_morning_halt_root_cause_audit/
+```
+
+## Phase28-D68 Status: PC/PS ADD Signed-Delta Contract Repair Design Complete
+
+Status:
+
+```text
+DESIGN ONLY COMPLETE
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D68_PC_PS_ADD_SIGNED_DELTA_CONTRACT_REPAIR_DESIGN_COMPLETE_D69_READY
+```
+
+Root contract mismatch:
+
+```text
+Portfolio Construction target_weight_change is a signed target delta:
+post_add_target_weight - current_weight.
+
+Position Sizing ADD branch consumed that field through _ratio(), which requires
+a non-negative ratio.
+```
+
+Selected repair:
+
+```text
+Keep PC target_weight_change signed.
+Repair Position Sizing ADD reason/diagnostic branch so executable ADD authority
+comes from existing positive-only fields:
+
+1. lot_aware_accepted_incremental_weight
+2. target_weight_resolution.lot_aware_final_reallocation.accepted_lot_increment_weight
+3. accepted_incremental_weight
+4. max(target_weight - current_weight, 0)
+```
+
+Expected 2023-05-09 / 76470 behavior after D69:
+
+```text
+current_weight = 0.182409
+single_name_weight_cap = 0.18
+PM ADD
+
+Position Sizing = PASS
+quantity_delta_candidate = 0
+Runtime Planning = NO_ACTION
+No strategy_plan_quantity_unresolved:76470
+```
+
+Execution decision:
+
+```text
+Resume allowed after D69 short regression PASS = YES
+Fresh run required after D69 = NO
+D66 status = WAITING
+```
+
+Next Phase:
+
+```text
+Phase28-D69 PC/PS ADD signed-delta contract repair implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d68_pc_ps_add_signed_delta_contract_repair_design.md
+reports/phase_reports/phase28_d68_pc_ps_add_signed_delta_contract_repair_design.json
+reports/phase28_d68_pc_ps_add_signed_delta_contract_repair_design/
+```
+
+## Phase28-D69 Status: PC/PS ADD Signed-Delta Contract Repair Implemented, Resume Gate Blocked by Open Regression
+
+Status:
+
+```text
+IMPLEMENTED
+SHORT VALIDATION PARTIAL
+RESUME GATE NOT APPROVED
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D69_PC_PS_ADD_SIGNED_DELTA_CONTRACT_REPAIR_IMPLEMENTED_EXACT_REPAIR_PASS_FULL_RELEVANT_REGRESSION_FAILED
+```
+
+Implemented repair:
+
+```text
+Position Sizing ADD branch no longer consumes signed target_weight_change via
+_ratio as executable ADD authority. target_weight_change remains signed
+observability, while executable ADD authority uses existing positive-only
+transaction delta lineage.
+```
+
+Exact D67 reproduction:
+
+```text
+76470
+PM ADD
+current_weight = 0.182409
+target_weight = 0.18
+target_weight_change = -0.002409
+
+Position Sizing = PASS
+quantity_delta_candidate = 0
+quantity_status = RESOLVED_ZERO_DELTA
+```
+
+Validation:
+
+```text
+Focused D69 / D61 / D36 / D55 / D31 / C Position Sizing = 16 passed
+Full Position Sizing file = 62 passed
+Focused Portfolio Construction = 14 passed
+Focused Runtime Planning = 15 passed
+Focused Strategy Planning Authority fail-closed = 2 passed
+py_compile = PASS
+Full relevant PC + Runtime Planning + SPA = 115 passed, 1 failed
+```
+
+Open regression:
+
+```text
+tests/runtime_v2/test_phase23_i_strategy_planning_authority.py::test_phase23_i_valid_no_action_remains_empty_pending_without_legacy_fallback
+
+Expected = NO_ORDER_AUTHORIZED
+Observed = REVIEW_REQUIRED
+```
+
+Execution decision:
+
+```text
+Root D67 repair = IMPLEMENTED
+Resume allowed after D69 = NO
+Fresh run required after D69 = NO
+D66 status = WAITING
+```
+
+Next Phase:
+
+```text
+Phase28-D70A Strategy Planning Authority no-action empty pending regression triage before resume gate
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d69_pc_ps_add_signed_delta_contract_repair_implementation.md
+reports/phase_reports/phase28_d69_pc_ps_add_signed_delta_contract_repair_implementation.json
+reports/phase28_d69_pc_ps_add_signed_delta_contract_repair_implementation/
+```
+
+---
+
+## Phase28-D70A SPA NO_ACTION / EMPTY Pending Regression Root Cause Audit
+
+Status:
+
+```text
+COMPLETED
+READ_ONLY
+RESUME GATE NOT APPROVED
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D70A_SPA_NO_ACTION_EMPTY_PENDING_REGRESSION_CLASSIFIED_CASE_C_STALE_TEST_FIXTURE_PRODUCTION_FAIL_CLOSED_PRESERVED
+```
+
+Root Cause:
+
+```text
+The failing Phase23-I fixture expected NO_ORDER_AUTHORIZED, but its Runtime Planning input is now UNRESOLVED because the fixture supplies only current_codes=("7203",) and no runtime-owned current-position authority row with quantity/source/as_of.
+```
+
+Direct REVIEW_REQUIRED Producer:
+
+```text
+runtime_v2.planning.strategy_authority.activate_strategy_planning_authority
+reason = strategy_plan_order_side_unresolved
+```
+
+Classification:
+
+```text
+CASE_C_TEST_EXPECTATION_STALE
+Production Runtime Defect = NO
+D69 Direct Causality = NOT_DIRECT
+Fail-closed preserved = YES
+```
+
+Execution decision:
+
+```text
+Resume allowed = NO
+Fresh-run required = NO
+Repair required before resume = YES
+D66 status = WAITING
+```
+
+Next Phase:
+
+```text
+Phase28-D70B update stale Phase23-I NO_ACTION fixture to provide runtime-owned current-position authority, then rerun short regression gate.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d70a_spa_no_action_empty_pending_regression_root_cause_audit.md
+reports/phase_reports/phase28_d70a_spa_no_action_empty_pending_regression_root_cause_audit.json
+reports/phase28_d70a_spa_no_action_empty_pending_regression_root_cause_audit/
+```
+
+---
+
+## Phase28-D70B Phase23-I Stale NO_ACTION Fixture Contract Repair
+
+Status:
+
+```text
+COMPLETED
+TEST FIXTURE CONTRACT REPAIR
+RESUME GATE APPROVED
+```
+
+Primary Judgment:
+
+```text
+PHASE28_D70B_PHASE23I_STALE_NO_ACTION_FIXTURE_REPAIRED_FULL_RELEVANT_REGRESSION_PASS_RESUME_READY
+```
+
+Fixture repair:
+
+```text
+The Phase23-I valid NO_ACTION fixture now supplies runtime-owned current-position
+authority for 7203: quantity=100, source=runtime_v2_runtime_owned_fill_projection,
+as_of=BUSINESS_DATE.
+```
+
+Fail-closed preservation:
+
+```text
+The invalid authority case with missing quantity/source/as_of still returns
+REVIEW_REQUIRED with strategy_plan_order_side_unresolved and does not commit
+current Pending.
+```
+
+Validation:
+
+```text
+Original failing test = PASS
+Phase23-I full regression = 17 passed
+Full relevant regression = 179 passed
+py_compile = PASS
+git diff --check = PASS
+JSON validation = PASS
+```
+
+Execution decision:
+
+```text
+Resume allowed = YES
+Fresh-run required = NO
+Repair required before resume = NO
+D66 status = READY_FOR_RESUME
+```
+
+Resume target:
+
+```text
+runtime-test-historical-smoke-20260809T065457596902Z
+```
+
+User resume command:
+
+```text
+PYTHONPATH=src python3 scripts/runtime_test.py resume --profile historical-smoke --run-id runtime-test-historical-smoke-20260809T065457596902Z --confirm --yes-i-understand-this-mutates-trading-state
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d70b_phase23i_stale_no_action_fixture_contract_repair.md
+reports/phase_reports/phase28_d70b_phase23i_stale_no_action_fixture_contract_repair.json
+reports/phase28_d70b_phase23i_stale_no_action_fixture_contract_repair/
+```
+
+---
+
+## Phase28-D71 Final Closure / Phase29 Handoff
+
+Status:
+
+```text
+CLOSED
+READ_ONLY CONSOLIDATION
+PHASE29 HANDOFF READY
+```
+
+Primary Judgment:
+
+```text
+PHASE28_CLOSED_PHASE29_PERFORMANCE_HANDOFF_READY
+```
+
+Closure basis:
+
+```text
+Latest confirmed state = Phase28-D70B
+Full relevant regression = 179 passed
+Resume allowed = YES
+Fresh-run required = NO
+D66 status = READY_FOR_RESUME
+Resume target = runtime-test-historical-smoke-20260809T065457596902Z
+```
+
+Phase28 outcome:
+
+```text
+Phase28 repaired the ADD conversion architecture from PM ADD intent through
+ADD evidence, Portfolio Construction, lot-aware PC/PS conversion, Position
+Sizing, Runtime Planning, and resume-ready post-D61 validation.
+
+Phase28 also repaired Runtime/Safety evidence blockers that surfaced during
+performance measurement, while preserving fail-closed behavior.
+```
+
+Important limitation:
+
+```text
+The post-D61 100BD run is not complete at Phase28 closure. Its performance
+effect is Phase29 continuing evidence, not final Phase28 result.
+```
+
+Phase29 first action:
+
+```text
+User resumes runtime-test-historical-smoke-20260809T065457596902Z, then D66-style
+post-D61 ADD conversion / exposure / cash / position count / performance
+attribution is performed after final_summary.json confirms 100 completed
+business days.
+```
+
+Approved resume command:
+
+```text
+PYTHONPATH=src python3 scripts/runtime_test.py resume --profile historical-smoke --run-id runtime-test-historical-smoke-20260809T065457596902Z --confirm --yes-i-understand-this-mutates-trading-state
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase28_d71_final_closure_phase29_handoff.md
+reports/phase_reports/phase28_d71_final_closure_phase29_handoff.json
+reports/phase28_d71_final_closure_phase29_handoff/
 ```

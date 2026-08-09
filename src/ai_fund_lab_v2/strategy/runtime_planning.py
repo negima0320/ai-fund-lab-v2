@@ -776,6 +776,11 @@ def _build_plans(
         sizing = sizing_positions.get(code, {})
         opportunity_authority = opportunity_rows.get(code)
         current_authority = current_position_authorities.get(code, {})
+        liquidation_authority = _full_liquidation_authority(
+            pm_position=pm_position,
+            pc_member=pc_member,
+            sizing=sizing,
+        )
         intent, intent_reasons = _resolve_intent(
             code,
             pc_member,
@@ -785,6 +790,7 @@ def _build_plans(
             current_codes,
             current_authority,
             quantity_source_mode=quantity_source_mode,
+            full_liquidation_authority_present=liquidation_authority["full_liquidation_authority_present"],
         )
         reasons.extend(intent_reasons)
         if intent == "NO_ACTION" and str(pc_member.get("membership_intent") or "") == "EXCLUDE":
@@ -851,6 +857,11 @@ def _build_plans(
             "quantity_reference": str(sizing.get("position_reference") or "") if quantity_required else "",
             "canonical_quantity_source": quantity_source_mode,
             "canonical_quantity_delta_priority": quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN",
+            "source_pm_action": liquidation_authority["source_pm_action"],
+            "source_pm_decision_id": liquidation_authority["source_pm_decision_id"],
+            "source_pm_reason_codes": liquidation_authority["source_pm_reason_codes"],
+            "full_liquidation_authority_present": liquidation_authority["full_liquidation_authority_present"],
+            "full_liquidation_authority_source": liquidation_authority["full_liquidation_authority_source"],
             "pm_fallback_used": pm_fallback_used,
             "pm_fallback_scope": (
                 ("LEGACY_COMPATIBILITY_ONLY" if quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN" else "LEGACY_COMPATIBILITY")
@@ -935,6 +946,69 @@ def _price_authority_fields(sizing: Mapping[str, Any]) -> dict[str, Any]:
         "reference_price_date": str(sizing.get("reference_price_date") or ""),
     }
     return fields
+
+
+def _full_liquidation_authority(
+    *,
+    pm_position: Mapping[str, Any],
+    pc_member: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+) -> dict[str, Any]:
+    source_pm_action = _source_pm_action(pm_position=pm_position, pc_member=pc_member, sizing=sizing)
+    source_pm_decision_id = str(
+        pm_position.get("source_pm_decision_ref")
+        or pm_position.get("pm_decision_id")
+        or pm_position.get("decision_id")
+        or pc_member.get("source_pm_decision_ref")
+        or pc_member.get("source_pm_decision_id")
+        or sizing.get("source_pm_decision_ref")
+        or sizing.get("source_pm_decision_id")
+        or ""
+    )
+    reason_codes = _source_pm_reason_codes(pm_position=pm_position, pc_member=pc_member, sizing=sizing)
+    present = source_pm_action == "EXIT"
+    return {
+        "source_pm_action": source_pm_action,
+        "source_pm_decision_id": source_pm_decision_id,
+        "source_pm_reason_codes": reason_codes,
+        "full_liquidation_authority_present": present,
+        "full_liquidation_authority_source": "PM_EXIT" if present else "NONE",
+    }
+
+
+def _source_pm_action(
+    *,
+    pm_position: Mapping[str, Any],
+    pc_member: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+) -> str:
+    for value in (
+        pm_position.get("action"),
+        pc_member.get("pm_action"),
+        sizing.get("source_pm_intent"),
+        sizing.get("pm_action"),
+    ):
+        text = str(value or "").strip().upper()
+        if text:
+            return text
+    return "UNRESOLVED"
+
+
+def _source_pm_reason_codes(
+    *,
+    pm_position: Mapping[str, Any],
+    pc_member: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    for source in (pm_position, pc_member, sizing):
+        values = source.get("reason_codes")
+        if isinstance(values, list):
+            reasons.extend(str(value) for value in values if str(value))
+        reason = source.get("decision_reason") or source.get("reason")
+        if reason:
+            reasons.extend(part for part in str(reason).replace(";", "|").split("|") if part)
+    return sorted(set(reasons))
 
 
 def _current_position_membership_authorities(
@@ -1155,6 +1229,7 @@ def _resolve_intent(
     current_codes: set[str],
     current_position_authority: Mapping[str, Any] | None = None,
     quantity_source_mode: str = "LEGACY_POSITION_SIZING",
+    full_liquidation_authority_present: bool = False,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
     pm_action = str(pm_position.get("action") or "").upper()
@@ -1169,12 +1244,30 @@ def _resolve_intent(
         if quantity_delta > 0:
             return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["canonical_positive_quantity_delta_maps_to_buy_add" if code in current_codes else "canonical_positive_quantity_delta_maps_to_buy_new"]
         if quantity_delta < 0:
-            return ("SELL_EXIT" if target_quantity == 0 else "SELL_REDUCE"), ["canonical_negative_quantity_delta_maps_to_sell_exit" if target_quantity == 0 else "canonical_negative_quantity_delta_maps_to_sell_reduce"]
+            if target_quantity == 0:
+                if full_liquidation_authority_present:
+                    return "SELL_EXIT", ["canonical_negative_quantity_delta_maps_to_sell_exit", "full_liquidation_authority:PM_EXIT"]
+                return "UNRESOLVED", [f"planning_conflict_review:full_liquidation_authority_missing:{code}"]
+            return "SELL_REDUCE", ["canonical_negative_quantity_delta_maps_to_sell_reduce"]
         return "NO_ACTION", ["canonical_zero_quantity_delta_maps_to_no_action"]
     if quantity_delta is not None and quantity_delta != 0:
         if quantity_delta > 0:
             return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["position_sizing_positive_quantity_delta_maps_to_buy_add" if code in current_codes else "position_sizing_positive_quantity_delta_maps_to_buy_new"]
-        return ("SELL_EXIT" if target_quantity == 0 else "SELL_REDUCE"), ["position_sizing_negative_quantity_delta_maps_to_sell_exit" if target_quantity == 0 else "position_sizing_negative_quantity_delta_maps_to_sell_reduce"]
+        if target_quantity == 0:
+            if full_liquidation_authority_present:
+                return "SELL_EXIT", ["position_sizing_negative_quantity_delta_maps_to_sell_exit", "full_liquidation_authority:PM_EXIT"]
+            return "UNRESOLVED", [f"planning_conflict_review:full_liquidation_authority_missing:{code}"]
+        return "SELL_REDUCE", ["position_sizing_negative_quantity_delta_maps_to_sell_reduce"]
+    if code in current_codes and quantity_delta == 0:
+        if current_authority_status == "PASS" and current_membership in {"CURRENT_PORTFOLIO_MEMBER", "NEWLY_FILLED_PORTFOLIO_MEMBER", "RETAINED_PORTFOLIO_MEMBER", "EXITING_PORTFOLIO_MEMBER"}:
+            return "NO_ACTION", [
+                f"current_position_membership_resolved:{current_membership.lower()}",
+                "current_position_zero_delta_maps_to_no_action",
+            ]
+        authority_reasons = [str(reason) for reason in current_authority.get("reason_codes") or [] if str(reason)]
+        return "UNRESOLVED", [
+            f"unresolved_mapping:{reason}" for reason in (authority_reasons or ["current_position_membership_authority_unresolved"])
+        ]
     if canonical_source and pm_action in {"ADD", "REDUCE", "EXIT", "HOLD"}:
         return "UNRESOLVED", [f"planning_conflict_review:canonical_delta_missing_pm_fallback_disabled:{code}"]
     if pm_action == "ADD":
@@ -1191,16 +1284,6 @@ def _resolve_intent(
         return "BUY_NEW", ["portfolio_add_candidate_maps_to_buy_new"]
     if membership == "EXCLUDE":
         return "NO_ACTION", ["portfolio_exclude_maps_to_no_plan"]
-    if code in current_codes and quantity_delta == 0:
-        if current_authority_status == "PASS" and current_membership in {"CURRENT_PORTFOLIO_MEMBER", "NEWLY_FILLED_PORTFOLIO_MEMBER", "RETAINED_PORTFOLIO_MEMBER", "EXITING_PORTFOLIO_MEMBER"}:
-            return "NO_ACTION", [
-                f"current_position_membership_resolved:{current_membership.lower()}",
-                "current_position_zero_delta_maps_to_no_action",
-            ]
-        authority_reasons = [str(reason) for reason in current_authority.get("reason_codes") or [] if str(reason)]
-        return "UNRESOLVED", [
-            f"unresolved_mapping:{reason}" for reason in (authority_reasons or ["current_position_membership_authority_unresolved"])
-        ]
     if membership == "UNRESOLVED":
         return "UNRESOLVED", ["unresolved_mapping:portfolio_membership_unresolved"]
     if membership in {"REMOVE_CANDIDATE", "REDUCE_CANDIDATE"}:

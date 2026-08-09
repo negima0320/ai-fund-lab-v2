@@ -614,6 +614,38 @@ def main(argv: list[str] | None = None) -> int:
                 final_state = "BLOCKED"
                 errors.append(morning_capability_decision.reason)
         if args.job == "morning" and exit_code == EXIT_SUCCESS:
+            pm_result = produce_position_management_decisions(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+                mode=args.mode,
+                feature_date=args.feature_date,
+                opportunity_path=args.pm_opportunity_path,
+                feature_path=args.pm_feature_path,
+                now=evaluation_time,
+            )
+            position_management_manifest = {
+                **pm_result.to_manifest_fields(),
+                "strategy_planning_pm_authority": True,
+                "strategy_planning_pm_authority_reason": "same_day_pm_materialized_before_formal_strategy_generation",
+                "strategy_planning_pm_consumer": "phase22_strategy_artifact_generation",
+            }
+            stages.append(
+                _stage(
+                    "position_management_ai_runtime_producer",
+                    pm_result.status,
+                    "Position Management AI generated same-day PM authority before formal Strategy artifact generation.",
+                    position_management_manifest,
+                )
+            )
+            if pm_result.status == "REVIEW_REQUIRED":
+                exit_code = EXIT_REVIEW_REQUIRED
+                final_state = "REVIEW_REQUIRED"
+                warnings.append(f"position management review required before strategy planning: {pm_result.reason}")
+            elif pm_result.status in {"BLOCK", "BLOCKED", "HALT"}:
+                exit_code = EXIT_BLOCKED if pm_result.status in {"BLOCK", "BLOCKED"} else EXIT_HALT
+                final_state = "BLOCKED" if pm_result.status in {"BLOCK", "BLOCKED"} else "HALT"
+                errors.append(f"position management unavailable before strategy planning: {pm_result.reason}")
+        if args.job == "morning" and exit_code == EXIT_SUCCESS:
             strategy_run_dir = _strategy_planning_run_dir(args=args, run_id=run_id)
             strategy_summary = generate_strategy_shadow_for_day(
                 run_dir=strategy_run_dir,

@@ -13,6 +13,7 @@ from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
     run_sell_planning_pending_pipeline,
 )
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
+from ai_fund_lab_v2.strategy.reduce_intensity_authority import canonical_reduce_fraction
 
 
 BUSINESS_DATE = "2026-07-08"
@@ -30,6 +31,17 @@ def test_phase19_bt_reduce_quantity_normal_tiers_and_rounding():
     assert medium["expected_remaining_quantity"] == 700
     assert strong["final_sell_quantity"] == 500
     assert strong["expected_remaining_quantity"] == 500
+
+
+def test_phase28_d34_reduce_quantity_uses_shared_canonical_authority():
+    assert canonical_reduce_fraction("LIGHT") == 0.25
+    assert canonical_reduce_fraction("MEDIUM") == 0.33
+    assert canonical_reduce_fraction("STRONG") == 0.50
+
+    contract = calculate_reduce_quantity_contract(position_quantity=1000, reduce_intensity="STRONG")
+
+    assert contract["target_reduce_ratio"] == canonical_reduce_fraction("STRONG")
+    assert contract["reduce_fraction_authority"]["authority_type"] == "CANONICAL_REDUCE_INTENSITY_AUTHORITY"
 
 
 def test_phase19_bt_reduce_small_position_non_executable_no_order_contract():

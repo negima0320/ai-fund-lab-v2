@@ -220,6 +220,174 @@ def test_phase23_e_runtime_current_positions_feed_strategy_pm_without_fixed_empt
     assert validate_position_management_artifact(payload)["status"] == "PASS"
 
 
+@pytest.mark.parametrize(
+    ("decision_type", "expected_action", "expected_intensity"),
+    [
+        ("ADD", "ADD", "UNRESOLVED"),
+        ("HOLD", "HOLD", "NONE"),
+        ("REDUCE", "REDUCE", "UNRESOLVED"),
+        ("EXIT", "EXIT", "NONE"),
+    ],
+)
+def test_phase28_d12_runtime_current_adapter_reads_runtime_pm_decision_type(
+    tmp_path: Path,
+    decision_type: str,
+    expected_action: str,
+    expected_intensity: str,
+) -> None:
+    payload = _produce_with_runtime_current(
+        tmp_path,
+        decisions=[
+            {
+                "symbol": "94320",
+                "decision_type": decision_type,
+                "pm_decision_id": f"pm-2023-04-04-94320-{decision_type.lower()}",
+                "reason_codes": ["runtime_pm_canonical_reason"],
+                "confidence": 0.73,
+            }
+        ],
+        current_symbol="94320",
+    )
+
+    position = payload["positions"][0]
+    assert position["action"] == expected_action
+    assert position["intensity"] == expected_intensity
+    assert position["source_pm_decision_ref"] == f"pm-2023-04-04-94320-{decision_type.lower()}"
+    assert position["reason_codes"] == ["runtime_pm_canonical_reason"]
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d12_runtime_current_adapter_preserves_action_decision_priority_and_conflict_evidence(tmp_path: Path) -> None:
+    cases = [
+        (
+            {"symbol": "94320", "action": "ADD", "decision_type": "ADD", "pm_decision_id": "pm-same"},
+            "ADD",
+            "",
+        ),
+        (
+            {"symbol": "94320", "action": "HOLD", "decision_type": "ADD", "pm_decision_id": "pm-conflict"},
+            "HOLD",
+            "pm_action_field_conflict:action=HOLD,decision_type=ADD",
+        ),
+        (
+            {"symbol": "94320", "decision": "ADD", "decision_type": "EXIT", "pm_decision_id": "pm-decision-priority"},
+            "ADD",
+            "pm_action_field_conflict:decision=ADD,decision_type=EXIT",
+        ),
+        (
+            {"symbol": "94320", "decision_type": "REBUY", "pm_decision_id": "pm-invalid"},
+            "UNRESOLVED",
+            "",
+        ),
+        (
+            {"symbol": "94320", "pm_decision_id": "pm-missing"},
+            "UNRESOLVED",
+            "",
+        ),
+    ]
+    for index, (decision, expected_action, expected_conflict) in enumerate(cases):
+        payload = _produce_with_runtime_current(tmp_path / f"case_{index}", decisions=[decision], current_symbol="94320")
+        position = payload["positions"][0]
+        assert position["action"] == expected_action
+        assert position["source_pm_decision_ref"] == decision["pm_decision_id"]
+        if expected_conflict:
+            assert expected_conflict in position["reason_codes"]
+        else:
+            assert not any(reason.startswith("pm_action_field_conflict:") for reason in position["reason_codes"])
+        assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d12_runtime_current_adapter_preserves_decision_id_priority(tmp_path: Path) -> None:
+    payload = _produce_with_runtime_current(
+        tmp_path,
+        decisions=[
+            {
+                "symbol": "94320",
+                "decision_type": "ADD",
+                "decision_id": "legacy-decision-id",
+                "pm_decision_id": "runtime-pm-decision-id",
+            }
+        ],
+        current_symbol="94320",
+    )
+
+    position = payload["positions"][0]
+    assert position["action"] == "ADD"
+    assert position["source_pm_decision_ref"] == "legacy-decision-id"
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d12_existing_decisions_adapter_reads_decision_type_and_pm_decision_id(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path,
+        decisions=[
+            {
+                "symbol": "94320",
+                "decision_type": "ADD",
+                "pm_decision_id": "pm-2023-04-04-94320-add",
+                "reason_codes": ["strong_trend_continuation"],
+                "confidence": 0.81,
+            }
+        ],
+    ).payload
+
+    position = payload["positions"][0]
+    assert position["position_id"] == "pm-2023-04-04-94320-add"
+    assert position["security_code"] == "94320"
+    assert position["action"] == "ADD"
+    assert position["intensity"] == "UNRESOLVED"
+    assert position["source_pm_decision_ref"] == "pm-2023-04-04-94320-add"
+    assert position["reason_codes"] == ["strong_trend_continuation"]
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d12_existing_decisions_adapter_preserves_legacy_action_and_decision_forms(tmp_path: Path) -> None:
+    payload = _produce(
+        tmp_path,
+        decisions=[
+            {"decision_id": "pm-action", "symbol": "7203", "action": "ADD", "confidence": 0.7},
+            {"decision_id": "pm-decision", "symbol": "6758", "decision": "ADD", "confidence": 0.8},
+        ],
+    ).payload
+
+    by_code = {row["security_code"]: row for row in payload["positions"]}
+    assert by_code["7203"]["action"] == "ADD"
+    assert by_code["7203"]["source_pm_decision_ref"] == "pm-action"
+    assert by_code["6758"]["action"] == "ADD"
+    assert by_code["6758"]["source_pm_decision_ref"] == "pm-decision"
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d19_runtime_current_adapter_records_same_day_pm_source_evidence(tmp_path: Path) -> None:
+    payload = _produce_with_runtime_current(
+        tmp_path,
+        decisions=[
+            {
+                "symbol": "94320",
+                "decision_type": "ADD",
+                "pm_decision_id": "pm-2023-04-04-94320-add",
+                "reason_codes": ["strong_trend_continuation"],
+                "_source_artifact_path": ".runtime/runtime_state/position_management/2023-04-04/position_management_decisions.json",
+                "_source_artifact_hash": "sha256:abcdef",
+                "_source_business_date": "2026-07-15",
+            }
+        ],
+        current_symbol="94320",
+    )
+
+    position = payload["positions"][0]
+    assert position["action"] == "ADD"
+    assert position["source_pm_decision_ref"] == "pm-2023-04-04-94320-add"
+    source = next(item for item in payload["source_artifacts"] if item["role"] == "position_management_decisions")
+    assert source["status"] == "PASS"
+    assert source["decision_count"] == 1
+    assert source["pm_decision_ids"] == ["pm-2023-04-04-94320-add"]
+    assert source["decision_types"] == ["ADD"]
+    source_hash = next(item for item in payload["source_hashes"] if item["role"] == "position_management_decisions")
+    assert source_hash["sha256"] == "abcdef"
+    assert validate_position_management_artifact(payload)["status"] == "PASS"
+
+
 def test_phase23_k_authoritative_empty_runtime_current_is_safe_zero_action(tmp_path: Path) -> None:
     payload, _ = build_position_management_payload(
         business_date="2026-07-15",
@@ -302,6 +470,39 @@ def _produce(tmp_path: Path, *, decisions: list[dict[str, object]] | None = None
         accepted_generation_reference=_generation(tmp_path),
         output_path=default_runtime_artifact_path(tmp_path / ".runtime", "2026-07-15"),
     )
+
+
+def _produce_with_runtime_current(
+    tmp_path: Path,
+    *,
+    decisions: list[dict[str, object]],
+    current_symbol: str,
+) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    payload, _ = build_position_management_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        existing_pm_decisions=decisions,
+        runtime_current_positions=[
+            {
+                "position_id": f"runtime-pos-{current_symbol}",
+                "symbol": current_symbol,
+                "quantity": 100,
+                "average_price": 1000,
+                "acquired_at": "2026-07-10T00:00:00+00:00",
+                "position_state_as_of": "2026-07-15",
+                "valuation_as_of": "2026-07-15",
+                "position_lifecycle_id": f"lifecycle-{current_symbol}",
+            }
+        ],
+        position_lifecycle_summary=_summary(tmp_path, "lifecycle"),
+        technical_feature_summary=_summary(tmp_path, "features"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        accepted_generation_reference=_generation(tmp_path),
+    )
+    return payload
 
 
 def _pm_decisions() -> list[dict[str, object]]:

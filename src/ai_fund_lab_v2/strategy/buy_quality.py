@@ -443,6 +443,72 @@ def _decision_for_row(
         "target_position_count_decision_consumer": False,
         "fixed_rank_n_limit_used": False,
         "fixed_raw_score_threshold_used": False,
+        **_listed_info_metadata(opportunity, candidate),
+    }
+
+
+def _listed_info_metadata(*rows: Mapping[str, Any]) -> dict[str, Any]:
+    for row in rows:
+        if not row:
+            continue
+        nested = row.get("listed_info")
+        if isinstance(nested, Mapping):
+            info = _listed_info_payload(row, nested)
+            if info is not None:
+                return _listed_info_metadata_fields(info)
+        info = _listed_info_payload(row, row)
+        if info is not None:
+            return _listed_info_metadata_fields(info)
+    return {}
+
+
+def _listed_info_metadata_fields(info: Mapping[str, Any]) -> dict[str, Any]:
+    market = str(info.get("market") or "").strip()
+    product_category = str(info.get("product_category") or "").strip()
+    security_type = str(info.get("security_type") or product_category).strip()
+    current_listed = bool(info.get("current_listed", True))
+    listed_info = {
+        "code": str(info.get("code") or "").strip(),
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
+    }
+    return {
+        "market": market,
+        "market_name": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
+        "is_current_listed": current_listed,
+        "listed_info": listed_info,
+    }
+
+
+def _listed_info_payload(parent: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
+    product_category = str(row.get("product_category") or row.get("ProdCat") or "").strip()
+    security_type = str(row.get("security_type") or row.get("SecType") or row.get("Type") or product_category).strip()
+    market = str(row.get("market") or row.get("MktNm") or row.get("market_name") or "").strip()
+    if not product_category and not security_type and not market:
+        return None
+    code = str(
+        row.get("code")
+        or row.get("Code")
+        or row.get("security_code")
+        or row.get("symbol")
+        or parent.get("code")
+        or parent.get("symbol")
+        or parent.get("security_code")
+        or ""
+    ).strip()
+    current_raw = row.get("current_listed", row.get("is_current_listed", True))
+    current_listed = str(current_raw).lower() not in {"false", "0", "no", "nan", "none", ""}
+    return {
+        "code": code,
+        "market": market,
+        "product_category": product_category,
+        "security_type": security_type,
+        "current_listed": current_listed,
     }
 
 

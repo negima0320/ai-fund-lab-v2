@@ -10,6 +10,8 @@ from ai_fund_lab_v2.strategy.portfolio_construction import (
     PortfolioConstructionConsumerError,
     PortfolioConstructionSchemaError,
     PortfolioConstructionSourceSummary,
+    _positive_increment_over_target,
+    apply_lot_aware_final_reallocation,
     build_portfolio_construction_payload,
     default_runtime_artifact_path,
     load_portfolio_construction_fixture,
@@ -181,10 +183,26 @@ def test_phase23_ao_target_weight_authority_equal_weight_and_cap(tmp_path: Path)
         market_context_artifact_path=_write_market_context(tmp_path),
         corporate_event_artifact_path=_write_corporate_event(tmp_path),
         portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
-        position_management_artifact_path=_write_position_management(tmp_path),
-        candidate_summary=_candidate_summary(tmp_path),
-        opportunity_summary=_opportunity_summary(tmp_path),
-        current_portfolio_summary=_current_summary(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=[], producer_status="PASS"),
+        candidate_summary=_source_summary(
+            tmp_path,
+            "candidate",
+            rows=[
+                {"candidate_id": "candidate-6098", "code": "6098", "candidate_order": 1, "candidate_score": 0.9, "universe_eligible": True},
+                {"candidate_id": "candidate-6758", "code": "6758", "candidate_order": 2, "candidate_score": 0.88, "universe_eligible": True},
+                {"candidate_id": "candidate-8888", "code": "8888", "candidate_order": 3, "candidate_score": 0.86, "universe_eligible": True},
+            ],
+        ),
+        opportunity_summary=_source_summary(
+            tmp_path,
+            "opportunity",
+            rows=[
+                {"opportunity_id": "opportunity-6098", "code": "6098", "opportunity_rank": 1, "expected_edge_score": 0.92},
+                {"opportunity_id": "opportunity-6758", "code": "6758", "opportunity_rank": 2, "expected_edge_score": 0.86},
+                {"opportunity_id": "opportunity-8888", "code": "8888", "opportunity_rank": 3, "expected_edge_score": 0.71},
+            ],
+        ),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=[]),
         pending_summary=_source_summary(tmp_path, "pending", rows=[]),
         policy_config_summary=_policy_config_summary(tmp_path, target_position_count=3, exposure=0.9, cap=0.2),
     )
@@ -405,10 +423,10 @@ def test_phase23_ao_negative_new_opportunity_is_not_forced_into_target_membershi
         market_context_artifact_path=_write_market_context(tmp_path),
         corporate_event_artifact_path=_write_corporate_event(tmp_path),
         portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
-        position_management_artifact_path=_write_position_management(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=_pm_rows_without_sell_intents(), producer_status="PASS"),
         candidate_summary=_candidate_summary(tmp_path),
         opportunity_summary=opportunity,
-        current_portfolio_summary=_current_summary(tmp_path),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=_current_rows_without_sell_intents()),
         pending_summary=_source_summary(tmp_path, "pending", rows=[]),
         policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.8, cap=0.25),
     )
@@ -445,10 +463,10 @@ def test_phase26_a_no_buy_reason_opportunity_is_excluded_without_target_count_sl
         market_context_artifact_path=_write_market_context(tmp_path),
         corporate_event_artifact_path=_write_corporate_event(tmp_path),
         portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
-        position_management_artifact_path=_write_position_management(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=_pm_rows_without_sell_intents(), producer_status="PASS"),
         candidate_summary=candidate,
         opportunity_summary=opportunity,
-        current_portfolio_summary=_current_summary(tmp_path),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=_current_rows_without_sell_intents()),
         pending_summary=_source_summary(tmp_path, "pending", rows=[]),
         policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.8, cap=0.2),
     )
@@ -461,6 +479,179 @@ def test_phase26_a_no_buy_reason_opportunity_is_excluded_without_target_count_sl
     assert by_code["8888"]["target_membership"] is True
     assert by_code["8888"]["target_weight"] > 0
     assert by_code["8888"]["target_weight_authority"]["target_position_count_decision_authority"] == "DEPRECATED_METADATA_ONLY"
+
+
+def test_phase28_d49_unsupported_buy_new_is_excluded_without_blocking_lower_eligible_candidate(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=[], producer_status="PASS"),
+        candidate_summary=_source_summary(
+            tmp_path,
+            "candidate",
+            rows=[
+                {"candidate_id": "candidate-93990", "code": "93990", "candidate_order": 1, "candidate_score": 0.95, "universe_eligible": True, "listed_info": _broker_fixture_listed_info("93990", "021")},
+                {"candidate_id": "candidate-6098", "code": "6098", "candidate_order": 2, "candidate_score": 0.80, "universe_eligible": True, "listed_info": _broker_fixture_listed_info("6098", "011")},
+            ],
+        ),
+        opportunity_summary=_source_summary(
+            tmp_path,
+            "opportunity",
+            rows=[
+                {"opportunity_id": "opportunity-93990", "code": "93990", "opportunity_rank": 1, "expected_edge_score": 0.95, "listed_info": _broker_fixture_listed_info("93990", "021")},
+                {"opportunity_id": "opportunity-6098", "code": "6098", "opportunity_rank": 2, "expected_edge_score": 0.80, "listed_info": _broker_fixture_listed_info("6098", "011")},
+            ],
+        ),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=[]),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.5, cap=0.5),
+    )
+    by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
+
+    assert payload["broker_eligibility_gating_owner"] == "PORTFOLIO_CONSTRUCTION"
+    assert by_code["93990"]["input_opportunity_rank"] == 1
+    assert by_code["93990"]["runtime_opportunity_score"] == 0.95
+    assert by_code["93990"]["membership_intent"] == "EXCLUDE"
+    assert by_code["93990"]["target_membership"] is False
+    assert by_code["93990"]["target_weight"] == 0.0
+    assert by_code["93990"]["broker_eligibility"]["broker_security_type"] == "UNSUPPORTED_FOREIGN_LISTED_STOCK"
+    assert "BROKER_PRODUCT_CATEGORY_UNSUPPORTED" in by_code["93990"]["reason_codes"]
+    assert by_code["6098"]["membership_intent"] == "ADD_CANDIDATE"
+    assert by_code["6098"]["target_membership"] is True
+    assert by_code["6098"]["target_weight"] > 0
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d51_candidate_flat_listed_info_metadata_reaches_broker_eligibility(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=[], producer_status="PASS"),
+        candidate_summary=_source_summary(
+            tmp_path,
+            "candidate",
+            rows=[
+                {
+                    "candidate_id": "candidate-93990",
+                    "code": "93990",
+                    "candidate_order": 1,
+                    "candidate_score": 0.95,
+                    "universe_eligible": True,
+                    "market_name": "スタンダード",
+                    "product_category": "021",
+                    "security_type": "021",
+                    "is_current_listed": True,
+                },
+                {
+                    "candidate_id": "candidate-6098",
+                    "code": "6098",
+                    "candidate_order": 2,
+                    "candidate_score": 0.80,
+                    "universe_eligible": True,
+                    "market_name": "プライム",
+                    "product_category": "011",
+                    "security_type": "011",
+                    "is_current_listed": True,
+                },
+            ],
+        ),
+        opportunity_summary=_source_summary(
+            tmp_path,
+            "opportunity",
+            rows=[
+                {"opportunity_id": "opportunity-93990", "code": "93990", "opportunity_rank": 1, "expected_edge_score": 0.95},
+                {"opportunity_id": "opportunity-6098", "code": "6098", "opportunity_rank": 2, "expected_edge_score": 0.80},
+            ],
+        ),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=[]),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.5, cap=0.5),
+    )
+    by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
+
+    assert by_code["93990"]["broker_listed_info"] == {
+        "code": "93990",
+        "current_listed": True,
+        "market": "スタンダード",
+        "product_category": "021",
+        "security_type": "021",
+    }
+    assert by_code["93990"]["broker_eligibility"]["broker_security_type"] == "UNSUPPORTED_FOREIGN_LISTED_STOCK"
+    assert by_code["93990"]["membership_intent"] == "EXCLUDE"
+    assert by_code["93990"]["target_membership"] is False
+    assert by_code["93990"]["target_weight"] == 0.0
+    assert by_code["6098"]["target_membership"] is True
+    assert by_code["6098"]["target_weight"] > 0
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d49_unknown_category_fails_closed_and_zero_eligible_buy_day_is_valid(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=[], producer_status="PASS"),
+        candidate_summary=_source_summary(
+            tmp_path,
+            "candidate",
+            rows=[{"candidate_id": "candidate-99990", "code": "99990", "candidate_order": 1, "candidate_score": 0.90, "universe_eligible": True, "listed_info": _broker_fixture_listed_info("99990", "999")}],
+        ),
+        opportunity_summary=_source_summary(
+            tmp_path,
+            "opportunity",
+            rows=[{"opportunity_id": "opportunity-99990", "code": "99990", "opportunity_rank": 1, "expected_edge_score": 0.90, "listed_info": _broker_fixture_listed_info("99990", "999")}],
+        ),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=[]),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=1, exposure=0.5, cap=0.5),
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "99990")
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["total_target_weight"] == 0.0
+    assert member["membership_intent"] == "EXCLUDE"
+    assert member["broker_eligibility"]["status"] == "FAIL_CLOSED"
+    assert member["broker_eligibility"]["reason"] == "BROKER_PRODUCT_CATEGORY_UNKNOWN"
+    assert "BROKER_PRODUCT_CATEGORY_UNKNOWN" in member["reason_codes"]
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d49_existing_unsupported_position_stays_visible_but_buy_add_is_blocked(tmp_path: Path) -> None:
+    def build(action: str) -> dict[str, object]:
+        workdir = tmp_path / action.lower()
+        workdir.mkdir(parents=True, exist_ok=True)
+        opportunity_rows = [
+            _eligible_add_opportunity("93990", 1, 0.80) | {"listed_info": _broker_fixture_listed_info("93990", "021")}
+        ]
+        return _build_d28_payload(
+            workdir,
+            current_rows=[{"position_id": "current-93990", "security_code": "93990", "current_weight": 0.10, "listed_info": _broker_fixture_listed_info("93990", "021")}],
+            pm_rows=[_pm_row("93990", action)],
+            opportunity_rows=opportunity_rows if action == "ADD" else [],
+            exposure=0.5,
+            cap=0.5,
+        )
+
+    hold = next(row for row in build("HOLD")["portfolio_members"] if row["security_code"] == "93990")
+    reduce = next(row for row in build("REDUCE")["portfolio_members"] if row["security_code"] == "93990")
+    exit_member = next(row for row in build("EXIT")["portfolio_members"] if row["security_code"] == "93990")
+    add = next(row for row in build("ADD")["portfolio_members"] if row["security_code"] == "93990")
+
+    assert hold["current_position"] is True
+    assert hold["membership_intent"] == "RETAIN"
+    assert "broker_eligibility_existing_position_visibility_preserved" in hold["reason_codes"]
+    assert reduce["membership_intent"] == "REDUCE_CANDIDATE"
+    assert exit_member["membership_intent"] == "REMOVE_CANDIDATE"
+    assert add["pm_action"] == "ADD"
+    assert add["weight_intent"] == "MAINTAIN"
+    assert add["target_weight"] == add["current_weight"]
+    assert add["add_allocation_eligibility_status"] == "FAIL_CLOSED"
+    assert "broker_eligibility_buy_add_excluded_existing_position_visible" in add["target_weight_reason_codes"]
 
 
 def test_phase22_e_date_pit_blocks_cross_date_and_future_snapshot(tmp_path: Path) -> None:
@@ -530,6 +721,837 @@ def test_phase22_e_behavior_and_capital_deployment_authority_preserved(tmp_path:
     assert payload["legacy_authority_active"] is True
 
 
+def test_phase28_c_canonical_add_bridge_increases_existing_target_weight_when_incremental_evidence_passes(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path),
+        candidate_summary=_source_summary(
+            tmp_path,
+            "candidate",
+            rows=[
+                {"candidate_id": "candidate-6758", "code": "6758", "candidate_order": 1, "candidate_score": 0.88, "universe_eligible": True},
+                {"candidate_id": "candidate-6098", "code": "6098", "candidate_order": 2, "candidate_score": 0.70, "universe_eligible": True},
+            ],
+        ),
+        opportunity_summary=_source_summary(
+            tmp_path,
+            "opportunity",
+            rows=[
+                {
+                    "opportunity_id": "opportunity-6758",
+                    "code": "6758",
+                    "opportunity_rank": 1,
+                    "expected_edge_score": 0.86,
+                    "expected_edge_baseline_score": 0.72,
+                    "expected_edge_baseline_business_date": "2026-07-14",
+                    "incremental_investment_value_state": "POSITIVE",
+                    "opportunity_cost_status": "PASS",
+                    "campaign_continuation_status": "PASS",
+                    "no_loss_averaging_status": "PASS",
+                },
+                {"opportunity_id": "opportunity-6098", "code": "6098", "opportunity_rank": 2, "expected_edge_score": 0.70},
+            ],
+        ),
+        current_portfolio_summary=_source_summary(
+            tmp_path,
+            "current",
+            rows=[
+                {"position_id": "current-7203", "security_code": "7203", "current_weight": 0.10},
+                {"position_id": "current-6758", "security_code": "6758", "current_weight": 0.05},
+            ],
+        ),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=3, exposure=0.6, cap=0.2),
+    )
+
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "6758")
+    assert member["pm_action"] == "ADD"
+    assert member["target_weight"] == 0.2
+    assert member["post_add_target_weight"] == 0.2
+    assert member["target_weight_change"] == 0.15
+    assert member["add_allocation_eligibility_status"] == "PASS"
+    assert member["expected_edge_improvement_state"] == "IMPROVING"
+    assert member["incremental_investment_value_state"] == "POSITIVE"
+    assert "ADD_TARGET_WEIGHT_INCREASED" in member["target_weight_reason_codes"]
+    assert member["target_weight_resolution"]["add_allocation_bridge"]["status"] == "PASS"
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_c_canonical_add_bridge_fails_closed_when_expected_edge_evidence_missing(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path),
+        candidate_summary=_candidate_summary(tmp_path),
+        opportunity_summary=_opportunity_summary(tmp_path),
+        current_portfolio_summary=_source_summary(
+            tmp_path,
+            "current",
+            rows=[
+                {"position_id": "current-7203", "security_code": "7203", "current_weight": 0.10},
+                {"position_id": "current-6758", "security_code": "6758", "current_weight": 0.05},
+                {"position_id": "current-9984", "security_code": "9984", "current_weight": 0.10},
+                {"position_id": "current-8306", "security_code": "8306", "current_weight": 0.10},
+            ],
+        ),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(tmp_path, target_position_count=3, exposure=0.6, cap=0.2),
+    )
+
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "6758")
+    assert member["target_weight"] == 0.05
+    assert member["post_add_target_weight"] == 0.05
+    assert member["target_weight_change"] == 0.0
+    assert member["add_allocation_eligibility_status"] == "FAIL_CLOSED"
+    assert member["expected_edge_improvement_state"] == "UNKNOWN"
+    assert "ADD_EXPECTED_EDGE_UNKNOWN_FAIL_CLOSED" in member["target_weight_reason_codes"]
+    assert member["target_weight_resolution"]["review_reason"]
+
+
+def test_phase28_d55_a_add_evidence_resolver_valid_case_drives_positive_increment(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05, "position_campaign_id": "campaign-11110"}],
+        pm_rows=[{**_pm_row("11110", "ADD"), "position_campaign_id": "campaign-11110", "reason_codes": ["strong_trend_continuation", "opportunity_rank_still_high", "no_loss_averaging"]}],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                position_campaign_id="campaign-11110",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                expected_edge_baseline_campaign_id="campaign-11110",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+    evidence = member["add_investment_evidence"]
+
+    assert evidence["schema_version"] == "add_investment_evidence.v1"
+    assert evidence["producer_result_status"] == "PASS"
+    assert evidence["campaign_continuation"]["status"] == "PASS"
+    assert evidence["expected_edge"]["status"] == "PASS"
+    assert evidence["expected_edge"]["temporal_authority"]["baseline_temporally_valid"] is True
+    assert evidence["no_loss_averaging"]["status"] == "PASS"
+    assert member["target_weight"] > member["current_weight"]
+    assert member["add_allocation_eligibility_status"] == "PASS"
+
+
+def test_phase28_d61_add_current_above_base_target_still_requests_increment_when_eligible(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.22, "position_campaign_id": "campaign-11110"}],
+        pm_rows=[{**_pm_row("11110", "ADD"), "position_campaign_id": "campaign-11110", "reason_codes": ["strong_trend_continuation", "opportunity_rank_still_high", "no_loss_averaging"]}],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                position_campaign_id="campaign-11110",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                expected_edge_baseline_campaign_id="campaign-11110",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            ),
+            _opportunity_row("22220", 2, 0.60),
+        ],
+        exposure=0.4,
+        cap=0.35,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert member["current_weight"] >= member["target_weight_resolution"]["base_weight"]
+    assert member["add_allocation_eligibility_status"] == "PASS"
+    assert member["requested_incremental_weight"] > 0
+    assert member["accepted_incremental_weight"] > 0
+    assert member["target_weight"] > member["current_weight"]
+    assert member["target_weight"] <= 0.35
+    assert "ADD_TARGET_WEIGHT_INCREASED" in member["target_weight_reason_codes"]
+
+
+def test_phase28_d55_a_missing_campaign_authority_fails_closed(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05}],
+        pm_rows=[{**_pm_row("11110", "ADD"), "reason_codes": ["no_loss_averaging"]}],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert member["target_weight"] == member["current_weight"]
+    assert member["add_investment_evidence"]["campaign_continuation"]["status"] == "FAIL_CLOSED"
+    assert "ADD_CAMPAIGN_CONTINUATION_FAIL" in member["target_weight_reason_codes"]
+
+
+def test_phase28_d55_a_campaign_mismatch_and_future_baseline_fail_closed(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05, "position_campaign_id": "campaign-current"}],
+        pm_rows=[{**_pm_row("11110", "ADD"), "position_campaign_id": "campaign-current", "reason_codes": ["no_loss_averaging"]}],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                position_campaign_id="campaign-other",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-16",
+                expected_edge_baseline_campaign_id="campaign-other",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+    evidence = member["add_investment_evidence"]
+
+    assert member["target_weight"] == member["current_weight"]
+    assert evidence["campaign_continuation"]["state"] == "MISMATCH"
+    assert evidence["expected_edge"]["temporal_authority"]["future_evidence_used"] is True
+    assert evidence["expected_edge"]["status"] == "FAIL_CLOSED"
+
+
+def test_phase28_d55_a_edge_deterioration_negative_value_opportunity_cost_and_loss_averaging_fail_closed(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05, "position_campaign_id": "campaign-11110"}],
+        pm_rows=[{**_pm_row("11110", "ADD"), "position_campaign_id": "campaign-11110", "reason_codes": ["loss_averaging_violation"]}],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.60,
+                position_campaign_id="campaign-11110",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                incremental_investment_value_state="NEGATIVE",
+                opportunity_cost_status="FAIL",
+            ),
+            _opportunity_row("22220", 2, 0.90),
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+    evidence = member["add_investment_evidence"]
+
+    assert member["target_weight"] == member["current_weight"]
+    assert evidence["expected_edge"]["state"] == "WEAKENING"
+    assert evidence["incremental_value"]["state"] == "NEGATIVE"
+    assert evidence["opportunity_cost"]["status"] == "FAIL_CLOSED"
+    assert evidence["no_loss_averaging"]["status"] == "FAIL_CLOSED"
+    assert {"ADD_EXPECTED_EDGE_WEAKENING", "ADD_INCREMENTAL_VALUE_NEGATIVE", "ADD_OPPORTUNITY_COST_FAIL", "ADD_NO_LOSS_AVERAGING_FAIL"} <= set(member["target_weight_reason_codes"])
+
+
+def test_phase28_d55_b_lot_aware_reallocation_authorizes_minimum_lot_only_within_policy(tmp_path: Path) -> None:
+    members = [
+        {
+            "security_code": "11110",
+            "symbol": "11110",
+            "current_position": False,
+            "membership_intent": "ADD_CANDIDATE",
+            "pm_action": "NEW",
+            "construction_priority": 1,
+            "target_weight": 0.03,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.03, "adjustments": []},
+            "runtime_opportunity_score": 0.9,
+        }
+    ]
+    result = apply_lot_aware_final_reallocation(
+        members=members,
+        lot_feasibility_rows=[
+            {
+                "symbol": "11110",
+                "lot_feasible": False,
+                "broker_eligible": True,
+                "minimum_executable_weight": 0.08,
+                "reason_codes": ["below_minimum_executable_notional"],
+            }
+        ],
+        target_gross_exposure=0.5,
+        single_name_cap=0.2,
+    )
+    member = result["members"][0]
+
+    assert member["target_weight"] == 0.08
+    assert member["lot_aware_accepted_buy_new_weight"] == 0.08
+    assert result["evidence"]["promoted"][0]["reason"] == "minimum_executable_lot_authorized_by_pc"
+    assert result["evidence"]["ps_preflight_decides_economic_allocation"] is False
+
+
+def test_phase28_d55_b_lot_aware_reallocation_preserves_cash_when_minimum_lot_not_justified(tmp_path: Path) -> None:
+    members = [
+        {
+            "security_code": "11110",
+            "symbol": "11110",
+            "current_position": False,
+            "membership_intent": "ADD_CANDIDATE",
+            "pm_action": "NEW",
+            "construction_priority": 1,
+            "target_weight": 0.03,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.03, "adjustments": []},
+            "runtime_opportunity_score": 0.9,
+        }
+    ]
+    result = apply_lot_aware_final_reallocation(
+        members=members,
+        lot_feasibility_rows=[{"symbol": "11110", "lot_feasible": False, "broker_eligible": True, "minimum_executable_weight": 0.25}],
+        target_gross_exposure=0.2,
+        single_name_cap=0.2,
+    )
+
+    assert result["members"][0]["target_weight"] == 0.0
+    assert result["members"][0]["target_weight_resolution"]["zero_weight_reason"] == "minimum_lot_exceeds_concentration_cap"
+    assert result["evidence"]["remaining_cash_weight"] == 0.2
+    assert result["evidence"]["skipped"][0]["reason"] == "minimum_lot_exceeds_concentration_cap"
+
+
+def test_phase28_d55_b_lot_aware_reallocation_can_skip_high_rank_and_fund_lower_rank(tmp_path: Path) -> None:
+    members = [
+        {
+            "security_code": "11110",
+            "symbol": "11110",
+            "current_position": False,
+            "membership_intent": "ADD_CANDIDATE",
+            "pm_action": "NEW",
+            "construction_priority": 1,
+            "target_weight": 0.03,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.03, "adjustments": []},
+            "runtime_opportunity_score": 0.9,
+        },
+        {
+            "security_code": "22220",
+            "symbol": "22220",
+            "current_position": False,
+            "membership_intent": "ADD_CANDIDATE",
+            "pm_action": "NEW",
+            "construction_priority": 2,
+            "target_weight": 0.06,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.06, "adjustments": []},
+            "runtime_opportunity_score": 0.8,
+        },
+    ]
+    result = apply_lot_aware_final_reallocation(
+        members=members,
+        lot_feasibility_rows=[
+            {"symbol": "11110", "lot_feasible": False, "broker_eligible": True, "minimum_executable_weight": 0.25},
+            {"symbol": "22220", "lot_feasible": True, "broker_eligible": True, "minimum_executable_weight": 0.05},
+        ],
+        target_gross_exposure=0.2,
+        single_name_cap=0.2,
+    )
+    by_code = {row["security_code"]: row for row in result["members"]}
+
+    assert by_code["11110"]["target_weight"] == 0.0
+    assert by_code["22220"]["target_weight"] == 0.06
+    assert result["evidence"]["remaining_cash_weight"] == 0.14
+
+
+def test_phase28_d55_b_lot_aware_reallocation_handles_buy_add_and_infeasible_add(tmp_path: Path) -> None:
+    members = [
+        {
+            "security_code": "11110",
+            "symbol": "11110",
+            "current_position": True,
+            "membership_intent": "RETAIN",
+            "pm_action": "ADD",
+            "construction_priority": 1,
+            "current_weight": 0.05,
+            "target_weight": 0.06,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.06, "adjustments": []},
+        },
+        {
+            "security_code": "22220",
+            "symbol": "22220",
+            "current_position": True,
+            "membership_intent": "RETAIN",
+            "pm_action": "ADD",
+            "construction_priority": 2,
+            "current_weight": 0.05,
+            "target_weight": 0.06,
+            "target_membership": True,
+            "target_weight_authority": {},
+            "target_weight_resolution": {"status": "PASS", "resolved_weight": 0.06, "adjustments": []},
+        },
+    ]
+    result = apply_lot_aware_final_reallocation(
+        members=members,
+        lot_feasibility_rows=[
+            {"symbol": "11110", "lot_feasible": False, "broker_eligible": True, "minimum_executable_weight": 0.04},
+            {"symbol": "22220", "lot_feasible": False, "broker_eligible": True, "minimum_executable_weight": 0.2},
+        ],
+        target_gross_exposure=0.2,
+        single_name_cap=0.12,
+    )
+    by_code = {row["security_code"]: row for row in result["members"]}
+
+    assert by_code["11110"]["target_weight"] == 0.09
+    assert by_code["11110"]["lot_aware_accepted_incremental_weight"] == 0.04
+    assert by_code["22220"]["target_weight"] == 0.05
+    assert result["evidence"]["skipped"][0]["symbol"] == "22220"
+
+
+def test_phase28_d28_20230404_incremental_budget_reconciliation_reproduction(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-43880", "security_code": "43880", "current_weight": 0.123279},
+            {"position_id": "current-83060", "security_code": "83060", "current_weight": 0.17231},
+            {"position_id": "current-94320", "security_code": "94320", "current_weight": 0.126961},
+        ],
+        pm_rows=[
+            _pm_row("43880", "HOLD"),
+            _pm_row("83060", "ADD"),
+            _pm_row("94320", "ADD"),
+        ],
+        opportunity_rows=[
+            _opportunity_row("94320", 1, 0.32829857),
+            _opportunity_row("83060", 2, 0.22285948),
+            _opportunity_row("43880", 3, 0.19727013),
+            _opportunity_row("67310", 4, 0.1747092),
+            _opportunity_row("59350", 6, 0.01072994),
+        ],
+        exposure=0.72,
+        cap=0.2,
+    )
+
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["baseline_existing_required_weight"] == 0.42255
+    assert payload["available_incremental_budget"] == 0.29745
+    assert payload["incremental_budget_reconciliation"]["accepted_add_increment"] == 0.0
+    assert payload["incremental_budget_reconciliation"]["accepted_buy_new_weight"] == 0.288
+    assert payload["total_target_weight"] == 0.71055
+    assert payload["total_target_weight"] <= payload["target_gross_exposure"]
+    assert by_code["43880"]["target_weight"] == 0.123279
+    assert by_code["83060"]["target_weight"] == 0.17231
+    assert by_code["94320"]["target_weight"] == 0.126961
+    assert by_code["67310"]["target_weight"] == 0.144
+    assert by_code["59350"]["target_weight"] == 0.144
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase28_d28_hold_baseline_preserves_current_weight_below_equal_weight(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.10}],
+        pm_rows=[_pm_row("11110", "HOLD")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.5), _opportunity_row("22220", 2, 0.4)],
+        exposure=0.6,
+        cap=0.5,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert by_code["11110"]["target_weight"] == 0.10
+    assert by_code["11110"]["baseline_existing_weight"] == 0.10
+    assert "hold_equal_weight_increase_reconciled_to_current_weight" in payload["reason_codes"]
+
+
+def test_phase28_d28_add_sufficient_budget_still_increases_existing_position(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05}],
+        pm_rows=[_pm_row("11110", "ADD")],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.8,
+                expected_edge_baseline_score=0.5,
+                expected_edge_baseline_business_date="2026-07-14",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+                campaign_continuation_status="PASS",
+                no_loss_averaging_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert member["target_weight"] > member["current_weight"]
+    assert member["accepted_incremental_weight"] > 0
+    assert member["add_allocation_eligibility_status"] == "PASS"
+    assert "ADD_TARGET_WEIGHT_INCREASED" in member["target_weight_reason_codes"]
+
+
+def test_phase28_d28_multiple_add_within_budget_both_increase(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.05},
+        ],
+        pm_rows=[_pm_row("11110", "ADD"), _pm_row("22220", "ADD")],
+        opportunity_rows=[
+            _eligible_add_opportunity("11110", 1, 0.8),
+            _eligible_add_opportunity("22220", 2, 0.7),
+        ],
+        exposure=0.4,
+        cap=0.3,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert by_code["11110"]["accepted_incremental_weight"] > 0
+    assert by_code["22220"]["accepted_incremental_weight"] > 0
+    assert payload["total_target_weight"] <= payload["target_gross_exposure"]
+
+
+def test_phase28_d28_multiple_add_over_budget_trims_weakest_increment(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.30},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.05},
+            {"position_id": "current-33330", "security_code": "33330", "current_weight": 0.05},
+        ],
+        pm_rows=[_pm_row("11110", "HOLD"), _pm_row("22220", "ADD"), _pm_row("33330", "ADD")],
+        opportunity_rows=[
+            _opportunity_row("11110", 1, 0.9),
+            _eligible_add_opportunity("22220", 2, 0.8),
+            _eligible_add_opportunity("33330", 3, 0.7),
+        ],
+        exposure=0.5,
+        cap=0.5,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["incremental_budget_reconciliation"]["trimmed_incremental_weight"] > 0
+    assert by_code["22220"]["accepted_incremental_weight"] > 0
+    assert by_code["33330"]["accepted_incremental_weight"] == 0
+    assert payload["total_target_weight"] <= payload["target_gross_exposure"]
+
+
+def test_phase28_d28_add_and_buy_new_compete_for_same_incremental_budget(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.30},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.05},
+        ],
+        pm_rows=[_pm_row("11110", "HOLD"), _pm_row("22220", "ADD")],
+        opportunity_rows=[
+            _opportunity_row("11110", 1, 0.9),
+            _eligible_add_opportunity("22220", 2, 0.8),
+            _opportunity_row("33330", 3, 0.7),
+        ],
+        exposure=0.5,
+        cap=0.5,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert by_code["22220"]["accepted_incremental_weight"] > 0
+    assert by_code["33330"]["accepted_buy_new_weight"] < by_code["33330"]["requested_buy_new_weight"]
+    assert payload["total_target_weight"] <= payload["target_gross_exposure"]
+
+
+def test_phase28_d28_reduce_releases_capacity_for_buy_new_without_exit_escalation(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.30},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.10},
+        ],
+        pm_rows=[_pm_row("11110", "REDUCE"), _pm_row("22220", "HOLD")],
+        opportunity_rows=[_opportunity_row("33330", 1, 0.9), _opportunity_row("11110", 2, 0.8)],
+        exposure=0.4,
+        cap=0.4,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert payload["incremental_budget_reconciliation"]["released_reduce_capacity"] > 0
+    assert by_code["11110"]["membership_intent"] == "REDUCE_CANDIDATE"
+    assert by_code["11110"]["target_weight"] == 0.225
+    assert by_code["11110"]["reduce_fraction"] == 0.25
+    assert by_code["33330"]["target_weight"] > 0
+    assert payload["total_target_weight"] <= payload["target_gross_exposure"]
+
+
+def test_phase28_d34_77760_light_reduce_resolves_partial_target_weight(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-77760", "security_code": "77760", "current_weight": 0.053147}],
+        pm_rows=[_pm_row("77760", "REDUCE")],
+        opportunity_rows=[_opportunity_row("77760", 1, 0.5)],
+        exposure=0.2,
+        cap=0.2,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "77760")
+
+    assert member["target_weight"] == 0.03986
+    assert member["baseline_existing_weight"] == 0.03986
+    assert member["reduce_intensity"] == "LIGHT"
+    assert member["reduce_fraction"] == 0.25
+    assert member["released_reduce_capacity"] == 0.013287
+    assert member["target_membership"] is True
+
+
+def test_phase28_d34_43880_light_reduce_resolves_partial_target_weight(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-43880", "security_code": "43880", "current_weight": 0.127745}],
+        pm_rows=[_pm_row("43880", "REDUCE")],
+        opportunity_rows=[_opportunity_row("43880", 1, 0.5)],
+        exposure=0.3,
+        cap=0.3,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "43880")
+
+    assert member["target_weight"] == 0.095809
+    assert member["reduce_fraction_authority"]["authority_type"] == "CANONICAL_REDUCE_INTENSITY_AUTHORITY"
+    assert member["target_weight_resolution"]["reason"] == "reduce_partial_target_resolved"
+
+
+def test_phase28_d34_reduce_unknown_intensity_fails_closed_without_exit_target(tmp_path: Path) -> None:
+    row = _pm_row("11110", "REDUCE")
+    row["intensity"] = "UNRESOLVED"
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.2}],
+        pm_rows=[row],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.5)],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert payload["producer_result_status"] == "REVIEW_REQUIRED"
+    assert member["pm_action"] == "REDUCE"
+    assert member["target_weight_resolution"]["review_reason"] == "reduce_intensity_unknown"
+
+
+def test_phase28_d28_zero_capacity_add_retains_baseline_without_sell(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.4}],
+        pm_rows=[_pm_row("11110", "ADD")],
+        opportunity_rows=[_eligible_add_opportunity("11110", 1, 0.8)],
+        exposure=0.4,
+        cap=0.5,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert payload["available_incremental_budget"] == 0.0
+    assert member["target_weight"] == 0.4
+    assert member["accepted_incremental_weight"] == 0.0
+    assert member["membership_intent"] == "RETAIN"
+    assert member["weight_intent"] == "INCREASE"
+
+
+def test_phase28_d39_retained_baseline_over_target_enters_passive_convergence(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.45},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.30},
+        ],
+        pm_rows=[_pm_row("11110", "HOLD"), _pm_row("22220", "ADD")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.9), _eligible_add_opportunity("22220", 2, 0.8)],
+        exposure=0.7,
+        cap=0.6,
+    )
+
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+    assert payload["producer_result_status"] != "BLOCK"
+    assert "existing_baseline_over_dynamic_target_passive_convergence" in payload["reason_codes"]
+    assert "positive_increment_suppressed_while_over_target" in payload["reason_codes"]
+    assert "baseline_existing_required_weight_above_target_gross_exposure" not in payload["reason_codes"]
+    assert payload["baseline_existing_required_weight"] == 0.75
+    assert payload["available_incremental_budget"] == 0.0
+    assert payload["total_target_weight"] == 0.75
+    assert payload["incremental_budget_reconciliation"]["aggregate_exposure_state"] == "OVER_TARGET_EXISTING_BASELINE"
+    assert payload["incremental_budget_reconciliation"]["transition_mode"] == "PASSIVE_CONVERGENCE"
+    assert payload["incremental_budget_reconciliation"]["positive_increment_allowed"] is False
+    assert by_code["11110"]["target_weight"] == 0.45
+    assert by_code["22220"]["target_weight"] == 0.30
+    assert by_code["22220"]["accepted_incremental_weight"] == 0.0
+
+
+def test_phase28_d39_20230601_exact_passive_convergence_replay(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-21340", "security_code": "21340", "current_weight": 0.117487},
+            {"position_id": "current-30410", "security_code": "30410", "current_weight": 0.1207},
+            {"position_id": "current-59550", "security_code": "59550", "current_weight": 0.091236},
+            {"position_id": "current-76470", "security_code": "76470", "current_weight": 0.183666},
+            {"position_id": "current-93990", "security_code": "93990", "current_weight": 0.064251},
+            {"position_id": "current-94320", "security_code": "94320", "current_weight": 0.116166},
+        ],
+        pm_rows=[
+            _pm_row("21340", "ADD"),
+            _pm_row("30410", "ADD"),
+            _pm_row("59550", "ADD"),
+            _pm_row("76470", "HOLD"),
+            _pm_row("93990", "REDUCE"),
+            _pm_row("94320", "ADD"),
+        ],
+        opportunity_rows=[
+            _opportunity_row("94320", 1, 0.49789815),
+            _opportunity_row("30410", 2, 0.45),
+            _opportunity_row("21340", 3, 0.34150423),
+            _opportunity_row("59550", 4, 0.3),
+            _opportunity_row("76470", 5, 0.25),
+            _opportunity_row("93990", 6, 0.06864322),
+            _opportunity_row("11110", 7, 0.2),
+            _opportunity_row("22220", 8, 0.1),
+        ],
+        exposure=0.54,
+        cap=0.18,
+    )
+
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["baseline_existing_required_weight"] == 0.677443
+    assert payload["available_incremental_budget"] == 0.0
+    assert payload["total_target_weight"] == 0.677443
+    assert payload["incremental_budget_reconciliation"]["aggregate_exposure_state"] == "OVER_TARGET_EXISTING_BASELINE"
+    assert payload["incremental_budget_reconciliation"]["accepted_buy_new_weight"] == 0.0
+    assert by_code["21340"]["target_weight"] == 0.117487
+    assert by_code["30410"]["target_weight"] == 0.1207
+    assert by_code["59550"]["target_weight"] == 0.091236
+    assert by_code["76470"]["target_weight"] == 0.183666
+    assert by_code["93990"]["target_weight"] == 0.048188
+    assert by_code["93990"]["released_reduce_capacity"] == 0.016063
+    assert by_code["94320"]["target_weight"] == 0.116166
+    assert by_code["11110"]["accepted_buy_new_weight"] == 0.0
+    assert by_code["22220"]["accepted_buy_new_weight"] == 0.0
+
+
+def test_phase28_d39_add_over_target_preserves_baseline_and_suppresses_increment(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.5},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.2},
+        ],
+        pm_rows=[_pm_row("11110", "HOLD"), _pm_row("22220", "ADD")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.9), _eligible_add_opportunity("22220", 2, 0.8)],
+        exposure=0.54,
+        cap=0.5,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "22220")
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert member["pm_action"] == "ADD"
+    assert member["target_weight"] == 0.2
+    assert member["accepted_incremental_weight"] == 0.0
+    assert member["requested_incremental_weight"] > 0
+
+
+def test_phase28_d39_buy_new_over_target_gets_zero_allocation_without_block(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.68}],
+        pm_rows=[_pm_row("11110", "HOLD")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.9), _opportunity_row("22220", 2, 0.8)],
+        exposure=0.54,
+        cap=0.5,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "22220")
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert member["current_position"] is False
+    assert member["requested_buy_new_weight"] > 0
+    assert member["accepted_buy_new_weight"] == 0.0
+    assert member["target_weight"] == 0.0
+
+
+def test_phase28_d39_reduce_over_target_passes_even_when_aggregate_remains_over_target(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.4},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.4},
+        ],
+        pm_rows=[_pm_row("11110", "REDUCE"), _pm_row("22220", "HOLD")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.9), _opportunity_row("22220", 2, 0.8)],
+        exposure=0.54,
+        cap=0.5,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert payload["total_target_weight"] == 0.7
+    assert by_code["11110"]["target_weight"] == 0.3
+    assert by_code["11110"]["reduce_fraction"] == 0.25
+    assert payload["incremental_budget_reconciliation"]["aggregate_exposure_state"] == "OVER_TARGET_EXISTING_BASELINE"
+
+
+def test_phase28_d39_exit_over_target_passes_and_preserves_zero_target(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[
+            {"position_id": "current-11110", "security_code": "11110", "current_weight": 0.68},
+            {"position_id": "current-22220", "security_code": "22220", "current_weight": 0.2},
+        ],
+        pm_rows=[_pm_row("11110", "HOLD"), _pm_row("22220", "EXIT")],
+        opportunity_rows=[_opportunity_row("11110", 1, 0.9), _opportunity_row("22220", 2, 0.8)],
+        exposure=0.54,
+        cap=0.5,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert payload["producer_result_status"] != "BLOCK"
+    assert by_code["22220"]["membership_intent"] == "REMOVE_CANDIDATE"
+    assert by_code["22220"]["target_weight"] == 0.0
+    assert payload["total_target_weight"] == 0.68
+
+
+def test_phase28_d39_positive_increment_over_target_remains_fail_closed() -> None:
+    assert _positive_increment_over_target(
+        final_target_weight_sum=0.58,
+        target_gross_exposure=0.54,
+        tolerance=0.0,
+        accepted_add=0.08,
+        accepted_buy_new=0.0,
+    )
+    assert not _positive_increment_over_target(
+        final_target_weight_sum=0.677443,
+        target_gross_exposure=0.54,
+        tolerance=0.0,
+        accepted_add=0.0,
+        accepted_buy_new=0.0,
+    )
+
+
 def test_phase22_e_fixture_shadow_reads_draft_and_rejects_production(tmp_path: Path) -> None:
     result = _produce(tmp_path)
     payload = load_portfolio_construction_fixture(result.artifact_path)
@@ -587,6 +1609,20 @@ def _pm_rows() -> list[dict[str, object]]:
         {"position_id": "pm-6758", "security_code": "6758", "action": "ADD", "intensity": "UNRESOLVED", "confidence": 0.7, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["ADD_BY_STRONG_TREND_AND_RANK"], "lifecycle_reference": "", "opportunity_reference": "", "market_context_reference": "", "corporate_event_reference": "", "portfolio_policy_reference": ""},
         {"position_id": "pm-9984", "security_code": "9984", "action": "REDUCE", "intensity": "MEDIUM", "confidence": 0.6, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["REDUCE_BY_PEAK_DRAWDOWN_WARNING"], "lifecycle_reference": "", "opportunity_reference": "", "market_context_reference": "", "corporate_event_reference": "", "portfolio_policy_reference": ""},
         {"position_id": "pm-8306", "security_code": "8306", "action": "EXIT", "intensity": "NONE", "confidence": 0.9, "uncertainty": "UPSTREAM_REVIEW_REQUIRED", "reason_codes": ["EXIT_BY_HARD_STOP"], "lifecycle_reference": "", "opportunity_reference": "", "market_context_reference": "", "corporate_event_reference": "", "portfolio_policy_reference": ""},
+    ]
+
+
+def _current_rows_without_sell_intents() -> list[dict[str, object]]:
+    return [
+        {"position_id": "current-7203", "security_code": "7203", "current_weight": 0.05},
+        {"position_id": "current-6758", "security_code": "6758", "current_weight": 0.05},
+    ]
+
+
+def _pm_rows_without_sell_intents() -> list[dict[str, object]]:
+    return [
+        {"position_id": "pm-7203", "security_code": "7203", "action": "HOLD", "intensity": "NONE", "confidence": 0.8, "uncertainty": "LOW", "reason_codes": ["HOLD_FIXTURE"], "lifecycle_reference": "", "opportunity_reference": "", "market_context_reference": "", "corporate_event_reference": "", "portfolio_policy_reference": ""},
+        {"position_id": "pm-6758", "security_code": "6758", "action": "HOLD", "intensity": "NONE", "confidence": 0.8, "uncertainty": "LOW", "reason_codes": ["HOLD_FIXTURE"], "lifecycle_reference": "", "opportunity_reference": "", "market_context_reference": "", "corporate_event_reference": "", "portfolio_policy_reference": ""},
     ]
 
 
@@ -648,9 +1684,10 @@ def _policy_config_summary(tmp_path: Path, *, target_position_count: int, exposu
     )
 
 
-def _write_position_management(tmp_path: Path) -> Path:
+def _write_position_management(tmp_path: Path, rows: list[dict[str, object]] | None = None, producer_status: str = "REVIEW_REQUIRED") -> Path:
+    rows = _pm_rows() if rows is None else rows
     source = tmp_path / "pm_source.json"
-    _write_json(source, {"rows": _pm_rows()})
+    _write_json(source, {"rows": rows})
     payload = {
         "schema_version": position_management.SCHEMA_VERSION,
         "producer_version": "phase22_d_position_management_producer.v1",
@@ -659,16 +1696,16 @@ def _write_position_management(tmp_path: Path) -> Path:
         "feature_date": "2026-07-15",
         "artifact_lifecycle_status": "DRAFT",
         "source_authority_status": "VALID",
-        "producer_result_status": "REVIEW_REQUIRED",
+        "producer_result_status": producer_status,
         "runtime_consumer_eligibility": "NOT_ELIGIBLE",
-        "positions": _pm_rows(),
-        "position_count": 4,
+        "positions": rows,
+        "position_count": len(rows),
         "action_taxonomy": ["ADD", "EXIT", "HOLD", "REDUCE"],
         "intensity_taxonomy": ["LIGHT", "MEDIUM", "NONE", "STRONG", "UNRESOLVED"],
         "quantity_decided": False,
         "minimum_holding_decided": False,
         "cooldown_decided": False,
-        "reason_codes": ["upstream_review_required:SOURCE_NOT_ELIGIBLE"],
+        "reason_codes": [] if producer_status == "PASS" else ["upstream_review_required:SOURCE_NOT_ELIGIBLE"],
         "upstream_artifacts": {},
         "accepted_generation_reference": {},
         "model_reference": {},
@@ -685,6 +1722,97 @@ def _write_position_management(tmp_path: Path) -> Path:
     path = tmp_path / "position_management.json"
     _write_json(path, payload)
     return path
+
+
+def _build_d28_payload(
+    tmp_path: Path,
+    *,
+    current_rows: list[dict[str, object]],
+    pm_rows: list[dict[str, object]],
+    opportunity_rows: list[dict[str, object]],
+    exposure: float,
+    cap: float,
+) -> dict[str, object]:
+    codes = [str(row["code"]) for row in opportunity_rows]
+    candidate_rows = [
+        {
+            "candidate_id": f"candidate-{code}",
+            "code": code,
+            "candidate_order": index,
+            "candidate_score": 1.0 - index / 100.0,
+            "universe_eligible": True,
+        }
+        for index, code in enumerate(codes, start=1)
+    ]
+    payload, _ = build_portfolio_construction_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_portfolio_policy(tmp_path),
+        position_management_artifact_path=_write_position_management(tmp_path, rows=pm_rows),
+        candidate_summary=_source_summary(tmp_path, "candidate", rows=candidate_rows),
+        opportunity_summary=_source_summary(tmp_path, "opportunity", rows=opportunity_rows),
+        current_portfolio_summary=_source_summary(tmp_path, "current", rows=current_rows),
+        pending_summary=_source_summary(tmp_path, "pending", rows=[]),
+        policy_config_summary=_policy_config_summary(
+            tmp_path,
+            target_position_count=len(opportunity_rows),
+            exposure=exposure,
+            cap=cap,
+        ),
+    )
+    return payload
+
+
+def _pm_row(code: str, action: str) -> dict[str, object]:
+    return {
+        "position_id": f"pm-{code}",
+        "security_code": code,
+        "action": action,
+        "intensity": "UNRESOLVED" if action == "ADD" else ("LIGHT" if action == "REDUCE" else "NONE"),
+        "confidence": 0.8,
+        "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
+        "reason_codes": [f"{action}_FIXTURE"],
+        "lifecycle_reference": "",
+        "opportunity_reference": code,
+        "market_context_reference": "",
+        "corporate_event_reference": "",
+        "portfolio_policy_reference": "",
+    }
+
+
+def _opportunity_row(code: str, rank: int, score: float, **extra: object) -> dict[str, object]:
+    return {
+        "opportunity_id": f"opportunity-{code}",
+        "code": code,
+        "opportunity_rank": rank,
+        "expected_edge_score": score,
+        **extra,
+    }
+
+
+def _eligible_add_opportunity(code: str, rank: int, score: float) -> dict[str, object]:
+    return _opportunity_row(
+        code,
+        rank,
+        score,
+        expected_edge_baseline_score=score - 0.1,
+        expected_edge_baseline_business_date="2026-07-14",
+        incremental_investment_value_state="POSITIVE",
+        opportunity_cost_status="PASS",
+        campaign_continuation_status="PASS",
+        no_loss_averaging_status="PASS",
+    )
+
+
+def _broker_fixture_listed_info(code: str, product_category: str) -> dict[str, object]:
+    return {
+        "code": code,
+        "market": "TSE",
+        "product_category": product_category,
+        "security_type": product_category,
+        "current_listed": True,
+    }
 
 
 def _write_portfolio_policy(tmp_path: Path) -> Path:

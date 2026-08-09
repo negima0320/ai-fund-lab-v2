@@ -32,6 +32,8 @@ ARTIFACT_FILENAMES = {
     "corporate_event": "corporate_event.json",
     "portfolio_policy": "portfolio_policy.json",
     "buy_quality": "buy_quality_decisions.json",
+    "portfolio_construction_draft": "portfolio_construction_draft.json",
+    "position_sizing_preflight": "position_sizing_preflight.json",
     "portfolio_construction": "portfolio_construction.json",
     "position_sizing": "position_sizing.json",
     "position_management": "position_management.json",
@@ -240,6 +242,15 @@ def generate_strategy_shadow_for_day(
             as_of=as_of,
         ),
     )
+    add_baseline_evidence = _supply_add_expected_edge_baseline(
+        run_dir=run_dir,
+        business_date=business_date,
+        opportunity=opportunity,
+        current=current,
+        position_management=results.get("position_management", {}),
+    )
+    opportunity = add_baseline_evidence["opportunity"]
+    _write_json(strategy_dir / "add_baseline_supply_evidence.json", add_baseline_evidence["evidence"])
     produce(
         "buy_quality",
         lambda: buy_quality.produce_buy_quality_artifact(
@@ -257,7 +268,7 @@ def generate_strategy_shadow_for_day(
         ),
     )
     produce(
-        "portfolio_construction",
+        "portfolio_construction_draft",
         lambda: portfolio_construction.produce_portfolio_construction_artifact(
             business_date=business_date,
             market_context_artifact_path=artifact_paths["market_context"],
@@ -270,11 +281,38 @@ def generate_strategy_shadow_for_day(
             pending_summary=_pc_summary(pending, business_date),
             policy_config_summary=_pc_summary(results.get("portfolio_policy", policy_config_summary), business_date),
             buy_quality_summary=_pc_summary(results.get("buy_quality", {}), business_date),
-            output_path=artifact_paths["portfolio_construction"],
+            output_path=artifact_paths["portfolio_construction_draft"],
             as_of=as_of,
         ),
     )
     ps_config = _load_optional(lambda: position_sizing.load_position_sizing_config(Path("configs/strategy/position_sizing.json")))
+    produce(
+        "position_sizing_preflight",
+        lambda: position_sizing.produce_position_sizing_artifact(
+            business_date=business_date,
+            portfolio_construction_summary=_ps_summary(results.get("portfolio_construction_draft", {}), business_date),
+            capital_deployment_summary=_ps_summary({"status": "REVIEW_REQUIRED", "summary": {"reason": "capital_deployment_is_downstream_of_position_sizing_in_shadow_chain"}}, business_date),
+            dynamic_cash_exposure_summary=_ps_summary(results.get("portfolio_policy", {}), business_date),
+            dynamic_position_count_summary=_ps_summary(results.get("portfolio_policy", {}), business_date),
+            position_management_summary=_ps_summary(results.get("position_management", {}), business_date),
+            opportunity_summary=_ps_summary(opportunity, business_date),
+            current_position_summary=_ps_summary(current, business_date),
+            price_volatility_summary=_ps_summary(_materialized_summary(price_volatility), business_date),
+            safety_limit_summary=_ps_summary(safety, business_date),
+            config=ps_config,
+            output_path=artifact_paths["position_sizing_preflight"],
+            as_of=as_of,
+        ),
+    )
+    produce(
+        "portfolio_construction",
+        lambda: _produce_lot_aware_final_portfolio_construction(
+            business_date=business_date,
+            draft_path=artifact_paths["portfolio_construction_draft"],
+            preflight_path=artifact_paths["position_sizing_preflight"],
+            output_path=artifact_paths["portfolio_construction"],
+        ),
+    )
     produce(
         "position_sizing",
         lambda: position_sizing.produce_position_sizing_artifact(
@@ -1080,8 +1118,174 @@ def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any
         if not isinstance(row, Mapping):
             continue
         value = _float(row.get("market_value", row.get("value", 0.0)))
-        rows.append({**dict(row), "current_weight": round(value / total_equity, 6) if total_equity > 0 else 0.0})
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip()
+        campaign_id = str(row.get("position_campaign_id") or row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or "")
+        rows.append({**dict(row), "position_campaign_id": campaign_id, "current_weight": round(value / total_equity, 6) if total_equity > 0 else 0.0})
     return {"status": "PASS" if path.is_file() else "MISSING", "business_date": business_date, "feature_date": business_date, "source_ref": str(path), "source_hash": _file_hash(path), "summary": {"position_count": len(positions), "current_position_count": len(positions), "positions": rows, "cash": cash, "buying_power": _float(payload.get("buying_power", cash)), "current_cash": cash, "current_market_value": market_value, "gross_exposure": market_value, "portfolio_value": total_equity, "portfolio_total_equity": total_equity}, "rows": tuple(rows)}
+
+
+def _supply_add_expected_edge_baseline(
+    *,
+    run_dir: Path,
+    business_date: str,
+    opportunity: Mapping[str, Any],
+    current: Mapping[str, Any],
+    position_management: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    current_campaign_by_symbol: dict[str, str] = {}
+    for row in current.get("rows") or ():
+        if not isinstance(row, Mapping):
+            continue
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        campaign_id = str(row.get("position_campaign_id") or row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or "").strip()
+        if symbol and campaign_id:
+            current_campaign_by_symbol[symbol] = campaign_id
+    pm_payload = _payload_from_summary_item(position_management or {})
+    for row in (position_management or {}).get("rows") or pm_payload.get("positions") or pm_payload.get("decisions") or ():
+        if not isinstance(row, Mapping):
+            continue
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        action = str(row.get("action") or row.get("pm_action") or row.get("decision_type") or "").upper()
+        campaign_id = str(
+            row.get("position_campaign_id")
+            or row.get("campaign_id")
+            or row.get("lifecycle_reference")
+            or row.get("position_lifecycle_id")
+            or row.get("current_position_reference")
+            or row.get("position_id")
+            or ""
+        ).strip()
+        if symbol and campaign_id and action in {"HOLD", "ADD", "REDUCE", "EXIT", "UNRESOLVED"}:
+            current_campaign_by_symbol.setdefault(symbol, campaign_id)
+    baseline_by_symbol: dict[str, dict[str, Any]] = {}
+    daily_root = run_dir / "daily"
+    for path in sorted(daily_root.glob("*/strategy/portfolio_construction.json")):
+        day = path.parent.parent.name
+        if day >= business_date:
+            continue
+        payload = _read_json(path)
+        for member in payload.get("portfolio_members") or ():
+            if not isinstance(member, Mapping) or not member.get("current_position"):
+                continue
+            symbol = str(member.get("security_code") or member.get("symbol") or "").strip()
+            active_campaign = current_campaign_by_symbol.get(symbol, "")
+            if not symbol or not active_campaign:
+                continue
+            member_campaign = str(
+                member.get("current_position_campaign_id")
+                or member.get("position_campaign_id")
+                or member.get("campaign_id")
+                or member.get("position_management_reference")
+                or member.get("current_position_reference")
+                or ""
+            ).strip()
+            if member_campaign and member_campaign != active_campaign:
+                continue
+            if not member_campaign:
+                continue
+            score = member.get("runtime_opportunity_score")
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                continue
+            baseline_by_symbol[symbol] = {
+                "score": float(score),
+                "business_date": day,
+                "campaign_id": active_campaign,
+                "artifact_path": str(path),
+                "artifact_hash": _file_hash(path),
+            }
+    payload = _payload_from_summary_item(opportunity)
+    source_rows = opportunity.get("rows") or payload.get("rankings") or payload.get("decisions") or ()
+    enriched_rows: list[dict[str, Any]] = []
+    supplied = 0
+    missing = 0
+    for row in source_rows:
+        item = dict(row) if isinstance(row, Mapping) else {}
+        symbol = str(item.get("code") or item.get("security_code") or item.get("symbol") or "").strip()
+        campaign_id = current_campaign_by_symbol.get(symbol, "")
+        if campaign_id:
+            item.setdefault("position_campaign_id", campaign_id)
+        baseline = baseline_by_symbol.get(symbol)
+        if baseline:
+            item["expected_edge_baseline_score"] = baseline["score"]
+            item["expected_edge_baseline_business_date"] = baseline["business_date"]
+            item["expected_edge_baseline_campaign_id"] = baseline["campaign_id"]
+            item["expected_edge_baseline_type"] = "latest_prior_same_campaign_strategy_evidence"
+            item["add_baseline_source_artifact_path"] = baseline["artifact_path"]
+            item["add_baseline_source_artifact_hash"] = baseline["artifact_hash"]
+            supplied += 1
+        elif campaign_id:
+            missing += 1
+        enriched_rows.append(item)
+    enriched_payload = {**payload}
+    if "rankings" in enriched_payload:
+        enriched_payload["rankings"] = enriched_rows
+    elif "decisions" in enriched_payload:
+        enriched_payload["decisions"] = enriched_rows
+    evidence = {
+        "schema_version": "phase28_d55_c_add_baseline_supply_evidence.v1",
+        "business_date": business_date,
+        "baseline_producer": "latest_prior_same_campaign_strategy_portfolio_construction",
+        "baseline_artifact": "daily/<prior_business_date>/strategy/portfolio_construction.json",
+        "baseline_field_path": "portfolio_members[].runtime_opportunity_score",
+        "campaign_identity_field": "position_campaign_id",
+        "campaign_identity_authority": "strategy_position_management_current_position_lifecycle_reference",
+        "temporal_selection_rule": "latest prior business_date strictly less than current business_date",
+        "supplied_count": supplied,
+        "missing_count": missing,
+        "current_campaign_count": len(current_campaign_by_symbol),
+        "future_baseline_used": False,
+        "symbol_only_baseline_used": False,
+        "missing_baseline_behavior": "UNKNOWN_FAIL_CLOSED",
+    }
+    return {
+        "opportunity": {**dict(opportunity), "payload": enriched_payload, "rows": tuple(enriched_rows)},
+        "evidence": evidence,
+    }
+
+
+def _produce_lot_aware_final_portfolio_construction(
+    *,
+    business_date: str,
+    draft_path: Path,
+    preflight_path: Path,
+    output_path: Path,
+) -> Any:
+    draft = _read_json(draft_path)
+    preflight = _read_json(preflight_path)
+    reallocation = portfolio_construction.apply_lot_aware_final_reallocation(
+        members=[dict(row) for row in draft.get("portfolio_members") or []],
+        lot_feasibility_rows=[dict(row) for row in preflight.get("lot_feasibility_preflight") or []],
+        target_gross_exposure=draft.get("target_gross_exposure"),
+        single_name_cap=draft.get("single_name_weight_cap"),
+    )
+    final_payload = {
+        **draft,
+        "portfolio_construction_stage": "FINAL_LOT_AWARE_REALLOCATION",
+        "portfolio_construction_draft_artifact_path": str(draft_path),
+        "position_sizing_preflight_artifact_path": str(preflight_path),
+        "portfolio_members": reallocation["members"],
+        "total_target_weight": round(sum(float(row.get("target_weight") or 0.0) for row in reallocation["members"]), 6),
+        "lot_aware_final_reallocation": reallocation["evidence"],
+        "reason_codes": sorted(set([*list(draft.get("reason_codes") or []), *reallocation["reason_codes"]])),
+    }
+    portfolio_construction.validate_portfolio_construction_artifact(final_payload)
+    artifact_hash = portfolio_construction.portfolio_construction_hash(final_payload)
+    final_payload = {**final_payload, "artifact_hash": artifact_hash}
+    _write_json(output_path, final_payload)
+    return _SimpleProducerResult(
+        status=str(final_payload.get("producer_result_status") or "PASS"),
+        reason=",".join(final_payload.get("reason_codes") or []),
+        artifact_path=str(output_path),
+        artifact_hash=artifact_hash,
+    )
+
+
+class _SimpleProducerResult:
+    def __init__(self, *, status: str, reason: str, artifact_path: str, artifact_hash: str) -> None:
+        self.status = status
+        self.reason = reason
+        self.artifact_path = artifact_path
+        self.artifact_hash = artifact_hash
 
 
 def _cash_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any]:
@@ -1347,10 +1551,22 @@ def _existing_pm_decisions(*, runtime_root: Path, business_date: str) -> list[di
         runtime_root / "runtime_state" / "position_management" / business_date / "position_management_decisions.json",
     ]
     for path in candidates:
-        payload = _read_json(path) if path.is_file() else {}
+        if not path.is_file():
+            continue
+        payload = _read_json(path)
         rows = payload if isinstance(payload, list) else payload.get("decisions") or payload.get("positions") or []
         if isinstance(rows, list):
-            return [dict(row) for row in rows if isinstance(row, Mapping)]
+            source_hash = _file_hash(path)
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                item = dict(row)
+                item["_source_artifact_path"] = str(path)
+                item["_source_artifact_hash"] = source_hash
+                item["_source_business_date"] = str(payload.get("business_date") or business_date) if isinstance(payload, Mapping) else business_date
+                result.append(item)
+            return result
     return []
 
 

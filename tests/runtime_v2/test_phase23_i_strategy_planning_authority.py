@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from ai_fund_lab_v2.broker.issue_code_normalizer import normalize_broker_issue_code
 from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntimeV2DemoSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
     _mark_strategy_planning_authority_consumer_called,
@@ -26,7 +27,10 @@ from ai_fund_lab_v2.runtime_v2.submit.pipeline import (
     _submit_guard_item_evidence,
 )
 from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _demo_settings
-from tests.strategy.test_phase22_g_runtime_planning import _produce as produce_runtime_planning_fixture
+from tests.strategy.test_phase22_g_runtime_planning import (
+    _produce as produce_runtime_planning_fixture,
+    _runtime_owned_current_position_row,
+)
 
 
 BUSINESS_DATE = "2026-07-15"
@@ -153,6 +157,123 @@ def test_phase23_bq_strategy_authority_accepts_carry_forward_current_position_no
     assert result.reason_codes == ()
     assert pending.plan is not None
     assert len(pending.plan.items) == 0
+
+
+def test_phase28_d14_strategy_sell_30410_uses_canonical_listed_info_without_opportunity(tmp_path: Path) -> None:
+    business_date = "2023-06-14"
+    runtime_root = tmp_path / ".runtime"
+    strategy_dir = tmp_path / "strategy"
+    strategy_dir.mkdir(parents=True)
+    listed_issues_path = _write_listed_issues_parquet(
+        tmp_path / "listed_issues" / "data.parquet",
+        rows=(
+            {
+                "Date": business_date,
+                "Code": "30410",
+                "MktNm": "スタンダード",
+                "ProdCat": "011",
+            },
+        ),
+    )
+    _write_strategy_source_input_manifest(
+        strategy_dir=strategy_dir,
+        business_date=business_date,
+        listed_issues_path=listed_issues_path,
+    )
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp30410",
+        pm_actions={"30410": "EXIT"},
+        pc_members={"30410": ("REMOVE_CANDIDATE", True)},
+        current_codes=("30410",),
+        current_position_rows=(
+            {
+                "security_code": "30410",
+                "symbol": "30410",
+                "quantity": 100,
+                "market_value": 130_000.0,
+                "as_of": business_date,
+                "valuation_as_of": business_date,
+                "source_market_date": business_date,
+                "source": "runtime_v2_runtime_owned_fill_projection",
+            },
+        ),
+        position_sizing_positions={
+            "30410": {
+                **_position_sizing_row(
+                    target_notional=0.0,
+                    target_quantity=0,
+                    quantity_delta=-100,
+                    reference_price=1300.0,
+                ),
+                "current_notional": 130_000.0,
+                "incremental_target_notional": -130_000.0,
+                "incremental_buy_notional": 0.0,
+            }
+        },
+    )
+    runtime_payload = json.loads(Path(runtime_plan.artifact_path).read_text(encoding="utf-8"))
+    runtime_payload["business_date"] = business_date
+    runtime_payload["feature_date"] = business_date
+    runtime_payload["as_of"] = business_date + "T00:00:00+00:00"
+    for plan in runtime_payload["plans"]:
+        plan["business_date"] = business_date
+        plan["reference_price_authority"]["business_date"] = business_date
+        plan["reference_price_authority"]["price_date"] = business_date
+        plan["reference_price_authority"]["symbol"] = "30410"
+        plan["reference_price_date"] = business_date
+        plan.pop("opportunity_authority", None)
+    _write_json(strategy_dir / "runtime_planning.json", runtime_payload)
+    _write_json(
+        strategy_dir / "position_sizing.json",
+        {
+            "schema_version": "position_sizing.v1",
+            "business_date": business_date,
+            "producer_result_status": "PASS",
+            "positions": [
+                {
+                    **_position_sizing_artifact_row(symbol="30410", target_notional=0.0, reference_price=1300.0),
+                    "current_notional": 130_000.0,
+                    "incremental_target_notional": -130_000.0,
+                    "incremental_buy_notional": 0.0,
+                    "target_quantity_candidate": 0,
+                    "quantity_delta_candidate": -100,
+                    "quantity_status": "RESOLVED_CANDIDATE",
+                }
+            ],
+        },
+    )
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context={"broker_write": False},
+    )
+
+    pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="historical")
+    approval = json.loads((runtime_root / "runtime_state" / "strategy_planning" / business_date / "approval_artifact.json").read_text(encoding="utf-8"))
+    assert result.status == "PASS"
+    assert result.reason_codes == ()
+    assert pending.plan is not None
+    assert len(pending.plan.items) == 1
+    item = pending.plan.items[0]
+    assert item.symbol == "30410"
+    assert item.side == "SELL"
+    assert item.source_decision_type == "SELL_EXIT"
+    assert item.listed_info is not None
+    assert item.listed_info["listed_info_authority"] == "canonical_pit_listed_issues"
+    assert item.listed_info["code"] == "30410"
+    assert item.listed_info["market"] == "スタンダード"
+    assert item.listed_info["product_category"] == "011"
+    assert item.listed_info["security_type"] == "011"
+    assert item.listed_info["current_listed"] is True
+    assert item.listed_info["listed_info_source_hash"] == _file_sha256(listed_issues_path)
+    assert approval["status"] == "APPROVED"
+    normalized = normalize_broker_issue_code(item.symbol, listed_info=item.listed_info)
+    assert normalized.normalization_status == "PASS"
+    assert normalized.broker_issue_code == "3041"
 
 
 def test_phase24_ij_unscoped_empty_review_does_not_commit_current_pending(tmp_path: Path) -> None:
@@ -724,6 +845,14 @@ def test_phase23_i_valid_no_action_remains_empty_pending_without_legacy_fallback
         pm_actions={"7203": "HOLD"},
         pc_members={"7203": ("RETAIN", True)},
         current_codes=("7203",),
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "7203",
+                quantity=100,
+                as_of=BUSINESS_DATE,
+                source="runtime_v2_runtime_owned_fill_projection",
+            ),
+        ),
         position_sizing_positions={"7203": _position_sizing_row(target_notional=0.0, target_quantity=100, quantity_delta=0, quantity_status="RESOLVED_ZERO_DELTA")},
     )
     Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
@@ -745,6 +874,36 @@ def test_phase23_i_valid_no_action_remains_empty_pending_without_legacy_fallback
     assert pending.exists and pending.valid
     assert pending.plan is not None
     assert pending.plan.state.value == "EMPTY"
+
+
+def test_phase28_d70b_no_action_missing_current_authority_still_fails_closed(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    strategy_dir = tmp_path / "strategy"
+    strategy_dir.mkdir(parents=True)
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp",
+        pm_actions={"7203": "HOLD"},
+        pc_members={"7203": ("RETAIN", True)},
+        current_codes=("7203",),
+        position_sizing_positions={"7203": _position_sizing_row(target_notional=0.0, target_quantity=100, quantity_delta=0, quantity_status="RESOLVED_ZERO_DELTA")},
+    )
+    Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
+    _write_position_sizing(strategy_dir / "position_sizing.json", symbol="7203", target_notional=0.0)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={"7203": 2_000.0},
+        environment_capability_context={"broker_write": False},
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.no_action is False
+    assert result.reason_codes == ("strategy_plan_order_side_unresolved",)
+    pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="historical")
+    assert not pending.exists
 
 
 def test_phase23_ar_invalid_planned_quantity_fails_closed_without_pending_materialization(tmp_path: Path) -> None:
@@ -1229,6 +1388,54 @@ def _write_opportunity_rankings(path: Path, *, symbols: tuple[str, ...], no_buy_
         },
     )
     return path
+
+
+def _write_listed_issues_parquet(path: Path, *, rows: tuple[dict[str, object], ...]) -> Path:
+    import pandas as pd
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(list(rows)).to_parquet(path, index=False)
+    return path
+
+
+def _write_strategy_source_input_manifest(
+    *,
+    strategy_dir: Path,
+    business_date: str,
+    listed_issues_path: Path,
+) -> None:
+    listed_issues_hash = _file_sha256(listed_issues_path)
+    _write_json(
+        strategy_dir / "input_manifest.json",
+        {
+            "schema_version": "strategy_shadow_input_manifest.v1",
+            "business_date": business_date,
+            "strategy_source_authority": {
+                "schema_version": "phase23_bm_strategy_source_authority.v1",
+                "status": "PASS",
+                "reason": "run_scoped_historical_logical_input_manifest",
+                "authority": "historical_logical_input_manifest",
+                "business_date": business_date,
+                "resolution_source": "phase28_d14_fixture",
+                "source_manifest_path": str(strategy_dir / "source_manifest.json"),
+                "source_manifest_hash": "",
+                "run_scoped_historical_authority_used": True,
+                "operations_latest_fallback_used": False,
+                "paths": {"listed_issues": str(listed_issues_path)},
+                "source_records": {
+                    "listed_issues": {
+                        "path": str(listed_issues_path),
+                        "exists": True,
+                        "sha256": listed_issues_hash,
+                        "expected_sha256": listed_issues_hash,
+                        "business_date": business_date,
+                        "pit_status": "PASS",
+                    }
+                },
+                "expected_hashes": {"jquants_listed_issues": listed_issues_hash},
+            },
+        },
+    )
 
 
 def _write_capital_policy(

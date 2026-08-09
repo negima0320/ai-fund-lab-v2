@@ -154,6 +154,37 @@ def test_shadow_runtime_passes_buy_quality_decisions_to_portfolio_construction(t
     assert attached["buy_quality_authority"]["authority_type"] == "ADAPTIVE_BUY_QUALITY_AUTHORITY"
 
 
+def test_phase28_d51_buy_quality_preserves_listed_info_from_opportunity_and_candidate(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.24, 0.18, 0.10, -0.04],
+        market="BULL",
+        calibration_applied=True,
+        listed_info_by_symbol={
+            "1000": {
+                "code": "1000",
+                "market": "スタンダード",
+                "product_category": "021",
+                "security_type": "021",
+                "current_listed": True,
+            }
+        },
+    )
+    decision = _decision(payload, "1000")
+
+    assert decision["product_category"] == "021"
+    assert decision["security_type"] == "021"
+    assert decision["market_name"] == "スタンダード"
+    assert decision["listed_info"] == {
+        "code": "1000",
+        "current_listed": True,
+        "market": "スタンダード",
+        "product_category": "021",
+        "security_type": "021",
+    }
+    assert decision["quality_score"] > 0
+
+
 def _quality_payload(
     tmp_path: Path,
     *,
@@ -161,6 +192,7 @@ def _quality_payload(
     market: str,
     calibration_applied: bool,
     binding_status: str = "PASS",
+    listed_info_by_symbol: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     market_path = _write_json(
@@ -191,18 +223,27 @@ def _quality_payload(
         tmp_path / "corporate_event.json",
         {"schema_version": "corporate_event.v1", "business_date": BUSINESS_DATE, "feature_date": BUSINESS_DATE, "producer_result_status": "PASS"},
     )
-    opportunity_rows = [
-        {
-            "symbol": f"{1000 + index}",
+    listed_info_by_symbol = listed_info_by_symbol or {}
+    opportunity_rows = []
+    for index, score in enumerate(scores):
+        symbol = f"{1000 + index}"
+        row = {
+            "symbol": symbol,
             "buy_rank": index + 1,
             "expected_edge_score": score,
             "confidence": 0.96,
             "downside_risk_score": 0.18,
             "opportunity_id": f"opp-{index}",
         }
-        for index, score in enumerate(scores)
-    ]
-    candidate_rows = [{"symbol": row["symbol"], "candidate_id": f"candidate-{row['symbol']}", "confidence": 0.95} for row in opportunity_rows]
+        if symbol in listed_info_by_symbol:
+            row["listed_info"] = listed_info_by_symbol[symbol]
+        opportunity_rows.append(row)
+    candidate_rows = []
+    for row in opportunity_rows:
+        candidate = {"symbol": row["symbol"], "candidate_id": f"candidate-{row['symbol']}", "confidence": 0.95}
+        if row["symbol"] in listed_info_by_symbol:
+            candidate["listed_info"] = listed_info_by_symbol[row["symbol"]]
+        candidate_rows.append(candidate)
     payload, _ = buy_quality.build_buy_quality_payload(
         business_date=BUSINESS_DATE,
         candidate_summary=_summary(tmp_path, "candidate", rows=candidate_rows),
