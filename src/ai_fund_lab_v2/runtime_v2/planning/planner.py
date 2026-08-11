@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.planning.models import (
     CapitalAllocationSignal,
@@ -14,6 +15,10 @@ from ai_fund_lab_v2.runtime_v2.planning.models import (
     PlanningInput,
     PlanningResult,
 )
+
+SELL_ITEM_QUANTITY_CONTRACT_MISMATCH = "SELL_ITEM_QUANTITY_CONTRACT_MISMATCH"
+SELL_ITEM_QUANTITY_CONTRACT_MISSING = "SELL_ITEM_QUANTITY_CONTRACT_MISSING"
+SELL_CONTRACT_SOURCE_DECISIONS = frozenset(("REDUCE", "EXIT"))
 
 
 def build_order_plan(input: PlanningInput) -> PlanningResult:
@@ -76,7 +81,16 @@ def _build_item(input: PlanningInput, signal) -> OrderPlanItem:
     reasons: list[str] = []
     estimated_amount = allocation.allocated_amount if allocation else 0.0
     estimated_price = _estimated_price(allocation)
-    quantity = _round_lot_quantity(estimated_amount, estimated_price)
+    quantity = _materialized_quantity(signal.side, allocation, estimated_amount, estimated_price)
+    contract_validation = _validate_sell_quantity_contract(
+        signal_side=signal.side,
+        signal_id=signal.signal_id,
+        allocation=allocation,
+        materialized_quantity=quantity,
+    )
+    if contract_validation:
+        blocked = True
+        reasons.append(contract_validation)
 
     if signal.side == "BUY":
         if allocation is None or allocation.price_required and allocation.estimated_price <= 0:
@@ -246,6 +260,80 @@ def _estimated_price(allocation: CapitalAllocationSignal | None) -> float:
     if allocation is None:
         return 0.0
     return allocation.estimated_price if allocation.estimated_price > 0 else 0.0
+
+
+def _materialized_quantity(
+    side: str,
+    allocation: CapitalAllocationSignal | None,
+    estimated_amount: float,
+    estimated_price: float,
+) -> float:
+    contract = allocation.quantity_contract if allocation else None
+    final_sell_quantity = _authoritative_final_sell_quantity(side, contract)
+    if final_sell_quantity is not None:
+        return final_sell_quantity
+    return _round_lot_quantity(estimated_amount, estimated_price)
+
+
+def _validate_sell_quantity_contract(
+    *,
+    signal_side: str,
+    signal_id: str,
+    allocation: CapitalAllocationSignal | None,
+    materialized_quantity: float,
+) -> str:
+    if str(signal_side).upper() != "SELL":
+        return ""
+    contract = allocation.quantity_contract if allocation else None
+    if not _requires_sell_quantity_contract(signal_id=signal_id, contract=contract):
+        return ""
+    final_sell_quantity = _authoritative_final_sell_quantity(signal_side, contract)
+    if final_sell_quantity is None:
+        return SELL_ITEM_QUANTITY_CONTRACT_MISSING
+    if not _same_quantity(materialized_quantity, final_sell_quantity):
+        return SELL_ITEM_QUANTITY_CONTRACT_MISMATCH
+    return ""
+
+
+def _requires_sell_quantity_contract(
+    *,
+    signal_id: str,
+    contract: dict[str, Any] | None,
+) -> bool:
+    source_decision = _contract_source_decision(contract)
+    if source_decision in SELL_CONTRACT_SOURCE_DECISIONS:
+        return True
+    normalized_signal_id = str(signal_id or "").lower()
+    return normalized_signal_id.startswith("sell-reduce-") or normalized_signal_id.startswith("sell-exit-")
+
+
+def _authoritative_final_sell_quantity(
+    side: str,
+    contract: dict[str, Any] | None,
+) -> float | None:
+    if str(side).upper() != "SELL":
+        return None
+    if _contract_source_decision(contract) not in SELL_CONTRACT_SOURCE_DECISIONS:
+        return None
+    if not contract or "final_sell_quantity" not in contract:
+        return None
+    try:
+        final_quantity = float(contract.get("final_sell_quantity"))
+    except (TypeError, ValueError):
+        return None
+    if final_quantity <= 0:
+        return None
+    return final_quantity
+
+
+def _contract_source_decision(contract: dict[str, Any] | None) -> str:
+    if not contract:
+        return ""
+    return str(contract.get("source_decision") or contract.get("source_decision_type") or "").upper()
+
+
+def _same_quantity(left: float, right: float) -> bool:
+    return abs(float(left or 0.0) - float(right or 0.0)) < 1e-9
 
 
 def _current_position_quantity(asset_state, symbol: str) -> float:

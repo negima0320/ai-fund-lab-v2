@@ -1,15 +1,23 @@
 {
   "schema_version": "dynamic_cash_exposure_config.v1",
-  "config_version": "phase22_i_dynamic_cash_exposure_policy.v1",
+  "config_version": "phase29_j2_opportunity_driven_dynamic_cash_exposure_policy.v1",
   "cash_policy": {
-    "minimum_cash_ratio": 0.12,
-    "baseline_target_cash_ratio": 0.2,
-    "maximum_cash_ratio": 0.5
+    "minimum_cash_ratio": 0.0,
+    "baseline_target_cash_ratio": 0.0,
+    "maximum_cash_ratio": 1.0
   },
   "exposure_policy": {
-    "minimum_gross_exposure_ratio": 0.4,
+    "minimum_gross_exposure_ratio": 0.0,
+    "baseline_target_gross_exposure_ratio": 1.0,
+    "maximum_gross_exposure_ratio": 1.0
+  },
+  "deprecated_fixed_policy_values": {
+    "baseline_target_cash_ratio": 0.2,
     "baseline_target_gross_exposure_ratio": 0.8,
-    "maximum_gross_exposure_ratio": 0.88
+    "minimum_cash_ratio": 0.12,
+    "maximum_gross_exposure_ratio": 0.88,
+    "classification": "DEPRECATED_METADATA_NOT_ACTIVE_AUTHORITY",
+    "replacement_semantics": "dynamic_defensive_cash_requirement_with_cash_equity_no_leverage_cap"
   },
   "regime_rules": {
     "BULL": { "cash_delta": -0.05, "exposure_delta": 0.05 },

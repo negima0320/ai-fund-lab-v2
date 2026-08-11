@@ -177,7 +177,15 @@ def execute_market_data_bootstrap(
             write_bootstrap_evidence(result, paths=BootstrapPaths(Path(runtime_root), Path(source_path), Path(evidence_root)))
         return result
     paths = BootstrapPaths(Path(runtime_root), Path(source_path), Path(evidence_root))
-    result = _commit_bootstrap_merge(paths=paths, plan=plan)
+    try:
+        result = _commit_bootstrap_merge(paths=paths, plan=plan)
+    except Exception as exc:  # noqa: BLE001
+        result = _bootstrap_commit_failure_result(
+            plan=plan,
+            paths=paths,
+            reason=f"commit_exception:{type(exc).__name__}",
+            error=str(exc),
+        )
     if write_evidence:
         write_bootstrap_evidence(result, paths=paths)
     return result
@@ -441,6 +449,14 @@ def write_bootstrap_evidence(payload: dict[str, Any], *, paths: BootstrapPaths) 
     _write_json(root / "bootstrap_plan.json", payload)
     _write_json(root / "bootstrap_contract.json", payload.get("merge_contract", bootstrap_contract(paths=paths)))
     _write_json(root / "warmup_requirement_inventory.json", payload.get("warmup_sufficiency", {}))
+    if payload.get("pre_commit_warmup_sufficiency"):
+        _write_json(root / "pre_commit_warmup_sufficiency.json", payload.get("pre_commit_warmup_sufficiency", {}))
+    if payload.get("post_commit_warmup_sufficiency"):
+        _write_json(root / "post_commit_warmup_sufficiency.json", payload.get("post_commit_warmup_sufficiency", {}))
+    if payload.get("post_commit_verification"):
+        _write_json(root / "post_commit_verification.json", payload.get("post_commit_verification", {}))
+    if payload.get("bootstrap_readiness"):
+        _write_json(root / "bootstrap_readiness.json", payload.get("bootstrap_readiness", {}))
     _write_json(
         root / "system_status_warmup_guard_test.json",
         build_market_data_warmup_sufficiency(
@@ -503,6 +519,7 @@ def historical_asof_contract_audit(*, paths: BootstrapPaths) -> dict[str, Any]:
 def _commit_bootstrap_merge(*, paths: BootstrapPaths, plan: dict[str, Any]) -> dict[str, Any]:
     import pandas as pd
 
+    pre_commit_warmup = dict(plan.get("warmup_sufficiency") or {})
     source = pd.read_parquet(paths.source_path)
     current = pd.read_parquet(paths.target_path) if paths.target_path.is_file() else pd.DataFrame(columns=list(REQUIRED_NORMALIZED_COLUMNS))
     merged = pd.concat([source, current], ignore_index=True)
@@ -528,6 +545,15 @@ def _commit_bootstrap_merge(*, paths: BootstrapPaths, plan: dict[str, Any]) -> d
             "final_judgment": "BOOTSTRAP_COMMIT_VALIDATION_FAILED",
             "blocked_reasons": list(dict.fromkeys([*plan.get("blocked_reasons", []), *blocked])),
             "runtime_market_data_mutated": False,
+            "commit_status": "NOT_ATTEMPTED",
+            "pre_commit_warmup_sufficiency": pre_commit_warmup,
+            "pre_commit_warmup_authority": "DIAGNOSTIC_ONLY",
+            "post_commit_warmup_sufficiency": {},
+            "bootstrap_readiness": _bootstrap_readiness(
+                commit_status="NOT_ATTEMPTED",
+                verification={"status": "BLOCK", "blocked_reasons": blocked},
+                post_commit_warmup={},
+            ),
             "merged_inventory": merged_inventory,
         }
     paths.target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -536,14 +562,144 @@ def _commit_bootstrap_merge(*, paths: BootstrapPaths, plan: dict[str, Any]) -> d
         shutil.copy2(paths.target_path, backup_path)
     os.replace(tmp, paths.target_path)
     final_inventory = parquet_inventory(paths.target_path)
+    post_commit_verification = _post_commit_verification(
+        paths=paths,
+        expected_merged_inventory=merged_inventory,
+        final_inventory=final_inventory,
+        plan=plan,
+    )
+    post_commit_warmup = build_market_data_warmup_sufficiency(
+        runtime_root=paths.runtime_root,
+        target_start_date=str(plan.get("target_start_date") or ""),
+        target_end_date=str(plan.get("target_end_date") or ""),
+        maximum_required_warmup_business_days=int(plan.get("maximum_required_warmup_business_days") or REQUIRED_LOOKBACK_BUSINESS_DAYS),
+        source_path=paths.target_path,
+    )
+    readiness = _bootstrap_readiness(
+        commit_status="PASS",
+        verification=post_commit_verification,
+        post_commit_warmup=post_commit_warmup,
+    )
+    blocked_reasons = list(dict.fromkeys(str(reason) for reason in (readiness.get("blocked_reasons") or []) if str(reason)))
+    status = "PASS" if readiness.get("status") == "PASS" else "BLOCK"
+    final_judgment = "BOOTSTRAP_COMMIT_COMPLETE" if status == "PASS" else "BOOTSTRAP_POST_COMMIT_READINESS_BLOCKED"
     return {
         **plan,
         "operation": "run",
-        "status": "PASS",
-        "final_judgment": "BOOTSTRAP_COMMIT_COMPLETE",
+        "status": status,
+        "final_judgment": final_judgment,
+        "blocked_reasons": blocked_reasons,
         "runtime_market_data_mutated": True,
+        "commit_status": "PASS",
         "backup_path": str(backup_path) if backup_path.exists() else "",
+        "pre_commit_warmup_sufficiency": pre_commit_warmup,
+        "pre_commit_warmup_authority": "DIAGNOSTIC_ONLY",
+        "post_commit_warmup_sufficiency": post_commit_warmup,
+        "post_commit_verification": post_commit_verification,
+        "bootstrap_readiness": readiness,
+        "warmup_sufficiency": post_commit_warmup,
         "merged_inventory": final_inventory,
+    }
+
+
+def _post_commit_verification(
+    *,
+    paths: BootstrapPaths,
+    expected_merged_inventory: dict[str, Any],
+    final_inventory: dict[str, Any],
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    blocked = []
+    if str(final_inventory.get("path") or "") != str(paths.target_path):
+        blocked.append("post_commit_target_path_mismatch")
+    if not final_inventory.get("exists"):
+        blocked.append("post_commit_target_missing")
+    if final_inventory.get("status") == "UNREADABLE":
+        blocked.append("post_commit_target_unreadable")
+    if final_inventory.get("duplicate_key_count"):
+        blocked.append("post_commit_duplicate_keys")
+    if compare_normalized_schemas(current=plan["current_runtime_ohlcv_inventory"], source=final_inventory)["status"] != "PASS":
+        blocked.append("post_commit_schema_invalid")
+    for key, reason in (
+        ("row_count", "post_commit_row_count_mismatch"),
+        ("earliest_date", "post_commit_earliest_date_mismatch"),
+        ("latest_date", "post_commit_latest_date_mismatch"),
+        ("schema_hash", "post_commit_schema_hash_mismatch"),
+        ("content_hash", "post_commit_content_hash_mismatch"),
+    ):
+        if str(final_inventory.get(key) or "") != str(expected_merged_inventory.get(key) or ""):
+            blocked.append(reason)
+    return {
+        "schema_version": BOOTSTRAP_SCHEMA_VERSION,
+        "component_id": "bootstrap_post_commit_verification",
+        "status": "PASS" if not blocked else "BLOCK",
+        "target_path": str(paths.target_path),
+        "expected_merged_inventory": expected_merged_inventory,
+        "committed_target_inventory": final_inventory,
+        "blocked_reasons": list(dict.fromkeys(blocked)),
+    }
+
+
+def _bootstrap_readiness(
+    *,
+    commit_status: str,
+    verification: dict[str, Any],
+    post_commit_warmup: dict[str, Any],
+) -> dict[str, Any]:
+    blocked = []
+    if commit_status != "PASS":
+        blocked.append("commit_not_pass")
+    blocked.extend(str(reason) for reason in (verification.get("blocked_reasons") or []) if str(reason))
+    if verification.get("status") != "PASS":
+        blocked.append("post_commit_verification_not_pass")
+    if post_commit_warmup.get("warmup_sufficiency_judgment") != "PASS":
+        blocked.append("post_commit_warmup_not_pass")
+    return {
+        "schema_version": BOOTSTRAP_SCHEMA_VERSION,
+        "component_id": "bootstrap_readiness",
+        "status": "PASS" if not blocked else "BLOCK",
+        "commit_status": commit_status,
+        "post_commit_verification_status": str(verification.get("status") or ""),
+        "post_commit_warmup_status": str(post_commit_warmup.get("warmup_sufficiency_judgment") or ""),
+        "final_warmup_authority": "POST_COMMIT",
+        "blocked_reasons": list(dict.fromkeys(blocked)),
+    }
+
+
+def _bootstrap_commit_failure_result(
+    *,
+    plan: dict[str, Any],
+    paths: BootstrapPaths,
+    reason: str,
+    error: str,
+) -> dict[str, Any]:
+    verification = {
+        "schema_version": BOOTSTRAP_SCHEMA_VERSION,
+        "component_id": "bootstrap_post_commit_verification",
+        "status": "BLOCK",
+        "target_path": str(paths.target_path),
+        "blocked_reasons": [reason],
+        "error": error,
+    }
+    readiness = _bootstrap_readiness(
+        commit_status="BLOCK",
+        verification=verification,
+        post_commit_warmup={},
+    )
+    return {
+        **plan,
+        "operation": "run",
+        "status": "BLOCK",
+        "final_judgment": "BOOTSTRAP_COMMIT_FAILED",
+        "blocked_reasons": list(dict.fromkeys([*plan.get("blocked_reasons", []), reason])),
+        "runtime_market_data_mutated": False,
+        "commit_status": "BLOCK",
+        "commit_error": error,
+        "pre_commit_warmup_sufficiency": dict(plan.get("warmup_sufficiency") or {}),
+        "pre_commit_warmup_authority": "DIAGNOSTIC_ONLY",
+        "post_commit_warmup_sufficiency": {},
+        "post_commit_verification": verification,
+        "bootstrap_readiness": readiness,
     }
 
 

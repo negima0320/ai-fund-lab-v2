@@ -30,6 +30,21 @@ CAPITAL_CONSTRAINT_STATUSES = {
     "SAFETY_CONSTRAINED",
     "SOURCE_UNAVAILABLE",
 }
+OPPORTUNITY_CAPACITY_CANONICAL_FIELD = "resolved_opportunity_capacity"
+OPPORTUNITY_CAPACITY_LEGACY_FIELDS = ("available_opportunity_count", "valid_opportunity_count")
+RESIDUAL_CASH_REASON_CLASSES = (
+    "DYNAMIC_DEFENSIVE_CASH",
+    "NO_ELIGIBLE_OPPORTUNITY",
+    "NO_LOT_FEASIBLE_OPPORTUNITY",
+    "CONCENTRATION_LIMIT",
+    "SAFETY_LIMIT",
+    "BROKER_LIMIT",
+    "CORPORATE_ACTION_LIMIT",
+    "PENDING_RESERVED",
+    "CAPITAL_BELOW_NEXT_LOT",
+    "COMPETITION_EXHAUSTED",
+    "UNKNOWN_FAIL_CLOSED",
+)
 
 
 class DynamicCashExposureError(RuntimeError):
@@ -83,6 +98,7 @@ class DynamicCashExposureConfig:
     opportunity_capacity_rules: Mapping[str, Any]
     uncertainty_rules: Mapping[str, Mapping[str, float]]
     safety_references: Mapping[str, str]
+    deprecated_fixed_policy_values: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -98,6 +114,7 @@ class DynamicCashExposureConfig:
             "opportunity_capacity_rules": dict(self.opportunity_capacity_rules),
             "uncertainty_rules": {k: dict(v) for k, v in self.uncertainty_rules.items()},
             "safety_references": dict(self.safety_references),
+            "deprecated_fixed_policy_values": dict(self.deprecated_fixed_policy_values),
         }
 
 
@@ -140,6 +157,7 @@ def load_dynamic_cash_exposure_config(path: Path | str) -> DynamicCashExposureCo
         opportunity_capacity_rules=dict(payload.get("opportunity_capacity_rules") or {}),
         uncertainty_rules=_rule_map(payload, "uncertainty_rules"),
         safety_references=dict(payload.get("safety_references") or {}),
+        deprecated_fixed_policy_values=dict(payload.get("deprecated_fixed_policy_values") or {}),
     )
 
 
@@ -266,6 +284,9 @@ def build_dynamic_cash_exposure_payload(
         uncertainty = "UPSTREAM_REVIEW_REQUIRED" if status == "REVIEW_REQUIRED" else "BLOCKING_INPUT"
     else:
         decision = _decide(config, market_context_summary.summary, portfolio_policy_summary.summary, dynamic_position_count_summary.summary, opportunity_summary.summary, safety_min_cash, safety_max_exposure)
+        opportunity_capacity_authority = decision["opportunity_capacity_authority"]
+        if opportunity_capacity_authority["status"] != "PASS" and status != "BLOCK":
+            status = "REVIEW_REQUIRED"
         minimum_cash = decision["minimum_cash_ratio"]
         target_cash = decision["target_cash_ratio"]
         maximum_cash = decision["maximum_cash_ratio"]
@@ -278,6 +299,19 @@ def build_dynamic_cash_exposure_payload(
         confidence = decision["confidence"]
         uncertainty = decision["uncertainty"]
         reasons.extend(decision["reason_codes"])
+        if opportunity_capacity_authority["status"] != "PASS":
+            target_cash = None
+            target_exposure = None
+            cash_posture = "UNRESOLVED"
+            exposure_posture = "UNRESOLVED"
+            capital_status = "SOURCE_UNAVAILABLE"
+            confidence = 0.0
+            uncertainty = "UPSTREAM_REVIEW_REQUIRED"
+    if unresolved_target:
+        opportunity_capacity_authority = _unresolved_opportunity_capacity_authority(
+            threshold=0 if config is None else int(config.opportunity_capacity_rules.get("low_opportunity_count_threshold") or 0),
+            reason_code="dynamic_cash_exposure_target_unresolved",
+        )
     if target_cash is not None and target_cash < safety_min_cash:
         status = "BLOCK"; reasons.append("target_cash_below_safety_minimum")
     if target_exposure is not None and target_exposure > safety_max_exposure:
@@ -350,6 +384,7 @@ def build_dynamic_cash_exposure_payload(
         "cash_posture": cash_posture,
         "exposure_posture": exposure_posture,
         "capital_constraint_status": capital_status,
+        "opportunity_capacity_authority": opportunity_capacity_authority,
         "dynamic_position_count_reference": dynamic_position_count_summary.source_ref,
         "market_context_reference": market_context_summary.source_ref,
         "portfolio_policy_reference": portfolio_policy_summary.source_ref,
@@ -359,6 +394,15 @@ def build_dynamic_cash_exposure_payload(
         "config_payload": config_payload,
         "cash_safety_minimum": safety_min_cash,
         "exposure_safety_maximum": safety_max_exposure,
+        "fixed_cash_reserve_authority_active": False,
+        "fixed_gross_exposure_ceiling_authority_active": False,
+        "strategy_minimum_cash_floor_active": False,
+        "strategy_maximum_gross_exposure_ceiling_active": False,
+        "safety_minimum_cash_floor_active": safety_min_cash > 0.0,
+        "safety_maximum_gross_exposure_ceiling_active": safety_max_exposure < 1.0,
+        "cash_equity_no_leverage_cap": 1.0,
+        "dynamic_defensive_cash_requirement": None if target_cash is None else round(target_cash, 6),
+        "residual_cash_reason_classes": list(RESIDUAL_CASH_REASON_CLASSES),
         "implied_average_position_exposure": _implied_average(target_exposure, dynamic_position_count_summary.summary.get("target_position_count")),
         "confidence": confidence,
         "uncertainty": uncertainty,
@@ -469,10 +513,19 @@ def _decide(config: DynamicCashExposureConfig, market: Mapping[str, Any], policy
     uncertainty = str(market.get("uncertainty") or policy.get("uncertainty") or "LOW")
     rule = config.uncertainty_rules.get(uncertainty) or config.uncertainty_rules.get("MEDIUM", {})
     cash += float(rule.get("cash_delta", 0)); exposure += float(rule.get("exposure_delta", 0))
-    if int(opportunity.get("available_opportunity_count") or opportunity.get("valid_opportunity_count") or 0) < int(config.opportunity_capacity_rules.get("low_opportunity_count_threshold") or 0):
+    capacity_authority = _resolve_opportunity_capacity_authority(
+        count=count,
+        opportunity=opportunity,
+        threshold=int(config.opportunity_capacity_rules.get("low_opportunity_count_threshold") or 0),
+    )
+    if capacity_authority["low_opportunity_capacity"] is True:
         cash += float(config.opportunity_capacity_rules.get("low_opportunity_cash_delta") or 0)
         exposure += float(config.opportunity_capacity_rules.get("low_opportunity_exposure_delta") or 0)
         reasons.append("low_opportunity_capacity")
+    if capacity_authority["status"] != "PASS":
+        reasons.append(str(capacity_authority["reason_code"]))
+    elif capacity_authority["legacy_alias_used"]:
+        reasons.append("opportunity_capacity_legacy_alias_used")
     min_cash = max(float(config.cash_policy["minimum_cash_ratio"]), safety_min_cash)
     max_cash = float(config.cash_policy["maximum_cash_ratio"])
     min_exp = float(config.exposure_policy["minimum_gross_exposure_ratio"])
@@ -490,7 +543,102 @@ def _decide(config: DynamicCashExposureConfig, market: Mapping[str, Any], policy
         "confidence": min(_ratio(market.get("confidence"), 1.0), _ratio(policy.get("confidence"), 1.0), _ratio(count.get("confidence"), 1.0)),
         "uncertainty": uncertainty,
         "reason_codes": reasons,
+        "opportunity_capacity_authority": capacity_authority,
     }
+
+
+def _resolve_opportunity_capacity_authority(*, count: Mapping[str, Any], opportunity: Mapping[str, Any], threshold: int) -> dict[str, Any]:
+    legacy_observed = {
+        field: value
+        for field in OPPORTUNITY_CAPACITY_LEGACY_FIELDS
+        if field in opportunity
+        for value in [_count_or_none(opportunity.get(field))]
+        if value is not None
+    }
+    canonical = _count_or_none(count.get(OPPORTUNITY_CAPACITY_CANONICAL_FIELD))
+    if canonical is not None:
+        return _opportunity_capacity_authority(
+            status="PASS",
+            resolved_value=canonical,
+            source="dynamic_position_count.resolved_opportunity_capacity",
+            source_field=OPPORTUNITY_CAPACITY_CANONICAL_FIELD,
+            threshold=threshold,
+            legacy_alias_used=False,
+            legacy_fields_observed=legacy_observed,
+            ignored_legacy_fields=legacy_observed,
+            reason_code="opportunity_capacity_resolved_from_dynamic_position_count",
+        )
+    return _unresolved_opportunity_capacity_authority(
+        threshold=threshold,
+        reason_code="opportunity_capacity_authority_unresolved",
+        legacy_fields_observed=legacy_observed,
+    )
+
+
+def _opportunity_capacity_authority(
+    *,
+    status: str,
+    resolved_value: int,
+    source: str,
+    source_field: str,
+    threshold: int,
+    legacy_alias_used: bool,
+    legacy_fields_observed: Mapping[str, int],
+    ignored_legacy_fields: Mapping[str, int],
+    reason_code: str,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "canonical_field": OPPORTUNITY_CAPACITY_CANONICAL_FIELD,
+        "canonical_producer": "dynamic_position_count",
+        "consumer": "dynamic_cash_exposure",
+        "resolved_value": resolved_value,
+        "source": source,
+        "source_field": source_field,
+        "low_opportunity_count_threshold": threshold,
+        "low_opportunity_capacity": resolved_value < threshold,
+        "zero_is_valid_capacity": resolved_value == 0,
+        "missing_capacity_semantics": "REVIEW_REQUIRED_NOT_ZERO",
+        "legacy_alias_used": legacy_alias_used,
+        "legacy_alias_active_fallback_used": False,
+        "legacy_fields_observed": dict(legacy_fields_observed),
+        "ignored_legacy_fields": dict(ignored_legacy_fields),
+        "reason_code": reason_code,
+    }
+
+
+def _unresolved_opportunity_capacity_authority(
+    *,
+    threshold: int,
+    reason_code: str,
+    legacy_fields_observed: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": "REVIEW_REQUIRED",
+        "canonical_field": OPPORTUNITY_CAPACITY_CANONICAL_FIELD,
+        "canonical_producer": "dynamic_position_count",
+        "consumer": "dynamic_cash_exposure",
+        "resolved_value": None,
+        "source": "",
+        "source_field": "",
+        "low_opportunity_count_threshold": threshold,
+        "low_opportunity_capacity": None,
+        "zero_is_valid_capacity": True,
+        "missing_capacity_semantics": "REVIEW_REQUIRED_NOT_ZERO",
+        "legacy_alias_used": False,
+        "legacy_alias_active_fallback_used": False,
+        "legacy_fields_observed": dict(legacy_fields_observed or {}),
+        "ignored_legacy_fields": {},
+        "reason_code": reason_code,
+    }
+
+
+def _count_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if int(value) != float(value) or value < 0:
+        return None
+    return int(value)
 
 
 def _implied_average(exposure: float | None, count: Any) -> float | None:

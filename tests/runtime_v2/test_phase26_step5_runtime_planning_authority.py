@@ -17,7 +17,9 @@ from tests.runtime_v2.test_phase23_i_strategy_planning_authority import (
     _write_capital_policy,
     _write_current_cash,
     _write_json,
+    _write_listed_issues_parquet,
     _write_position_sizing_many,
+    _write_strategy_source_input_manifest,
 )
 from tests.strategy.test_phase22_g_runtime_planning import _produce as produce_runtime_planning_fixture
 
@@ -105,6 +107,22 @@ def test_phase26_step5_buy_position_sizing_review_does_not_block_sell_planning(t
     )
     strategy_dir = tmp_path / "strategy"
     strategy_dir.mkdir(parents=True)
+    listed_issues_path = _write_listed_issues_parquet(
+        tmp_path / "listed_issues" / "data.parquet",
+        rows=(
+            {
+                "Date": BUSINESS_DATE,
+                "Code": "7203",
+                "MktNm": "プライム",
+                "ProdCat": "011",
+            },
+        ),
+    )
+    _write_strategy_source_input_manifest(
+        strategy_dir=strategy_dir,
+        business_date=BUSINESS_DATE,
+        listed_issues_path=listed_issues_path,
+    )
     policy = load_capital_deployment_policy(_write_capital_policy(tmp_path / "capital_deployment_policy.json"))
     runtime_plan = produce_runtime_planning_fixture(
         tmp_path / "rp",
@@ -144,12 +162,17 @@ def test_phase26_step5_buy_position_sizing_review_does_not_block_sell_planning(t
     assert result.status == "PASS"
     assert order_plan["buy_planning_status"] == "PASS"
     assert order_plan["sell_planning_status"] == "PASS"
+    assert order_plan["accepted_generation_binding_status"] == "REVIEW_REQUIRED"
     assert pending.plan is not None
     assert pending.plan.state.value == "REVIEW_REQUIRED"
     assert pending.plan.buy_items_status == "REVIEW_REQUIRED"
     assert pending.plan.sell_items_status == "PASS"
     assert pending.plan.sell_continuation_allowed is True
     assert {item.side for item in pending.plan.items} == {"BUY", "SELL"}
+    sell_item = next(item for item in pending.plan.items if item.side == "SELL")
+    assert sell_item.listed_info is not None
+    assert sell_item.listed_info["listed_info_authority"] == "canonical_pit_listed_issues"
+    assert sell_item.listed_info["code"] == "7203"
 
 
 def test_phase26_pf3i_strategy_dir_authorities_flow_to_pending_and_submit_feasibility(tmp_path: Path) -> None:

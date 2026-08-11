@@ -31,6 +31,13 @@ from ai_fund_lab_v2.runtime_v2.historical_support.isolated_root import (
     materialize_isolated_historical_runtime_root,
     protected_shared_runtime_hashes,
 )
+from ai_fund_lab_v2.runtime_v2.historical_support.corporate_action_quarantine import (
+    PRODUCTION_APPLICABILITY as CORPORATE_ACTION_QUARANTINE_PRODUCTION_APPLICABILITY,
+    QUARANTINE_STATUS as CORPORATE_ACTION_QUARANTINE_STATUS,
+    RUN_CONTINUATION_ELIGIBILITY as CORPORATE_ACTION_QUARANTINE_CONTINUATION_ELIGIBILITY,
+    quarantine_fields as corporate_action_quarantine_fields,
+    upsert_quarantine as upsert_corporate_action_quarantine,
+)
 from ai_fund_lab_v2.runtime_v2.ai_status import (
     build_ai_status_report,
     write_ai_status_evidence,
@@ -52,6 +59,10 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
 from ai_fund_lab_v2.runtime_v2.market_data_bootstrap import (
     build_market_data_bootstrap_plan,
     execute_market_data_bootstrap,
+)
+from ai_fund_lab_v2.runtime_v2.source_authority_materialization import (
+    NORMALIZED_OHLCV_RELATIVE_PATH,
+    reconcile_calendar_with_quotes,
 )
 from ai_fund_lab_v2.runtime_v2.market_data_acquisition import (
     FETCH_CONFIRM_FLAG,
@@ -108,6 +119,10 @@ RUNTIME_TEST_JOB_DEFAULT_TERMINATE_GRACE_SECONDS = 10.0
 RUNTIME_TEST_SUBPROCESS_TRACE_SCHEMA_VERSION = "runtime_test_subprocess_trace_v1"
 
 SCOPED_BUY_ONLY_JOB_STATUSES = {"REVIEW_REQUIRED_BUY_ONLY", "BLOCKED_BUY_ONLY"}
+SCOPED_CORPORATE_ACTION_QUARANTINE_JOB_STATUSES = {"COMPLETED_WITH_SYMBOL_QUARANTINE"}
+SCOPED_CONTINUATION_JOB_STATUSES = (
+    SCOPED_BUY_ONLY_JOB_STATUSES | SCOPED_CORPORATE_ACTION_QUARANTINE_JOB_STATUSES
+)
 PM_RUNTIME_TEST_FATAL_STATUSES = {"HALT"}
 
 PROFILE_PATHS = {
@@ -359,6 +374,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_mutation_safety(resume)
     resume.add_argument("--run-id", required=True)
 
+    ca_repair = subparsers.add_parser("repair-ca-quarantine-continuation")
+    add_common(ca_repair)
+    add_mutation_safety(ca_repair)
+    ca_repair.add_argument("--run-id", required=True)
+    ca_repair.add_argument("--business-date", required=True)
+    ca_repair.add_argument("--job", default="submit")
+
     abandon = subparsers.add_parser("abandon")
     add_common(abandon)
     add_mutation_safety(abandon)
@@ -436,6 +458,13 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return validate_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "resume":
         return resume_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "repair-ca-quarantine-continuation":
+        return repair_ca_quarantine_continuation_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
     if args.subcommand == "abandon":
         return abandon_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "rollback":
@@ -4375,6 +4404,14 @@ def run_command(
                 job=job["job"],
                 exit_code=completed.returncode,
             )
+            if not scoped_block:
+                scoped_block = classify_historical_corporate_action_quarantine_result(
+                    run_dir=run_dir,
+                    runtime_root=runtime_root,
+                    business_date=day["business_date"],
+                    job=job["job"],
+                    exit_code=completed.returncode,
+                )
             if scoped_block:
                 job_record["runtime_test_job_status"] = scoped_block["status"]
                 job_record["scoped_block_continuation"] = scoped_block
@@ -4552,7 +4589,8 @@ def resume_command(
     completed_success = {
         (record.get("business_date"), record.get("job"))
         for record in run_state.get("completed_jobs", [])
-        if int(record.get("exit_code", 1)) == 0 or str(record.get("runtime_test_job_status") or "") in SCOPED_BUY_ONLY_JOB_STATUSES
+        if int(record.get("exit_code", 1)) == 0
+        or str(record.get("runtime_test_job_status") or "") in SCOPED_CONTINUATION_JOB_STATUSES
     }
     run_state["status"] = "RUNNING"
     write_json_atomic(run_dir / "run_state.json", run_state)
@@ -4617,6 +4655,14 @@ def resume_command(
                 job=job["job"],
                 exit_code=completed.returncode,
             )
+            if not scoped_block:
+                scoped_block = classify_historical_corporate_action_quarantine_result(
+                    run_dir=run_dir,
+                    runtime_root=runtime_root,
+                    business_date=day["business_date"],
+                    job=job["job"],
+                    exit_code=completed.returncode,
+                )
             if scoped_block:
                 job_record["runtime_test_job_status"] = scoped_block["status"]
                 job_record["scoped_block_continuation"] = scoped_block
@@ -4688,6 +4734,165 @@ def resume_command(
     payload = base_payload("resume", "PASS")
     payload.update({"run_id": args.run_id, "evidence_path": str(run_dir), "completed_business_days": run_state.get("completed_business_days", [])})
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def repair_ca_quarantine_continuation_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_id = str(args.run_id)
+    business_date = str(args.business_date)
+    job = str(args.job or "submit")
+    if job != "submit":
+        raise RuntimeTestError(
+            "Corporate Action quarantine continuation repair is submit-job only",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    run_dir = runs_root(evidence_root) / run_id
+    run_state = load_run_state(evidence_root, run_id)
+    halted_at = run_state.get("halted_at") if isinstance(run_state.get("halted_at"), dict) else {}
+    target_record = _find_completed_job_record(run_state=run_state, business_date=business_date, job=job)
+    exit_code = int((target_record or halted_at).get("exit_code") or EXIT_BLOCKED)
+    classification = classify_historical_corporate_action_quarantine_result(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        job=job,
+        exit_code=exit_code,
+        persist=False,
+    )
+    state_before = state_hashes(runtime_root)
+    source_baseline_before = dict(run_state.get("source_baseline") or {})
+    current_source_baseline = source_baseline(runtime_root)
+    payload = base_payload("repair-ca-quarantine-continuation", "DRY_RUN" if args.dry_run else "PASS")
+    payload.update(
+        {
+            "run_id": run_id,
+            "profile_id": profile["profile_id"],
+            "business_date": business_date,
+            "job": job,
+            "current_run_status": run_state.get("status") or "",
+            "halted_at_matches_target": (
+                str(halted_at.get("business_date") or "") == business_date
+                and str(halted_at.get("job") or "") == job
+            ),
+            "target_completed_job_present": bool(target_record),
+            "runtime_cli_exit_code": exit_code,
+            "classification_eligible": bool(classification),
+            "classification": classification or {},
+            "dry_run_no_mutation": bool(args.dry_run),
+            "submit_reexecuted": False,
+            "broker_access": False,
+            "broker_write": False,
+            "external_delivery": False,
+            "ledger_mutated": False,
+            "cash_mutated": False,
+            "positions_mutated": False,
+            "state_hashes_before": state_before,
+            "source_baseline_before": source_baseline_before,
+            "source_baseline_after": current_source_baseline,
+            "files_to_modify": [
+                str(run_dir / "run_state.json"),
+                str(runtime_root / "runtime_state" / "corporate_action_quarantine" / "historical_symbol_registry.json"),
+            ],
+            "files_to_create": [
+                str(run_dir / "daily" / business_date / job / "corporate_action_symbol_quarantine_continuation.json"),
+                str(run_dir / "ca_quarantine_continuation_repair.json"),
+            ],
+        }
+    )
+    if not classification:
+        payload["status"] = "PRECONDITION_FAILURE"
+        payload["repair_performed"] = False
+        payload["state_hashes_after"] = state_before
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        payload["repair_performed"] = False
+        payload["state_hashes_after"] = state_before
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    if not target_record:
+        raise RuntimeTestError(
+            "repair rejected; target completed job record is missing",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    persisted_classification = classify_historical_corporate_action_quarantine_result(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        job=job,
+        exit_code=exit_code,
+        persist=True,
+    )
+    if not persisted_classification:
+        raise RuntimeTestError(
+            "repair rejected; persisted classification became ineligible",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    classification = persisted_classification
+    repaired_at = utc_now()
+    target_record["runtime_test_job_status"] = "COMPLETED_WITH_SYMBOL_QUARANTINE"
+    target_record["scoped_block_continuation"] = classification
+    target_record["ca_quarantine_continuation_repaired_at"] = repaired_at
+    if (
+        str(halted_at.get("business_date") or "") == business_date
+        and str(halted_at.get("job") or "") == job
+    ):
+        run_state.pop("halted_at", None)
+        run_state.pop("halt_summary", None)
+    run_state["status"] = "RUNNING"
+    run_state["next_job"] = f"{business_date}:execution"
+    run_state["source_baseline"] = current_source_baseline
+    repair_evidence = {
+        "schema_version": "runtime_test_ca_quarantine_continuation_repair_v1",
+        "run_id": run_id,
+        "profile_id": profile["profile_id"],
+        "business_date": business_date,
+        "job": job,
+        "repaired_at": repaired_at,
+        "repair_scope": "runtime_test_evidence_and_run_state_only",
+        "submit_reexecuted": False,
+        "ledger_mutated": False,
+        "cash_mutated": False,
+        "positions_mutated": False,
+        "classification": classification,
+        "source_baseline_before": source_baseline_before,
+        "source_baseline_after": current_source_baseline,
+    }
+    write_json_atomic(run_dir / "ca_quarantine_continuation_repair.json", repair_evidence)
+    write_json_atomic(run_dir / "run_state.json", run_state)
+    payload.update(
+        {
+            "status": "PASS",
+            "repair_performed": True,
+            "resume_allowed": True,
+            "next_job_after_repair": run_state["next_job"],
+            "repair_evidence_path": str(run_dir / "ca_quarantine_continuation_repair.json"),
+            "state_hashes_after": state_hashes(runtime_root),
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def _find_completed_job_record(
+    *,
+    run_state: dict[str, Any],
+    business_date: str,
+    job: str,
+) -> dict[str, Any] | None:
+    for record in run_state.get("completed_jobs", []):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("business_date") or "") == business_date and str(record.get("job") or "") == job:
+            return record
+    return None
 
 
 def abandon_command(
@@ -6628,11 +6833,11 @@ def resolve_business_window(
     if date_from and date_to:
         requested_start = date_from
         requested_end = date_to
-        requested_intent_dates = weekday_business_days(date_from=date_from, date_to=date_to)
+        requested_intent_dates = [day for day in calendar_days if date_from <= day <= date_to] if calendar_days else weekday_business_days(date_from=date_from, date_to=date_to)
         if business_days:
             requested_intent_dates = requested_intent_dates[:requested_count]
         selection_authority = "cli_date_from"
-        override_reason = "cli_date_from_and_date_to_define_explicit_window"
+        override_reason = "cli_date_from_and_date_to_define_explicit_window_with_calendar_authority" if calendar_days else "cli_date_from_and_date_to_define_explicit_window"
     else:
         if date_from:
             requested_start = date_from
@@ -6662,8 +6867,12 @@ def resolve_business_window(
     else:
         resolved = list(requested_intent_dates)
     unresolved = [day for day in requested_intent_dates[:requested_count] if day not in set(resolved)]
-    status = "PASS" if requested_count == len(resolved) else "REVIEW_REQUIRED"
-    reason = "requested_window_fully_resolved" if status == "PASS" else "requested_window_partially_resolved_calendar_authority_insufficient"
+    if calendar.get("status") not in {"PASS", "MISSING"}:
+        status = "REVIEW_REQUIRED"
+        reason = str(calendar.get("reason") or "calendar_authority_review_required")
+    else:
+        status = "PASS" if requested_count == len(resolved) else "REVIEW_REQUIRED"
+        reason = "requested_window_fully_resolved" if status == "PASS" else "requested_window_partially_resolved_calendar_authority_insufficient"
     override_applied = selection_authority != "profile_window_date_from"
     return {
         "requested_start_date": requested_start,
@@ -6711,47 +6920,118 @@ def weekday_business_days_from_start(*, start_date: str, business_days: int) -> 
 
 def load_trading_calendar_authority(*, runtime_root: Path) -> dict[str, Any]:
     base_path = runtime_root / "operations" / "jquants" / "historical_snapshots" / "trading_calendar" / "data.parquet"
-    base_days = _read_calendar_business_days(base_path)
+    base_state = _read_calendar_state(base_path)
     overlays = _validated_calendar_overlay_authorities(runtime_root=runtime_root)
-    composed_days = sorted({*base_days, *(day for overlay in overlays for day in overlay["business_days"])})
+    composed_state = dict(base_state)
+    resolved_source_conflicts = []
+    unresolved_source_conflicts = []
+    overlay_states: list[dict[str, bool]] = []
+    for overlay in overlays:
+        state = _read_calendar_state(Path(str(overlay["path"])))
+        for day, is_open in state.items():
+            if day in composed_state and composed_state[day] != is_open:
+                resolved_source_conflicts.append(
+                    {
+                        "date": day,
+                        "base_state": "OPEN" if composed_state[day] else "CLOSED",
+                        "overlay_state": "OPEN" if is_open else "CLOSED",
+                        "resolution": "validated_staging_overlay_precedence",
+                    }
+                )
+            composed_state[day] = is_open
+        overlay_states.append(state)
+    if len(overlay_states) > 1:
+        all_days = sorted({day for state in overlay_states for day in state})
+        for day in all_days:
+            values = {state[day] for state in overlay_states if day in state}
+            if len(values) > 1:
+                unresolved_source_conflicts.append({"date": day, "reason": "validated_calendar_overlays_disagree"})
+    composed_days = sorted(day for day, is_open in composed_state.items() if is_open)
     source_paths = [str(base_path)] + [overlay["path"] for overlay in overlays]
+    quote_reconciliation = _reconcile_runtime_calendar_with_quotes(
+        calendar_state=composed_state,
+        runtime_root=runtime_root,
+    )
+    review_reasons = []
+    if unresolved_source_conflicts:
+        review_reasons.append("validated_calendar_source_conflict")
+    if quote_reconciliation.get("status") == "REVIEW_REQUIRED":
+        review_reasons.append("calendar_quote_reconciliation_ambiguity")
     return {
         "schema_version": "runtime_test_calendar_authority_v1",
         "authority": "validated_canonical_calendar_base_plus_validated_incremental_staging_overlay" if overlays else "canonical_calendar_base",
-        "status": "PASS" if composed_days else "MISSING",
+        "status": "REVIEW_REQUIRED" if review_reasons else ("PASS" if composed_days else "MISSING"),
+        "reason": review_reasons[0] if review_reasons else ("calendar_authority_ready" if composed_days else "calendar_authority_missing"),
         "path": str(base_path),
         "source_paths": source_paths,
         "source_hashes": {path: file_ref(Path(path)).get("sha256", "") for path in source_paths},
         "base_path": str(base_path),
-        "base_max_date": max(base_days) if base_days else "",
+        "base_max_date": max(base_state) if base_state else "",
         "overlay_count": len(overlays),
         "overlays": overlays,
         "business_days": composed_days,
         "max_date": max(composed_days) if composed_days else "",
-        "duplicate_policy": "Date key dedupe; validated overlay may extend base but does not mutate canonical",
+        "resolved_source_conflicts": resolved_source_conflicts[:50],
+        "unresolved_source_conflicts": unresolved_source_conflicts[:50],
+        "quote_calendar_reconciliation": quote_reconciliation,
+        "duplicate_policy": "Date key dedupe; validated overlay may extend or correct base with explicit precedence",
         "canonical_mutated": False,
     }
 
 
 def _read_calendar_business_days(path: Path) -> list[str]:
+    return sorted(day for day, is_open in _read_calendar_state(path).items() if is_open)
+
+
+def _read_calendar_state(path: Path) -> dict[str, bool]:
     if not path.is_file():
-        return []
+        return {}
     try:
         import pandas as pd
 
         frame = pd.read_parquet(path)
     except Exception:
-        return []
+        return {}
     if "Date" not in frame.columns:
-        return []
+        return {}
     calendar_state_columns = [column for column in ("HolDiv", "HolidayDivision", "holiday_division") if column in frame.columns]
     if calendar_state_columns:
         mask = None
         for column in calendar_state_columns:
             column_mask = frame[column].notna() & frame[column].map(_is_calendar_open_value)
             mask = column_mask if mask is None else mask | column_mask
-        frame = frame[mask].copy()
-    return sorted(str(value) for value in frame["Date"].dropna().unique())
+        state_frame = frame.copy()
+        state_frame["_is_open"] = mask
+    elif "is_trading_day" in frame.columns:
+        state_frame = frame.copy()
+        state_frame["_is_open"] = frame["is_trading_day"].astype(bool)
+    else:
+        state_frame = frame.copy()
+        state_frame["_is_open"] = True
+    logical = state_frame[["Date", "_is_open"]].dropna(subset=["Date"]).drop_duplicates(["Date"], keep="last")
+    return {str(row["Date"]): bool(row["_is_open"]) for row in logical.to_dict(orient="records")}
+
+
+def _reconcile_runtime_calendar_with_quotes(*, calendar_state: dict[str, bool], runtime_root: Path) -> dict[str, Any]:
+    if not calendar_state:
+        return {"status": "SKIPPED", "reason": "calendar_state_empty"}
+    try:
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            [
+                {"Date": day, "HolDiv": "1" if is_open else "3"}
+                for day, is_open in sorted(calendar_state.items())
+            ]
+        )
+        return reconcile_calendar_with_quotes(
+            calendar_frame=frame,
+            quote_path=runtime_root / NORMALIZED_OHLCV_RELATIVE_PATH,
+            start_date=min(calendar_state),
+            end_date=max(calendar_state),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "REVIEW_REQUIRED", "reason": f"calendar_quote_reconciliation_failed:{type(exc).__name__}"}
 
 
 def _validated_calendar_overlay_authorities(*, runtime_root: Path) -> list[dict[str, Any]]:
@@ -8419,6 +8699,222 @@ def classify_scoped_buy_only_result(
     return result
 
 
+def classify_historical_corporate_action_quarantine_result(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    job: str,
+    exit_code: int,
+    persist: bool = True,
+) -> dict[str, Any] | None:
+    if exit_code == 0 or job != "submit":
+        return None
+    job_dir = run_dir / "daily" / business_date / job
+    manifest_path = job_dir / "runtime_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    guard_items = manifest.get("submit_guard_item_evidence")
+    item_results_payload = manifest.get("item_results")
+    if not isinstance(guard_items, list):
+        return None
+    item_results: list[dict[str, Any]] = []
+    item_results_by_id: dict[str, dict[str, Any]] = {}
+    item_results_present = isinstance(item_results_payload, list)
+    if item_results_present:
+        item_results = [item for item in item_results_payload if isinstance(item, dict)]
+        item_results_by_id = {
+            str(item.get("pending_item_id") or ""): item for item in item_results
+        }
+    try:
+        pending_item_count = int(manifest.get("pending_item_count") or len(item_results_by_id) or len(guard_items) or 0)
+        submitted_count = int(manifest.get("submitted_count") or 0)
+        blocked_count = int(manifest.get("blocked_count") or 0)
+    except (TypeError, ValueError):
+        return None
+    eligible_items: list[dict[str, Any]] = []
+    nonpass_item_ids: set[str] = set()
+    pass_guard_item_ids: set[str] = set()
+    successful_submit_statuses = {"ACCEPTED", "SUBMITTED", "PASS"}
+    if item_results_present:
+        for item in item_results:
+            item_id = str(item.get("pending_item_id") or "")
+            if not item_id or not item.get("symbol"):
+                return None
+            if str(item.get("submit_status") or "") not in successful_submit_statuses:
+                nonpass_item_ids.add(item_id)
+    for guard in guard_items:
+        if not isinstance(guard, dict):
+            return None
+        item_id = str(guard.get("pending_item_id") or "")
+        item_result = item_results_by_id.get(item_id, {})
+        symbol = str(guard.get("symbol") or item_result.get("symbol") or "").strip().upper()
+        reason = str(guard.get("guard_reason") or guard.get("blocked_at_submit_reason") or "")
+        if not item_id or not symbol:
+            return None
+        guard_status = str(guard.get("submit_item_status") or "")
+        guard_decision = str(guard.get("guard_decision") or "")
+        if guard_status == "PASS" and guard_decision == "PASS":
+            pass_guard_item_ids.add(item_id)
+            continue
+        checks = {
+            "submit_item_review_required": guard_status == "REVIEW_REQUIRED",
+            "submit_status_not_submitted": (
+                str(item_result.get("submit_status") or "") == "NOT_SUBMITTED"
+                if item_results_present
+                else True
+            ),
+            "guard_blocked": guard_decision == "BLOCKED",
+            "reason_corporate_action_unresolved": reason == "corporate_action_event_not_resolved",
+            "event_status_impact_detected": str(guard.get("corporate_action_event_status") or "") == "IMPACT_DETECTED",
+            "authority_review_required": (
+                str(guard.get("corporate_action_adjustment_authority_status") or "") == "REVIEW_REQUIRED"
+            ),
+            "symbol_identifiable": bool(symbol),
+            "split_inference_not_used": not bool(guard.get("corporate_action_split_inference_used", False)),
+            "quantity_adjustment_not_performed": not bool(
+                guard.get("corporate_action_quantity_adjustment_performed", False)
+            ),
+        }
+        if all(checks.values()):
+            eligible = {
+                **guard,
+                "symbol": symbol,
+                "submit_status": str(item_result.get("submit_status") or ""),
+                "quarantine_checks": checks,
+            }
+            eligible_items.append(eligible)
+    eligible_item_ids = {str(item.get("pending_item_id") or "") for item in eligible_items}
+    disqualified_nonpass_ids = nonpass_item_ids - eligible_item_ids
+    if not item_results_present:
+        observed_classified_count = len(pass_guard_item_ids) + len(eligible_item_ids)
+        if observed_classified_count != len(guard_items):
+            return None
+        disqualified_nonpass_ids = set()
+    checks = {
+        "runtime_cli_nonzero": exit_code != 0,
+        "submit_job": job == "submit",
+        "historical_replay": _manifest_indicates_historical_replay(manifest),
+        "broker_environment_historical_simulated": _manifest_has_historical_simulated_broker(manifest),
+        "no_actual_broker_write": _manifest_has_no_actual_broker_write(manifest),
+        "runtime_submit_review_required": str(manifest.get("final_state") or manifest.get("status") or "") == "REVIEW_REQUIRED",
+        "blocked_item_count_positive": blocked_count >= 1,
+        "pending_count_matches_guard_evidence": pending_item_count > 0 and len(guard_items) == pending_item_count,
+        "submitted_count_matches_pass_items": submitted_count == len(pass_guard_item_ids),
+        "blocked_count_matches_ca_items": blocked_count == len(eligible_item_ids),
+        "other_item_results_independently_inspectable": (
+            len(item_results_by_id) >= pending_item_count if item_results_present else len(pass_guard_item_ids) == submitted_count
+        ),
+        "has_eligible_corporate_action_item": bool(eligible_items),
+        "generic_review_required_not_continued": not disqualified_nonpass_ids,
+    }
+    if not all(checks.values()):
+        return None
+    quarantined_symbols = sorted({str(item["symbol"]) for item in eligible_items})
+    quarantines = []
+    for item in eligible_items:
+        if persist:
+            quarantine = upsert_corporate_action_quarantine(
+                runtime_root=runtime_root,
+                business_date=business_date,
+                symbol=str(item["symbol"]),
+                reason="corporate_action_event_not_resolved",
+                event_status="IMPACT_DETECTED",
+                source_evidence=item,
+            )
+        else:
+            quarantine = {
+                "symbol": str(item["symbol"]),
+                "first_detected_date": business_date,
+                "latest_checked_date": business_date,
+                "reason": "corporate_action_event_not_resolved",
+                "event_status": "IMPACT_DETECTED",
+                "resolution_status": "UNRESOLVED",
+                "source_evidence": item,
+                **corporate_action_quarantine_fields(
+                    symbol=str(item["symbol"]),
+                    reason="corporate_action_event_not_resolved",
+                ),
+            }
+        quarantines.append(quarantine)
+    result = {
+        "schema_version": "runtime_test_historical_corporate_action_symbol_quarantine_continuation_v1",
+        "status": "COMPLETED_WITH_SYMBOL_QUARANTINE",
+        "scope": "CORPORATE_ACTION_SYMBOL_ONLY",
+        "business_date": business_date,
+        "job": job,
+        "runtime_cli_exit_code": exit_code,
+        "runtime_manifest_path": str(manifest_path),
+        "checks": checks,
+        "quarantined_symbols": quarantined_symbols,
+        "corporate_action_quarantines": quarantines,
+        "corporate_action_quarantine_status": CORPORATE_ACTION_QUARANTINE_STATUS,
+        "corporate_action_quarantine_scope": "SYMBOL_ONLY",
+        "corporate_action_run_continuation_eligibility": CORPORATE_ACTION_QUARANTINE_CONTINUATION_ELIGIBILITY,
+        "corporate_action_run_continuation_reason": "corporate_action_event_not_resolved",
+        "production_applicability": CORPORATE_ACTION_QUARANTINE_PRODUCTION_APPLICABILITY,
+        "corporate_action_split_inference_used": False,
+        "corporate_action_quantity_adjustment_performed": False,
+        "portfolio_performance_limitation_status": "REVIEW_REQUIRED",
+        "portfolio_performance_limitation_reason": (
+            "unresolved_corporate_action_without_historical_broker_state_transition"
+        ),
+        "portfolio_performance_limitation_code": "CORPORATE_ACTION_UNRESOLVED_LIMITATION",
+        "affected_symbols": quarantined_symbols,
+        "reason": "historical_symbol_scoped_corporate_action_quarantine_continuation",
+    }
+    if persist:
+        write_json_atomic(job_dir / "corporate_action_symbol_quarantine_continuation.json", result)
+    return result
+
+
+def _manifest_indicates_historical_replay(manifest: dict[str, Any]) -> bool:
+    if str(manifest.get("run_type") or "").upper() == "HISTORICAL":
+        return True
+    if str(manifest.get("runtime_mode") or manifest.get("mode") or "").lower() == "historical":
+        return True
+    for stage_name in ("environment_composition", "submit"):
+        details = _stage_details(manifest, stage_name)
+        if bool(details.get("historical_replay")) or str(details.get("run_type") or "").upper() == "HISTORICAL":
+            return True
+    return False
+
+
+def _manifest_has_historical_simulated_broker(manifest: dict[str, Any]) -> bool:
+    if str(manifest.get("broker_environment") or "") == "historical_simulated":
+        return True
+    for stage_name in ("environment_composition", "submit"):
+        details = _stage_details(manifest, stage_name)
+        if str(details.get("broker_environment") or "") == "historical_simulated":
+            return True
+    return False
+
+
+def _manifest_has_no_actual_broker_write(manifest: dict[str, Any]) -> bool:
+    prohibited = manifest.get("prohibited_actions") if isinstance(manifest.get("prohibited_actions"), dict) else {}
+    if bool(prohibited.get("demo_submit_executed")) or bool(prohibited.get("production_order_executed")):
+        return False
+    if bool(prohibited.get("broker_write")) or bool(prohibited.get("external_delivery")):
+        return False
+    if bool(manifest.get("demo_submit_executed")) or bool(manifest.get("production_order_executed")):
+        return False
+    if bool(manifest.get("broker_write")) or bool(manifest.get("external_delivery")):
+        return False
+    if bool(manifest.get("tachibana_demo_write")) or bool(manifest.get("tachibana_production_write")):
+        return False
+    for stage_name in ("environment_composition", "submit"):
+        details = _stage_details(manifest, stage_name)
+        if bool(details.get("broker_write")) or bool(details.get("external_delivery")):
+            return False
+        if bool(details.get("tachibana_demo_write")) or bool(details.get("tachibana_production_write")):
+            return False
+    return True
+
+
 def _stage_details(manifest: dict[str, Any], name: str) -> dict[str, Any]:
     for stage in manifest.get("stages") or []:
         if not isinstance(stage, dict) or stage.get("name") != name:
@@ -8561,6 +9057,11 @@ def _fresh_run_summary(
 ) -> dict[str, Any]:
     completed_jobs = _completed_jobs_for_run(evidence_root=evidence_root, run_id=run_id)
     completed_days = _completed_days_for_run(evidence_root=evidence_root, run_id=run_id)
+    request_conformance_status = _fresh_run_request_conformance_status(
+        plan_payload=plan_payload,
+        completed_business_day_count=len(completed_days),
+        dry_run=dry_run,
+    )
     summary = {
         "schema_version": FRESH_RUN_SUMMARY_SCHEMA_VERSION,
         "subcommand": "fresh-run",
@@ -8585,7 +9086,7 @@ def _fresh_run_summary(
         "completed_business_day_count": len(completed_days),
         "window_resolution_status": plan_payload.get("window_resolution_status") or "",
         "window_resolution_reason": plan_payload.get("window_resolution_reason") or "",
-        "request_conformance_status": "PASS" if int(plan_payload.get("requested_business_days") or 0) == len(completed_days) and plan_payload.get("window_resolution_status") == "PASS" else "NOT_PASS",
+        "request_conformance_status": request_conformance_status,
         "unresolved_requested_dates": list(plan_payload.get("unresolved_requested_dates") or []),
         "independent_acceptance": _independent_acceptance_judgment(
             runtime_execution_status=status,
@@ -8593,6 +9094,8 @@ def _fresh_run_summary(
             resolved_business_day_count=int(plan_payload.get("resolved_business_day_count") or len(plan_payload.get("business_dates") or [])),
             completed_business_day_count=len(completed_days),
             window_resolution_status=str(plan_payload.get("window_resolution_status") or ""),
+            request_conformance_status=request_conformance_status,
+            dry_run=dry_run,
         ),
         "initial_cash": float(initial_cash if initial_cash is not None else profile["initial_state"]["cash"]),
         "steps": steps,
@@ -8632,6 +9135,33 @@ def _fresh_run_summary(
         "production_profile_rejected": profile.get("mode") != "production",
     }
     return summary
+
+
+def _fresh_run_request_conformance_status(
+    *,
+    plan_payload: dict[str, Any],
+    completed_business_day_count: int,
+    dry_run: bool,
+) -> str:
+    if dry_run:
+        planner_status = str(plan_payload.get("request_conformance_status") or "")
+        if planner_status:
+            return planner_status
+        return (
+            "PASS"
+            if int(plan_payload.get("requested_business_days") or 0)
+            == int(plan_payload.get("resolved_business_day_count") or len(plan_payload.get("business_dates") or []))
+            and plan_payload.get("window_resolution_status") == "PASS"
+            else "NOT_PASS"
+        )
+    return (
+        "PASS"
+        if int(plan_payload.get("requested_business_days") or 0)
+        == int(plan_payload.get("resolved_business_day_count") or len(plan_payload.get("business_dates") or []))
+        == completed_business_day_count
+        and plan_payload.get("window_resolution_status") == "PASS"
+        else "NOT_PASS"
+    )
 
 
 def _completed_jobs_for_run(*, evidence_root: Path, run_id: str) -> list[dict[str, Any]]:
@@ -8800,14 +9330,20 @@ def _independent_acceptance_judgment(
     resolved_business_day_count: int,
     completed_business_day_count: int,
     window_resolution_status: str,
+    request_conformance_status: str = "",
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     runtime_execution = "PASS" if runtime_execution_status == "PASS" else runtime_execution_status or "UNKNOWN"
     requested_window_resolution = "PASS" if window_resolution_status == "PASS" else "NOT_PASS"
     requested_window_conformance = (
-        "PASS"
-        if requested_business_days == resolved_business_day_count == completed_business_day_count
-        and window_resolution_status == "PASS"
-        else "NOT_PASS"
+        str(request_conformance_status or "")
+        if dry_run
+        else (
+            "PASS"
+            if requested_business_days == resolved_business_day_count == completed_business_day_count
+            and window_resolution_status == "PASS"
+            else "NOT_PASS"
+        )
     )
     overall = "PASS" if runtime_execution == "PASS" and requested_window_conformance == "PASS" else "REVIEW_REQUIRED"
     return {

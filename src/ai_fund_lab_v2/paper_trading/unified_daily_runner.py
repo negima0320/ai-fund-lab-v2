@@ -535,6 +535,7 @@ def _canonicalized_daily_quote_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "low": ("Low", "L", "AdjL"),
         "close": ("Close", "C", "AdjC"),
         "volume": ("Volume", "Vo", "AdjVo"),
+        "traded_value": ("TradingValue", "Va", "TurnoverValue"),
     }
     for target, sources in alias_pairs.items():
         if target in frame.columns:

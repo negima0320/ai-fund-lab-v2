@@ -46,6 +46,17 @@ RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED",
 BROKER_ELIGIBILITY_GATING_OWNER = "PORTFOLIO_CONSTRUCTION"
 BROKER_ELIGIBILITY_AUTHORITY_TYPE = "BROKER_PRODUCT_CLASSIFICATION_EXECUTION_ELIGIBILITY"
 LOT_AWARE_REALLOCATION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION"
+LOW_PRICE_RISK_ALLOCATION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_LOW_PRICE_RISK_ALLOCATION_AUTHORITY"
+SEMANTIC_REENTRY_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_SEMANTIC_REENTRY_AUTHORITY"
+REENTRY_COOLDOWN_BUSINESS_DAYS = 3
+DEFAULT_MINIMUM_TICK = 1.0
+LIQUIDITY_CAPACITY_TARGET_PARTICIPATION = 0.01
+PRICE_TICK_RISK_CAPS = {
+    "WATCH": 0.12,
+    "ELEVATED": 0.10,
+    "SEVERE": 0.08,
+    "EXTREME": 0.05,
+}
 BLOCKING_UPSTREAM_STATUSES = {INCOMPATIBLE_SCHEMA, INCOMPATIBLE_DATE, INCOMPATIBLE_HASH, SOURCE_BLOCKED, SOURCE_MISSING}
 REVIEW_UPSTREAM_STATUSES = {SOURCE_REVIEW_REQUIRED, SOURCE_NOT_ELIGIBLE}
 FORBIDDEN_CONCRETE_FIELDS = {
@@ -258,6 +269,7 @@ def build_portfolio_construction_payload(
         business_date=business_date,
         members=members,
         policy_config_summary=policy_config_summary,
+        current_portfolio_summary=current_portfolio_summary,
         portfolio_policy_reference=str(policy_result.get("artifact_path") or portfolio_policy_artifact_path or ""),
         source_hashes=[
             {"role": "candidate", "path": candidate_summary.source_ref, "sha256": _strip_sha256(candidate_summary.source_hash)},
@@ -863,6 +875,7 @@ def _member(
         **_opportunity_rank_authority_payload(opportunity or {}),
         "input_score": _score(opportunity or candidate or {}),
         **_score_authority_payload(business_date=business_date, candidate=candidate, opportunity=opportunity),
+        **_phase29_l16_observable_fields(opportunity, candidate, current, pm),
         **_add_allocation_evidence_payload(opportunity=opportunity, pm=pm, current=current),
         "pm_action": str((pm or {}).get("action") or ""),
         "pm_intensity": str((pm or {}).get("intensity") or ""),
@@ -928,6 +941,389 @@ def _apply_broker_eligibility_to_new_exposure(members: list[dict[str, Any]]) -> 
             patched["membership_reason"] = ";".join(sorted(set(reasons)))
         updated.append(patched)
     return updated, sorted(set(payload_reasons))
+
+
+def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str, Any]:
+    fields = (
+        "reference_price",
+        "minimum_tick",
+        "rolling_median_traded_value_20",
+        "price_momentum_return_20d",
+        "trend_close_over_ma_20d",
+        "prior_exit_business_date",
+        "last_exit_business_date",
+        "previous_exit_business_date",
+        "current_quantity",
+        "corporate_action_status",
+        "corporate_event_status",
+        "corporate_action_blocking_status",
+        "corporate_event_blocking_status",
+    )
+    payload: dict[str, Any] = {}
+    for field in fields:
+        for row in rows:
+            if row and row.get(field) not in (None, ""):
+                payload[field] = row.get(field)
+                break
+    return payload
+
+
+def _resolve_low_price_reentry_allocation_guard(
+    *,
+    row: Mapping[str, Any],
+    business_date: str,
+    normal_target_weight: float,
+    target_membership: bool,
+    target_weight_reason: str,
+    zero_weight_reason: str,
+    review_reason: str,
+    portfolio_equity: float | None,
+) -> dict[str, Any]:
+    current_position = bool(row.get("current_position"))
+    pm_action = str(row.get("pm_action") or "").upper()
+    membership = str(row.get("membership_intent") or "").upper()
+    current_weight = _optional_ratio(row.get("current_weight")) or 0.0
+    is_buy_add = current_position and pm_action == "ADD"
+    is_buy_new = (not current_position) and membership == "ADD_CANDIDATE"
+    is_buy_side_allocation = is_buy_new or is_buy_add
+    reference_price = _positive_number_from_row(row, ("reference_price", "close", "Close", "C", "AdjC", "price"))
+    minimum_tick = _positive_number_from_row(row, ("minimum_tick", "tick_size", "price_tick")) or DEFAULT_MINIMUM_TICK
+    single_tick_pct = round(minimum_tick / reference_price, 8) if reference_price and minimum_tick > 0 else None
+    price_tier = _price_tick_risk_tier(single_tick_pct)
+    price_tick_cap = PRICE_TICK_RISK_CAPS.get(price_tier)
+    rolling_value = _positive_number_from_row(
+        row,
+        (
+            "rolling_median_traded_value_20",
+            "rolling_median_va_20",
+            "liquidity_rolling_median_traded_value_20",
+            "traded_value_median_20d",
+            "rolling_median_turnover_value_20",
+        ),
+    )
+    proposed_notional = (
+        round(max(normal_target_weight, 0.0) * portfolio_equity, 2)
+        if portfolio_equity is not None and normal_target_weight >= 0
+        else None
+    )
+    capacity_ratio = (
+        round(proposed_notional / rolling_value, 8)
+        if proposed_notional is not None and rolling_value and rolling_value > 0
+        else None
+    )
+    liquidity_status = _liquidity_capacity_status(capacity_ratio)
+    liquidity_cap = (
+        round((rolling_value * LIQUIDITY_CAPACITY_TARGET_PARTICIPATION) / portfolio_equity, TARGET_WEIGHT_DECIMALS)
+        if rolling_value and portfolio_equity and portfolio_equity > 0
+        else None
+    )
+    semantic_buy = _semantic_reentry_evidence(row=row, business_date=business_date, is_buy_new=is_buy_new)
+    recovery = _reentry_recovery_evidence(row=row, semantic=semantic_buy, capacity_ratio=capacity_ratio, liquidity_status=liquidity_status)
+
+    final_weight = round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS)
+    final_membership = bool(target_membership)
+    reason = target_weight_reason
+    zero_reason = zero_weight_reason
+    review = review_reason
+    cap_reason = "NONE"
+    reason_code = ""
+    member_reason_code = ""
+    adjustments: list[dict[str, Any]] = []
+
+    if is_buy_new and semantic_buy["semantic_buy_type"] == "REENTRY":
+        if semantic_buy["reentry_cooldown_status"] != "PASS":
+            final_weight = 0.0
+            final_membership = False
+            reason = "semantic_reentry_cooldown_blocked"
+            zero_reason = "reentry_minimum_cooldown_not_satisfied"
+            review = ""
+            reason_code = "semantic_reentry_cooldown_blocked"
+            member_reason_code = "reentry_minimum_cooldown_not_satisfied"
+        elif recovery["reentry_recovery_status"] != "PASS":
+            final_weight = 0.0
+            final_membership = False
+            reason = "semantic_reentry_recovery_hurdle_not_satisfied"
+            zero_reason = str(recovery["reentry_recovery_reason"])
+            review = "" if recovery["reentry_recovery_status"] == "FAIL_CLOSED" else str(recovery["reentry_recovery_reason"])
+            reason_code = "semantic_reentry_recovery_blocked"
+            member_reason_code = str(recovery["reentry_recovery_reason"])
+
+    low_price_guard_active = is_buy_side_allocation and price_tier in PRICE_TICK_RISK_CAPS and final_weight > 0
+    if low_price_guard_active and rolling_value is None:
+        final_weight = current_weight if is_buy_add else 0.0
+        final_membership = bool(row.get("target_membership")) if is_buy_add else False
+        reason = "low_price_liquidity_evidence_missing_fail_closed"
+        zero_reason = "" if is_buy_add else "low_price_liquidity_evidence_missing_fail_closed"
+        review = "low_price_liquidity_evidence_missing_fail_closed"
+        cap_reason = "low_price_liquidity_evidence_missing_fail_closed"
+        reason_code = reason_code or "low_price_liquidity_evidence_missing_fail_closed"
+        member_reason_code = member_reason_code or "low_price_liquidity_evidence_missing_fail_closed"
+    elif is_buy_side_allocation and final_weight > 0:
+        caps = [final_weight]
+        if price_tick_cap is not None:
+            caps.append(price_tick_cap)
+        if liquidity_cap is not None:
+            caps.append(liquidity_cap)
+        capped_weight = round(min(caps), TARGET_WEIGHT_DECIMALS)
+        if is_buy_add:
+            capped_weight = round(max(capped_weight, current_weight), TARGET_WEIGHT_DECIMALS)
+        if capped_weight < final_weight:
+            cap_reason = _allocation_cap_reason(
+                normal_target_weight=final_weight,
+                capped_weight=capped_weight,
+                price_tick_cap=price_tick_cap,
+                liquidity_cap=liquidity_cap,
+            )
+            final_weight = capped_weight
+            reason = "low_price_risk_allocation_cap_applied"
+            reason_code = reason_code or "low_price_risk_allocation_cap_applied"
+            member_reason_code = member_reason_code or cap_reason
+
+    if final_weight != round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS) or member_reason_code:
+        adjustments.append(
+            {
+                "authority": LOW_PRICE_RISK_ALLOCATION_AUTHORITY_TYPE,
+                "semantic_buy_type": semantic_buy["semantic_buy_type"],
+                "normal_target_weight": round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS),
+                "final_risk_adjusted_target_weight": final_weight,
+                "price_tick_risk_tier": price_tier,
+                "liquidity_capacity_status": liquidity_status,
+                "allocation_cap_reason": cap_reason,
+            }
+        )
+
+    member_fields = {
+        **semantic_buy,
+        **recovery,
+        "single_tick_pct": single_tick_pct,
+        "price_tick_risk_tier": price_tier,
+        "rolling_median_traded_value_20": rolling_value,
+        "capacity_ratio": capacity_ratio,
+        "liquidity_capacity_status": liquidity_status,
+        "normal_target_weight": round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS),
+        "price_tick_cap_weight": price_tick_cap,
+        "liquidity_capacity_cap_weight": liquidity_cap,
+        "final_risk_adjusted_target_weight": final_weight,
+        "allocation_cap_reason": cap_reason,
+    }
+    return {
+        "target_weight": final_weight,
+        "target_membership": final_membership,
+        "target_weight_reason": reason,
+        "zero_weight_reason": zero_reason,
+        "review_reason": review,
+        "reason_code": reason_code,
+        "member_reason_code": member_reason_code,
+        "cap_applied": final_weight < round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS),
+        "adjustments": adjustments,
+        "member_fields": member_fields,
+        "low_price_risk_allocation_authority": {
+            "authority_type": LOW_PRICE_RISK_ALLOCATION_AUTHORITY_TYPE,
+            "business_date": business_date,
+            "portfolio_equity_source": "current_portfolio_summary",
+            "current_authoritative_portfolio_equity": portfolio_equity,
+            "minimum_tick": minimum_tick,
+            "single_tick_pct": single_tick_pct,
+            "price_tick_risk_tier": price_tier,
+            "price_tick_cap_weight": price_tick_cap,
+            "rolling_median_traded_value_20": rolling_value,
+            "capacity_ratio": capacity_ratio,
+            "liquidity_capacity_status": liquidity_status,
+            "liquidity_capacity_target_participation": LIQUIDITY_CAPACITY_TARGET_PARTICIPATION,
+            "liquidity_capacity_cap_weight": liquidity_cap,
+            "status": "PASS" if not review or review != "low_price_liquidity_evidence_missing_fail_closed" else "REVIEW_REQUIRED",
+        },
+        "semantic_reentry_authority": {
+            "authority_type": SEMANTIC_REENTRY_AUTHORITY_TYPE,
+            "business_date": business_date,
+            **semantic_buy,
+            **recovery,
+        },
+    }
+
+
+def _semantic_reentry_evidence(*, row: Mapping[str, Any], business_date: str, is_buy_new: bool) -> dict[str, Any]:
+    pm_action = str(row.get("pm_action") or "").upper()
+    if bool(row.get("current_position")):
+        return {
+            "semantic_buy_type": "BUY_ADD" if pm_action == "ADD" else "NOT_APPLICABLE",
+            "prior_exit_business_date": "",
+            "business_days_since_exit": None,
+            "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
+            "reentry_cooldown_status": "NOT_APPLICABLE",
+        }
+    prior_exit = _prior_exit_business_date(row)
+    if not is_buy_new or not prior_exit or prior_exit >= business_date:
+        return {
+            "semantic_buy_type": "BUY_NEW",
+            "prior_exit_business_date": "",
+            "business_days_since_exit": None,
+            "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
+            "reentry_cooldown_status": "NOT_APPLICABLE",
+        }
+    days_since_exit = _completed_business_days_between(prior_exit, business_date)
+    status = "PASS" if days_since_exit >= REENTRY_COOLDOWN_BUSINESS_DAYS else "FAIL_CLOSED"
+    return {
+        "semantic_buy_type": "REENTRY",
+        "prior_exit_business_date": prior_exit,
+        "business_days_since_exit": days_since_exit,
+        "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
+        "reentry_cooldown_status": status,
+    }
+
+
+def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str, Any], capacity_ratio: float | None, liquidity_status: str) -> dict[str, Any]:
+    rank = _canonical_opportunity_rank(row)
+    edge = _finite_number(row.get("runtime_opportunity_score", row.get("expected_edge_score", row.get("score"))))
+    quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "")
+    trend = _finite_number(row.get("trend_close_over_ma_20d"))
+    momentum = _finite_number(row.get("price_momentum_return_20d"))
+    ca_status = _corporate_action_status(row)
+    base = {
+        "reentry_recovery_status": "NOT_APPLICABLE",
+        "reentry_recovery_reason": "not_reentry",
+        "reentry_rank": rank,
+        "reentry_expected_edge": edge,
+        "reentry_buy_quality_action": quality_action,
+        "reentry_trend_close_over_ma_20d": trend,
+        "reentry_price_momentum_return_20d": momentum,
+        "reentry_corporate_action_status": ca_status,
+    }
+    if semantic.get("semantic_buy_type") != "REENTRY":
+        return base
+    failures: list[str] = []
+    unknowns: list[str] = []
+    if rank is None:
+        unknowns.append("reentry_rank_missing")
+    elif rank > 10:
+        failures.append("reentry_rank_above_threshold")
+    if edge is None:
+        unknowns.append("reentry_expected_edge_missing")
+    elif edge < 0.10:
+        failures.append("reentry_expected_edge_below_threshold")
+    if not quality_action:
+        unknowns.append("reentry_buy_quality_action_missing")
+    elif quality_action not in {"REDUCED_ALLOCATION_ONLY", "FULL_ALLOCATION_ELIGIBLE"}:
+        failures.append("reentry_buy_quality_action_not_allowed")
+    if ca_status == "UNKNOWN":
+        unknowns.append("reentry_corporate_action_status_missing")
+    elif ca_status not in {"PASS", "RESOLVED", "NO_BLOCKING_EVENT", "NO_EVENT"}:
+        failures.append("reentry_corporate_action_unresolved")
+    if capacity_ratio is None:
+        unknowns.append("reentry_liquidity_capacity_missing")
+    elif liquidity_status == "SEVERE" or capacity_ratio > 0.03:
+        failures.append("reentry_liquidity_capacity_severe")
+    trend_pass = trend is not None and trend >= 1.0
+    momentum_pass = momentum is not None and momentum >= 0.0
+    if trend is None and momentum is None:
+        unknowns.append("reentry_momentum_trend_missing")
+    elif not (trend_pass or momentum_pass):
+        failures.append("reentry_momentum_trend_not_recovered")
+    if failures:
+        return {**base, "reentry_recovery_status": "FAIL_CLOSED", "reentry_recovery_reason": failures[0]}
+    if unknowns:
+        return {**base, "reentry_recovery_status": "REVIEW_REQUIRED", "reentry_recovery_reason": unknowns[0]}
+    return {**base, "reentry_recovery_status": "PASS", "reentry_recovery_reason": "reentry_recovery_hurdle_passed"}
+
+
+def _price_tick_risk_tier(single_tick_pct: float | None) -> str:
+    if single_tick_pct is None:
+        return "UNKNOWN"
+    if single_tick_pct < 0.01:
+        return "NORMAL"
+    if single_tick_pct < 0.02:
+        return "WATCH"
+    if single_tick_pct < 0.05:
+        return "ELEVATED"
+    if single_tick_pct < 0.10:
+        return "SEVERE"
+    return "EXTREME"
+
+
+def _liquidity_capacity_status(capacity_ratio: float | None) -> str:
+    if capacity_ratio is None:
+        return "UNKNOWN"
+    if capacity_ratio <= 0.005:
+        return "NORMAL"
+    if capacity_ratio <= 0.01:
+        return "WATCH"
+    if capacity_ratio <= 0.03:
+        return "CAP_REQUIRED"
+    return "SEVERE"
+
+
+def _allocation_cap_reason(*, normal_target_weight: float, capped_weight: float, price_tick_cap: float | None, liquidity_cap: float | None) -> str:
+    if liquidity_cap is not None and capped_weight <= liquidity_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return "liquidity_capacity_cap_applied"
+    if price_tick_cap is not None and capped_weight <= price_tick_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return "price_tick_risk_cap_applied"
+    if capped_weight < normal_target_weight:
+        return "risk_allocation_cap_applied"
+    return "NONE"
+
+
+def _current_authoritative_equity(summary: PortfolioConstructionSourceSummary) -> float | None:
+    data = dict(summary.summary or {})
+    for key in ("portfolio_total_equity", "portfolio_value", "total_equity", "current_authoritative_portfolio_equity"):
+        value = _finite_number(data.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _positive_number_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -> float | None:
+    for field in fields:
+        raw = row.get(field)
+        value = _finite_number(raw)
+        if value is None and raw not in (None, ""):
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                parsed = math.nan
+            value = parsed if math.isfinite(parsed) else None
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _prior_exit_business_date(row: Mapping[str, Any]) -> str:
+    for field in ("prior_exit_business_date", "last_exit_business_date", "previous_exit_business_date"):
+        value = str(row.get(field) or "").strip()
+        if not value:
+            continue
+        try:
+            _validate_iso_date(value[:10], field=field)
+        except Exception:
+            continue
+        return value[:10]
+    return ""
+
+
+def _completed_business_days_between(start_date: str, end_date: str) -> int:
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError:
+        return 0
+    if end <= start:
+        return 0
+    days = 0
+    current = start
+    while True:
+        current = date.fromordinal(current.toordinal() + 1)
+        if current >= end:
+            break
+        if current.weekday() < 5:
+            days += 1
+    return days
+
+
+def _corporate_action_status(row: Mapping[str, Any]) -> str:
+    for field in ("corporate_action_status", "corporate_event_status", "corporate_action_blocking_status", "corporate_event_blocking_status"):
+        value = str(row.get(field) or "").strip().upper()
+        if value:
+            return value
+    return "UNKNOWN"
 
 
 def _broker_eligibility_payload(member: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1002,10 +1398,12 @@ def _resolve_target_weight_contract(
     business_date: str,
     members: list[dict[str, Any]],
     policy_config_summary: PortfolioConstructionSourceSummary,
+    current_portfolio_summary: PortfolioConstructionSourceSummary,
     portfolio_policy_reference: str,
     source_hashes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     summary = dict(policy_config_summary.summary or {})
+    current_equity = _current_authoritative_equity(current_portfolio_summary)
     policy_authority = resolve_portfolio_policy_allocation_authority(
         business_date=business_date,
         policy_config_summary=policy_config_summary,
@@ -1213,6 +1611,40 @@ def _resolve_target_weight_contract(
                 "add_allocation_bridge": add_bridge["trace"],
             }
             authority = {**authority, "add_allocation_bridge_authority": add_bridge["authority"]}
+        l16_adjustment = _resolve_low_price_reentry_allocation_guard(
+            row=row,
+            business_date=business_date,
+            normal_target_weight=weight,
+            target_membership=target_membership,
+            target_weight_reason=reason,
+            zero_weight_reason=zero_reason,
+            review_reason=review_reason,
+            portfolio_equity=current_equity,
+        )
+        weight = l16_adjustment["target_weight"]
+        target_membership = l16_adjustment["target_membership"]
+        reason = l16_adjustment["target_weight_reason"]
+        zero_reason = l16_adjustment["zero_weight_reason"]
+        review_reason = l16_adjustment["review_reason"]
+        if l16_adjustment["reason_code"]:
+            reason_codes.append(str(l16_adjustment["reason_code"]))
+        if l16_adjustment["member_reason_code"]:
+            existing_member_reasons = list(row.get("reason_codes") or [])
+            row = {**row, "reason_codes": sorted(set([*existing_member_reasons, str(l16_adjustment["member_reason_code"])]))}
+        resolution = {
+            **resolution,
+            "reason": reason,
+            "resolved_weight": weight,
+            "zero_weight_reason": zero_reason,
+            "review_reason": review_reason,
+            "cap_applied": bool(resolution.get("cap_applied")) or bool(l16_adjustment["cap_applied"]),
+            "adjustments": list(resolution.get("adjustments") or []) + list(l16_adjustment["adjustments"]),
+        }
+        authority = {
+            **authority,
+            "low_price_risk_allocation_authority": l16_adjustment["low_price_risk_allocation_authority"],
+            "semantic_reentry_authority": l16_adjustment["semantic_reentry_authority"],
+        }
         updated = {
             **row,
             "target_membership": target_membership,
@@ -1220,6 +1652,7 @@ def _resolve_target_weight_contract(
             "target_weight_authority": authority,
             "target_weight_resolution": resolution,
             "weight_reason": reason,
+            **l16_adjustment["member_fields"],
             **reduce_member_fields,
             **(add_bridge["member_fields"] if add_bridge else {}),
         }
@@ -1520,16 +1953,43 @@ def apply_lot_aware_final_reallocation(
         current_position = bool(member.get("current_position"))
         baseline = 0.0
         participant_type = "NONE"
+        requested_increment = 0.0
         if current_position and pm_action in {"HOLD", "ADD"}:
             baseline = current_weight if current_weight is not None else target
-            participant_type = "BUY_ADD" if pm_action == "ADD" and target > baseline else "NONE"
+            requested_increment = round(
+                max(
+                    float(member.get("requested_incremental_weight") or 0.0),
+                    float(member.get("accepted_incremental_weight") or 0.0),
+                    target - baseline,
+                    0.0,
+                ),
+                TARGET_WEIGHT_DECIMALS,
+            )
+            participant_type = "BUY_ADD" if pm_action == "ADD" and requested_increment > 0 else "NONE"
         elif current_position:
             baseline = target
         elif membership == "ADD_CANDIDATE":
-            participant_type = "BUY_NEW" if target > 0 else "NONE"
+            requested_increment = round(
+                max(
+                    float(member.get("requested_buy_new_weight") or 0.0),
+                    float(member.get("accepted_buy_new_weight") or 0.0),
+                    target,
+                    0.0,
+                ),
+                TARGET_WEIGHT_DECIMALS,
+            )
+            participant_type = "BUY_NEW" if requested_increment > 0 else "NONE"
         baseline = round(baseline, TARGET_WEIGHT_DECIMALS)
         baseline_total += baseline
-        prepared.append({"index": index, "baseline": baseline, "draft_target": target, "participant_type": participant_type})
+        prepared.append(
+            {
+                "index": index,
+                "baseline": baseline,
+                "draft_target": target,
+                "requested_increment": requested_increment,
+                "participant_type": participant_type,
+            }
+        )
     baseline_total = round(baseline_total, TARGET_WEIGHT_DECIMALS)
     if baseline_total > float(target_gross_exposure) + _target_weight_sum_tolerance(len(members)) and _is_passive_convergence_baseline(members=members, prepared=[{"baseline": item["baseline"]} for item in prepared]):
         return {
@@ -1547,6 +2007,8 @@ def apply_lot_aware_final_reallocation(
     skipped: list[dict[str, Any]] = []
     skipped_by_index: dict[int, str] = {}
     promoted: list[dict[str, Any]] = []
+    rebatch_allocations: list[dict[str, Any]] = []
+    allocation_iterations: list[dict[str, Any]] = []
     candidates = []
     for item in prepared:
         if item["participant_type"] == "NONE":
@@ -1555,7 +2017,14 @@ def apply_lot_aware_final_reallocation(
         member = members[item["index"]]
         symbol = str(member.get("security_code") or member.get("symbol") or "")
         feasibility = feasibility_by_symbol.get(symbol)
-        request = round(max(float(item["draft_target"]) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
+        request = round(
+            max(
+                float(item.get("requested_increment") or 0.0),
+                float(item["draft_target"]) - float(item["baseline"]),
+                0.0,
+            ),
+            TARGET_WEIGHT_DECIMALS,
+        )
         candidates.append(
             {
                 **item,
@@ -1570,35 +2039,91 @@ def apply_lot_aware_final_reallocation(
         feasibility = item["feasibility"]
         member = members[item["index"]]
         min_weight = _optional_ratio((feasibility or {}).get("minimum_executable_weight"))
+        lot_resolution = dict((feasibility or {}).get("phase29_l19_lot_resolution") or {})
+        feasibility_classification = str((feasibility or {}).get("lot_first_feasibility_classification") or "")
         lot_feasible = bool((feasibility or {}).get("lot_feasible"))
         broker_eligible = (feasibility or {}).get("broker_eligible") is not False and str(member.get("broker_eligibility_status") or "") != "FAIL_CLOSED"
         required = item["request"]
+        iteration = len(accepted_by_index) + len(skipped) + 1
+        base_skip_evidence = {
+            "symbol": item["symbol"],
+            "participant_type": item["participant_type"],
+            "reallocation_iteration": iteration,
+            "opportunity_cost_order": item["priority"],
+            "requested_weight": item["request"],
+            "draft_target_weight": item["draft_target"],
+            "baseline_weight": item["baseline"],
+            "lot_resolution": lot_resolution,
+            "residual_recycled": False,
+            "residual_destination": "Cash",
+        }
+        if feasibility is None:
+            accepted_by_index[item["index"]] = 0.0
+            skipped_by_index[item["index"]] = "lot_feasibility_unknown_fail_closed"
+            skipped.append({**base_skip_evidence, "reason": "lot_feasibility_unknown_fail_closed", "request": item["request"], "blocked_reason": "lot_feasibility_unknown_fail_closed"})
+            continue
         if not lot_feasible:
-            if min_weight is not None and required < min_weight:
-                required = min_weight
+            if min_weight is not None:
+                required = max(required, min_weight)
             else:
                 required = 0.0
         if not broker_eligible or required <= 0:
             accepted_by_index[item["index"]] = 0.0
             skipped_by_index[item["index"]] = "lot_or_broker_infeasible"
-            skipped.append({"symbol": item["symbol"], "reason": "lot_or_broker_infeasible", "feasibility": feasibility})
+            skipped.append({**base_skip_evidence, "reason": "lot_or_broker_infeasible", "blocked_reason": "lot_or_broker_infeasible", "feasibility": feasibility, "feasibility_classification": feasibility_classification})
             continue
         if single_name_cap is not None:
             max_increment = round(max(float(single_name_cap) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
             if required > max_increment:
                 accepted_by_index[item["index"]] = 0.0
                 skipped_by_index[item["index"]] = "minimum_lot_exceeds_concentration_cap"
-                skipped.append({"symbol": item["symbol"], "reason": "minimum_lot_exceeds_concentration_cap", "required_weight": required, "max_increment": max_increment})
+                skipped.append(
+                    {
+                        **base_skip_evidence,
+                        "reason": "minimum_lot_exceeds_concentration_cap",
+                        "blocked_reason": str(lot_resolution.get("boundary_classification") or "minimum_lot_exceeds_concentration_cap"),
+                        "required_weight": required,
+                        "max_increment": max_increment,
+                        "feasibility_classification": "CONCENTRATION_BLOCKED",
+                    }
+                )
                 continue
         if required > remaining:
             accepted_by_index[item["index"]] = 0.0
             skipped_by_index[item["index"]] = "minimum_lot_exceeds_remaining_budget"
-            skipped.append({"symbol": item["symbol"], "reason": "minimum_lot_exceeds_remaining_budget", "required_weight": required, "remaining_budget": remaining})
+            skipped.append({**base_skip_evidence, "reason": "minimum_lot_exceeds_remaining_budget", "blocked_reason": "minimum_lot_exceeds_remaining_budget", "required_weight": required, "remaining_budget": remaining, "feasibility_classification": "CAPITAL_BLOCKED"})
             continue
         accepted_by_index[item["index"]] = required
         remaining = round(max(remaining - required, 0.0), TARGET_WEIGHT_DECIMALS)
+        allocation_iterations.append(
+            {
+                "symbol": item["symbol"],
+                "participant_type": item["participant_type"],
+                "accepted_lot_increment_weight": required,
+                "reallocation_iteration": iteration,
+                "opportunity_cost_order": item["priority"],
+                "residual_recycled": item["draft_target"] <= item["baseline"] and item["request"] > 0,
+                "residual_destination": item["symbol"],
+                "lot_resolution": lot_resolution,
+                "reason": "cap_constrained_lot_floor_allocation",
+            }
+        )
         if required > item["request"]:
             promoted.append({"symbol": item["symbol"], "from_weight": item["request"], "to_weight": required, "reason": "minimum_executable_lot_authorized_by_pc"})
+        if item["draft_target"] <= item["baseline"] and item["request"] > 0:
+            rebatch_allocations.append(
+                {
+                    "symbol": item["symbol"],
+                    "participant_type": item["participant_type"],
+                    "accepted_lot_increment_weight": required,
+                    "reallocation_iteration": iteration,
+                    "opportunity_cost_order": item["priority"],
+                    "residual_recycled": True,
+                    "residual_destination": item["symbol"],
+                    "lot_resolution": lot_resolution,
+                    "reason": "request_positive_rebatched_after_lot_first_recycling",
+                }
+            )
     final_members = []
     for member, item in zip(members, prepared):
         accepted = accepted_by_index.get(item["index"], 0.0)
@@ -1613,8 +2138,12 @@ def apply_lot_aware_final_reallocation(
                 "pre_lot_target_weight": item["draft_target"],
                 "post_lot_target_weight": final_weight,
                 "accepted_lot_increment_weight": accepted,
+                "requested_lot_first_increment_weight": item.get("requested_increment", 0.0),
             }
         )
+        feasibility = feasibility_by_symbol.get(str(member.get("security_code") or member.get("symbol") or ""))
+        feasibility_classification = str((feasibility or {}).get("lot_first_feasibility_classification") or "")
+        lot_resolution = dict((feasibility or {}).get("phase29_l19_lot_resolution") or {})
         final_members.append(
             {
                 **member,
@@ -1637,11 +2166,31 @@ def apply_lot_aware_final_reallocation(
                         "pre_lot_target_weight": item["draft_target"],
                         "post_lot_target_weight": final_weight,
                         "accepted_lot_increment_weight": accepted,
+                        "requested_lot_first_increment_weight": item.get("requested_increment", 0.0),
+                        "lot_first_feasibility_classification": feasibility_classification,
+                        "skip_reason": skipped_by_index.get(item["index"], ""),
+                        "phase29_l19_lot_resolution": lot_resolution,
                     },
                 },
                 "lot_aware_final_target_weight": final_weight,
                 "lot_aware_accepted_incremental_weight": accepted if item["participant_type"] == "BUY_ADD" else 0.0,
                 "lot_aware_accepted_buy_new_weight": accepted if item["participant_type"] == "BUY_NEW" else 0.0,
+                "lot_first_feasibility_classification": feasibility_classification,
+                "lot_first_rebatch_participant": item["participant_type"] != "NONE",
+                "lot_first_rebatch_skip_reason": skipped_by_index.get(item["index"], ""),
+                "phase29_l19_lot_resolution": {
+                    **lot_resolution,
+                    "symbol": str(member.get("security_code") or member.get("symbol") or ""),
+                    "semantic_type": item["participant_type"],
+                    "requested_target_weight": item["draft_target"],
+                    "requested_incremental_weight": item.get("requested_increment", 0.0),
+                    "final_target_weight": final_weight,
+                    "blocked_reason": skipped_by_index.get(item["index"], ""),
+                    "residual_notional": None,
+                    "residual_recycled": accepted > 0,
+                    "residual_destination": str(member.get("security_code") or member.get("symbol") or "") if accepted > 0 else "Cash",
+                    "final_quantity_delta": lot_resolution.get("executable_quantity_delta"),
+                },
             }
         )
     total = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
@@ -1649,6 +2198,34 @@ def apply_lot_aware_final_reallocation(
         reason_codes.append("lot_aware_infeasible_allocations_reallocated_or_cash")
     if promoted:
         reason_codes.append("lot_aware_minimum_executable_lot_authorized")
+    if rebatch_allocations:
+        reason_codes.append("lot_first_rebatch_recycled_request_positive_capital")
+    deployable_budget = round(max(float(target_gross_exposure) - baseline_total, 0.0), TARGET_WEIGHT_DECIMALS)
+    allocated_increment = round(max(total - baseline_total, 0.0), TARGET_WEIGHT_DECIMALS)
+    residual_cash_reason = "COMPETITION_EXHAUSTED"
+    if remaining <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        residual_cash_reason = "TARGET_GROSS_EXPOSURE_FULLY_ALLOCATED"
+    elif not candidates:
+        residual_cash_reason = "NO_ELIGIBLE_OPPORTUNITY"
+    elif all(str(item.get("reason") or "") in {"minimum_lot_exceeds_concentration_cap"} for item in skipped) and skipped:
+        residual_cash_reason = "CONCENTRATION_LIMIT"
+    elif any(str(item.get("reason") or "") == "minimum_lot_exceeds_remaining_budget" for item in skipped):
+        residual_cash_reason = "CAPITAL_BELOW_NEXT_LOT"
+    elif all(str(item.get("reason") or "") in {"lot_or_broker_infeasible"} for item in skipped) and skipped:
+        residual_cash_reason = "NO_LOT_FEASIBLE_OPPORTUNITY"
+    capital_conservation = {
+        "authority_type": "PORTFOLIO_CONSTRUCTION_LOT_FIRST_CAPITAL_CONSERVATION",
+        "target_gross_exposure": target_gross_exposure,
+        "baseline_existing_required_weight": baseline_total,
+        "deployable_budget_weight": deployable_budget,
+        "allocated_increment_weight": allocated_increment,
+        "residual_cash_weight": remaining,
+        "conservation_lhs_weight": round(allocated_increment + remaining, TARGET_WEIGHT_DECIMALS),
+        "conservation_rhs_weight": deployable_budget,
+        "conservation_difference_weight": round((allocated_increment + remaining) - deployable_budget, TARGET_WEIGHT_DECIMALS),
+        "status": "PASS" if abs((allocated_increment + remaining) - deployable_budget) <= _target_weight_sum_tolerance(len(members)) else "REVIEW_REQUIRED",
+    }
+    residual_recycled_weight = round(sum(float(row.get("accepted_lot_increment_weight") or 0.0) for row in allocation_iterations), TARGET_WEIGHT_DECIMALS)
     return {
         "members": final_members,
         "reason_codes": sorted(set(reason_codes)),
@@ -1661,6 +2238,17 @@ def apply_lot_aware_final_reallocation(
             "remaining_cash_weight": remaining,
             "skipped": skipped,
             "promoted": promoted,
+            "rebatch_allocations": rebatch_allocations,
+            "phase29_l19_allocation_iterations": allocation_iterations,
+            "lot_first_rebatch_enabled": True,
+            "lot_first_rebatch_candidate_count": len(candidates),
+            "phase29_l19_cap_constrained_lot_floor_enabled": True,
+            "phase29_l19_strategy_safety_cap_separated": any(bool((item.get("lot_resolution") or {}).get("safety_hard_cap_weight")) for item in skipped + allocation_iterations + rebatch_allocations),
+            "phase29_l19_reallocation_iterations": len(candidates),
+            "phase29_l19_residual_recycled_weight": residual_recycled_weight,
+            "phase29_l19_candidate_exhaustion_status": "EXHAUSTED_TO_CASH" if candidates and remaining > TARGET_WEIGHT_ABSOLUTE_TOLERANCE and not allocation_iterations else "ALLOCATED_OR_NOT_APPLICABLE",
+            "residual_cash_reason": residual_cash_reason,
+            "capital_conservation": capital_conservation,
             "ps_preflight_decides_economic_allocation": False,
             "pc_remains_target_weight_authority": True,
         },

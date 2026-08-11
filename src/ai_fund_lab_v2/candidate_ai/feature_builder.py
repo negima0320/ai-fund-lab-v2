@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from typing import Any, Iterable, Mapping
 
 from ai_fund_lab_v2.candidate_ai.leakage_audit import audit_feature_table
@@ -120,7 +120,11 @@ def _build_row(
 
     closes = [_to_float(row["close"]) for row in visible_rows]
     volumes = [_to_float(row["volume"]) for row in visible_rows]
+    traded_values = [_optional_float(_traded_value(row)) for row in visible_rows]
     returns_20d = [_safe_ratio(closes[index], closes[index - 1]) for index in range(len(closes) - 20, len(closes))]
+    rolling_median_traded_value_20 = None
+    if all(value is not None for value in traded_values[-20:]):
+        rolling_median_traded_value_20 = _round(median([float(value) for value in traded_values[-20:]]))
     base_row.update(
         {
             "price_momentum_return_5d": _round(_safe_ratio(closes[-1], closes[-6])),
@@ -129,6 +133,7 @@ def _build_row(
             "volatility_return_std_20d": _round(pstdev(returns_20d)),
             "trend_close_over_ma_20d": _round(_safe_ratio(closes[-1], mean(closes[-20:]))),
             "liquidity_avg_volume_20d": _round(mean(volumes[-20:])),
+            "rolling_median_traded_value_20": rolling_median_traded_value_20,
         }
     )
     return base_row
@@ -142,11 +147,28 @@ def _empty_feature_values() -> dict[str, Any]:
         "volatility_return_std_20d": None,
         "trend_close_over_ma_20d": None,
         "liquidity_avg_volume_20d": None,
+        "rolling_median_traded_value_20": None,
     }
 
 
 def _to_float(value: Any) -> float:
     return float(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _traded_value(row: Mapping[str, Any]) -> Any:
+    for key in ("traded_value", "value_traded", "turnover_value", "Va", "TradingValue", "turnover"):
+        if row.get(key) not in (None, ""):
+            return row.get(key)
+    return None
 
 
 def _safe_ratio(current: float, previous: float) -> float:

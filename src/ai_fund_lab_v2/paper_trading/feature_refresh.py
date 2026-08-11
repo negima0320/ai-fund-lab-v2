@@ -690,6 +690,7 @@ def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str
             "code": quotes["code"].astype(str),
             "close": pd.to_numeric(quotes["Close"], errors="coerce"),
             "volume": pd.to_numeric(quotes["Volume"], errors="coerce"),
+            "traded_value": pd.to_numeric(quotes["traded_value"], errors="coerce") if "traded_value" in quotes.columns else pd.NA,
         }
     )
     source = source[source["date"] <= target_data_until].sort_values(["code", "date"])
@@ -698,6 +699,7 @@ def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str
         visible = group.reset_index(drop=True)
         closes = visible["close"]
         volumes = visible["volume"]
+        traded_values = visible["traded_value"]
         insufficient_history = len(visible) < 61
         price_missing = _window_has_missing(closes, 61)
         volume_missing = _window_has_missing(volumes, 20)
@@ -718,12 +720,12 @@ def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str
             "missing_flags_price": bool(price_missing),
             "missing_flags_volume": bool(volume_missing),
         }
-        row.update(_formal_feature_values(closes=closes, volumes=volumes, eligible=eligible))
+        row.update(_formal_feature_values(closes=closes, volumes=volumes, traded_values=traded_values, eligible=eligible))
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, eligible: bool) -> dict[str, Any]:
+def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, traded_values: pd.Series, eligible: bool) -> dict[str, Any]:
     if not eligible:
         return {
             "price_momentum_return_5d": None,
@@ -736,9 +738,11 @@ def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, eligible: b
             "trend_ma_5_20_ratio": None,
             "trend_ma_20_60_ratio": None,
             "liquidity_avg_volume_20d": None,
+            "rolling_median_traded_value_20": None,
         }
     close_values = [float(value) for value in closes.tail(61).tolist()]
     volume_values = [float(value) for value in volumes.tail(20).tolist()]
+    traded_window = pd.to_numeric(traded_values.tail(20), errors="coerce")
     returns_20d = [_safe_ratio_value(close_values[index], close_values[index - 1]) for index in range(len(close_values) - 20, len(close_values))]
     ma5 = sum(close_values[-5:]) / 5
     ma20 = sum(close_values[-20:]) / 20
@@ -756,6 +760,7 @@ def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, eligible: b
         "trend_ma_5_20_ratio": _round(_safe_divide(ma5, ma20)),
         "trend_ma_20_60_ratio": _round(_safe_divide(ma20, ma60)),
         "liquidity_avg_volume_20d": _round(avg_volume_20),
+        "rolling_median_traded_value_20": None if traded_window.isna().any() else _round(float(traded_window.median())),
     }
 
 

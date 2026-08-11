@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ai_fund_lab_v2.strategy import corporate_event, market_context
+from ai_fund_lab_v2.strategy import corporate_event, market_context, portfolio_policy as pp
+from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import ArtifactCompatibilityResult
 from ai_fund_lab_v2.strategy.portfolio_policy import (
     PortfolioPolicyConfig,
     PortfolioPolicyConsumerError,
@@ -203,6 +204,36 @@ def test_phase22_c_artifact_hash_is_stable_and_detects_mismatch(tmp_path: Path) 
     assert payload["artifact_hash"] != portfolio_policy_hash(payload)
 
 
+def test_phase29_j1_portfolio_policy_routes_dpc_capacity_to_dce_without_low_capacity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pp, "validate_market_context_compatibility", lambda *args, **kwargs: _compatible_result("market_context"))
+    monkeypatch.setattr(pp, "validate_corporate_event_compatibility", lambda *args, **kwargs: _compatible_result("corporate_event"))
+    payload, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path, accepted=True),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path, accepted=True),
+        candidate_summary=_summary(tmp_path, "candidate_j1", summary={"consumer_eligible_rows": 50}),
+        opportunity_summary=_summary(
+            tmp_path,
+            "opportunity_j1",
+            summary={"consumer_eligible_rows": 50, "buy_eligible_opportunity_count": 50, "meaningful_allocation_position_count": 50},
+        ),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 200000},
+        current_exposure_summary={"gross_exposure": 800000},
+        policy_config=_config(tmp_path),
+        safety_limit_summary={"minimum_cash_ratio": 0.0, "maximum_gross_exposure_ratio": 1.0, "concentration": {"maximum_position_weight": 0.25}},
+    )
+    dce_internal = payload["upstream_artifacts"]["internal_policy_resolvers"]["dynamic_cash_exposure_internal"]
+
+    assert payload["resolved_opportunity_capacity"] == 50
+    assert payload["meaningful_allocation_position_count"] == 50
+    assert dce_internal["opportunity_capacity_authority"]["resolved_value"] == 50
+    assert dce_internal["opportunity_capacity_authority"]["source"] == "dynamic_position_count.resolved_opportunity_capacity"
+    assert "internal_dynamic_cash_exposure:low_opportunity_capacity" not in payload["reason_codes"]
+    assert dce_internal["target_gross_exposure_ratio"] == 1.0
+    assert dce_internal["target_gross_exposure_ratio"] > 0.90
+
+
 def _produce(tmp_path: Path):
     return produce_portfolio_policy_artifact(
         business_date="2026-07-15",
@@ -249,9 +280,10 @@ def _summary(
     status: str = "PASS",
     business_date: str = "2026-07-15",
     feature_date: str = "2026-07-15",
+    summary: dict[str, object] | None = None,
 ) -> PortfolioPolicyInputSummary:
     path = tmp_path / f"{kind}_summary.json"
-    payload = {"kind": kind, "business_date": business_date, "feature_date": feature_date, "count": 2}
+    payload = summary or {"kind": kind, "business_date": business_date, "feature_date": feature_date, "count": 2}
     _write_json(path, payload)
     return PortfolioPolicyInputSummary(
         status=status,
@@ -269,6 +301,7 @@ def _write_market_context(
     schema_version: str = market_context.SCHEMA_VERSION,
     business_date: str = "2026-07-15",
     feature_date: str = "2026-07-15",
+    accepted: bool = False,
 ) -> Path:
     source = tmp_path / "market_source.parquet"
     source.write_text("market-source", encoding="utf-8")
@@ -283,13 +316,13 @@ def _write_market_context(
         "market_breadth": "NEUTRAL",
         "volatility_regime": "NORMAL",
         "sector_dispersion": "MODERATE",
-        "confidence": 0.0,
-        "uncertainty": "THRESHOLD_OR_SOURCE_REVIEW_REQUIRED",
-        "artifact_lifecycle_status": "DRAFT",
+        "confidence": 0.9 if accepted else 0.0,
+        "uncertainty": "LOW" if accepted else "THRESHOLD_OR_SOURCE_REVIEW_REQUIRED",
+        "artifact_lifecycle_status": "ACCEPTED" if accepted else "DRAFT",
         "source_authority_status": "VALID",
-        "producer_result_status": "REVIEW_REQUIRED",
-        "runtime_consumer_eligibility": "NOT_ELIGIBLE",
-        "reason_codes": ["market_context_threshold_config_required"],
+        "producer_result_status": "PASS" if accepted else "REVIEW_REQUIRED",
+        "runtime_consumer_eligibility": "ELIGIBLE" if accepted else "NOT_ELIGIBLE",
+        "reason_codes": [] if accepted else ["market_context_threshold_config_required"],
         "source_artifacts": [{"role": "jquants_daily_quotes", "path": str(source), "required": True, "exists": True}],
         "source_hashes": [{"role": "jquants_daily_quotes", "path": str(source), "sha256": market_context.sha256_file(source)}],
         "temporal_safety": {
@@ -311,6 +344,7 @@ def _write_corporate_event(
     *,
     business_date: str = "2026-07-15",
     feature_date: str = "2026-07-15",
+    accepted: bool = False,
 ) -> Path:
     source = tmp_path / "corporate_source.parquet"
     source.write_text("corporate-source", encoding="utf-8")
@@ -320,11 +354,11 @@ def _write_corporate_event(
         "business_date": business_date,
         "as_of": f"{business_date}T00:00:00+00:00",
         "feature_date": feature_date,
-        "artifact_lifecycle_status": "DRAFT",
+        "artifact_lifecycle_status": "ACCEPTED" if accepted else "DRAFT",
         "source_authority_status": "VALID",
-        "producer_result_status": "REVIEW_REQUIRED",
-        "runtime_consumer_eligibility": "NOT_ELIGIBLE",
-        "coverage_status": "PARTIAL",
+        "producer_result_status": "PASS" if accepted else "REVIEW_REQUIRED",
+        "runtime_consumer_eligibility": "ELIGIBLE" if accepted else "NOT_ELIGIBLE",
+        "coverage_status": "FULL" if accepted else "PARTIAL",
         "events": [],
         "event_count": 0,
         "event_taxonomy": sorted(corporate_event.EVENT_TYPES),
@@ -333,7 +367,7 @@ def _write_corporate_event(
             "fields": ["security_code", "event_type", "announcement_date", "effective_date", "availability_date", "source_reference", "revision_id"],
             "row_order_dependent": False,
         },
-        "reason_codes": ["corporate_event_source_coverage_incomplete"],
+        "reason_codes": [] if accepted else ["corporate_event_source_coverage_incomplete"],
         "source_artifacts": [{"role": "jquants_listed_issues", "path": str(source), "required": True, "exists": True}],
         "source_hashes": [{"role": "jquants_listed_issues", "path": str(source), "sha256": corporate_event.sha256_file(source)}],
         "temporal_safety": {
@@ -364,3 +398,26 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _compatible_result(kind: str) -> ArtifactCompatibilityResult:
+    return ArtifactCompatibilityResult(
+        artifact_kind=kind,
+        artifact_path=f"{kind}.json",
+        schema_version=f"{kind}.v1",
+        status="COMPATIBLE_NOT_CONNECTED",
+        schema_compatible=True,
+        shadow_read_allowed=True,
+        production_decision_allowed=False,
+        business_date="2026-07-15",
+        feature_date="2026-07-15",
+        business_date_aligned=True,
+        feature_date_point_in_time=True,
+        artifact_hash_valid=True,
+        source_lineage_valid=True,
+        source_hashes_valid=True,
+        lifecycle_status="DRAFT",
+        producer_result_status="PASS",
+        runtime_consumer_eligibility="NOT_ELIGIBLE",
+        reason_codes=(),
+    )

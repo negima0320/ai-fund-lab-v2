@@ -1,6 +1,6 @@
 {
   "schema_version": "portfolio_safety_limits.v1",
-  "config_version": "phase22_hs_portfolio_safety_limits.v1",
+  "config_version": "phase29_j2_portfolio_safety_limits.v1",
   "authority_owner": "Safety Layer",
   "position_count": {
     "safety_hard_maximum": null,
@@ -19,10 +19,10 @@
     ]
   },
   "cash_exposure": {
-    "minimum_cash_ratio": 0.1,
-    "maximum_gross_exposure_ratio": 0.9,
+    "minimum_cash_ratio": 0.0,
+    "maximum_gross_exposure_ratio": 1.0,
     "authority": "Safety hard limit",
-    "rationale": "Independent cash/exposure hard limits. Minimum 10% cash reserve and maximum 90% gross exposure leave operational room above the Strategy 20/80 baseline without reusing legacy target_investment_ratio=0.85 or max_exposure=850000 as Safety authority.",
+    "rationale": "Independent no-leverage cash-equity boundary. No generic fixed cash reserve is required; gross exposure may approach but must not exceed 100% of authoritative equity, while Pending, Broker, Corporate Action, concentration, temporal, and unresolved-authority gates remain separate Safety controls.",
     "effective_scope": [
       "production",
       "demo",
@@ -33,7 +33,13 @@
       "docs/02_architecture/strategy_architecture_v1.md",
       "docs/03_ai_design/capital_deployment_design.md",
       "docs/phase_reports/phase22_hs_independent_safety_hard_maximum_definition.md"
-    ]
+    ],
+    "deprecated_fixed_policy_values": {
+      "minimum_cash_ratio": 0.1,
+      "maximum_gross_exposure_ratio": 0.9,
+      "classification": "DEPRECATED_METADATA_NOT_ACTIVE_FIXED_RESERVE_AUTHORITY",
+      "replacement_semantics": "cash_equity_no_leverage_boundary"
+    }
   },
   "concentration": {
     "maximum_position_weight": 0.25,

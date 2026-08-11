@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from ai_fund_lab_v2.broker.settings import BrokerSettings
 from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntimeV2DemoSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.promotion import attach_approval_link, promote_order_plan_to_pending
+from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
     REDUCE_QUANTITY_CONTRACT_VERSION,
     SellExitDecision,
@@ -191,14 +195,7 @@ def test_phase26_pf3l_exit_sell_planning_materializes_approval_conditions_and_co
 def test_phase19_bt_reduce_pending_sell_conflict_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path, mode="demo")
     _write_current_state(runtime_root, mode="demo", positions=[_position("6522", quantity=1000, price=100)])
-    _write_json(
-        runtime_root / "pending_order_plan" / "pending_order_plan.json",
-        {
-            "state": "APPROVED",
-            "active_pending": True,
-            "items": [{"symbol": "6522", "side": "SELL", "quantity": 100}],
-        },
-    )
+    _write_existing_sell_pending(runtime_root, mode="demo", symbol="6522", quantity=100)
 
     result = run_sell_planning_pending_pipeline(
         runtime_root=runtime_root,
@@ -217,7 +214,8 @@ def test_phase19_bt_reduce_pending_sell_conflict_review_required(tmp_path):
 
     assert result.status == "REVIEW_REQUIRED"
     assert result.selected_count == 0
-    assert "REVIEW_REQUIRED_REDUCE_PENDING_SELL_CONFLICT:6522" in result.reason
+    assert "PENDING_SELL_CONFLICTING_QUANTITY_REVIEW" in result.reason
+    assert "PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED" in result.reason
 
 
 def test_phase19_bt_exit_priority_over_reduce_same_symbol(tmp_path):
@@ -371,6 +369,47 @@ def _position(symbol: str, *, quantity: float, price: float) -> dict:
         "source": "fixture",
         "as_of": BUSINESS_DATE,
     }
+
+
+def _write_existing_sell_pending(root: Path, *, mode: str, symbol: str, quantity: float):
+    order_plan_path = root / "fixtures" / "existing_sell_order_plan.json"
+    order_plan_path.parent.mkdir(parents=True, exist_ok=True)
+    order_plan_path.write_text(json.dumps({"order_plan_id": "order-plan-existing-sell"}), encoding="utf-8")
+    item = PendingOrderItem(
+        pending_item_id=f"opi-existing-reduce-{symbol}",
+        symbol=symbol,
+        side="SELL",
+        quantity=quantity,
+        order_type="MARKET",
+        estimated_price=100,
+        estimated_amount=quantity * 100,
+        approved=True,
+        state="READY",
+        quantity_contract={"source_decision": "REDUCE"},
+        source_decision_type="REDUCE",
+        source_position_symbol=symbol,
+    )
+    pending = promote_order_plan_to_pending(
+        order_plan_id="order-plan-existing-sell",
+        source_order_plan_path=str(order_plan_path),
+        source_order_plan_hash="sha256:phase19bt-existing-sell-fixture",
+        environment=mode,
+        plan_created_date=BUSINESS_DATE,
+        intended_submit_date=BUSINESS_DATE,
+        target_session_date=BUSINESS_DATE,
+        items=(item,),
+    )
+    pending = attach_approval_link(
+        pending,
+        approval_path=str(root / "fixtures" / "existing_sell_approval.json"),
+        approval_hash="sha256:phase19bt-existing-sell-approval",
+        approval_status="APPROVED",
+        approved_item_ids=(item.pending_item_id,),
+        approval_expires_at=f"{BUSINESS_DATE}T15:00:00+09:00",
+    )
+    pending = replace(pending, state=PendingPlanState.APPROVED)
+    write_pending_order_plan(root / "pending_order_plan" / "pending_order_plan.json", pending)
+    return pending
 
 
 def _partial_sell_filled_snapshot(**kwargs):

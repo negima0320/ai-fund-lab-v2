@@ -21,6 +21,11 @@ from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
     materialize_corporate_action_adjustment_authority,
 )
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import evaluate_opportunity_buy_eligibility
+from ai_fund_lab_v2.runtime_v2.historical_support.corporate_action_quarantine import (
+    quarantine_fields,
+    registry_path as corporate_action_quarantine_registry_path,
+    unresolved_entry as unresolved_corporate_action_quarantine_entry,
+)
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
@@ -1699,6 +1704,30 @@ def _submit_guard_item_evidence(
     if feasibility_evidence:
         evidence.update(_submit_feasibility_evidence_fields(feasibility_evidence))
         evidence["submit_aggregate_status"] = str(feasibility_evidence.get("status") or "")
+    if mode == "historical":
+        quarantine_entry = unresolved_corporate_action_quarantine_entry(runtime_root, item.symbol)
+        if quarantine_entry:
+            reason = str(quarantine_entry.get("reason") or "corporate_action_event_not_resolved")
+            event_status = str(quarantine_entry.get("event_status") or "IMPACT_DETECTED")
+            evidence.update(quarantine_fields(symbol=str(item.symbol), reason=reason))
+            evidence.update(
+                {
+                    "corporate_action_event_status": event_status,
+                    "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+                    "corporate_action_adjustment_authority_reason": reason,
+                    "corporate_action_reason_codes": ["corporate_action_event_not_resolved"],
+                    "quantity_reconciliation_status": "REVIEW_REQUIRED",
+                    "price_reconciliation_status": "REVIEW_REQUIRED",
+                    "already_applied_status": "UNKNOWN",
+                }
+            )
+            return _blocked_guard_evidence(
+                evidence=evidence,
+                reason=reason,
+                violated_policy="historical_corporate_action_symbol_quarantine",
+                violated_policy_source=str(corporate_action_quarantine_registry_path(runtime_root)),
+                should_have_been_blocked_at_planning=True,
+            )
     corporate_action_authority = evaluate_corporate_action_adjustment_authority(
         runtime_root=runtime_root,
         business_date=business_date,

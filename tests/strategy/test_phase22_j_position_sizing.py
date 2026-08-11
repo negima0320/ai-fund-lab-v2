@@ -717,6 +717,75 @@ def test_phase28_d55_b_ps_lot_feasibility_preflight_reports_minimum_executable_n
     assert "below_minimum_executable_notional" in preflight["reason_codes"]
 
 
+def test_phase29_e_ps_preflight_includes_request_positive_buy_new_trimmed_to_zero(tmp_path: Path) -> None:
+    row = _row("22220", price=1000.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    row.update({"target_weight": 0.0, "requested_buy_new_weight": 0.06, "accepted_buy_new_weight": 0.0})
+    row["target_weight_resolution"]["resolved_weight"] = 0.0
+
+    payload = _produce(tmp_path / "phase29_e_request_positive_zero_accept_preflight", rows=[row], target_count=1, exposure=0.8).payload
+    preflight = payload["lot_feasibility_preflight"][0]
+
+    assert preflight["symbol"] == "22220"
+    assert preflight["requested_basis_notional"] == 60000.0
+    assert preflight["target_basis_notional"] == 60000.0
+    assert preflight["lot_first_feasibility_classification"] == "EXECUTABLE_IF_RECYCLED"
+    assert preflight["concentration_headroom_weight"] == 0.18
+
+
+def test_phase29_e_ps_preflight_classifies_one_lot_above_concentration_headroom(tmp_path: Path) -> None:
+    row = _row("11110", price=1000.0, membership="RETAIN", pm_action="ADD", current_weight=0.17)
+    row.update({"current_position": True, "current_quantity": 100, "target_weight": 0.17, "requested_incremental_weight": 0.04, "accepted_incremental_weight": 0.0})
+    row["target_weight_resolution"]["resolved_weight"] = 0.17
+
+    payload = _produce(tmp_path / "phase29_e_concentration_preflight", rows=[row], target_count=1, exposure=0.8).payload
+    preflight = payload["lot_feasibility_preflight"][0]
+
+    assert preflight["intent_type"] == "BUY_ADD"
+    assert preflight["lot_first_feasibility_classification"] == "CONCENTRATION_BLOCKED"
+    assert preflight["concentration_feasible"] is False
+    assert "minimum_lot_exceeds_concentration_headroom" in preflight["reason_codes"]
+
+
+def test_phase29_l19_ps_preflight_materializes_strategy_safety_lot_boundary(tmp_path: Path) -> None:
+    row = _row("94320", price=151.3, membership="RETAIN", pm_action="ADD", current_weight=0.136879)
+    row.update(
+        {
+            "current_position": True,
+            "current_quantity": 900,
+            "target_weight": 0.18,
+            "requested_incremental_weight": 0.043121,
+            "accepted_incremental_weight": 0.043121,
+        }
+    )
+    row["target_weight_resolution"]["resolved_weight"] = 0.18
+
+    payload = _produce(tmp_path / "phase29_l19_add_boundary_preflight", rows=[row], target_count=1, exposure=1.0).payload
+    resolution = payload["lot_feasibility_preflight"][0]["phase29_l19_lot_resolution"]
+
+    assert resolution["strategy_cap_weight"] == 0.18
+    assert resolution["safety_hard_cap_weight"] == 0.25
+    assert resolution["remaining_strategy_headroom"] == 0.043121
+    assert resolution["maximum_strategy_feasible_lots"] < resolution["minimum_policy_lots"]
+    assert resolution["maximum_safety_feasible_lots"] >= resolution["minimum_policy_lots"]
+    assert resolution["executable_quantity_delta"] == 0
+    assert resolution["boundary_classification"] == "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX"
+
+
+def test_phase29_l19_ps_preflight_separates_buy_new_safety_hard_breach(tmp_path: Path) -> None:
+    row = _row("78780", price=2872.5, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    row.update({"target_weight": 0.18, "requested_buy_new_weight": 0.18, "accepted_buy_new_weight": 0.18})
+    row["target_weight_resolution"]["resolved_weight"] = 0.18
+
+    payload = _produce(tmp_path / "phase29_l19_buy_new_hard_breach_preflight", rows=[row], target_count=1, exposure=1.0).payload
+    resolution = payload["lot_feasibility_preflight"][0]["phase29_l19_lot_resolution"]
+
+    assert resolution["strategy_cap_weight"] == 0.18
+    assert resolution["safety_hard_cap_weight"] == 0.25
+    assert resolution["maximum_safety_feasible_lots"] < resolution["minimum_policy_lots"]
+    assert resolution["safety_hard_cap_preserved"] is False
+    assert resolution["boundary_classification"] == "MINIMUM_EXECUTABLE_LOT_EXCEEDS_SAFETY_HARD_MAX"
+
+
 def test_phase28_d55_b_ps_final_sizing_consumes_lot_aware_pc_target_for_buy_new(tmp_path: Path) -> None:
     row = _row("11110", price=1000.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
     row["target_weight"] = 0.11
@@ -991,6 +1060,65 @@ def test_phase28_d36_existing_add_positive_increment_above_cap_remains_blocked(t
     assert "target_weight_above_position_cap:0" in str(exc.value)
 
 
+def test_phase29_g_passive_hold_drift_above_safety_cap_is_retained(tmp_path: Path) -> None:
+    row = _targeted_row("21340", membership="RETAIN", pm_action="HOLD", current_weight=0.26, target_weight=0.26, quantity=100)
+
+    payload = _produce(tmp_path / "phase29_g_hold_drift", rows=[row], target_count=1, exposure=0.79).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["target_weight"] == 0.26
+    assert item["target_quantity_candidate"] == 100
+    assert item["quantity_delta_candidate"] == 0
+    assert "PASSIVE_CONCENTRATION_DRIFT_RETAINED" in item["reason_codes"]
+    assert "SAFETY_CAP_DRIFT_NO_RISK_INCREASE" in item["reason_codes"]
+
+
+def test_phase29_g_passive_add_intent_zero_increment_above_safety_cap_is_retained(tmp_path: Path) -> None:
+    row = _targeted_row("21340", membership="RETAIN", pm_action="ADD", current_weight=0.262811, target_weight=0.262811, quantity=8200, price=36.0)
+    row.update(
+        {
+            "accepted_incremental_weight": 0.0,
+            "lot_aware_accepted_incremental_weight": 0.0,
+            "target_weight_change": 0.0,
+            "add_allocation_eligibility_status": "FAIL_CLOSED",
+        }
+    )
+
+    payload = _produce(tmp_path / "phase29_g_21340_add_zero", rows=[row], target_count=1, exposure=0.79).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["pm_action"] == "ADD"
+    assert item["target_weight"] == 0.262811
+    assert item["transaction_delta_weight"] == 0.0
+    assert item["transaction_quantity_candidate"] == 0
+    assert item["target_quantity_candidate"] == 8200
+    assert item["quantity_delta_candidate"] == 0
+    assert item["quantity_status"] == "RESOLVED_ZERO_DELTA"
+    assert "ADD_TARGET_WEIGHT_UNCHANGED" in item["reason_codes"]
+    assert "PASSIVE_CONCENTRATION_DRIFT_RETAINED" in item["reason_codes"]
+    assert "SAFETY_CAP_DRIFT_NO_RISK_INCREASE" in item["reason_codes"]
+
+
+def test_phase29_g_add_risk_increase_above_cap_remains_blocked(tmp_path: Path) -> None:
+    row = _targeted_row("21341", membership="RETAIN", pm_action="ADD", current_weight=0.24, target_weight=0.27, quantity=1000)
+
+    with pytest.raises(PositionSizingSchemaError) as exc:
+        _produce(tmp_path / "phase29_g_add_increase_to_above_cap", rows=[row], target_count=1, exposure=0.79)
+
+    assert "target_weight_above_position_cap:0" in str(exc.value)
+
+
+def test_phase29_g_already_above_cap_further_add_remains_blocked(tmp_path: Path) -> None:
+    row = _targeted_row("21342", membership="RETAIN", pm_action="ADD", current_weight=0.26, target_weight=0.27, quantity=1000)
+
+    with pytest.raises(PositionSizingSchemaError) as exc:
+        _produce(tmp_path / "phase29_g_add_more_when_already_above_cap", rows=[row], target_count=1, exposure=0.79)
+
+    assert "target_weight_above_position_cap:0" in str(exc.value)
+
+
 def test_phase28_d36_buy_new_above_cap_remains_strictly_capped_and_validator_blocks_mutation(tmp_path: Path) -> None:
     row = _row("6098", price=1000.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
     row.update({"target_weight": 0.185})
@@ -1046,6 +1174,18 @@ def test_phase28_d36_reduce_above_cap_risk_reducing_target_allowed(tmp_path: Pat
     assert "EXISTING_POSITION_RISK_REDUCING_ABOVE_CAP_ACCEPTED" in item["reason_codes"]
 
 
+def test_phase29_g_reduce_from_above_safety_cap_remains_allowed(tmp_path: Path) -> None:
+    row = _targeted_row("21343", membership="REDUCE_CANDIDATE", pm_action="REDUCE", current_weight=0.50, target_weight=0.30, quantity=1000, price=500.0)
+
+    payload = _produce(tmp_path / "phase29_g_reduce_above_safety_cap", rows=[row], target_count=1, exposure=0.79).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["target_weight"] == 0.30
+    assert item["quantity_delta_candidate"] < 0
+    assert "SAFETY_CAP_DRIFT_RISK_REDUCING_TRANSACTION_ALLOWED" in item["reason_codes"]
+
+
 def test_phase28_d36_exit_above_cap_remains_valid(tmp_path: Path) -> None:
     row = _row("83062", price=500.0, membership="REMOVE_CANDIDATE", pm_action="EXIT", current_weight=0.24)
     row.update({"current_quantity": 300, "target_weight": 0.0})
@@ -1058,6 +1198,88 @@ def test_phase28_d36_exit_above_cap_remains_valid(tmp_path: Path) -> None:
     assert item["target_weight"] == 0.0
     assert item["target_quantity_candidate"] == 0
     assert item["quantity_delta_candidate"] == -300
+
+
+def test_phase29_g_exit_from_above_safety_cap_remains_allowed(tmp_path: Path) -> None:
+    row = _targeted_row("21344", membership="REMOVE_CANDIDATE", pm_action="EXIT", current_weight=0.30, target_weight=0.0, quantity=1000)
+
+    payload = _produce(tmp_path / "phase29_g_exit_above_safety_cap", rows=[row], target_count=1, exposure=0.79).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["target_weight"] == 0.0
+    assert item["target_quantity_candidate"] == 0
+    assert item["quantity_delta_candidate"] == -1000
+
+
+def test_phase29_g_buy_new_safety_cap_behavior_is_not_weakened(tmp_path: Path) -> None:
+    row = _row("21345", price=1000.0, membership="ADD_CANDIDATE", pm_action="NEW")
+    row.update({"target_weight": 0.30})
+    row["target_weight_resolution"]["resolved_weight"] = 0.30
+
+    payload = _produce(
+        tmp_path / "phase29_g_buy_new_cap",
+        rows=[row],
+        target_count=1,
+        exposure=0.79,
+    ).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["position_type"] == "NEW_POSITION"
+    assert item["target_weight"] == 0.18
+    assert item["maximum_position_weight"] == 0.18
+    assert "position_concentration_cap_applied" in item["reason_codes"]
+
+
+def test_phase29_g_missing_current_quantity_does_not_assume_passive_drift(tmp_path: Path) -> None:
+    row = _targeted_row("21346", membership="RETAIN", pm_action="ADD", current_weight=0.26, target_weight=0.26, quantity=100)
+    payload = _produce(tmp_path / "phase29_g_missing_quantity_source", rows=[row], target_count=1, exposure=0.79).payload
+    mutated = json.loads(json.dumps(payload))
+    mutated["positions"][0]["current_quantity"] = 0
+
+    with pytest.raises(PositionSizingSchemaError) as exc:
+        validate_position_sizing_artifact(mutated)
+
+    assert "target_weight_above_safety_cap:0" in str(exc.value)
+
+
+def test_phase29_g_passive_drift_does_not_invalidate_unrelated_quantities(tmp_path: Path) -> None:
+    drift = _targeted_row("21340", membership="RETAIN", pm_action="ADD", current_weight=0.262811, target_weight=0.262811, quantity=8200, price=36.0)
+    drift.update({"accepted_incremental_weight": 0.0, "lot_aware_accepted_incremental_weight": 0.0, "target_weight_change": 0.0})
+    buy_new = _row("40520", price=500.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0, priority=2)
+    buy_new.update({"target_weight": 0.12})
+    buy_new["target_weight_resolution"]["resolved_weight"] = 0.12
+
+    payload = _produce(tmp_path / "phase29_g_unrelated_isolation", rows=[drift, buy_new], target_count=2, exposure=0.79).payload
+    by_code = {item["security_code"]: item for item in payload["positions"]}
+
+    assert payload["producer_result_status"] == "PASS"
+    assert by_code["21340"]["quantity_delta_candidate"] == 0
+    assert by_code["40520"]["quantity_status"] == "RESOLVED_CANDIDATE"
+    assert by_code["40520"]["quantity_delta_candidate"] > 0
+
+
+def test_phase29_g_safety_cap_boundary_uses_existing_tolerance(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "phase29_g_boundary", rows=[_row("21347", price=1000.0)], target_count=1, exposure=0.79).payload
+
+    below = json.loads(json.dumps(payload))
+    below["positions"][0].update({"target_weight": 0.249999, "maximum_position_weight": 1.0})
+    validate_position_sizing_artifact(below)
+
+    exact = json.loads(json.dumps(payload))
+    exact["positions"][0].update({"target_weight": 0.25, "maximum_position_weight": 1.0})
+    validate_position_sizing_artifact(exact)
+
+    within_tolerance = json.loads(json.dumps(payload))
+    within_tolerance["positions"][0].update({"target_weight": 0.250001, "maximum_position_weight": 1.0})
+    validate_position_sizing_artifact(within_tolerance)
+
+    above = json.loads(json.dumps(payload))
+    above["positions"][0].update({"target_weight": 0.250002, "maximum_position_weight": 1.0})
+    with pytest.raises(PositionSizingSchemaError) as exc:
+        validate_position_sizing_artifact(above)
+    assert "target_weight_above_safety_cap:0" in str(exc.value)
 
 
 def test_phase28_d34_reduce_intensity_quantities_are_partial_sells(tmp_path: Path) -> None:

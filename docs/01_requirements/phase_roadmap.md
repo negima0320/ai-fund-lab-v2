@@ -13227,3 +13227,2528 @@ docs/phase_reports/phase28_d71_final_closure_phase29_handoff.md
 reports/phase_reports/phase28_d71_final_closure_phase29_handoff.json
 reports/phase28_d71_final_closure_phase29_handoff/
 ```
+
+---
+
+## Phase29-B Post-D61 Effect Attribution and Remaining Performance Bottleneck Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY EVIDENCE AUDIT
+```
+
+Primary Judgment:
+
+```text
+PHASE29_B_POST_D61_EFFECT_ATTRIBUTION_PARTIAL_IMPROVEMENT_REMAINING_CAPITAL_GAPS
+```
+
+Summary:
+
+```text
+Post-D61 100BD daily artifacts show final equity improved from 1,123,400 JPY
+to 1,139,700 JPY (+16,300 JPY / +1.63pt). D61 is partially supported:
+positive ADD request formation improved, BUY_ADD fills increased from 3 to 4,
+and BUY_ADD notional increased from 164,500 to 345,500 JPY.
+
+However, Runtime BUY_ADD plans stayed at 4, average cash ratio worsened from
+44.03% to 44.71%, average exposure fell from 55.97% to 55.29%, and the main
+remaining bottleneck is lot/minimum-notional capital conversion after positive
+PC ADD/BUY_NEW allocation requests.
+```
+
+Next recommended task:
+
+```text
+Phase29-C Lot/Minimum-Notional Capital Conversion Bottleneck Root Cause Audit
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_b_post_d61_effect_attribution_and_remaining_performance_bottleneck_audit.md
+reports/phase29_b_post_d61_effect_attribution_and_remaining_performance_bottleneck_audit/
+```
+
+---
+
+## Phase29-C Lot/Minimum-Notional Capital Conversion Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY ROOT CAUSE AUDIT
+```
+
+Primary Judgment:
+
+```text
+PHASE29_C_LOT_MINIMUM_NOTIONAL_CAPITAL_CONVERSION_ROOT_CAUSE_MULTI_CAUSAL_CONFIRMED
+```
+
+Summary:
+
+```text
+Post-D61 remaining capital conversion bottleneck is multi-causal. ADD request
+formation improved, but PC accepted-positive ADD converted poorly: 60 PC
+positive accepts produced only 4 lot-positive accepts and 56 lot-zero cases.
+BUY_NEW shares the same issue: 102 PC positive accepts produced 29 lot-positive
+accepts and 73 lot-zero cases. Measured from positive request, BUY_NEW dropout
+is 126 rows, matching the Phase29-B remaining bottleneck signal.
+
+The largest terminal blocker is 100-share lot/minimum-notional infeasibility
+after promotion into the 0.18 single-name cap or remaining deployment budget.
+This is primarily an architecture/design gap plus legitimate lot and
+concentration constraints, not a confirmed production defect.
+```
+
+Repair classification:
+
+```text
+A Production Defect: NO_CONFIRMED
+B Architecture/Design Gap: YES
+C Legitimate Constraint: YES_MEANINGFUL_SHARE
+D Policy Question: YES
+E Insufficient Evidence: LIMITED
+```
+
+Next recommended task:
+
+```text
+Phase29-D Lot-First Capital Recycling and Concentration Policy Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_c_lot_minimum_notional_capital_conversion_root_cause_audit.md
+reports/phase29_c_lot_minimum_notional_capital_conversion_root_cause_audit/
+```
+
+---
+
+## Phase29-D Lot-First Capital Recycling and Concentration Policy Repair Design
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON ARCHITECTURE REPAIR DESIGN
+NO IMPLEMENTATION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_D_LOT_FIRST_CAPITAL_RECYCLING_REPAIR_DESIGN_COMPLETE_PHASE29_E_READY
+```
+
+Summary:
+
+```text
+Phase29-D selected Design B: Lot-First Feasibility-Aware Rebatch.
+Continuous target weights remain useful as preference and desired-exposure
+signals, but they must not be treated as final capital reservation authority
+when they cannot be expressed as executable 100-share lots under target cash,
+pending reservation, broker/safety gates, and the 0.18 single-name cap.
+
+The design preserves D61 current-baseline ADD increment semantics, D69 signed
+delta observability, no forced ADD/BUY_NEW, no forced cash deployment, no fixed
+position count, Market Context target cash, Safety/Broker/Pending/Submit
+authority, and SELL/REDUCE/EXIT contracts.
+```
+
+Phase29-E constraints:
+
+```text
+0.18 concentration cap change = NO
+Schema/config changes should be additive and backward-compatible where needed.
+Long historical validation remains user-operated after short regression PASS.
+```
+
+Next recommended task:
+
+```text
+Phase29-E Lot-First Capital Recycling Implementation with Regression Guardrails
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_d_lot_first_capital_recycling_and_concentration_policy_repair_design.md
+reports/phase29_d_lot_first_capital_recycling_and_concentration_policy_repair_design/
+```
+
+---
+
+## Phase29-E Lot-First Capital Recycling Implementation
+
+Status:
+
+```text
+IMPLEMENTED
+SHORT REGRESSION BLOCKED BY EXISTING SELL REGRESSION
+NO 100BD READY GATE
+```
+
+Primary Judgment:
+
+```text
+PHASE29_E_LOT_FIRST_CAPITAL_RECYCLING_IMPLEMENTED_SHORT_REGRESSION_BLOCKED_BY_EXISTING_SELL_REGRESSION
+```
+
+Summary:
+
+```text
+Phase29-E implemented the Phase29-D Design B lot-first feasibility-aware
+rebatch in Production-common Strategy. Position Sizing preflight now exposes
+request-positive candidates even when first-pass PC budget reconciliation trims
+their draft target to zero. Portfolio Construction final lot-aware reallocation
+now includes original request-positive ADD/BUY_NEW rows in a common deterministic
+rebatch queue and can recycle deployable capital from infeasible higher-priority
+rows to later eligible executable rows.
+
+Focused Phase29-E PC/PS regression passed: 14 passed. Broad short regression
+passed 229 tests but failed one mandatory existing SELL regression:
+tests/runtime_v2/test_phase19_bt_reduce_quantity_contract.py::test_phase19_bt_reduce_pending_sell_conflict_review_required.
+Phase29-E did not modify SELL/Pending/Submit/Execution code, and SELL-path repair
+was prohibited in this task. Therefore Phase29-E is implemented but not approved
+for user-operated 100BD validation until that gate is resolved or explicitly
+waived.
+```
+
+Next recommended task:
+
+```text
+Phase29-E2 Mandatory SELL Regression Gate Repair or Waiver Before 100BD Validation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_e_lot_first_capital_recycling_implementation.md
+reports/phase29_e_lot_first_capital_recycling_implementation/
+```
+
+---
+
+## Phase29-E2 Mandatory SELL Regression Gate Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+TEST-ONLY REPAIR
+100BD READY
+```
+
+Primary Judgment:
+
+```text
+PHASE29_E2_MANDATORY_SELL_REGRESSION_STALE_FIXTURE_REPAIRED_100BD_READY
+```
+
+Summary:
+
+```text
+Phase29-E2 reproduced the single Phase29-E mandatory SELL regression failure and
+confirmed it was not caused by Phase29-E Strategy PC/PS changes. The direct
+cause was a stale Phase19-BT fixture that wrote a minimal active pending SELL
+payload lacking current Pending schema/authority fields. Current Pending reader
+classified it INVALID, so SELL reconciliation saw no valid existing active
+pending and returned PASS.
+
+The test was repaired with a valid current Pending fixture using Production
+Pending model/promotion/writer helpers. With valid existing SELL 100 vs new
+REDUCE MEDIUM 300, current Phase28-D3 reconciliation correctly returns
+REVIEW_REQUIRED with PENDING_SELL_CONFLICTING_QUANTITY_REVIEW and preserves the
+original pending plan. Production code was not changed.
+
+Validation passed: original failing test 1 passed, full REDUCE contract
+12 passed, related SELL pending reconciliation 19 passed, and Phase29-E
+mandatory broad regression subset 230 passed.
+```
+
+Next recommended operator action:
+
+```text
+User may proceed to Phase29 post-E 100BD validation from the approved gate.
+Codex must not execute 100BD.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_e2_mandatory_sell_regression_gate_root_cause_audit.md
+reports/phase29_e2_mandatory_sell_regression_gate_root_cause_audit/
+```
+
+---
+
+## Phase29-F Post-E 100BD Position Sizing Safety-Cap HALT Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY ROOT CAUSE AUDIT
+NO IMPLEMENTATION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_F_POST_E_SAFETY_CAP_HALT_LEGITIMATE_SAFETY_BLOCK_ARCHITECTURE_GAP_CONFIRMED
+```
+
+Summary:
+
+```text
+Phase29-F audited fresh 100BD run
+runtime-test-historical-smoke-20260809T141932598150Z, halted on 2023-06-16
+morning with strategy_planning_authority_unresolved. Direct Strategy shadow
+error was Position Sizing target_weight_above_safety_cap:0.
+
+The failing row 0 is 21340. PC final/current target was 0.262811, with
+accepted_incremental_weight=0 and lot_aware_accepted_incremental_weight=0.
+This row was not a Phase29-E rebatch participant and no rebatch allocation
+created the overweight. The independent Safety hard concentration cap is 0.25,
+so the absolute target/current weight truly exceeded Safety cap. The executable
+ADD increment was zero, so D61 and D69 ADD zero/no-action semantics are
+preserved.
+
+Classification is legitimate Safety fail-closed with an architecture /
+observability gap: PC can PASS retained baseline drift above the Safety hard cap
+and PS surfaces the halt as a schema-style shadow generation error instead of a
+rich symbol-level Safety drift block. Phase29-E is not causal. No code, config,
+Runtime artifact, Pending, fresh run, resume, or Historical execution was
+performed.
+```
+
+Next recommended task:
+
+```text
+Phase29-G PC/PS Safety-Cap Drift Authority and Observability Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_f_post_e_position_sizing_safety_cap_halt_root_cause_audit.md
+reports/phase29_f_post_e_position_sizing_safety_cap_halt_root_cause_audit/
+```
+
+---
+
+## Phase29-G Passive Concentration Drift Authority Repair Implementation
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON SAFETY AUTHORITY REPAIR
+SHORT REGRESSION PASS
+```
+
+Primary Judgment:
+
+```text
+PHASE29_G_PASSIVE_CONCENTRATION_DRIFT_AUTHORITY_REPAIR_IMPLEMENTED_SHORT_REGRESSION_PASS_FRESH_100BD_READY
+```
+
+Summary:
+
+```text
+Phase29-G implemented the Production Position Sizing authority repair that
+separates passive valuation drift above the independent Safety concentration
+cap from active BUY/ADD concentration risk increases.
+
+Existing RETAIN HOLD/ADD positions above Safety cap can now be retained only
+when the target remains the current or baseline valuation, current quantity is
+present, accepted incremental weight is zero, and quantity_delta_candidate is
+zero. PM ADD intent remains observable; executable ADD quantity can be zero.
+
+REDUCE above Safety cap remains executable when it is risk-reducing. EXIT
+remains executable. BUY_NEW and BUY_ADD risk increases above cap remain
+fail-closed. Strategy cap 0.18 and Safety cap 0.25 were not changed.
+
+Validation passed: Phase29-G focused regression 19 passed, full Position
+Sizing regression 74 passed, mandatory short regression 304 passed, and
+py_compile passed.
+
+No fresh run, resume, 100BD, or long Historical execution was performed.
+```
+
+Next recommended operator action:
+
+```text
+Proceed to approved fresh 100BD validation from the Phase29-G gate.
+Codex must not execute 100BD without explicit operator instruction.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_g_passive_concentration_drift_authority_repair_implementation.md
+reports/phase29_g_passive_concentration_drift_authority_repair_implementation/
+```
+
+---
+
+## Phase29-H Post-E/G 100BD Final Effect Attribution and Performance Gate Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY FINAL EFFECT ATTRIBUTION / PERFORMANCE GATE AUDIT
+NO IMPLEMENTATION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_H_POST_EG_100BD_FINAL_EFFECT_ATTRIBUTION_PARTIAL_IMPROVEMENT_NEXT_BOTTLENECK_CONFIRMED
+```
+
+Summary:
+
+```text
+Phase29-H audited completed run
+runtime-test-historical-smoke-20260809T211454176476Z without Production code,
+Strategy, Runtime, config, schema, threshold, fixture, fresh-run, resume, 100BD,
+or long Historical execution.
+
+Return improved from +13.970% to +15.747%, final equity improved by +17,770
+JPY versus the Phase29 primary baseline, and average actual exposure improved
+from 55.29% to 60.8911%. Average cash ratio fell from 44.71% to 39.1089%.
+Unused deployable capital improved from 96/100 days and 178,537.41 JPY average
+to 64/100 days and 117,875.62 JPY average, derived from trimmed incremental
+weight times daily Position Sizing portfolio value.
+
+Drawdown mildly worsened from -12.25% to -13.7517%, but Return / |Max DD| was
+1.1451 and the worst trough recovered after 12 business days. Compound capital
+authority passed: current equity, realized proceeds, and unrealized valuation
+flow through sizing without an active hidden fixed 1,000,000 JPY sizing base.
+
+Phase29-E effect is PARTIAL: capital deployment and recycling improved, but
+ADD/BUY_NEW fill conversion did not materially expand. Phase29-G effect is YES:
+21340 passive drift above 25% was retained on six dates and the former
+2023-06-16 Safety-cap halt no longer stops the run, with no observed active
+BUY/ADD above-cap positive-quantity bypass.
+
+Close REVIEW_REQUIRED is classified as
+MULTI_CAUSAL_OBSERVABILITY_AND_SUMMARIZATION_GAP, separated from performance:
+Runtime execution, trading state, accounting state, and production planning
+passed, while Strategy Shadow lineage/lifecycle review remained non-mutating.
+
+Overall performance gate is PARTIAL. The next primary bottleneck is SELL / EXIT
+quality, not another broad lot-first capital recycling repair.
+```
+
+Next recommended task:
+
+```text
+Phase29-I SELL / EXIT Decision Quality and Lineage Observability Bottleneck Audit
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_h_post_eg_100bd_final_effect_attribution_and_performance_gate_audit.md
+reports/phase29_h_post_eg_100bd_final_effect_attribution_and_performance_gate_audit/
+```
+
+---
+
+## Phase29-I Fixed Cash Reserve Removal and Opportunity-Driven Capital Deployment Design
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY ARCHITECTURE / AUTHORITY AUDIT
+PRODUCTION-COMMON REPAIR DESIGN
+NO IMPLEMENTATION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_I_FIXED_CASH_RESERVE_REMOVAL_ACTIVE_AUTHORITY_CONFIRMED_MULTI_CAUSAL_REPAIR_DESIGN_COMPLETE
+```
+
+Implementation Gate:
+
+```text
+MULTI_CAUSAL_DESIGN_REQUIRED
+```
+
+Summary:
+
+```text
+Phase29-I confirmed an active fixed cash reserve / exposure ceiling authority in
+the Production-common Strategy path. The authoritative producer is
+configs/strategy/dynamic_cash_exposure.json consumed by
+src/ai_fund_lab_v2/strategy/dynamic_cash_exposure.py::_decide, then surfaced
+through Portfolio Policy into Portfolio Construction and Position Sizing.
+
+Active Strategy settings are baseline_target_cash_ratio=0.20,
+baseline_target_gross_exposure_ratio=0.80, minimum_cash_ratio=0.12, and
+maximum_gross_exposure_ratio=0.88. Independent Safety cash/exposure authority
+also exists with minimum_cash_ratio=0.10 and maximum_gross_exposure_ratio=0.90.
+Legacy 0.85 / 850000 / evaluation_capital values are not active PC/PS sizing
+authority.
+
+Final 2023-08-25 target gross exposure was 0.72 because DCE started from 0.80
+and applied low_opportunity_capacity=-0.08. Across the 100BD run, target gross
+exposure never reached 0.80: buckets were 0.46, 0.54, 0.62, 0.72, 0.75, 0.77,
+and 0.79. low_opportunity_capacity was emitted on 100/100 days even though
+Portfolio Policy evidence reported resolved_opportunity_capacity=50, indicating
+an opportunity-capacity field contract mismatch in addition to the fixed reserve
+authority.
+
+Post-hoc attribution estimates average capital constrained by policy ceiling vs
+configured 0.88 at 155,535.94 JPY/day. This is not executable proof because
+lot, concentration, broker, Safety, Corporate Action, Pending, and quality
+constraints remain valid.
+
+Recommended architecture is a staged Design A+B: remove fixed baseline/floor
+cash reserve semantics from Dynamic Cash Exposure, preserve Market Context
+dynamic defensive cash, repair opportunity-capacity field mapping, and allow
+risk-on opportunity-driven exposure toward near-full deployment under Safety,
+Broker, Corporate Action, Pending, concentration, lot, and quality gates. Do
+not implement PC-level reserve override because it creates double authority.
+```
+
+Next recommended task:
+
+```text
+Phase29-J Staged Dynamic Cash Exposure Repair:
+1. decide Safety cash-floor treatment explicitly,
+2. repair opportunity-capacity field contract,
+3. implement no-fixed-reserve Dynamic Cash Exposure with I-R1..I-R10 regression.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_i_fixed_cash_reserve_removal_opportunity_driven_capital_deployment_design.md
+reports/phase29_i_fixed_cash_reserve_removal_opportunity_driven_capital_deployment_design/
+```
+
+---
+
+## Phase29-J1 Opportunity Capacity Contract Repair Implementation
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON IMPLEMENTATION
+SHORT REGRESSION COMPLETE
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_J1_OPPORTUNITY_CAPACITY_CONTRACT_REPAIR_IMPLEMENTED
+```
+
+Summary:
+
+```text
+Phase29-J1 repaired the Dynamic Position Count -> Portfolio Policy -> Dynamic
+Cash Exposure opportunity-capacity contract. The canonical field is now
+resolved_opportunity_capacity produced by Dynamic Position Count and consumed
+by Dynamic Cash Exposure. Legacy opportunity-summary aliases remain only as an
+observable compatibility path, and canonical capacity wins over conflicting
+aliases.
+
+The previous DCE consumer defaulted missing available_opportunity_count /
+valid_opportunity_count to zero, which could falsely emit
+low_opportunity_capacity even when Portfolio Policy evidence reported
+resolved_opportunity_capacity=50. Missing capacity now produces REVIEW_REQUIRED
+with unresolved target exposure instead of a zero default. Valid zero capacity
+is still valid and can emit low_opportunity_capacity.
+
+No fixed cash reserve, exposure ceiling, Safety, concentration, SELL/EXIT,
+ranking/model, quality floor, lot-first recycling, Pending, Broker, Corporate
+Action, Temporal, Accepted Generation, or Runtime profile policy was changed.
+Focused DCE/PP regression passed with 23 tests, and the broader short
+non-regression set passed with 255 tests.
+```
+
+Next recommended task:
+
+```text
+Phase29-J2: fixed cash reserve / opportunity-driven Dynamic Cash Exposure
+policy repair, preserving the J1 capacity contract.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_j1_opportunity_capacity_contract_repair_implementation.md
+reports/phase29_j1_opportunity_capacity_contract_repair_implementation/
+```
+
+---
+
+## Phase29-J2 Fixed Cash Reserve Removal and Opportunity-Driven DCE Policy Repair Implementation
+
+Status:
+
+```text
+IMPLEMENTED
+PRODUCTION-COMMON POLICY REPAIR
+CORE SHORT REGRESSION PASS
+FRESH 100BD NOT READY - KNOWN NON-J2 RUNTIME PLANNING REVIEW REMAINS
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_J2_FIXED_CASH_RESERVE_REMOVED_OPPORTUNITY_DRIVEN_DCE_IMPLEMENTED_SHORT_REGRESSION_PASS_WITH_KNOWN_NON_J2_RUNTIME_PLANNING_REVIEW
+```
+
+Summary:
+
+```text
+Phase29-J2 removed active fixed cash reserve / fixed gross exposure ceiling
+authority from Production-common Dynamic Cash Exposure. Strategy DCE now uses
+0.00 fixed cash baseline/floor and 1.00 cash-equity gross exposure boundary,
+with defensive cash still derived from market regime, breadth, volatility,
+portfolio risk posture, uncertainty, and opportunity capacity.
+
+Safety cash/exposure was changed from 0.10 / 0.90 fixed reserve/ceiling to
+0.00 / 1.00 no-leverage cash-equity boundary. Concentration Safety remains
+0.25 and Strategy concentration remains 0.18.
+
+J1 resolved_opportunity_capacity remains the canonical opportunity capacity
+contract. Legacy opportunity aliases are observable but are not active fallback.
+Unknown opportunity authority remains REVIEW_REQUIRED / unresolved, and valid
+zero opportunity capacity remains valid.
+
+Focused DCE/PP regression passed with 30 tests. Broader J2 non-regression
+passed with 262 tests. An additional Runtime Planning coverage set still has
+one non-J2 failure in SELL/Accepted Generation review; this was not repaired
+because J2 forbids SELL and Accepted Generation changes. Therefore fresh 100BD
+is not marked ready until that item is resolved or explicitly waived.
+```
+
+Next recommended task:
+
+```text
+Resolve or explicitly waive the known non-J2 Runtime Planning SELL/Accepted
+Generation review, then run the operator-owned fresh 100BD validation.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_j2_fixed_cash_reserve_opportunity_driven_dce_policy_repair_implementation.md
+reports/phase29_j2_fixed_cash_reserve_opportunity_driven_dce_policy_repair_implementation/
+```
+
+---
+
+## Phase29-J3 Runtime Planning BUY Review / SELL Independence Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY ROOT CAUSE AUDIT
+NO PRODUCTION CODE CHANGE
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_J3_RUNTIME_PLANNING_BUY_REVIEW_SELL_INDEPENDENCE_STALE_FIXTURE_CONFIRMED
+```
+
+Summary:
+
+```text
+Phase29-J3 reproduced the Phase26 Step5 Runtime Planning failure. The observed
+sell_planning_status=REVIEW_REQUIRED is not caused by BUY-side Position Sizing
+review propagating into SELL, nor by Phase29-J2 or Phase29-J1.
+
+Runtime Planning resolves the SELL_EXIT quantity for 7203 independently:
+current quantity 100, planned quantity 100, price authority PASS. The SELL
+pending item is not generated because current Production requires canonical
+listed-info authority for SELL item creation, and the stale Phase26 fixture
+does not provide strategy/input_manifest.json with strategy_source_authority
+and canonical listed_issues source records.
+
+Accepted Generation is also REVIEW_REQUIRED because the same input_manifest is
+missing, but it is not the direct SELL item failure. A temporary current-contract
+fixture probe with input_manifest and listed_issues authority produced
+sell_planning_status=PASS while BUY Accepted Generation review remained present.
+
+Neighbor SELL/REDUCE/EXIT and strategy authority regressions passed with
+63 tests. Fresh 100BD remains NOT READY until the stale fixture is repaired and
+the failing regression is green.
+```
+
+Next recommended task:
+
+```text
+Phase29-J4 Stale Runtime Planning Fixture Repair
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_j3_runtime_planning_buy_review_sell_independence_root_cause_audit.md
+reports/phase29_j3_runtime_planning_buy_review_sell_independence_root_cause_audit/
+```
+
+---
+
+## Phase29-J4 Stale Runtime Planning Fixture Repair
+
+Status:
+
+```text
+COMPLETE
+TEST-ONLY FIXTURE REPAIR
+SHORT REGRESSION PASS
+FRESH 100BD READY
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_J4_STALE_RUNTIME_PLANNING_FIXTURE_REPAIRED_SHORT_REGRESSION_PASS_FRESH_100BD_READY
+```
+
+Summary:
+
+```text
+Phase29-J4 repaired the stale Phase26 Runtime Planning fixture identified by
+Phase29-J3. The target test now materializes current SELL-side authority for
+7203 using strategy/input_manifest.json, strategy_source_authority, and
+canonical listed_issues source records.
+
+The fixture intentionally keeps Accepted Generation binding REVIEW_REQUIRED, so
+the BUY-side review condition remains present. With complete SELL authority,
+sell_planning_status is PASS, pending sell_items_status is PASS, and
+sell_continuation_allowed remains true.
+
+No Production code, config, schema, Runtime mutation, or Historical execution
+was changed. Target test, full target file, neighbor SELL regressions, J2/J1
+short regressions, and broad relevant regressions all passed.
+```
+
+Next recommended task:
+
+```text
+User-operated fresh 100BD validation for the combined J1/J2/Phase29-E/Phase29-G/current BUY-SELL independence stack.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_j4_stale_runtime_planning_fixture_repair.md
+reports/phase29_j4_stale_runtime_planning_fixture_repair/
+```
+
+---
+
+## Phase29-K Post-J2 100BD Final Effect Attribution and Long-Horizon Validation Gate Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY FINAL EFFECT ATTRIBUTION / LONG-HORIZON VALIDATION GATE AUDIT
+NO IMPLEMENTATION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_K_POST_J2_100BD_MATERIAL_PERFORMANCE_IMPROVEMENT_CONFIRMED_LONG_HORIZON_READY
+```
+
+Summary:
+
+```text
+Phase29-K audited completed run
+runtime-test-historical-smoke-20260810T031643559982Z without Production code,
+Strategy, Runtime, config, schema, threshold, fixture, fresh-run, resume, 100BD,
+or long Historical execution by Codex.
+
+Return improved from +15.747% to +24.736%, a +8.989 percentage point gain and
++89,890 JPY final-equity delta versus the Phase29-H primary baseline. Max
+drawdown improved from -13.7517% to -12.9364%.
+
+Average actual exposure improved from 60.8911% to 70.7702%, average cash fell
+from 39.1089% to 29.2298%, and final exposure reached 83.4859%. Exposure was
+>=80% on 31 days and >=90% on 14 days, versus 0 and 0 in the Phase29-H
+baseline.
+
+Unused deployable capital improved from 64/100 days and 117,875.62 JPY average
+to 37/100 days and 50,729.91 JPY average. Execution notional increased from
+4,393,870 JPY to 7,031,010 JPY.
+
+ADD did not regress: PM ADD intent increased from 173 to 186, BUY_ADD fills
+remained 4, and BUY_ADD notional improved from 273,300 JPY to 304,440 JPY.
+BUY_NEW was the larger expansion driver, with fills improving from 18 to 28 and
+notional from 2,234,680 JPY to 3,608,070 JPY.
+
+Cash/leverage integrity passed with 0 negative cash occurrences and 0 exposure
+>100% occurrences. Compound capital passed. Close REVIEW_REQUIRED remains a
+non-mutating Strategy Shadow review and is separated from performance.
+
+Performance gate passed. Local 100BD tuning should stop; proceed to long-horizon
+validation with winner-dependency monitoring.
+```
+
+Next recommended task:
+
+```text
+Phase29-L Multi-Year Historical Validation Handoff
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_k_post_j2_100bd_final_effect_attribution_long_horizon_gate_audit.md
+reports/phase29_k_post_j2_100bd_final_effect_attribution_long_horizon_gate_audit/
+```
+
+---
+
+## Phase29-L Multi-Year Historical Validation Preflight and Handoff
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY PREFLIGHT / HANDOFF
+DATA ACQUISITION REQUIRED
+FRESH LONG-HORIZON RUN NOT READY
+NO PRODUCTION CODE CHANGE
+NO RUNTIME MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L_MULTI_YEAR_HISTORICAL_VALIDATION_PREFLIGHT_DATA_ACQUISITION_REQUIRED
+```
+
+Summary:
+
+```text
+Phase29-L resolved the requested 2022-08-10 to 2026-08-09 multi-year validation
+window against the combined J-Quants/repo calendar. The first business day is
+2022-08-10, the last business day is 2026-08-07, and the exact business-day
+count is 979.
+
+The selected validation profile remains historical-smoke, matching the
+Phase29-K accepted 100BD performance stack. The runtime lookback requirement is
+61 business days, so the earliest required source date for the first target
+date is 2022-05-17.
+
+Current market-data coverage is not ready for a fresh long-horizon run. The
+best existing full source reaches 2026-07-14, a terminal extension reaches
+2026-08-03, and required terminal business dates 2026-08-04 through 2026-08-07
+remain missing from a single supported bootstrap source. Listed Issues and
+Corporate Event authority are also partial at the requested terminal boundary.
+
+Phase29-L produced the exact operator acquisition, resume, and bootstrap
+commands for the required 2022-05-17 to 2026-08-07 source. No fresh-run command
+is released as ready; Phase29-L2 should recheck data readiness after operator
+acquisition/bootstrap before long-horizon Historical execution.
+```
+
+Next recommended task:
+
+```text
+Phase29-L2 data acquisition/bootstrap readiness recheck, followed only then by
+the multi-year Historical fresh-run if all coverage gates pass.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l_multi_year_historical_validation_preflight_and_handoff.md
+reports/phase29_l_multi_year_historical_validation_preflight_and_handoff/
+```
+
+---
+
+## Phase29-L2 Post-Acquisition Bootstrap Long-Horizon Readiness Recheck
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY SOURCE COVERAGE / BOOTSTRAP AUTHORITY AUDIT
+OHLCV ACQUISITION SOURCE COMPLETE
+OHLCV BOOTSTRAP TARGET COMPLETE
+FRESH 979BD GATE NOT READY
+NO PRODUCTION CODE CHANGE
+NO RUNTIME MUTATION BY CODEX
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L2_MULTI_CAUSAL_SOURCE_AUTHORITY_DEFECT_CONFIRMED_REPAIR_REQUIRED
+```
+
+Summary:
+
+```text
+Phase29-L2 inspected the completed operator acquisition and bootstrap chain
+without rerunning acquisition, bootstrap, resume, or long Historical execution.
+
+The final acquisition OHLCV parquet is complete: 4,328,997 rows, 2022-05-17 to
+2026-08-07, 1,037 unique quote dates, and 0 duplicate Date/Code keys. All 52
+acquisition state chunks completed. The bootstrap consumed the intended
+jquants-acquisition-20220517-20260807 source, and the committed operations
+OHLCV target is also complete with the same 2022-05-17 to 2026-08-07 coverage.
+
+The observed BOOTSTRAP_COMMIT_COMPLETE warmup BLOCK / QUOTE_TARGET_DATE_MISSING
+was stale pre-commit evidence: build_market_data_bootstrap_plan read the old
+operations target covering 2026-02-16 to 2026-07-14 before _commit_bootstrap_merge
+replaced it. A post-commit warmup recomputation on the actual target now passes
+with 61 available warmup business dates and target_date_available=true.
+
+Source reuse was not a false positive and did not select the old 2026-07-14
+source. The old dates explain the stale warmup evidence only.
+
+Fresh-run dry-run now resolves the terminal date to 2026-08-07, but resolves
+977 business days, not the Phase29-L 979BD contract, and keeps
+request_conformance_status=NOT_PASS. The 979 discrepancy is calendar authority
+related: several 2026 holidays are marked as trading days in an older raw
+calendar but are non-trading in the newer historical snapshot and have no quote
+rows.
+
+Listed Issues remain not ready in canonical operations authority. The
+acquisition staging listed_info source reaches 2026-08-07, but operations
+listed_issues remains 2026-07-06 to 2026-07-15 and historical snapshots are not
+materialized through the requested end. Corporate Event readiness remains
+PARTIAL.
+
+No price API refetch and no OHLCV re-bootstrap are required. The next blocker is
+repair/materialization design for bootstrap post-commit evidence, calendar
+authority reconciliation, and listed/trading-calendar canonical authority.
+```
+
+Next recommended task:
+
+```text
+Phase29-L3 repair/readiness design for bootstrap post-commit evidence,
+calendar authority reconciliation, and listed/trading-calendar materialization
+from completed acquisition staging; then rerun a read-only gate before any long
+Historical fresh-run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l2_post_acquisition_bootstrap_long_horizon_readiness_recheck.md
+reports/phase29_l2_post_acquisition_bootstrap_long_horizon_readiness_recheck/
+```
+
+---
+
+## Phase29-L3 Long-Horizon Bootstrap / Listed / Calendar Repair Design
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY REPAIR DESIGN / ARCHITECTURE CONTRACT DESIGN
+NO IMPLEMENTATION
+NO PRODUCTION CODE CHANGE
+NO RUNTIME MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L3_LONG_HORIZON_DATA_AUTHORITY_REPAIR_DESIGN_COMPLETE_PHASE29_L4_READY
+```
+
+Summary:
+
+```text
+Phase29-L3 designed the Production-common Data Authority repair for the
+Phase29-L2 long-horizon blockers without modifying code, config, schema,
+Strategy, Runtime, or executing Historical.
+
+Bootstrap repair should use a two-phase transaction: pre-commit validation,
+atomic commit, re-read committed canonical target, verify target identity/hash,
+compute post_commit_warmup_sufficiency, then derive final bootstrap_readiness
+from post-commit authority. pre_commit_warmup_sufficiency remains diagnostic
+only.
+
+Listed Issues repair should use a separate source-specific canonical
+materialization stage. Acquisition staging listed_info already reaches
+2026-08-07, so no listed API refetch is required. The repair must validate
+staging, commit/merge canonical operations listed_issues, materialize PIT
+snapshots by provider Date, rebuild the snapshot index, and keep the existing
+latest_snapshot_not_after_business_date resolver so current listed state is
+never copied backward.
+
+Calendar repair should establish one canonical Historical Calendar SoT from
+validated J-Quants historical snapshot base plus validated staging
+extension/correction, with conflict detection and quote consistency. The legacy
+.runtime/data/raw calendar is observability only because it marks five 2026
+holidays as HolDiv=1 while newer J-Quants staging/snapshot/operations authority
+marks them HolDiv=3 and quote rows are zero. Expected long-horizon business-day
+count after reconciliation is 977, not the provisional Phase29-L 979.
+
+Corporate Event remains NON_BLOCKING_PARTIAL_AUTHORITY for this repair scope:
+do not claim full READY, but do not broaden L4 unless the next readiness gate
+proves it is a hard blocker.
+
+Recommended implementation staging is L4-A bootstrap post-commit evidence
+repair, L4-B listed/calendar canonical materialization and reconciliation, then
+L4-C read-only long-horizon gate recheck before any user-operated Historical.
+```
+
+Next recommended task:
+
+```text
+Phase29-L4-A Bootstrap post-commit evidence/readiness repair, followed by
+Phase29-L4-B Listed/calendar materialization and reconciliation.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l3_long_horizon_bootstrap_listed_calendar_repair_design.md
+reports/phase29_l3_long_horizon_bootstrap_listed_calendar_repair_design/
+```
+
+---
+
+## Phase29-L4-A Bootstrap Post-Commit Evidence / Readiness Repair Implementation
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON IMPLEMENTATION
+SHORT REGRESSION PASS
+NO CONFIG CHANGE
+NO STRATEGY CHANGE
+NO ACQUISITION
+NO LONG BOOTSTRAP
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L4_A_BOOTSTRAP_POST_COMMIT_READINESS_AUTHORITY_REPAIRED_SHORT_REGRESSION_PASS_PHASE29_L4_B_READY
+```
+
+Summary:
+
+```text
+Phase29-L4-A repaired the Bootstrap final readiness authority defect confirmed
+by Phase29-L2/L3. Bootstrap run evidence now preserves the old target warmup as
+pre_commit_warmup_sufficiency with DIAGNOSTIC_ONLY authority, commits the
+merged canonical target, re-reads the committed target, verifies target
+identity/content/schema/date coverage, recomputes post_commit_warmup_sufficiency
+from the committed canonical target, and derives bootstrap_readiness from
+commit_status + post_commit_verification + post_commit_warmup.
+
+The backward-compatible warmup_sufficiency field remains present in final run
+evidence and now maps to post_commit_warmup_sufficiency. New evidence fields are
+additive only: commit_status, pre_commit_warmup_sufficiency,
+pre_commit_warmup_authority, post_commit_warmup_sufficiency,
+post_commit_verification, bootstrap_readiness, and commit_error.
+
+Failure semantics are fail-closed for commit exception, target missing after
+commit, target unreadable, target content/hash mismatch, duplicate target keys,
+schema invalidity, and post-commit warmup insufficiency. A physical commit can
+succeed while bootstrap_readiness is BLOCK, and this is now explicit.
+
+Focused bootstrap regression passed with 12 tests. Broader Runtime CLI /
+Historical as-of neighbor regression passed with 41 tests. py_compile passed
+with PYTHONPYCACHEPREFIX redirected to /private/tmp.
+
+No config, Strategy, Listed Issues materialization, Trading Calendar
+materialization/reconciliation, acquisition, long bootstrap, or Historical
+execution was performed.
+```
+
+Next recommended task:
+
+```text
+Phase29-L4-B Listed Issues canonical materialization and Trading Calendar
+authority reconciliation.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l4_a_bootstrap_post_commit_evidence_readiness_repair_implementation.md
+reports/phase29_l4_a_bootstrap_post_commit_evidence_readiness_repair_implementation/
+```
+
+---
+
+## Phase29-L4-B Listed Issues Canonical Materialization and Trading Calendar Authority Repair
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON IMPLEMENTATION
+CANONICAL LISTED ISSUES MATERIALIZED
+TRADING CALENDAR AUTHORITY RECONCILED
+SHORT REGRESSION PASS
+NO CONFIG CHANGE
+NO STRATEGY / PM / ADD / BUY / SELL SEMANTIC CHANGE
+NO ACQUISITION
+NO OHLCV REFETCH
+NO LONG BOOTSTRAP
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L4_B_LISTED_CALENDAR_AUTHORITY_REPAIRED_PHASE29_L4_C_READY
+```
+
+Summary:
+
+```text
+Phase29-L4-B implemented the Phase29-L3 listed/calendar authority repair while
+preserving Phase29-L4-A bootstrap post-commit readiness semantics.
+
+Validated acquisition staging Listed Issues covering 2022-05-31 to 2026-08-07
+was materialized into canonical operations listed_issues and PIT snapshots were
+written/re-indexed under the existing latest_snapshot_not_after_business_date
+resolver. Future snapshot selection remains prohibited.
+
+Validated acquisition staging Trading Calendar was materialized into canonical
+Historical and operations calendar authority. Validated staging corrections now
+take precedence over older base rows, quote/calendar ambiguity is detected, and
+legacy .runtime/data/raw calendar cache remains non-authoritative.
+
+The five disputed 2026 dates are excluded as non-trading days:
+2026-03-20, 2026-04-29, 2026-05-04, 2026-05-05, and 2026-05-06. The requested
+window 2022-08-10 to 2026-08-07 resolves to 977 business days.
+
+No config, Strategy, PM, ADD, BUY_NEW, SELL, REDUCE, EXIT, cash, concentration,
+Safety, model, threshold, Accepted Generation, acquisition, OHLCV refetch, long
+bootstrap, or Historical execution change was performed.
+```
+
+Next recommended task:
+
+```text
+Phase29-L4-C read-only long-horizon gate recheck before any user-operated
+Historical fresh-run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l4_b_listed_issues_calendar_authority_repair_implementation.md
+reports/phase29_l4_b_listed_issues_calendar_authority_repair_implementation/
+```
+
+---
+
+## Phase29-L4-C Long-Horizon Final Readiness Gate
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY FINAL READINESS AUDIT / DRY-RUN GATE
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME CANONICAL DATA MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L4_C_LONG_HORIZON_NOT_READY_RUNTIME_CONTRACT_BLOCK
+```
+
+Summary:
+
+```text
+Phase29-L4-C audited the post-L4-A/L4-B real runtime authority chain for the
+requested long-horizon period. OHLCV coverage, 61BD warmup, Listed canonical
+authority, Listed PIT, future leakage protection, calendar authority,
+quote/calendar reconciliation, Production-common, compound capital,
+no-leverage, BUY/SELL independence, runtime isolation, resume contract, and
+long-horizon observability gates pass or are ready.
+
+The canonical window resolves to 2022-08-10 through 2026-08-07 with 977 business
+days. The five disputed 2026 dates remain non-trading with zero quote rows.
+
+The final gate is blocked by a Runtime dry-run contract mismatch: the
+fresh-run dry-run planner step summary reports request_conformance_status=PASS
+and window_resolution_status=PASS, but the top-level fresh-run dry-run payload
+reports request_conformance_status=NOT_PASS and
+independent_acceptance.requested_window_conformance_judgment=NOT_PASS.
+
+Because Phase29-L4-C is read-only, no repair was made and the 977BD user command
+was not released.
+```
+
+Next recommended task:
+
+```text
+Repair or explicitly adjudicate the fresh-run dry-run top-level
+request_conformance_status / independent_acceptance mismatch; then rerun
+Phase29-L4-C read-only gate.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l4_c_long_horizon_final_readiness_gate.md
+reports/phase29_l4_c_long_horizon_final_readiness_gate/
+```
+
+---
+
+## Phase29-L4-D Dry-Run Request Conformance Root Cause Repair
+
+Status:
+
+```text
+COMPLETE
+ROOT CAUSE AUDIT COMPLETE
+NARROW PRODUCTION-COMMON REPAIR COMPLETE
+SHORT REGRESSION PASS
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO STRATEGY CHANGE
+NO RUNTIME CANONICAL DATA MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L4_D_DRY_RUN_REQUEST_CONFORMANCE_CONTRACT_REPAIRED_SHORT_REGRESSION_PASS_L4_C2_READY
+```
+
+Summary:
+
+```text
+Phase29-L4-D traced the Phase29-L4-C dry-run conformance mismatch. The planner
+correctly produced request_conformance_status=PASS for the canonical
+2022-08-10 through 2026-08-07 / 977BD trading window, but the fresh-run
+top-level summary and independent acceptance recomputed conformance using
+completed_business_day_count. In --dry-run, completed_business_day_count is 0 by
+design, so the dry-run top-level conformance was incorrectly overwritten to
+NOT_PASS.
+
+This was not a stale 979 assumption, not a literal requested-end comparison
+defect, and not legacy calendar authority. It was a Production-common fresh-run
+dry-run contract defect.
+
+The repair keeps executed-run acceptance strict while making dry-run conformance
+consume the canonical planner request_conformance_status. After repair, the
+L4-C reproduction dry-run reports planner PASS, independent acceptance PASS,
+top-level request_conformance_status=PASS, window_resolution_status=PASS,
+resolved end 2026-08-07, and 977 business days.
+```
+
+Next recommended task:
+
+```text
+Phase29-L4-C2 read-only final gate rerun. Do not execute 977BD Historical from
+Phase29-L4-D.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l4_d_dry_run_request_conformance_root_cause_repair.md
+reports/phase29_l4_d_dry_run_request_conformance_root_cause_repair/
+```
+
+---
+
+## Phase29-L4-C2 Long-Horizon Final Release Gate
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY FINAL READINESS RECHECK / RELEASE GATE
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME CANONICAL DATA MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L4_C2_LONG_HORIZON_FINAL_RELEASE_GATE_PASS_USER_977BD_RUN_READY
+```
+
+Summary:
+
+```text
+Phase29-L4-C2 rechecked the real Runtime path after the Phase29-L4-D dry-run
+conformance repair. All mandatory release gates passed: OHLCV, 61BD warmup,
+Listed canonical/PIT, future leakage protection, calendar authority,
+quote/calendar reconciliation, dry-run planner/independent/top-level
+conformance, window resolution, dry-run isolation, Production-common,
+BUY/SELL independence, Compound Capital, no-leverage, runtime isolation,
+resume contract, and long-horizon observability.
+
+The validated read-only dry-run resolves 2022-08-10 through 2026-08-09 to the
+canonical trading window 2022-08-10 through 2026-08-07 with 977 business days.
+Planner request_conformance_status, independent acceptance, top-level
+request_conformance_status, and window_resolution_status are all PASS.
+
+Critical Production blocker count is 0. Fresh 977BD Ready is YES.
+```
+
+Released user command:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-smoke \
+  --date-from 2022-08-10 \
+  --date-to 2026-08-09 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l4_c2_long_horizon_final_release_gate.md
+reports/phase29_l4_c2_long_horizon_final_release_gate/
+```
+
+---
+
+## Phase29-L5 Long-Horizon Raw OHLCV Authority Repair
+
+Status:
+
+```text
+COMPLETE
+ROOT CAUSE CONFIRMED
+NARROW PRODUCTION-COMMON REPAIR COMPLETE
+CANONICAL RAW OHLCV MATERIALIZED
+SHORT REGRESSION PASS
+NO STRATEGY / PM / ADD / BUY / SELL SEMANTIC CHANGE
+NO ACQUISITION
+NO LONG BOOTSTRAP
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L5_RAW_OHLCV_CANONICAL_AUTHORITY_REPAIRED_SHORT_REGRESSION_PASS_LONG_HORIZON_RETRY_READY
+```
+
+Summary:
+
+```text
+The user 977BD Historical fresh-run halted at 2022-08-10 market_refresh because
+raw_ohlcv was a mandatory Historical as-of authority but canonical operations
+raw OHLCV still covered only 2026-02-16 through 2026-07-14. Its 2022-08-10
+logical PIT view was empty, so historical_asof_authority_invalid was correct.
+
+The completed long-horizon acquisition staging raw OHLCV exists, covers
+2022-05-17 through 2026-08-07, has 4,504,589 rows, duplicate Date/Code = 0,
+and J-Quants lineage PASS. Phase29-L5 added a production-common raw authority
+materializer and byte-preserving atomic materialization from validated staging
+to canonical operations raw OHLCV. The canonical raw target now covers
+2022-05-17 through 2026-08-07 and its hash matches the staging raw source.
+
+PIT checks now PASS for 2022-08-10, 2023-04-03, and 2026-07-14 with future
+rows excluded and no leakage. L4-A bootstrap and L4-B listed/calendar
+regressions remain green. Strategy, PM, ADD, BUY_NEW, SELL, REDUCE, EXIT, cash,
+concentration, Safety, thresholds, and Accepted Generation were untouched.
+```
+
+Next recommended operator command:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-smoke \
+  --date-from 2022-08-10 \
+  --date-to 2026-08-09 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l5_long_horizon_raw_ohlcv_authority_repair.md
+reports/phase29_l5_long_horizon_raw_ohlcv_authority_repair/
+```
+
+---
+
+## Phase29-L6 Pending SELL Conflicting Quantity Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY ROOT CAUSE AUDIT / REPAIR DESIGN
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L6_PENDING_SELL_FALSE_QUANTITY_CONFLICT_PRODUCTION_DEFECT_CONFIRMED
+```
+
+Summary:
+
+```text
+The long-horizon Historical run runtime-test-historical-smoke-20260810T154347268066Z
+halted after 39 completed business days at 2022-10-07:sell_planning with
+PENDING_SELL_CONFLICTING_QUANTITY_REVIEW.
+
+Existing approved pending SELL for 76920 was 1000 shares, source decision
+SELL_REDUCE. The new PM action was REDUCE and Position Sizing / Runtime
+Planning also produced target_quantity=1000, quantity_delta=-1000, and
+planned_quantity=1000. Sell Planning's own REDUCE quantity_contract likewise
+computed final_sell_quantity=1000.
+
+The actual new OrderPlan/Pending item quantity was 900. D3 reconciliation
+compared existing_item.quantity=1000 to new_item.quantity=900 and correctly
+failed closed while preserving the original pending plan. Therefore the root
+cause is not a sign mismatch, not target-remaining versus sell-quantity
+confusion, and not D3 suppressing a valid SELL. The Production defect is that
+common OrderPlan item materialization recomputed SELL quantity from notional /
+price and ignored authoritative quantity_contract.final_sell_quantity.
+
+Classification: L6-C SAME_INTENT_DIFFERENT_QUANTITY_CALCULATION_DEFECT.
+```
+
+Next recommended task:
+
+```text
+Phase29-L7 implementation: bind SELL OrderPlanItem.quantity to
+quantity_contract.final_sell_quantity for REDUCE/EXIT, add fail-closed
+quantity-contract consistency validation before Pending promotion, preserve
+D3 reconciliation semantics, then run focused SELL pending regression. Use a
+fresh long-horizon run after repair; do not resume the 39BD halted run.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l6_pending_sell_conflicting_quantity_root_cause_audit.md
+reports/phase29_l6_pending_sell_conflicting_quantity_root_cause_audit/
+```
+
+---
+
+## Phase29-L7 SELL Quantity-Contract Materialization Repair
+
+Status:
+
+```text
+COMPLETE
+NARROW PRODUCTION-COMMON REPAIR COMPLETE
+SHORT REGRESSION PASS
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L7_SELL_QUANTITY_CONTRACT_MATERIALIZATION_REPAIRED_SHORT_REGRESSION_PASS_FRESH_977BD_RETRY_READY
+```
+
+Summary:
+
+```text
+Fixed the L6 production defect where common build_order_plan recomputed a
+resolved REDUCE/EXIT SELL quantity from notional / price and produced a
+900-share OrderPlanItem for 76920 while the formal quantity contract said
+final_sell_quantity=1000.
+
+For REDUCE/EXIT SELL allocations with quantity_contract.final_sell_quantity,
+OrderPlanItem.quantity now consumes that authoritative final sell quantity.
+BUY remains on the existing lot-rounding path. ADD, Strategy, PM, Position
+Sizing, D3 Pending reconciliation, Submit, and Execution semantics were not
+changed.
+
+Added fail-closed guards for SELL_ITEM_QUANTITY_CONTRACT_MISSING and
+SELL_ITEM_QUANTITY_CONTRACT_MISMATCH. Same-quantity pending reconciliation
+passes, genuine different-quantity SELL conflict remains REVIEW_REQUIRED, and
+REDUCE/EXIT D3 priority behavior is preserved.
+```
+
+Next recommended action:
+
+```text
+Do not resume runtime-test-historical-smoke-20260810T154347268066Z. Abandon the
+old halted 39BD run, confirm status is idle, then execute a fresh 977BD
+historical-smoke run for 2022-08-10 through 2026-08-09.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l7_sell_quantity_contract_materialization_repair.md
+reports/phase29_l7_sell_quantity_contract_materialization_repair/
+```
+
+---
+
+## Phase29-L8 Corporate Action Symbol-Scoped Historical Continuation Design Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY DESIGN AUDIT
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L8_SYMBOL_SCOPED_HISTORICAL_CORPORATE_ACTION_QUARANTINE_DESIGN_READY
+```
+
+Summary:
+
+```text
+The 977BD Historical run runtime-test-historical-smoke-20260810T210535954893Z
+halted at 2022-10-28:submit because symbol 76920 had an unresolved Corporate
+Action impact. The detection and submit guard behavior were correct:
+AdjFactor=0.3333333333333333, event_status=IMPACT_DETECTED,
+event_type=UNKNOWN_ADJFACTOR_IMPACT, adjustment authority REVIEW_REQUIRED,
+and the SELL 700 item was NOT_SUBMITTED.
+
+The current escalation path is item-level REVIEW_REQUIRED -> submit job
+REVIEW_REQUIRED / exit code 20 -> Runtime Test run-level HALT. Production and
+Demo must keep this fail-closed and operator-visible behavior.
+
+Historical-only continuation should be implemented as
+HISTORICAL_SYMBOL_SCOPED_CORPORATE_ACTION_QUARANTINE: the impacted symbol
+remains REVIEW_REQUIRED / QUARANTINED and NOT_SUBMITTED, while run
+continuation eligibility is ALLOWED_FOR_HISTORICAL_REPLAY_ONLY. This must not
+downgrade REVIEW_REQUIRED to PASS and must not apply to Production.
+
+Existing Historical Broker does not have authoritative split/reverse-split
+state-transition mechanics, so 76920 cannot be auto-adjusted from AdjFactor
+alone. Confirmed Category A events require PIT-safe event type, effective date,
+ratio, ledger/current/pending reconciliation, and already-applied proof before
+any Historical Broker / Ledger state transition.
+```
+
+Next recommended task:
+
+```text
+Phase29-L9 implementation: add Historical-only Corporate Action symbol
+quarantine continuation evidence and Runtime Test scoped continuation
+classifier, preserve Production fail-closed submit guard, and add regression
+for unresolved target-symbol CA, unrelated-symbol CA, other-symbol continuation,
+and no silent PASS.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l8_corporate_action_symbol_scoped_historical_continuation_design_audit.md
+reports/phase29_l8_corporate_action_symbol_scoped_historical_continuation_design_audit/
+```
+
+---
+
+## Phase29-L9 Historical Corporate Action Symbol Quarantine Implementation
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION CODE CHANGED
+CONFIG CHANGE: NO
+RUNTIME / PENDING / LEDGER MUTATION: NO
+HISTORICAL EXECUTION: NO
+RESUME ALLOWED: NO
+FRESH RUN REQUIRED: YES
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L9_HISTORICAL_SYMBOL_SCOPED_CORPORATE_ACTION_QUARANTINE_IMPLEMENTED_SHORT_REGRESSION_PASS_FRESH_977BD_RETRY_READY
+```
+
+Summary:
+
+```text
+Implemented HISTORICAL_SYMBOL_SCOPED_CORPORATE_ACTION_QUARANTINE as a
+Historical Runtime Test continuation gate. The Runtime CLI and Corporate
+Action authority remain fail-closed: unresolved Corporate Action evidence
+still produces REVIEW_REQUIRED / non-zero submit. Runtime Test continues only
+when the evidence proves a historical_simulated submit job with no actual
+broker write, item-level Corporate Action reason
+corporate_action_event_not_resolved, impacted symbol identifiable, adjustment
+authority REVIEW_REQUIRED, and the impacted item NOT_SUBMITTED.
+
+The quarantine is persisted by symbol for Historical replay only. Later
+Historical submit for the same unresolved symbol is blocked with
+REVIEW_REQUIRED / NOT_SUBMITTED; unrelated symbols continue through normal
+guards. Production and Demo do not use this continuation path.
+
+No auto Corporate Action mechanics were added: no split inference, no quantity
+adjustment, no average-cost adjustment, no valuation correction, no pending
+conversion, no lot conversion, and no PnL restatement.
+```
+
+Regression:
+
+```text
+Phase29-L9 focused tests: 4 passed
+Existing Corporate Action submit guard tests: 21 passed
+Phase29-L7 SELL quantity contract tests: 10 passed
+py_compile: PASS with PYTHONPYCACHEPREFIX=/private/tmp/ai-fund-lab-pycache
+```
+
+Next recommended action:
+
+```text
+Do not resume runtime-test-historical-smoke-20260810T210535954893Z after this
+source change. Abandon the halted run, confirm status is idle, then execute a
+fresh 977BD historical-smoke run for 2022-08-10 through 2026-08-09.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l9_historical_corporate_action_symbol_quarantine_implementation.md
+reports/phase29_l9_historical_corporate_action_symbol_quarantine_implementation/
+```
+
+---
+
+## Phase29-L10 L9 Real-Run Corporate Action Continuation Failure Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY AUDIT
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L10_L9_REAL_RUN_FAILURE_ROOT_CAUSE_IDENTIFIED_SOURCE_VERSION_AND_PAYLOAD_SHAPE_MISMATCH_NO_PRODUCTION_DEFECT
+```
+
+Summary:
+
+```text
+The fresh 977BD run runtime-test-historical-smoke-20260810T232622909184Z
+halted at 2022-10-28:submit with Runtime CLI exit code 20 and final_state
+REVIEW_REQUIRED. The Corporate Action evidence was still the intended L9
+scenario: 76920 SELL 700, guard_reason corporate_action_event_not_resolved,
+event_status IMPACT_DETECTED, event_type UNKNOWN_ADJFACTOR_IMPACT, AdjFactor
+0.3333333333333333, adjustment authority REVIEW_REQUIRED, with two unrelated
+BUY items submitted.
+
+No quarantine registry entry was present and no
+corporate_action_symbol_quarantine_continuation.json was written. The recorded
+runtime_test_source_commit was 1db2ce8b80b8356e086ce878f2a4bd3ee081f871, which
+does not contain the L9 quarantine module and whose runtime_test.py has only
+the BUY-only continuation classifier. Therefore, if the run used committed
+source, the L9 classifier was not available.
+
+The run also had source_dirty=true. Replaying the current L9 classifier against
+the real submit runtime_manifest returns ineligible because the real manifest
+does not contain top-level item_results, while the L9 unit fixture did. The
+exact current-source failed predicate is item_results missing/not list.
+```
+
+Classification:
+
+```text
+classifier wiring/source-version defect: YES for recorded committed source
+predicate/evidence-shape defect: YES for current L9 source
+ordering defect: NO
+quarantine registry defect: NO, registry was never reached
+production defect: NO
+historical-only defect: YES
+```
+
+Next recommended task:
+
+```text
+Phase29-L11: repair Historical Corporate Action continuation classifier against
+the real submit runtime_manifest shape, add a real-payload regression fixture,
+and decide whether to add an explicit retrospective evidence-only run_state
+classification path for halted runs without re-running submit.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l10_l9_real_run_corporate_action_continuation_failure_audit.md
+reports/phase29_l10_l9_real_run_corporate_action_continuation_failure_audit/
+```
+
+---
+
+## Phase29-L11 Historical Corporate Action Real-Payload Continuation Repair
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION CODE CHANGED
+CONFIG CHANGE: NO
+SCHEMA CHANGE: ADDITIVE RUNTIME TEST EVIDENCE ONLY
+RUNTIME / PENDING / LEDGER MUTATION DURING CODEX WORK: NO
+HISTORICAL EXECUTION: NO
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L11_HISTORICAL_CA_REAL_PAYLOAD_CONTINUATION_REPAIRED_RETROSPECTIVE_EVIDENCE_ONLY_REPAIR_READY_SHORT_REGRESSION_PASS
+```
+
+Summary:
+
+```text
+Repaired the Historical Corporate Action quarantine continuation classifier to
+support the real submit runtime_manifest shape from
+runtime-test-historical-smoke-20260810T232622909184Z / 2022-10-28 / submit.
+The real manifest has no top-level item_results but does have
+submit_guard_item_evidence, submitted_count=2, blocked_count=1, and
+pending_item_count=3.
+
+The classifier now preserves the item_results path when present and adds a
+strict real-payload fallback that derives eligibility from guard evidence and
+count consistency. Generic REVIEW_REQUIRED, mixed blocked reasons, Production,
+Demo, and actual broker write remain ineligible.
+
+Implemented an evidence-only retrospective repair command:
+repair-ca-quarantine-continuation. Dry-run against the real halted run showed
+classification eligible, submit_reexecuted=false, broker_write=false,
+ledger/cash/positions mutated=false, and unchanged state hashes. No mutating
+repair command was executed by Codex.
+```
+
+Operator handoff:
+
+```bash
+PYTHONPATH=src:. python3 scripts/runtime_test.py repair-ca-quarantine-continuation --profile historical-smoke --run-id runtime-test-historical-smoke-20260810T232622909184Z --business-date 2022-10-28 --job submit --dry-run --json
+```
+
+```bash
+PYTHONPATH=src:. python3 scripts/runtime_test.py repair-ca-quarantine-continuation --profile historical-smoke --run-id runtime-test-historical-smoke-20260810T232622909184Z --business-date 2022-10-28 --job submit --confirm --yes-i-understand-this-mutates-trading-state --json
+```
+
+```bash
+PYTHONPATH=src:. python3 scripts/runtime_test.py resume --profile historical-smoke --run-id runtime-test-historical-smoke-20260810T232622909184Z --confirm --yes-i-understand-this-mutates-trading-state
+```
+
+Resume / Fresh-run:
+
+```text
+Before operator repair command: Resume Allowed NO.
+After successful retrospective evidence-only repair command: Resume Allowed YES.
+Fresh-run Required after successful repair: NO.
+```
+
+Regression:
+
+```text
+Phase29-L9/L11 focused: 8 passed
+Phase29-L9 + L7 + L5: 23 passed
+Existing Corporate Action submit guard tests: 21 passed
+py_compile scripts/runtime_test.py: PASS
+```
+
+Next recommended task:
+
+```text
+Phase29-L12 - 93180 Universe Eligibility / Low-Price Opportunity Root Cause Audit
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l11_historical_corporate_action_real_payload_continuation_repair.md
+reports/phase29_l11_historical_corporate_action_real_payload_continuation_repair/
+```
+
+---
+
+## Phase29-L12 93180 Universe Eligibility / Low-Price Opportunity Root Cause Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY AUDIT
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L12_93180_LOW_PRICE_ELIGIBILITY_AND_REENTRY_DESIGN_GAP_IDENTIFIED_NO_PRODUCTION_DEFECT_READ_ONLY_AUDIT_COMPLETE
+```
+
+Summary:
+
+```text
+93180 was アジア開発キャピタル / Asia Development Capital Co.Ltd., ProdCat
+011, Standard market, S33 証券･商品先物取引業 in PIT listed_issues evidence.
+The PIT row did not expose issuer country or a domestic/foreign flag, so
+foreign classification remains UNKNOWN. Under current system treatment, ProdCat
+011 was broker-supported listed equity and Universe eligibility passed.
+
+The mandatory 2022-09-08, 2022-09-09, and 2022-09-12 events were not BUYs;
+they were SELL REDUCE, SELL REDUCE, and SELL EXIT. The 2022-10-21 BUY was
+system-classified BUY_NEW and semantically a re-entry after the 2022-09-12 full
+exit, not ADD.
+
+Root cause is not ADD regression. The root cause is a BUY-side strategy design
+gap: no evidenced hard low-price filter, only soft liquidity/execution-feasibility
+quality evidence, Opportunity ranking admitted 93180 at 4-6 JPY, Buy Quality
+passed it as FULL_ALLOCATION_ELIGIBLE, Portfolio Construction assigned normal
+14-18% target weights, and no same-symbol post-EXIT re-entry cooldown blocked it.
+```
+
+Key evidence:
+
+```text
+2022-08-26 BUY_NEW rank 5 expected_edge 0.00848027 target_weight 0.18 fill 29,900 @ 6 = 179,400
+2022-09-08 SELL REDUCE rank 9 expected_edge -0.15391145 fill 7,400 @ 6 = 44,400 sell
+2022-09-09 SELL REDUCE rank 14 expected_edge -0.21291214 fill 5,600 @ 6 = 33,600 sell
+2022-09-12 SELL EXIT rank 13 expected_edge -0.23949336 fill 16,900 @ 6 = 101,400 sell
+2022-10-21 BUY_NEW / semantic re-entry rank 3 expected_edge 0.08364030 target_weight 0.153333 fill 41,200 @ 5 = 206,000
+Total 93180 BUY capital deployed through 2022-10-27: 556,400 JPY
+Realized PnL through 2022-10-27: -41,200 JPY
+2022-10-27 pre-execution valuation unrealized evidence: -34,200 JPY
+```
+
+Classification:
+
+```text
+Low-price bias systemic: YES
+Production defect: NO
+Strategy design gap: YES
+ADD regression: NO
+SELL / REDUCE / EXIT regression: NO evidence
+```
+
+Next recommended task:
+
+```text
+Phase29-L13 - Low-Price Eligibility / Re-entry Cooldown / Allocation Guard Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l12_93180_universe_eligibility_low_price_opportunity_root_cause_audit.md
+reports/phase29_l12_93180_universe_eligibility_low_price_opportunity_root_cause_audit/
+```
+
+---
+
+## Phase29-L13 Low-Price Eligibility / Re-entry Cooldown / Allocation Guard Design
+
+Status:
+
+```text
+COMPLETE
+DESIGN ONLY
+READ_ONLY
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO EXISTING SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L13_LOW_PRICE_REENTRY_ALLOCATION_GUARD_DESIGN_COMPLETE_THRESHOLD_CALIBRATION_REQUIRED_BEFORE_IMPLEMENTATION
+```
+
+Summary:
+
+```text
+L13 confirmed the L12 root cause as a Strategy design gap, not ADD regression:
+low-price BUY_NEW / semantic REENTRY can pass current Opportunity and Buy
+Quality, receive normal Portfolio Construction target_weight, and be materialized
+by Position Sizing into large low-price share quantities.
+
+Recommended design is Option B: Price + Liquidity Conditional Eligibility +
+Portfolio Construction Allocation Guard + REENTRY Recovery Hurdle. A hard
+absolute low-price exclusion is not recommended because nominal price alone is
+sensitive to split/reverse-split/corporate-action effects and can over-exclude
+valid momentum opportunities. Pure liquidity-only control is also insufficient
+because 93180 had substantial PIT Va on BUY dates.
+
+The design keeps BUY_NEW possible, preserves canonical ADD, preserves
+SELL/REDUCE/EXIT independence, preserves Opportunity Cost and Dynamic Capital,
+and recycles trimmed low-price allocation to strong existing ADD first,
+higher-quality BUY_NEW second, then cash only when no eligible opportunity
+passes.
+
+Opportunity model distortion is plausible because percentage-return features
+can be amplified by 4-6 JPY nominal prices, but it is NOT_PROVEN from 93180
+alone. L13 therefore recommends downstream Strategy authority and diagnostics
+first, not model retraining or feature repair.
+```
+
+Recommended contract:
+
+```text
+BUY_NEW: conditional low-price eligibility using PIT price, listed, corporate-action, liquidity, traded-value, and execution-capacity evidence.
+REENTRY: semantic state required when current quantity is zero and prior same-symbol EXIT exists in past runtime state; apply BUY_NEW checks plus recovery hurdle.
+ADD: unchanged; no blanket low-price ADD ban. Optional future low-price incremental risk multiplier only after canonical ADD passes.
+Allocation: Portfolio Construction owns low-price target-weight cap / risk-budget multiplier before Position Sizing.
+Position Sizing: continues to materialize accepted PC target weights into executable quantities.
+SELL / REDUCE / EXIT: never blocked by BUY low-price eligibility, liquidity guard, allocation cap, or re-entry cooldown.
+Missing evidence: symbol-level BUY_INELIGIBLE / REVIEW_REQUIRED preferred over whole-run HALT when other symbols and risk-reducing actions can continue safely.
+```
+
+Threshold status:
+
+```text
+THRESHOLD_CALIBRATION_REQUIRED
+```
+
+Next recommended task:
+
+```text
+Phase29-L14 - Low-Price Liquidity / Re-entry Threshold Calibration and Implementation Readiness
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l13_low_price_reentry_allocation_guard_design.md
+reports/phase29_l13_low_price_reentry_allocation_guard_design/
+```
+
+---
+
+## Phase29-L14 Low-Price Liquidity / REENTRY Threshold Calibration and Implementation Readiness
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY CALIBRATION / IMPLEMENTATION READINESS AUDIT
+NO PRODUCTION CODE CHANGE
+NO CONFIG CHANGE
+NO EXISTING SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+IMPLEMENTATION NOT READY
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L14_LOW_PRICE_LIQUIDITY_REENTRY_CALIBRATION_COMPLETE_IMPLEMENTATION_NOT_READY_ADDITIONAL_CALIBRATION_REQUIRED
+```
+
+Summary:
+
+```text
+L14 used multi-symbol, multi-period PIT evidence from 19,150 Opportunity rows
+across 383 dates from 2022-07-01 through 2026-07-17, joined to canonical
+J-Quants raw OHLCV covering 2022-05-17 through 2026-08-07. It did not use PnL,
+backtest results, future returns, or 93180-specific optimization.
+
+Low-price Opportunity population is real and not isolated to 93180:
+price <100 contained 2,574 rows across 64 symbols and multiple years. Low-price
+rows spanned Standard, Growth, and Prime markets and sectors including
+Information/Communication, Real Estate, Retail, Electric Appliances, Services,
+Securities/Commodity Futures, and Pharmaceuticals.
+
+The evidence rejects hard blanket low-price exclusion and pure liquidity-only
+filtering. BUY-eligible low-price rows often had substantial rolling traded
+value, and 93180 itself had Va around 53M-63M JPY on audited BUY dates. Therefore
+liquidity authority is required but insufficient alone; it must combine with
+price/tick sensitivity and PC allocation caps.
+
+REENTRY semantic is READY as a definition:
+current_quantity=0 and prior same-symbol EXIT known from past runtime state
+before the current decision date. However cooldown days and recovery hurdle
+values are NOT_READY. Existing observed re-entry fills were too few to calibrate
+general thresholds without false-rejection risk.
+
+Buy Quality and Portfolio Construction execution artifacts available for this
+audit were limited to 2022-08-10 through 2022-10-28. They confirm the structural
+issue that low-price rows can receive normal target weights, but they are not
+wide enough to activate numerical allocation caps safely.
+```
+
+Calibration decisions:
+
+```text
+Low-price threshold calibration: NOT_READY
+Liquidity threshold calibration: NOT_READY
+Allocation cap calibration: NOT_READY
+REENTRY semantic: READY
+Cooldown calibration: NOT_READY
+Recovery hurdle calibration: NOT_READY
+Implementation readiness: NOT_READY
+```
+
+Preservation:
+
+```text
+ADD semantics weakened: NO
+BUY_NEW semantics implementation required: YES
+SELL semantics changed: NO
+REDUCE semantics changed: NO
+EXIT semantics changed: NO
+Opportunity Cost preserved: YES
+Capital reallocation preserved: YES
+Production fail-closed preserved: YES
+Historical-only Strategy introduced: NO
+```
+
+Next recommended task:
+
+```text
+Phase29-L15 - Additional Calibration / Design Revision
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l14_low_price_liquidity_reentry_threshold_calibration_and_implementation_readiness.md
+reports/phase29_l14_low_price_liquidity_reentry_threshold_calibration_and_implementation_readiness/
+```
+
+---
+
+## Phase29-L15 Cross-Period Low-Price / Liquidity / REENTRY / Allocation Calibration
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY CALIBRATION / DESIGN REVISION / IMPLEMENTATION READINESS
+NO PRODUCTION CODE CHANGE
+NO STRATEGY CODE CHANGE
+NO CONFIG CHANGE
+NO EXISTING SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+READY_FOR_L16_WITH_CANDIDATE_RANGES_AND_OPERATOR_ACCEPTANCE_REQUIRED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L15_CROSS_PERIOD_LOW_PRICE_LIQUIDITY_REENTRY_ALLOCATION_CALIBRATION_READY_FOR_L16_WITH_CANDIDATE_RANGES_AND_OPERATOR_ACCEPTANCE_REQUIRED
+```
+
+Summary:
+
+```text
+L15 built a cross-period calibration artifact from 19,150 Opportunity rows
+across 383 dates and 763 symbols, joined to PIT J-Quants raw OHLCV and listed
+snapshots, plus available real BQ/PC/fill artifacts. No PnL, backtest result,
+future return, or 93180-specific optimization was used.
+
+Price-only hard exclusion remains rejected. Price/tick risk is READY as a
+secondary risk signal with candidate ranges based on single-tick percentage
+sensitivity. Liquidity capacity is READY_WITH_CANDIDATE_RANGE via
+target_notional / rolling_median_traded_value_20 and estimated liquidation days,
+but pure liquidity filtering remains insufficient.
+
+PC allocation-cap formula is READY, with candidate ranges for watch/elevated/
+severe/extreme risk tiers. Because high-rank, high-edge, and high-liquidity
+low-price opportunities are common, the preferred repair is capping/risk
+budgeting plus capital reallocation, not blanket exclusion.
+
+REENTRY semantic is READY. Minimum cooldown and recovery hurdle are
+READY_WITH_CANDIDATE_RANGE, with time-only cooldown still rejected. Capital
+released by caps must recycle first to strong canonical ADD, then higher-quality
+uncapped BUY_NEW, then other eligible Strategy opportunities, then Cash.
+
+Canonical ADD, BUY_ADD, SELL, REDUCE, EXIT, L7 quantity contract, Opportunity
+Cost, Dynamic Capital, Cash Exposure Authority, Corporate Action fail-closed,
+Production-common Strategy, and anti-leakage constraints are preserved.
+```
+
+Next recommended task:
+
+```text
+Phase29-L16 - Low-Price Risk Allocation / Semantic REENTRY Guard Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l15_cross_period_low_price_liquidity_reentry_allocation_calibration.md
+reports/phase29_l15_cross_period_low_price_liquidity_reentry_allocation_calibration/
+```
+
+---
+
+## Phase29-L16 Low-Price Risk Allocation / Semantic REENTRY Guard Implementation
+
+Status:
+
+```text
+COMPLETE
+IMPLEMENTATION / SHORT REGRESSION / PRODUCTION-COMMON STRATEGY
+PRODUCTION-COMMON STRATEGY IMPLEMENTATION COMPLETE
+NO HISTORICAL-ONLY STRATEGY
+NO PRICE-ONLY HARD EXCLUSION
+NO 93180-SPECIFIC LOGIC
+NO CONFIG CHANGE
+NO EXISTING SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER MUTATION
+NO HISTORICAL EXECUTION
+SHORT REGRESSION PASS
+FRESH HISTORICAL VALIDATION READY
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L16_LOW_PRICE_RISK_ALLOCATION_AND_SEMANTIC_REENTRY_GUARD_IMPLEMENTED_SHORT_REGRESSION_PASS_FRESH_HISTORICAL_VALIDATION_READY
+```
+
+Summary:
+
+```text
+L16 implemented the L13-L15 approved common Strategy repair in Portfolio
+Construction. Single-tick percentage is now the price/tick risk authority with
+NORMAL / WATCH / ELEVATED / SEVERE / EXTREME tiers and operator-approved caps:
+WATCH 0.12, ELEVATED 0.10, SEVERE 0.08, EXTREME 0.05.
+
+Liquidity capacity now uses target notional over rolling_median_traded_value_20,
+with cap weight derived from rolling_median_traded_value_20 * 0.01 divided by
+current authoritative portfolio equity. No fixed 1,000,000 JPY Strategy
+authority was introduced.
+
+Semantic REENTRY is detected only from explicit prior same-symbol EXIT state
+already present before the decision date. REENTRY enforces a 3 completed-BD
+cooldown and a recovery hurdle requiring rank <=10, expected_edge >=0.10, BQ
+REDUCED/FULL, resolved Corporate Action status, non-severe liquidity capacity,
+and recovered trend or momentum. ADD / BUY_ADD is not REENTRY.
+
+Low-price BUY_NEW remains conditionally possible and is capped rather than
+blanket rejected. Canonical ADD remains possible and positive BUY_ADD
+increment remains supported. SELL / REDUCE / EXIT and the L7 SELL quantity
+contract are unchanged.
+
+Candidate feature generation now emits rolling_median_traded_value_20 when
+PIT traded-value input exists; missing traded-value evidence is not fabricated.
+Position Sizing carries L16 evidence forward but does not become economic
+allocation authority.
+```
+
+Regression:
+
+```text
+L16 focused: 8 passed
+PC / PS / L7 SELL quantity: 153 passed
+Corporate Action / Portfolio Policy / DCE / Feature / Runtime authority: 53 passed
+Combined focused regression: 206 passed
+py_compile: PASS
+Code search: no Strategy 93180 / 2022 / fixed-1M authority hits
+```
+
+Fresh / Resume decision:
+
+```text
+Fresh-run Required: YES
+Resume old pre-L16 run allowed: NO
+```
+
+Recommended operator command:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run --profile historical-smoke --date-from 2022-08-10 --date-to 2026-08-09 --initial-cash 1000000 --confirm --yes-i-understand-this-mutates-trading-state
+```
+
+Next recommended task:
+
+```text
+Operator-run fresh Historical validation, followed by read-only Phase29-L17
+effect attribution and structural correctness audit.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l16_low_price_risk_allocation_semantic_reentry_guard_implementation.md
+reports/phase29_l16_low_price_risk_allocation_semantic_reentry_guard_implementation/
+```
+
+---
+
+## Phase29-L17 L16 Early-Run Capital Utilization / Opportunity Reallocation Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY_AUDIT
+NO PRODUCTION / STRATEGY / RUNTIME / CONFIG / SCHEMA CHANGE
+NO RUNTIME / PENDING / LEDGER / QUARANTINE MUTATION
+NO HISTORICAL / FRESH / RESUME / ABANDON / REPAIR EXECUTION
+NO L16 STRATEGY REGRESSION IDENTIFIED
+CAPITAL ALLOCATION GAP REMAINS
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L17_L16_EARLY_RUN_CAPITAL_UTILIZATION_AUDIT_PASS_NO_STRATEGY_REGRESSION
+```
+
+Secondary Judgment:
+
+```text
+PHASE29_L17_CAPITAL_ALLOCATION_GAP_REMAINS_PRE_L16_STYLE_NOT_L16_REGRESSION
+```
+
+Audit scope:
+
+```text
+Run: runtime-test-historical-smoke-20260811T024356531918Z
+Dates: 2022-08-10 through 2022-08-24
+Completed business days audited: 10
+```
+
+Summary:
+
+```text
+The 2022-08-24 cash ratio was confirmed high at 69.346663%, with invested
+ratio 30.653337%, cash 688,120, market value 304,170, total equity 992,290,
+and two holdings: 94320 and 23880.
+
+The L16 low-price guard, liquidity cap, and REENTRY guard did not activate in
+the audited Top20 opportunity evidence. No L16-affected candidate was observed,
+and no evidence supports L16-caused BUY_NEW over-suppression.
+
+BUY_NEW supply was thin: 190 Top20 BUY_NEW candidate rows, 5 eligible rows,
+2 positive target rows, 2 positive sizing rows, 2 submitted rows, and 2 fills.
+The remaining rows were dominated by Buy Quality / non-positive edge rejection.
+
+ADD / BUY_ADD was preserved. Five ADD intent rows were observed, four had
+accepted incremental weight, but zero became quantity-positive because the
+increment was not executable below minimum lot or concentration feasibility.
+No ADD row was blocked by REENTRY cooldown or BUY_NEW low-price guard.
+
+Cash remained primarily for NO_ELIGIBLE_OPPORTUNITY and secondarily
+CONCENTRATION_LIMIT, especially lot-first rebatching skips such as minimum lot
+exceeding concentration cap. This is a capital allocation / lot concentration
+bottleneck, not an L16 regression.
+
+No fixed 1,000,000 JPY Strategy capital authority was observed in audited PC/PS
+artifacts. Position Sizing portfolio_total_equity varied with current equity,
+so the compound capital path was confirmed for sizing.
+```
+
+Next recommended task:
+
+```text
+Phase29-L18 - Lot / Concentration Feasibility Capital Deployment Bottleneck Audit and Repair Design
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l17_l16_early_run_capital_utilization_opportunity_reallocation_audit.md
+reports/phase29_l17_l16_early_run_capital_utilization_opportunity_reallocation_audit/
+```
+
+---
+
+## Phase29-L18 Lot / Concentration Feasibility Capital Deployment Bottleneck Audit and Repair Design
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY_AUDIT
+DESIGN_ONLY
+NO PRODUCTION / STRATEGY / RUNTIME / CONFIG / SCHEMA / THRESHOLD CHANGE
+NO RUNTIME / PENDING / LEDGER / QUARANTINE MUTATION
+NO HISTORICAL / FRESH / RESUME / ABANDON / REPAIR EXECUTION
+ROOT CAUSE CONFIRMED
+REPAIR DESIGN READY FOR L19
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L18_DISCRETE_LOT_AND_RESIDUAL_CAPITAL_REALLOCATION_GAPS_CONFIRMED_REPAIR_DESIGN_READY
+```
+
+Root Causes:
+
+```text
+DISCRETE_LOT_CONCENTRATION_BOUNDARY_GAP
+RESIDUAL_CAPITAL_RECYCLING_GAP_AT_ALL_CANDIDATES_CONCENTRATION_BLOCKED
+```
+
+Summary:
+
+```text
+L18 confirmed that the L17 cash bottleneck is not caused by L16 and does not
+represent ADD weakening. The issue is a continuous-weight versus discrete-lot
+boundary at the concentration cap.
+
+Portfolio Construction can validly allocate continuous target weight up to the
+18% Strategy concentration cap. Position Sizing preflight then computes minimum
+executable lot weight from PIT reference price, trading unit, and the
+minimum_meaningful_notional policy. In observed cases, one executable lot
+exceeds the remaining 18% Strategy-cap headroom, so lot-aware final reallocation
+zeros the increment.
+
+BUY_ADD example: 94320 on 2022-08-24 had current_weight 13.6879%, accepted ADD
+increment 4.3121%, target 18%, minimum executable weight 5.0128%, and one-lot
+post-trade weight 18.7007%. This exceeds the 18% Strategy cap but remains below
+the observed 25% Safety hard maximum, so it is a discrete lot boundary case.
+
+BUY_NEW example: 78780 on 2022-08-24 had target 18%, minimum executable weight
+24.7471%, and one-lot post-trade weight 24.7471%. This exceeds Strategy cap but
+is below the observed Safety hard maximum on that date. On 2022-08-22 and
+2022-08-23 the one-lot weight exceeded both Strategy cap and Safety hard maximum.
+
+Residual recycling exists as a lot-aware candidate queue with skipped,
+promoted, rebatch_allocations, and capital conservation evidence. It is not
+complete for all-candidates concentration-blocked days: residual budget is
+conserved but returns to Cash after all eligible participants fail the effective
+18% cap boundary.
+
+The recommended repair design is Option 5: Cap-Constrained Lot Floor plus
+Iterative Residual Reallocation. This preserves ADD / BUY_ADD / BUY_NEW
+semantics, SELL / REDUCE / EXIT semantics, L7 SELL quantity contract, L16
+guards, Opportunity Cost, Dynamic Capital, Cash Exposure Authority, Compound
+Capital, and no-forced-deployment.
+```
+
+Recommended L19 scope:
+
+```text
+Implement production-common cap-constrained discrete lot feasibility and
+iterative residual reallocation evidence. Do not change Strategy ranking,
+Expected Edge thresholds, BUY_ADD semantics, BUY_NEW eligibility semantics,
+SELL / REDUCE / EXIT semantics, L16 guard semantics, or concentration Safety
+hard maximum.
+```
+
+Next recommended task:
+
+```text
+Phase29-L19 - Production-Common Cap-Constrained Lot Floor and Iterative Residual Reallocation Implementation
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l18_lot_concentration_feasibility_capital_deployment_bottleneck_audit_and_repair_design.md
+reports/phase29_l18_lot_concentration_feasibility_capital_deployment_bottleneck_audit_and_repair_design/
+```
+
+---
+
+## Phase29-L19 Cap-Constrained Lot Floor and Iterative Residual Reallocation Implementation
+
+Status:
+
+```text
+COMPLETE
+IMPLEMENTATION
+SHORT_REGRESSION_PASS
+PRODUCTION_COMMON_STRATEGY
+NO RUNTIME / PENDING / LEDGER / QUARANTINE MUTATION
+NO HISTORICAL / FRESH / RESUME / ABANDON / REPAIR EXECUTION
+FRESH HISTORICAL VALIDATION REQUIRED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L19_CAP_CONSTRAINED_LOT_FLOOR_AND_ITERATIVE_RESIDUAL_REALLOCATION_IMPLEMENTED_SHORT_REGRESSION_PASS_FRESH_HISTORICAL_REQUIRED
+```
+
+Summary:
+
+```text
+L19 implemented the L18 Option 5 repair design as additive Production-common
+Strategy evidence in Position Sizing and Portfolio Construction.
+
+Position Sizing now materializes phase29_l19_lot_resolution for BUY_ADD and
+BUY_NEW lot feasibility preflight rows. The evidence separates Strategy cap and
+Safety hard cap, records remaining strategy/safety headroom, one-lot notional
+and weight, minimum policy lots, max strategy/safety feasible lots, executable
+lots, executable quantity delta, and boundary classification.
+
+Portfolio Construction now carries that resolution into lot-aware final
+reallocation evidence, per-candidate skipped/allocation iteration evidence, and
+per-member phase29_l19_lot_resolution. Existing candidate ordering and
+Opportunity Cost queue semantics are preserved. Residual capital continues to
+the next eligible candidate, and if all candidates are exhausted Cash remains
+valid with explicit evidence.
+
+The implementation does not set effective_cap to Safety 25%, does not force
+deployment, does not change BUY_ADD / BUY_NEW eligibility semantics, does not
+change SELL / REDUCE / EXIT semantics, and does not weaken L16 guards.
+```
+
+Regression:
+
+```text
+Focused L19 tests: 6 passed
+Portfolio Construction + Position Sizing focused files: 149 passed
+L16 + L7 SELL focused regression: 18 passed
+py_compile: PASS
+git diff --check: PASS
+```
+
+Fresh-run decision:
+
+```text
+Fresh-run Required: YES
+Resume halted pre-L19 run as L19 validation: NO
+```
+
+Recommended operator command:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run --profile historical-smoke --date-from 2022-08-10 --date-to 2026-08-09 --initial-cash 1000000 --confirm --yes-i-understand-this-mutates-trading-state
+```
+
+Next recommended task:
+
+```text
+Operator-run fresh Historical validation, followed by Phase29-L20 read-only effect attribution and execution-HALT separation audit if needed.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l19_cap_constrained_lot_floor_iterative_residual_reallocation_implementation.md
+reports/phase29_l19_cap_constrained_lot_floor_iterative_residual_reallocation_implementation/
+```
+---
+
+## Phase29-L19R Historical Lot / Sizing Repair Lineage and Regression Audit
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY LINEAGE / REGRESSION AUDIT
+NO PRODUCTION / STRATEGY / RUNTIME / CONFIG / SCHEMA CHANGE
+NO HISTORICAL EXECUTION
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L19R_MIXED_PRE_EXISTING_INCOMPLETE_IMPLEMENTATION_AND_PARTIAL_AUTHORITY_MIGRATION_GAP_NO_PROVEN_REGRESSION
+```
+
+Summary:
+
+```text
+L19 is classified as MIXED, not a proven regression. Similar repair existed
+before only PARTIAL: Phase22 introduced Strategy cap / Safety hard cap
+separation in Position Sizing evidence, and Phase28 introduced lot-aware PC/PS
+capital conversion with minimum executable promotion and lower-rank funding.
+
+The missing pre-L19 contract was the combined discrete lot-count boundary:
+maximum_strategy_feasible_lots, maximum_safety_feasible_lots, and explicit
+classification of minimum executable lots that exceed Strategy cap headroom
+while remaining inside, or breaching, the independent Safety hard cap.
+
+No previous L19-equivalent implementation was found, and no later removal of an
+equivalent implementation was proven. L19 remains required as completion of a
+pre-existing incomplete Phase28 lot-aware repair and a partial authority
+migration gap from the earlier Strategy/Safety cap separation.
+
+The current 4-year Historical run
+runtime-test-historical-smoke-20260811T055746254454Z was not touched.
+```
+
+Next recommended action:
+
+```text
+Do not re-open L19 as a regression rollback. Keep L19 as the required completion
+of Phase28's partial lot-aware repair, then proceed only through the approved
+operator-owned long-horizon validation gate; include L19 boundary fixtures in
+future ADD/BUY_NEW lot-sizing regression suites.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l19r_lot_sizing_repair_lineage_and_regression_audit.md
+reports/phase29_l19r_lot_sizing_repair_lineage_and_regression_audit/
+```

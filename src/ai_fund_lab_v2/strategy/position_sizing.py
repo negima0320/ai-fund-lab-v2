@@ -200,9 +200,10 @@ def build_lot_feasibility_preflight(
     rows: list[Mapping[str, Any]],
     portfolio_value: float,
     config: PositionSizingConfig,
+    safety_cap: float | None = None,
 ) -> list[dict[str, Any]]:
     return [
-        _lot_feasibility_row(row, business_date=business_date, portfolio_value=portfolio_value, config=config)
+        _lot_feasibility_row(row, business_date=business_date, portfolio_value=portfolio_value, config=config, safety_cap=safety_cap)
         for row in sorted(rows, key=lambda item: (_positive_int(item.get("construction_priority"), 999999), str(item.get("security_code") or item.get("symbol") or "")))
         if _lot_preflight_required(row)
     ]
@@ -391,6 +392,7 @@ def build_position_sizing_payload(
             rows=sizing_rows,
             portfolio_value=portfolio_value,
             config=config,
+            safety_cap=safety_cap,
         )
         positions, sizing_reasons = _size_positions(
             config=config,
@@ -422,7 +424,11 @@ def build_position_sizing_payload(
             else:
                 status = "BLOCK"
                 reasons.append("aggregate_target_weight_above_exposure_cap")
-        if safety_cap is not None and any(float(item["target_weight"]) > safety_cap + 0.000001 for item in positions):
+        if safety_cap is not None and any(
+            float(item["target_weight"]) > safety_cap + 0.000001
+            and not _position_cap_exception_is_directionally_allowed(item, target=float(item["target_weight"]))
+            for item in positions
+        ):
             status = "BLOCK"
             reasons.append("produced_position_weight_above_safety_cap")
 
@@ -636,7 +642,14 @@ def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, An
     reasons: list[str] = []
     max_weight = min(config.strategy_maximum_position_weight, safety_cap)
     for row in rows:
-        item = _raw_position(row, config=config, base=base, max_weight=max_weight, portfolio_value=portfolio_value)
+        item = _raw_position(
+            row,
+            config=config,
+            base=base,
+            max_weight=max_weight,
+            portfolio_value=portfolio_value,
+            safety_cap=safety_cap,
+        )
         raw.append(item)
     active_total = sum(float(item["capped_weight"]) for item in raw if item["sizing_status"] in {"SIZED", "CAPPED"})
     scale = min(1.0, target_exposure / active_total) if active_total > 0 else 0.0
@@ -674,7 +687,14 @@ def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, An
 
 
 def _zero_allocation_position(row: Mapping[str, Any], *, config: PositionSizingConfig, safety_cap: float, reason: str) -> dict[str, Any]:
-    base = _raw_position(row, config=config, base=0.0, max_weight=min(config.strategy_maximum_position_weight, safety_cap), portfolio_value=0.0)
+    base = _raw_position(
+        row,
+        config=config,
+        base=0.0,
+        max_weight=min(config.strategy_maximum_position_weight, safety_cap),
+        portfolio_value=0.0,
+        safety_cap=safety_cap,
+    )
     return {
         **base,
         "base_weight": 0.0,
@@ -705,7 +725,15 @@ def _resolved_lot_aware_add_increment(row: Mapping[str, Any]) -> float:
     return nested if nested > 0 else 0.0
 
 
-def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base: float, max_weight: float, portfolio_value: float) -> dict[str, Any]:
+def _raw_position(
+    row: Mapping[str, Any],
+    *,
+    config: PositionSizingConfig,
+    base: float,
+    max_weight: float,
+    portfolio_value: float,
+    safety_cap: float | None = None,
+) -> dict[str, Any]:
     code = str(row.get("security_code") or row.get("symbol") or "")
     membership = str(row.get("membership_intent") or "UNRESOLVED").upper()
     pm_action = str(row.get("pm_action") or ("NEW" if membership == "ADD_CANDIDATE" else "HOLD")).upper()
@@ -864,29 +892,35 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
             reasons.append("ADD_POSITION_SIZING_ZERO_DELTA")
         if target_weight_resolution["status"] != "PASS":
             reasons.append("ADD_REQUIRED_EVIDENCE_MISSING")
+    baseline_weight = _ratio(row.get("baseline_existing_weight"), current_weight)
+    retained_baseline = (
+        existing_position
+        and pm_action in {"HOLD", "ADD"}
+        and membership == "RETAIN"
+        and accepted_incremental_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+        and quantity_delta_candidate == 0
+        and (
+            abs(target - current_weight) <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+            or abs(target - baseline_weight) <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+        )
+    )
+    risk_reducing = (
+        existing_position
+        and pm_action == "REDUCE"
+        and quantity_delta_candidate <= 0
+        and target <= current_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
     if target > max_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
-        baseline_weight = _ratio(row.get("baseline_existing_weight"), current_weight)
-        retained_baseline = (
-            existing_position
-            and pm_action in {"HOLD", "ADD"}
-            and membership == "RETAIN"
-            and accepted_incremental_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
-            and quantity_delta_candidate == 0
-            and (
-                abs(target - current_weight) <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
-                or abs(target - baseline_weight) <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
-            )
-        )
-        risk_reducing = (
-            existing_position
-            and pm_action == "REDUCE"
-            and quantity_delta_candidate <= 0
-            and target <= current_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE
-        )
         if retained_baseline:
             reasons.append("EXISTING_BASELINE_CAP_DRIFT_ACCEPTED_NO_INCREMENT")
         elif risk_reducing:
             reasons.append("EXISTING_POSITION_RISK_REDUCING_ABOVE_CAP_ACCEPTED")
+    if safety_cap is not None and target > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        if retained_baseline:
+            reasons.append("PASSIVE_CONCENTRATION_DRIFT_RETAINED")
+            reasons.append("SAFETY_CAP_DRIFT_NO_RISK_INCREASE")
+        elif risk_reducing:
+            reasons.append("SAFETY_CAP_DRIFT_RISK_REDUCING_TRANSACTION_ALLOWED")
     return {
         "security_code": code,
         "position_reference": str(row.get("position_reference") or row.get("member_id") or code),
@@ -932,6 +966,7 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
         "transaction_quantity_candidate": int(transaction_quantity_candidate),
         "target_weight_authority": dict(row.get("target_weight_authority") or {}),
         "target_weight_resolution": dict(target_weight_resolution),
+        **_phase29_l16_strategy_evidence(row),
         "target_quantity_candidate": target_quantity_candidate,
         "current_quantity": int(current_quantity),
         "quantity_delta_candidate": quantity_delta_candidate,
@@ -975,12 +1010,47 @@ def _raw_position(row: Mapping[str, Any], *, config: PositionSizingConfig, base:
     }
 
 
+def _phase29_l16_strategy_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
+    fields = (
+        "semantic_buy_type",
+        "prior_exit_business_date",
+        "business_days_since_exit",
+        "reentry_cooldown_threshold_bd",
+        "reentry_cooldown_status",
+        "reentry_recovery_status",
+        "reentry_recovery_reason",
+        "reentry_rank",
+        "reentry_expected_edge",
+        "reentry_buy_quality_action",
+        "reentry_trend_close_over_ma_20d",
+        "reentry_price_momentum_return_20d",
+        "reentry_corporate_action_status",
+        "single_tick_pct",
+        "price_tick_risk_tier",
+        "rolling_median_traded_value_20",
+        "capacity_ratio",
+        "liquidity_capacity_status",
+        "normal_target_weight",
+        "price_tick_cap_weight",
+        "liquidity_capacity_cap_weight",
+        "final_risk_adjusted_target_weight",
+        "allocation_cap_reason",
+    )
+    return {field: row.get(field) for field in fields if field in row}
+
+
 def _lot_preflight_required(row: Mapping[str, Any]) -> bool:
     membership = str(row.get("membership_intent") or "").upper()
     pm_action = str(row.get("pm_action") or "").upper()
     target = _ratio(row.get("target_weight"), 0.0)
     current = _ratio(row.get("current_weight"), 0.0)
+    requested_add = _ratio(row.get("requested_incremental_weight"), 0.0)
+    requested_buy_new = _ratio(row.get("requested_buy_new_weight"), 0.0)
     if membership == "ADD_CANDIDATE" and not row.get("current_position") and target > 0:
+        return True
+    if membership == "ADD_CANDIDATE" and not row.get("current_position") and requested_buy_new > 0:
+        return True
+    if bool(row.get("current_position")) and pm_action == "ADD" and requested_add > 0:
         return True
     return bool(row.get("current_position")) and pm_action == "ADD" and target > current
 
@@ -991,12 +1061,15 @@ def _lot_feasibility_row(
     business_date: str,
     portfolio_value: float,
     config: PositionSizingConfig,
+    safety_cap: float | None = None,
 ) -> dict[str, Any]:
     symbol = str(row.get("security_code") or row.get("symbol") or "")
     membership = str(row.get("membership_intent") or "").upper()
     pm_action = str(row.get("pm_action") or ("NEW" if membership == "ADD_CANDIDATE" else "")).upper()
     current_weight = _ratio(row.get("current_weight"), 0.0)
     target_weight = _ratio(row.get("target_weight"), 0.0)
+    requested_add = _ratio(row.get("requested_incremental_weight"), 0.0)
+    requested_buy_new = _ratio(row.get("requested_buy_new_weight"), 0.0)
     current_quantity = _positive_float(row.get("current_quantity"), 0.0)
     reference_price_resolution = resolve_reference_price(row)
     price = _positive_float(reference_price_resolution["resolved_price"], 0.0)
@@ -1006,11 +1079,40 @@ def _lot_feasibility_row(
     current_notional = round(current_weight * portfolio_value, 2)
     draft_delta_notional = round(max(draft_target_notional - current_notional, 0.0), 2)
     intent_type = "BUY_ADD" if bool(row.get("current_position")) and pm_action == "ADD" else "BUY_NEW"
-    target_basis_notional = draft_delta_notional if intent_type == "BUY_ADD" else draft_target_notional
+    requested_basis_notional = round((requested_add if intent_type == "BUY_ADD" else requested_buy_new) * portfolio_value, 2)
+    target_basis_notional = max(draft_delta_notional if intent_type == "BUY_ADD" else draft_target_notional, requested_basis_notional)
     draft_quantity_delta = _lot_quantity(target_basis_notional, price=price, trading_unit=trading_unit) if price > 0 and trading_unit > 0 else 0
     min_qty = int(trading_unit) if trading_unit > 0 else 0
     broker_eligible = str(row.get("broker_eligibility_status") or "PASS") != "FAIL_CLOSED"
     capital_feasible = portfolio_value > 0 and min_notional <= portfolio_value
+    concentration_cap = config.strategy_maximum_position_weight
+    concentration_headroom = max(concentration_cap - current_weight, 0.0)
+    safety_hard_cap = safety_cap if safety_cap is not None else concentration_cap
+    safety_headroom = max(float(safety_hard_cap) - current_weight, 0.0)
+    minimum_executable_weight = round(min_notional / portfolio_value, TARGET_WEIGHT_DECIMALS) if portfolio_value > 0 else None
+    one_lot_post_trade_weight = None if minimum_executable_weight is None else round(current_weight + minimum_executable_weight, TARGET_WEIGHT_DECIMALS)
+    concentration_feasible = minimum_executable_weight is not None and minimum_executable_weight <= concentration_headroom + TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    one_lot_notional = price * trading_unit if price > 0 and trading_unit > 0 else 0.0
+    one_lot_weight = one_lot_notional / portfolio_value if portfolio_value > 0 and one_lot_notional > 0 else 0.0
+    requested_lots = int(target_basis_notional // one_lot_notional) if one_lot_notional > 0 else 0
+    minimum_policy_lots = int(math.ceil(min_notional / one_lot_notional)) if one_lot_notional > 0 and min_notional > 0 else 0
+    maximum_strategy_feasible_lots = int(max(math.floor((concentration_headroom * portfolio_value) / one_lot_notional), 0)) if one_lot_notional > 0 and portfolio_value > 0 else 0
+    maximum_safety_feasible_lots = int(max(math.floor((safety_headroom * portfolio_value) / one_lot_notional), 0)) if one_lot_notional > 0 and portfolio_value > 0 else 0
+    executable_lots = 0
+    if requested_lots >= minimum_policy_lots and minimum_policy_lots > 0:
+        executable_lots = min(requested_lots, maximum_strategy_feasible_lots)
+    executable_quantity_delta = int(executable_lots * trading_unit)
+    one_minimum_policy_lot_post_trade_weight = round(current_weight + max(minimum_policy_lots, 1) * one_lot_weight, TARGET_WEIGHT_DECIMALS) if one_lot_weight > 0 else None
+    if minimum_policy_lots > maximum_safety_feasible_lots:
+        boundary_classification = "MINIMUM_EXECUTABLE_LOT_EXCEEDS_SAFETY_HARD_MAX"
+    elif minimum_policy_lots > maximum_strategy_feasible_lots:
+        boundary_classification = "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX"
+    elif executable_lots > 0:
+        boundary_classification = "CAP_CONSTRAINED_LOT_EXECUTABLE"
+    elif target_basis_notional < min_notional:
+        boundary_classification = "REQUEST_BELOW_MINIMUM_EXECUTABLE_NOTIONAL"
+    else:
+        boundary_classification = "NO_EXECUTABLE_LOT"
     lot_feasible = (
         reference_price_resolution["status"] == "PASS"
         and broker_eligible
@@ -1026,6 +1128,20 @@ def _lot_feasibility_row(
         reason_codes.append("below_minimum_executable_notional")
     if draft_quantity_delta <= 0:
         reason_codes.append("below_minimum_tradable_quantity")
+    if not concentration_feasible:
+        reason_codes.append("minimum_lot_exceeds_concentration_headroom")
+    if reference_price_resolution["status"] != "PASS":
+        feasibility_classification = "UNKNOWN_FAIL_CLOSED"
+    elif not broker_eligible:
+        feasibility_classification = "BROKER_OR_SAFETY_BLOCKED"
+    elif not concentration_feasible:
+        feasibility_classification = "CONCENTRATION_BLOCKED"
+    elif lot_feasible:
+        feasibility_classification = "EXECUTABLE_NOW"
+    elif capital_feasible and minimum_executable_weight is not None:
+        feasibility_classification = "EXECUTABLE_IF_RECYCLED"
+    else:
+        feasibility_classification = "CAPITAL_BLOCKED"
     return {
         "schema_version": LOT_FEASIBILITY_SCHEMA_VERSION,
         "symbol": symbol,
@@ -1037,9 +1153,34 @@ def _lot_feasibility_row(
         "tradable_unit": int(trading_unit),
         "minimum_executable_quantity": min_qty,
         "minimum_executable_notional": round(min_notional, 2),
-        "minimum_executable_weight": round(min_notional / portfolio_value, TARGET_WEIGHT_DECIMALS) if portfolio_value > 0 else None,
+        "minimum_executable_weight": minimum_executable_weight,
+        "phase29_l19_lot_resolution": {
+            "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+            "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+            "requested_target_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
+            "requested_incremental_weight": round(max(target_weight - current_weight, requested_add if intent_type == "BUY_ADD" else requested_buy_new, 0.0), TARGET_WEIGHT_DECIMALS),
+            "strategy_cap_weight": round(concentration_cap, TARGET_WEIGHT_DECIMALS),
+            "safety_hard_cap_weight": round(float(safety_hard_cap), TARGET_WEIGHT_DECIMALS),
+            "remaining_strategy_headroom": round(concentration_headroom, TARGET_WEIGHT_DECIMALS),
+            "remaining_safety_headroom": round(safety_headroom, TARGET_WEIGHT_DECIMALS),
+            "one_lot_notional": round(one_lot_notional, 2),
+            "one_lot_weight": round(one_lot_weight, TARGET_WEIGHT_DECIMALS),
+            "minimum_policy_lots": minimum_policy_lots,
+            "minimum_policy_lot_weight": round(max(minimum_policy_lots, 1) * one_lot_weight, TARGET_WEIGHT_DECIMALS) if one_lot_weight > 0 else 0.0,
+            "post_trade_weight": one_minimum_policy_lot_post_trade_weight,
+            "maximum_strategy_feasible_lots": maximum_strategy_feasible_lots,
+            "maximum_safety_feasible_lots": maximum_safety_feasible_lots,
+            "requested_lots": requested_lots,
+            "executable_lots": executable_lots,
+            "executable_quantity_delta": executable_quantity_delta,
+            "boundary_classification": boundary_classification,
+            "strategy_cap_preserved": True,
+            "safety_hard_cap_preserved": minimum_policy_lots <= maximum_safety_feasible_lots if minimum_policy_lots > 0 else True,
+        },
         "draft_target_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
         "draft_target_notional": draft_target_notional,
+        "requested_basis_notional": requested_basis_notional,
+        "target_basis_notional": round(target_basis_notional, 2),
         "current_quantity": int(current_quantity),
         "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
         "current_notional": current_notional,
@@ -1047,7 +1188,11 @@ def _lot_feasibility_row(
         "draft_delta_notional": draft_delta_notional,
         "lot_feasible": lot_feasible,
         "capital_feasible": capital_feasible,
-        "concentration_feasible": True,
+        "concentration_feasible": concentration_feasible,
+        "concentration_cap": round(concentration_cap, TARGET_WEIGHT_DECIMALS),
+        "concentration_headroom_weight": round(concentration_headroom, TARGET_WEIGHT_DECIMALS),
+        "one_lot_post_trade_weight": one_lot_post_trade_weight,
+        "lot_first_feasibility_classification": feasibility_classification,
         "broker_eligible": broker_eligible,
         "producer_result_status": "PASS" if lot_feasible else "REVIEW_REQUIRED",
         "reason_codes": sorted(set(reason_codes)),
@@ -1855,7 +2000,12 @@ def _validate_position(position: Any, *, index: int, safety_cap: float | None) -
         and not _position_cap_exception_is_directionally_allowed(position, target=target)
     ):
         errors.append(f"target_weight_above_position_cap:{index}")
-    if target is not None and safety_cap is not None and target > safety_cap + 0.000001:
+    if (
+        target is not None
+        and safety_cap is not None
+        and target > safety_cap + 0.000001
+        and not _position_cap_exception_is_directionally_allowed(position, target=target)
+    ):
         errors.append(f"target_weight_above_safety_cap:{index}")
     for field in ("target_notional", "current_notional", "incremental_buy_notional"):
         if isinstance(position.get(field), bool) or not isinstance(position.get(field), (int, float)) or float(position.get(field)) < 0:
