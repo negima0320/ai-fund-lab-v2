@@ -122,15 +122,28 @@ def _build_row(
     volumes = [_to_float(row["volume"]) for row in visible_rows]
     traded_values = [_optional_float(_traded_value(row)) for row in visible_rows]
     returns_20d = [_safe_ratio(closes[index], closes[index - 1]) for index in range(len(closes) - 20, len(closes))]
+    return_1d = _safe_ratio(closes[-1], closes[-2])
+    return_3d = _safe_ratio(closes[-1], closes[-4])
+    return_5d = _safe_ratio(closes[-1], closes[-6])
+    return_10d = _safe_ratio(closes[-1], closes[-11])
+    return_20d = _safe_ratio(closes[-1], closes[-21])
+    volatility_20d = pstdev(returns_20d)
     rolling_median_traded_value_20 = None
     if all(value is not None for value in traded_values[-20:]):
         rolling_median_traded_value_20 = _round(median([float(value) for value in traded_values[-20:]]))
     base_row.update(
         {
-            "price_momentum_return_5d": _round(_safe_ratio(closes[-1], closes[-6])),
-            "price_momentum_return_20d": _round(_safe_ratio(closes[-1], closes[-21])),
+            "price_momentum_return_1d": _round(return_1d),
+            "price_momentum_return_3d": _round(return_3d),
+            "price_momentum_return_5d": _round(return_5d),
+            "price_momentum_return_10d": _round(return_10d),
+            "price_momentum_return_20d": _round(return_20d),
+            "recent_move_volatility_z_1d": _round(_safe_divide(return_1d, volatility_20d)),
+            "recent_move_volatility_z_3d": _round(_safe_divide(return_3d, volatility_20d * (3.0**0.5))),
+            "momentum_5d_vs_20d_delta": _round(return_5d - return_20d),
+            "momentum_1d_vs_5d_delta": _round(return_1d - return_5d),
             "volume_momentum_ratio_5d": _round(_safe_divide(mean(volumes[-5:]), mean(volumes[-20:]))),
-            "volatility_return_std_20d": _round(pstdev(returns_20d)),
+            "volatility_return_std_20d": _round(volatility_20d),
             "trend_close_over_ma_20d": _round(_safe_ratio(closes[-1], mean(closes[-20:]))),
             "liquidity_avg_volume_20d": _round(mean(volumes[-20:])),
             "rolling_median_traded_value_20": rolling_median_traded_value_20,
@@ -141,8 +154,15 @@ def _build_row(
 
 def _empty_feature_values() -> dict[str, Any]:
     return {
+        "price_momentum_return_1d": None,
+        "price_momentum_return_3d": None,
         "price_momentum_return_5d": None,
+        "price_momentum_return_10d": None,
         "price_momentum_return_20d": None,
+        "recent_move_volatility_z_1d": None,
+        "recent_move_volatility_z_3d": None,
+        "momentum_5d_vs_20d_delta": None,
+        "momentum_1d_vs_5d_delta": None,
         "volume_momentum_ratio_5d": None,
         "volatility_return_std_20d": None,
         "trend_close_over_ma_20d": None,

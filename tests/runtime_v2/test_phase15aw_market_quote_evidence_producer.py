@@ -43,6 +43,89 @@ def test_phase15aw_normal_market_evidence_ready_and_quote_schema(tmp_path):
     assert "feature_artifacts" not in quote["source"]
 
 
+def test_phase29_l21t_be_market_evidence_marks_adjusted_price_as_unreconciled_analytical(tmp_path):
+    runtime_root, operations_root = _roots(tmp_path)
+    _write_daily_quotes(
+        operations_root,
+        BUSINESS_DATE,
+        rows=[
+            {
+                "target_date": BUSINESS_DATE,
+                "code": "67310",
+                "close": 3000.0,
+                "PriceSource": "adjusted",
+                "SchemaVersion": 2,
+            }
+        ],
+    )
+
+    result = produce_market_quote_evidence(
+        runtime_root=runtime_root,
+        operations_root=operations_root,
+        runtime_business_date=BUSINESS_DATE,
+        latest_available_market_date=BUSINESS_DATE,
+        current_symbols=("67310",),
+        now=_now(),
+    )
+    payload = _load_json(Path(result.artifact_path))
+    quote = payload["quotes"]["6731"]
+
+    assert result.status == "READY"
+    assert quote["adjusted"] is True
+    assert quote["price_role"] == "adjusted_analytical_price"
+    assert quote["economic_price_reconciliation_status"] == "REVIEW_REQUIRED"
+    assert quote["normalized_price_source"] == "adjusted"
+
+
+def test_phase29_l21t_bh_market_evidence_reconciles_adjusted_quote_from_raw_economic_source(tmp_path):
+    runtime_root, operations_root = _roots(tmp_path)
+    _write_daily_quotes(
+        operations_root,
+        BUSINESS_DATE,
+        rows=[
+            {
+                "target_date": BUSINESS_DATE,
+                "code": "94320",
+                "close": 149.8,
+                "PriceSource": "adjusted",
+                "SchemaVersion": 2,
+            }
+        ],
+    )
+    _write_raw_daily_quotes(
+        operations_root,
+        BUSINESS_DATE,
+        rows=[
+            {
+                "Date": BUSINESS_DATE,
+                "Code": "94320",
+                "C": 3744.0,
+                "AdjC": 149.8,
+            }
+        ],
+    )
+
+    result = produce_market_quote_evidence(
+        runtime_root=runtime_root,
+        operations_root=operations_root,
+        runtime_business_date=BUSINESS_DATE,
+        latest_available_market_date=BUSINESS_DATE,
+        current_symbols=("9432",),
+        now=_now(),
+    )
+    payload = _load_json(Path(result.artifact_path))
+    quote = payload["quotes"]["9432"]
+
+    assert result.status == "READY"
+    assert quote["adjusted"] is True
+    assert quote["price"] == 149.8
+    assert quote["price_role"] == "reconciled_raw_economic_valuation_price"
+    assert quote["economic_price_reconciliation_status"] == "PASS"
+    assert quote["economic_valuation_price"] == 3744.0
+    assert quote["adjusted_analytical_price"] == 149.8
+    assert "raw_ohlcv_close:" in quote["economic_price_provenance"]
+
+
 def test_phase15aw_data_readiness_reads_formal_market_artifact(tmp_path):
     runtime_root, operations_root = _roots(tmp_path)
     _write_daily_quotes(operations_root, BUSINESS_DATE, symbols=("7203",))
@@ -296,10 +379,16 @@ def _roots(tmp_path: Path) -> tuple[Path, Path]:
     return runtime_root, operations_root
 
 
-def _write_daily_quotes(operations_root: Path, market_date: str, *, symbols: tuple[str, ...]) -> None:
+def _write_daily_quotes(
+    operations_root: Path,
+    market_date: str,
+    *,
+    symbols: tuple[str, ...] = (),
+    rows: list[dict] | None = None,
+) -> None:
     path = operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
+    rows = rows or [
         {
             "target_date": market_date,
             "code": symbol,
@@ -307,6 +396,17 @@ def _write_daily_quotes(operations_root: Path, market_date: str, *, symbols: tup
         }
         for index, symbol in enumerate(symbols)
     ]
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+
+def _write_raw_daily_quotes(
+    operations_root: Path,
+    market_date: str,
+    *,
+    rows: list[dict],
+) -> None:
+    path = operations_root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(path, index=False)
 
 

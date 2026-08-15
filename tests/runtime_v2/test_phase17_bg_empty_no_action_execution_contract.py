@@ -60,6 +60,69 @@ def test_phase17_bg_empty_no_action_execution_is_terminal_pass_without_writes(tm
     assert json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text()) == pending_payload
 
 
+def test_phase29_l21t_ba_authorized_no_order_submit_continues_through_execution(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_payload = _empty_pending_payload(BUSINESS_DATE)
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending_payload)
+    _write_authorized_no_order_submit_manifest(runtime_root, business_date=BUSINESS_DATE)
+    before = _ledger_contents(runtime_root)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("authorized no-order needs no snapshot")),
+    )
+
+    assert result.status == "PASS"
+    assert result.reason == "no_submitted_orders"
+    assert result.execution_action == "NO_ACTION"
+    assert result.orderlist_required is False
+    assert result.submitted_order_count == 0
+    assert result.fill_count == 0
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.ledger_positions_appended == 0
+    assert result.ledger_cash_appended == 0
+    assert result.current_apply_status == "NOT_REQUIRED"
+    assert result.runtime_owned_projection_status == "NOT_REQUIRED"
+    assert result.pending_terminalization_status == "ALREADY_TERMINAL"
+    assert result.pending_consumed is False
+    assert result.pending_mutated is False
+    assert result.submit_action == "NO_SUBMISSION_REQUIRED"
+    assert result.submit_authority_status == "PASS"
+    assert _ledger_contents(runtime_root) == before
+    assert json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text()) == pending_payload
+
+
+def test_phase29_l21t_ba_buy_wait_zero_order_day_uses_authorized_no_order_without_pending(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_payload = _empty_pending_payload(BUSINESS_DATE)
+    pending_payload["no_action_reason"] = "BUY_WAIT:TEMPORARY_BUY_INELIGIBLE"
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending_payload)
+    _write_authorized_no_order_submit_manifest(
+        runtime_root,
+        business_date=BUSINESS_DATE,
+        no_action_reason="BUY_WAIT:TEMPORARY_BUY_INELIGIBLE",
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("BUY_WAIT no-order needs no snapshot")),
+    )
+
+    assert result.status == "PASS"
+    assert result.execution_action == "NO_ACTION"
+    assert result.submit_action == "NO_SUBMISSION_REQUIRED"
+    assert result.pending_item_count == 0
+    assert result.pending_consumed is False
+    assert result.pending_mutated is False
+    assert result.ledger_orders_appended == 0
+    assert result.current_apply_status == "NOT_REQUIRED"
+
+
 def test_phase17_bg_empty_pending_without_submit_no_action_authority_is_review_required(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", _empty_pending_payload(BUSINESS_DATE))
@@ -75,6 +138,62 @@ def test_phase17_bg_empty_pending_without_submit_no_action_authority_is_review_r
     assert result.reason == "submit NO_ACTION authority missing"
     assert result.orderlist_required is True
     assert result.orderlist_status == "NOT_EVALUATED"
+
+
+def test_phase29_l21t_ba_malformed_authorized_no_order_authority_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", _empty_pending_payload(BUSINESS_DATE))
+    _write_authorized_no_order_submit_manifest(
+        runtime_root,
+        business_date=BUSINESS_DATE,
+        authority_type="MALFORMED_AUTHORITY",
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("snapshot not required before authority")),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "submit NO_ACTION authority inconsistent"
+    assert result.orderlist_required is True
+
+
+def test_phase29_l21t_ba_pending_item_with_no_submission_required_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    payload = _empty_pending_payload(BUSINESS_DATE)
+    payload["items"] = [{"pending_item_id": "unexpected"}]
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", payload)
+    _write_authorized_no_order_submit_manifest(runtime_root, business_date=BUSINESS_DATE, pending_item_count=1)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("snapshot not required for invalid EMPTY")),
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.reason == "pending EMPTY classification requires empty items"
+
+
+def test_phase29_l21t_ba_submitted_order_with_no_action_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", _empty_pending_payload(BUSINESS_DATE))
+    _write_authorized_no_order_submit_manifest(runtime_root, business_date=BUSINESS_DATE, submitted_count=1)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("snapshot not required before authority")),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "submit NO_ACTION authority inconsistent"
+    assert result.orderlist_required is True
 
 
 def test_phase17_bg_empty_pending_target_date_metadata_is_not_order_authority(tmp_path):
@@ -178,6 +297,176 @@ def test_phase17_bg_real_order_execution_path_still_passes(tmp_path):
     assert result.submitted_order_count == 1
     assert result.ledger_orders_appended == 1
     assert result.ledger_executions_appended >= 1
+
+
+def test_phase29_l20b_quarantine_only_buy_execution_is_no_action_without_orderlist(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    business_date = HISTORICAL_ORDER_DATE
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _approved_pending_payload(business_date, symbol="76920", side="BUY", quantity=2000),
+    )
+    _write_quarantine_submit_authority(
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "run-l20b-buy",
+        business_date=business_date,
+        symbol="76920",
+        side="BUY",
+        quantity=2000,
+    )
+    before = _ledger_contents(runtime_root)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+
+    assert result.status == "PASS"
+    assert result.reason == "no_submitted_orders"
+    assert result.execution_action == "NO_ACTION"
+    assert result.orderlist_required is False
+    assert result.submitted_order_count == 0
+    assert result.fill_count == 0
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.current_apply_status == "NOT_REQUIRED"
+    assert result.submit_authority_status == "PASS"
+    assert result.submit_authority_reason == "historical_corporate_action_quarantine_no_submitted_orders"
+    assert _ledger_contents(runtime_root) == before
+
+
+def test_phase29_l20b_quarantine_only_sell_execution_is_no_action_without_orderlist(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    business_date = HISTORICAL_ORDER_DATE
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _approved_pending_payload(business_date, symbol="76920", side="SELL", quantity=700),
+    )
+    _write_quarantine_submit_authority(
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "run-l20b-sell",
+        business_date=business_date,
+        symbol="76920",
+        side="SELL",
+        quantity=700,
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+
+    assert result.status == "PASS"
+    assert result.execution_action == "NO_ACTION"
+    assert result.orderlist_required is False
+    assert result.fill_count == 0
+    assert result.pending_terminalization_status == "PENDING_LIFECYCLE_REQUIRED"
+    assert result.submit_authority_reason == "historical_corporate_action_quarantine_no_submitted_orders"
+
+
+def test_phase29_l20b_mixed_quarantine_and_submitted_order_still_requires_orderlist(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    business_date = HISTORICAL_ORDER_DATE
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _approved_pending_payload(business_date, symbol="76920", side="BUY", quantity=2000),
+    )
+    _write_quarantine_submit_authority(
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "run-l20b-mixed",
+        business_date=business_date,
+        symbol="76920",
+        side="BUY",
+        quantity=2000,
+        submitted_count=1,
+        pass_item=True,
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "orderlist evidence missing"
+    assert result.execution_action == "EXECUTE"
+    assert result.orderlist_required is True
+
+
+def test_phase29_l20h_mixed_quarantine_and_filled_order_requires_pending_lifecycle(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    business_date = HISTORICAL_ORDER_DATE
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _mixed_pending_payload(business_date),
+    )
+    _write_quarantine_submit_authority(
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "run-l20h-mixed",
+        business_date=business_date,
+        symbol="76920",
+        side="BUY",
+        quantity=1400,
+        submitted_count=1,
+        pass_item=True,
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=_MixedHistoricalSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == (
+        "runtime owned current projection failed before transaction commit: "
+        "runtime owned accepted submit evidence missing"
+    )
+    assert result.execution_action == "EXECUTE"
+    assert result.orderlist_required is True
+    assert result.submitted_order_count == 1
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.pending_terminalization_status == "NOT_EXECUTED"
+    assert result.transaction_consistency_status == "NOT_EXECUTED"
+
+
+def test_phase29_l20b_generic_review_required_does_not_become_no_action(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    business_date = HISTORICAL_ORDER_DATE
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _approved_pending_payload(business_date, symbol="76920", side="BUY", quantity=2000),
+    )
+    _write_quarantine_submit_authority(
+        runtime_root=runtime_root,
+        evidence_root=tmp_path / "reports" / "runtime_tests" / "runs" / "run-l20b-generic",
+        business_date=business_date,
+        symbol="76920",
+        side="BUY",
+        quantity=2000,
+        guard_reason="aggregate_submit_feasibility_failed",
+        violated_policy="submit_guard_canonical_evidence_revalidation",
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "orderlist evidence missing"
+    assert result.execution_action == "EXECUTE"
+    assert result.orderlist_required is True
 
 
 def test_phase17_bg_runtime_test_collects_execution_evidence_for_nonzero_and_zero(tmp_path):
@@ -361,7 +650,13 @@ def _empty_pending_payload(business_date: str) -> dict:
     }
 
 
-def _approved_pending_payload(business_date: str) -> dict:
+def _approved_pending_payload(
+    business_date: str,
+    *,
+    symbol: str = "7203",
+    side: str = "BUY",
+    quantity: int = 100,
+) -> dict:
     payload = _empty_pending_payload(business_date)
     payload.update(
         {
@@ -380,12 +675,12 @@ def _approved_pending_payload(business_date: str) -> dict:
             "items": [
                 {
                     "pending_item_id": "item-1",
-                    "symbol": "7203",
-                    "side": "BUY",
-                    "quantity": 100,
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
                     "order_type": "MARKET",
                     "estimated_price": 1000,
-                    "estimated_amount": 100000,
+                    "estimated_amount": quantity * 1000,
                     "approved": True,
                     "state": "APPROVED",
                 }
@@ -394,6 +689,171 @@ def _approved_pending_payload(business_date: str) -> dict:
     )
     payload.pop("no_action_reason", None)
     return payload
+
+
+def _mixed_pending_payload(business_date: str) -> dict:
+    payload = _approved_pending_payload(business_date, symbol="76920", side="BUY", quantity=1400)
+    payload["state"] = "REVIEW_REQUIRED"
+    payload["status"] = "REVIEW_REQUIRED"
+    payload["approved_item_ids"] = ["item-1", "item-pass"]
+    payload["approval"]["approved_item_ids"] = ["item-1", "item-pass"]
+    payload["items"] = [
+        {
+            "pending_item_id": "item-1",
+            "symbol": "76920",
+            "side": "BUY",
+            "quantity": 1400,
+            "order_type": "MARKET",
+            "estimated_price": 100,
+            "estimated_amount": 140000,
+            "approved": True,
+            "state": "APPROVED",
+        },
+        {
+            "pending_item_id": "item-pass",
+            "symbol": "7203",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 1000,
+            "estimated_amount": 100000,
+            "approved": True,
+            "state": "APPROVED",
+        },
+    ]
+    return payload
+
+
+def _write_quarantine_submit_authority(
+    *,
+    runtime_root: Path,
+    evidence_root: Path,
+    business_date: str,
+    symbol: str,
+    side: str,
+    quantity: int,
+    submitted_count: int = 0,
+    pass_item: bool = False,
+    guard_reason: str = "corporate_action_event_not_resolved",
+    violated_policy: str = "historical_corporate_action_symbol_quarantine",
+) -> None:
+    manifest_path = runtime_root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-submit-l20b.json"
+    guard_items = []
+    if pass_item:
+        guard_items.append(
+            {
+                "pending_item_id": "item-pass",
+                "symbol": "7203",
+                "side": "BUY",
+                "quantity": 100,
+                "submit_item_status": "PASS",
+                "guard_decision": "PASS",
+                "guard_reason": "approved_by_submit_guard_policy",
+            }
+        )
+    guard_items.append(
+        {
+            "pending_item_id": "item-1",
+            "symbol": symbol,
+            "side": side,
+            "quantity": float(quantity),
+            "submit_item_status": "REVIEW_REQUIRED",
+            "guard_decision": "BLOCKED",
+            "guard_reason": guard_reason,
+            "blocked_at_submit_reason": guard_reason,
+            "violated_policy": violated_policy,
+            "corporate_action_event_status": "IMPACT_DETECTED",
+            "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+            "corporate_action_adjustment_authority_reason": "corporate_action_event_not_resolved",
+            "corporate_action_split_inference_used": False,
+            "corporate_action_quantity_adjustment_performed": False,
+        }
+    )
+    blocked_count = 1
+    pending_item_count = len(guard_items)
+    _write_json(
+        manifest_path,
+        {
+            "run_id": "runtime-v2-submit-l20b",
+            "job": "submit",
+            "business_date": business_date,
+            "run_type": "HISTORICAL",
+            "runtime_mode": "historical",
+            "broker_environment": "historical_simulated",
+            "historical_replay": True,
+            "runtime_test_run_id": evidence_root.name,
+            "runtime_test_evidence_root": str(evidence_root),
+            "exit_code": 20,
+            "final_state": "REVIEW_REQUIRED",
+            "pending_read_valid": True,
+            "pending_classification": "VALID",
+            "pending_active": True,
+            "pending_plan_present": True,
+            "pending_item_count": pending_item_count,
+            "submit_action": "SUBMIT" if submitted_count else "NO_SUBMIT_ATTEMPTED",
+            "submitted_count": submitted_count,
+            "blocked_count": blocked_count,
+            "review_required": True,
+            "halt_required": False,
+            "broker_write": False,
+            "external_delivery": False,
+            "prohibited_actions": {
+                "demo_submit_executed": False,
+                "production_order_executed": False,
+                "broker_write": False,
+                "external_delivery": False,
+            },
+            "stages": [
+                {
+                    "name": "environment_composition",
+                    "status": "PASS",
+                    "details": {
+                        "run_type": "HISTORICAL",
+                        "broker_environment": "historical_simulated",
+                        "historical_replay": True,
+                        "broker_write": False,
+                        "external_delivery": False,
+                    },
+                }
+            ],
+            "submit_guard_item_evidence": guard_items,
+        },
+    )
+    continuation_path = evidence_root / "daily" / business_date / "submit" / "corporate_action_symbol_quarantine_continuation.json"
+    _write_json(
+        continuation_path,
+        {
+            "schema_version": "runtime_test_historical_corporate_action_symbol_quarantine_continuation_v1",
+            "status": "COMPLETED_WITH_SYMBOL_QUARANTINE",
+            "scope": "CORPORATE_ACTION_SYMBOL_ONLY",
+            "business_date": business_date,
+            "job": "submit",
+            "runtime_cli_exit_code": 20,
+            "runtime_manifest_path": str(evidence_root / "daily" / business_date / "submit" / "runtime_manifest.json"),
+            "checks": {
+                "runtime_cli_nonzero": True,
+                "submit_job": True,
+                "historical_replay": True,
+                "broker_environment_historical_simulated": True,
+                "no_actual_broker_write": True,
+                "runtime_submit_review_required": True,
+                "blocked_item_count_positive": True,
+                "pending_count_matches_guard_evidence": True,
+                "submitted_count_matches_pass_items": submitted_count == int(pass_item),
+                "blocked_count_matches_ca_items": guard_reason == "corporate_action_event_not_resolved",
+                "other_item_results_independently_inspectable": True,
+                "has_eligible_corporate_action_item": True,
+                "generic_review_required_not_continued": guard_reason == "corporate_action_event_not_resolved",
+            },
+            "affected_symbols": [symbol],
+            "quarantined_symbols": [symbol],
+            "corporate_action_quarantine_status": "QUARANTINED",
+            "corporate_action_quarantine_scope": "SYMBOL_ONLY",
+            "corporate_action_run_continuation_eligibility": "ALLOWED_FOR_HISTORICAL_REPLAY_ONLY",
+            "production_applicability": "NEVER",
+            "reason": "historical_symbol_scoped_corporate_action_quarantine_continuation",
+        },
+    )
 
 
 def _consumed_pending_payload(business_date: str) -> dict:
@@ -435,6 +895,53 @@ def _write_submit_manifest(runtime_root: Path, *, business_date: str) -> None:
     )
 
 
+def _write_authorized_no_order_submit_manifest(
+    runtime_root: Path,
+    *,
+    business_date: str,
+    authority_type: str = "AUTHORIZED_NO_ORDER",
+    pending_item_count: int = 0,
+    submitted_count: int = 0,
+    no_action_reason: str = "NO_SIGNAL:phase29_l21t_ba_fixture",
+) -> None:
+    _write_json(
+        runtime_root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-submit-ba.json",
+        {
+            "run_id": "runtime-v2-submit-ba",
+            "job": "submit",
+            "business_date": business_date,
+            "exit_code": 0,
+            "final_state": "CURRENT_STATE_LOADED",
+            "pending_read_valid": True,
+            "pending_classification": "VALID",
+            "pending_active": False,
+            "pending_plan_present": True,
+            "pending_item_count": pending_item_count,
+            "no_action_reason": no_action_reason,
+            "no_order_authority_status": "PASS",
+            "no_order_authority_evidence": {
+                "status": "PASS",
+                "authority_type": authority_type,
+                "approval_status": "NO_ORDER_AUTHORIZED",
+                "order_plan_status": "NO_ORDER_AUTHORIZED",
+                "planning_consumer_eligibility": "NO_ORDER_AUTHORIZED",
+                "pending_state": "EMPTY",
+                "pending_item_count": pending_item_count,
+                "pending_approved_item_count": 0,
+                "runtime_planning_status": "PASS",
+                "runtime_planning_quantity_unresolved_count": 0,
+                "runtime_planning_review_required_quantity_count": 0,
+            },
+            "submit_action": "NO_SUBMISSION_REQUIRED",
+            "submitted_count": submitted_count,
+            "blocked_count": 0,
+            "review_required": False,
+            "halt_required": False,
+            "prohibited_actions": {"demo_submit_executed": False, "production_order_executed": False},
+        },
+    )
+
+
 def _empty_orderlist_snapshot(**kwargs):
     snapshot_path = Path(kwargs["snapshot_path"])
     _write_json(
@@ -467,6 +974,40 @@ def _filled_order_snapshot(**kwargs):
                     "remaining_quantity": "0",
                     "status": "全部約定",
                     "as_of": BUSINESS_DATE + "T15:30:00+09:00",
+                }
+            ],
+            "executions": [],
+            "positions": [{"issue_code": "7203", "quantity": "100", "average_price": "1000", "market_value": "100000"}],
+            "buying_power": {"cash_available": "900000", "buying_power": "900000", "currency": "JPY"},
+        },
+    )
+    _write_json(Path(kwargs["report_path"]), {"status": "PASS"})
+    return type("SnapshotResult", (), {"status": "PASS"})()
+
+
+class _MixedHistoricalSnapshotProvider(HistoricalExecutionSnapshotProvider):
+    def __call__(self, *, mode: str, snapshot_path, report_path):
+        return _mixed_filled_order_snapshot(snapshot_path=snapshot_path, report_path=report_path)
+
+
+def _mixed_filled_order_snapshot(**kwargs):
+    snapshot_path = Path(kwargs["snapshot_path"])
+    _write_json(
+        snapshot_path,
+        {
+            "generated_at": HISTORICAL_ORDER_DATE + "T15:30:00+09:00",
+            "orders": [
+                {
+                    "order_id_hash": "sha256:order-l20h",
+                    "pending_item_id": "item-pass",
+                    "pending_plan_id": f"pending-active-{HISTORICAL_ORDER_DATE}",
+                    "issue_code": "7203",
+                    "side": "buy",
+                    "quantity": "100",
+                    "executed_quantity": "100",
+                    "remaining_quantity": "0",
+                    "status": "全部約定",
+                    "as_of": HISTORICAL_ORDER_DATE + "T15:30:00+09:00",
                 }
             ],
             "executions": [],

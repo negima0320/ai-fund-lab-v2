@@ -469,7 +469,7 @@ def test_phase24_d_opportunity_summary_counts_buy_eligible_only_from_canonical_r
     summary = _ai_output_summary(path, business_date="2026-07-06")
 
     assert summary["summary"]["opportunity_capacity_count"] == 3
-    assert summary["summary"]["buy_eligible_opportunity_count"] == 1
+    assert summary["summary"]["buy_eligible_opportunity_count"] == 2
 
 
 def test_phase23_bf_opportunity_path_absent_returns_none_without_keyerror(tmp_path: Path) -> None:

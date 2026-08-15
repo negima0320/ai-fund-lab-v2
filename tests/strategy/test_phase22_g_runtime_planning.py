@@ -301,6 +301,14 @@ def test_phase28_d25_runtime_planning_maps_pm_reduce_to_sell_reduce_not_exit(tmp
         pm_actions={"8306": "REDUCE"},
         pc_members={"8306": ("REDUCE_CANDIDATE", True)},
         current_codes=("8306",),
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "8306",
+                quantity=100,
+                as_of="2026-07-15",
+                source="runtime_v2_runtime_owned_fill_projection",
+            ),
+        ),
         position_sizing_positions={
             "8306": {
                 "sizing_status": "SIZED",
@@ -319,6 +327,56 @@ def test_phase28_d25_runtime_planning_maps_pm_reduce_to_sell_reduce_not_exit(tmp
     assert plan["source_pm_action"] == "REDUCE"
     assert plan["full_liquidation_authority_present"] is False
     assert plan["full_liquidation_authority_source"] == "NONE"
+
+
+def test_phase29_l21t_ad_runtime_planning_preserves_reduce_intentional_no_order_semantic(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"8306": "REDUCE"},
+        pc_members={"8306": ("REDUCE_CANDIDATE", True)},
+        current_codes=("8306",),
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "8306",
+                quantity=100,
+                as_of="2026-07-15",
+                source="runtime_v2_runtime_owned_fill_projection",
+            ),
+        ),
+        position_sizing_positions={
+            "8306": {
+                "sizing_status": "SIZED",
+                "target_quantity_candidate": 100,
+                "quantity_delta_candidate": 0,
+                "quantity_status": "RESOLVED_ZERO_DELTA",
+                "reduce_execution_semantic": "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT",
+                "reduce_executability_status": "INTENTIONAL_NO_ORDER",
+                "reduce_intentional_no_order": True,
+                "reduce_intentional_no_order_reason": "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT",
+                "reduce_executability_evidence": {
+                    "source_decision": "REDUCE",
+                    "symbol": "8306",
+                    "raw_reduce_quantity": 25.0,
+                    "tradable_unit": 100,
+                    "rounded_executable_quantity": 0,
+                    "final_sell_quantity": 0,
+                    "execution_semantic": "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT",
+                    "intentional_no_order": True,
+                },
+            }
+        },
+    )
+
+    plan = result.payload["plans"][0]
+    assert result.payload["producer_result_status"] == "PASS"
+    assert plan["planning_intent"] == "NO_ORDER"
+    assert plan["order_side_intent"] == "NONE"
+    assert plan["quantity_required"] is False
+    assert plan["no_order_reason"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert plan["reduce_execution_semantic"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert plan["reduce_intentional_no_order"] is True
+    assert "no_order_reduce_intentional_no_order" in plan["reason_codes"]
+    assert validate_runtime_planning_artifact(result.payload)["status"] == "PASS"
 
 
 def test_phase28_d36_runtime_planning_maps_existing_add_zero_delta_to_no_action(tmp_path: Path) -> None:
@@ -475,6 +533,56 @@ def test_phase23_bh_runtime_planning_blocks_no_buy_reason_from_executable_buy(tm
     assert "opportunity_no_buy_reason_present:high_downside_risk_score" in plan["reason_codes"]
 
 
+def test_phase29_l21t_ak_runtime_planning_allows_uncalibrated_non_positive_reason(tmp_path: Path) -> None:
+    opportunity_path = _write_opportunity_rankings(
+        tmp_path,
+        [
+            {
+                "symbol": "6098",
+                "rank": 1,
+                "buy_rank": 1,
+                "runtime_opportunity_score": -0.25,
+                "expected_edge_score": -0.25,
+                "no_buy_reason": "non_positive_expected_edge_score",
+                "canonical_score_field": "runtime_opportunity_score",
+                "score_semantic_role": "uncalibrated_relative_model_score",
+                "calibration_applied": False,
+                "economic_units_available": False,
+            }
+        ],
+        metadata={
+            "canonical_score_field": "runtime_opportunity_score",
+            "score_semantic_role": "uncalibrated_relative_model_score",
+            "calibration_applied": False,
+            "economic_units_available": False,
+        },
+    )
+    result = _produce(
+        tmp_path,
+        pc_members={"6098": ("ADD_CANDIDATE", False)},
+        current_codes=(),
+        position_sizing_positions={
+            "6098": {
+                "sizing_status": "SIZED",
+                "target_notional": 120000.0,
+                "target_quantity_candidate": 100,
+                "quantity_delta_candidate": 100,
+                "quantity_status": "RESOLVED_CANDIDATE",
+                "reference_price": 1200.0,
+            }
+        },
+        opportunity_artifact_path=opportunity_path,
+    )
+
+    plan = result.payload["plans"][0]
+    assert plan["planning_intent"] == "BUY_NEW"
+    assert plan["order_side_intent"] == "BUY"
+    assert plan["quantity_required"] is True
+    assert plan["planned_quantity"] == 100
+    assert plan["no_order_reason"] == ""
+    assert "opportunity_no_buy_reason_present:non_positive_expected_edge_score" not in plan["reason_codes"]
+
+
 def test_phase23_bk_runtime_owned_current_position_zero_delta_maps_to_no_action(tmp_path: Path) -> None:
     result = _produce(
         tmp_path,
@@ -567,6 +675,85 @@ def test_phase27_d2e_runtime_planning_maps_canonical_quantity_delta_to_runtime_a
     assert plans["9432"]["planned_quantity"] == 100
     assert all(plan["pm_fallback_used"] is False for plan in payload["plans"])
     assert validate_runtime_planning_artifact(payload)["status"] == "PASS"
+
+
+def test_phase29_l21f_runtime_planning_consumes_soft_cap_buy_add_positive_quantity(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"94320": "ADD"},
+        pc_members={"94320": ("RETAIN", True)},
+        current_codes=("94320",),
+        position_sizing_positions={
+            "94320": {
+                "sizing_status": "SIZED",
+                "pm_action": "ADD",
+                "target_weight": 0.194658,
+                "maximum_position_weight": 0.18,
+                "current_quantity": 900,
+                "target_quantity_candidate": 1300,
+                "quantity_delta_candidate": 400,
+                "quantity_status": "RESOLVED_CANDIDATE",
+                "reference_price": 150.4,
+            }
+        },
+    )
+    plan = result.payload["plans"][0]
+
+    assert result.payload["producer_result_status"] == "PASS"
+    assert plan["security_code"] == "94320"
+    assert plan["planning_intent"] == "BUY_ADD"
+    assert plan["planned_quantity"] == 400
+    assert plan["quantity_delta_candidate"] == 400
+    assert "strategy_plan_quantity_unresolved:94320" not in result.payload["reason_codes"]
+    assert validate_runtime_planning_artifact(result.payload)["status"] == "PASS"
+
+
+def test_phase29_l21t_b_runtime_planning_consumes_one_lot_buy_new_soft_cap_quantity(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={},
+        pc_members={"78780": ("ADD_CANDIDATE", False)},
+        current_codes=(),
+        position_sizing_positions={
+            "78780": {
+                "sizing_status": "SIZED",
+                "pm_action": "NEW",
+                "semantic_buy_type": "BUY_NEW",
+                "target_weight": 0.243189,
+                "maximum_position_weight": 0.18,
+                "current_quantity": 0,
+                "target_quantity_candidate": 100,
+                "quantity_delta_candidate": 100,
+                "quantity_status": "RESOLVED_CANDIDATE",
+                "reference_price": 2420.0,
+                "phase29_l19_lot_resolution": {
+                    "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+                    "semantic_type": "BUY_NEW",
+                    "strategy_cap_overshoot_applied": True,
+                    "one_lot_fallback_applied": True,
+                    "one_lot_feasibility_status": "PASS",
+                    "one_lot_quantity": 100,
+                    "final_allocated_quantity": 100,
+                    "post_trade_weight": 0.243189,
+                    "safety_hard_cap": 0.25,
+                    "safety_hard_cap_preserved": True,
+                    "safety_margin_after_trade": 0.006811,
+                    "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+                },
+            }
+        },
+    )
+    plan = next(plan for plan in result.payload["plans"] if plan["security_code"] == "78780")
+
+    assert result.payload["producer_result_status"] == "PASS"
+    assert plan["security_code"] == "78780"
+    assert plan["planning_intent"] == "BUY_NEW"
+    assert plan["order_side_intent"] == "BUY"
+    assert plan["planned_quantity"] == 100
+    assert plan["quantity_delta_candidate"] == 100
+    assert plan["quantity_status"] == "RESOLVED_EXECUTABLE"
+    assert "quantity_not_produced_due_to_upstream_block" not in plan["reason_codes"]
+    assert validate_runtime_planning_artifact(result.payload)["status"] == "PASS"
 
 
 def test_phase27_d2e_canonical_delta_disables_pm_fallback(tmp_path: Path) -> None:
@@ -1475,13 +1662,14 @@ def _write_position_sizing_plan(tmp_path: Path, positions: dict[str, dict[str, o
     return path
 
 
-def _write_opportunity_rankings(tmp_path: Path, rows: list[dict[str, object]]) -> Path:
+def _write_opportunity_rankings(tmp_path: Path, rows: list[dict[str, object]], metadata: dict[str, object] | None = None) -> Path:
     payload = {
         "schema_version": "runtime_v2_opportunity_ranking_v1",
         "schema_name": "runtime_v2_buy_opportunity_ranking",
         "artifact_role": "BUY_OPPORTUNITY_RANKING",
         "business_date": "2026-07-15",
         "feature_date": "2026-07-15",
+        **(metadata or {}),
         "rankings": [
             {
                 "business_date": "2026-07-15",
@@ -1491,9 +1679,20 @@ def _write_opportunity_rankings(tmp_path: Path, rows: list[dict[str, object]]) -
                 "code": str(row.get("symbol") or row.get("code") or ""),
                 "rank": row.get("rank", index),
                 "buy_rank": row.get("buy_rank", row.get("rank", index)),
+                "runtime_opportunity_score": row.get("runtime_opportunity_score", row.get("expected_edge_score", 0.1)),
                 "expected_edge_score": row.get("expected_edge_score", 0.1),
                 "expected_return": row.get("expected_return", row.get("expected_edge_score", 0.1)),
                 "no_buy_reason": str(row.get("no_buy_reason") or ""),
+                **{
+                    key: row[key]
+                    for key in (
+                        "canonical_score_field",
+                        "score_semantic_role",
+                        "calibration_applied",
+                        "economic_units_available",
+                    )
+                    if key in row
+                },
                 "model_version": "test-opportunity-model",
             }
             for index, row in enumerate(rows, start=1)

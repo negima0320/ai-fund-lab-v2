@@ -15752,3 +15752,415 @@ Deliverables:
 docs/phase_reports/phase29_l19r_lot_sizing_repair_lineage_and_regression_audit.md
 reports/phase29_l19r_lot_sizing_repair_lineage_and_regression_audit/
 ```
+
+---
+
+## Phase29-L21T-Y Phase30 Handoff / Long-Horizon Partial Performance Evidence Update
+
+Status:
+
+```text
+COMPLETE
+READ_ONLY EVIDENCE REVIEW / DOCUMENTATION UPDATE
+PERFORMANCE_EVIDENCE_PARTIAL
+NO RUNTIME / STRATEGY / MODEL / CONFIG CHANGE
+NO TARGET RUN MUTATION
+NO FRESH-RUN / RESUME / REPLAY / RECOVERY
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_Y_PHASE30_HANDOFF_UPDATED_WITH_PARTIAL_LONG_HORIZON_PERFORMANCE_EVIDENCE
+```
+
+Summary:
+
+```text
+L21T-Y updated Phase30 handoff documentation after read-only review of partial
+long-horizon run runtime-test-historical-smoke-20260812T212155604711Z.
+
+The run plan resolves 2022-08-10 through 2026-08-07 with 977 business days, but
+run_state remains HALT at 2023-06-23:execution after 213 completed business
+days. Therefore Runtime Validation Status is HALT / NOT CLOSED, Performance
+Evidence Status is PERFORMANCE_EVIDENCE_PARTIAL, and Long-Horizon Completion
+Status is FULL_LONG_HORIZON_NOT_COMPLETE.
+
+Partial evidence as of 2023-06-23 shows total equity 1,077,060 JPY, observed
+partial return +7.706%, cash 129,890 JPY, market value 947,170 JPY, final cash
+ratio 12.0597%, and final gross exposure 87.9403%. Daily carried-ledger
+estimates across the available 214 daily evidence directories show average cash
+ratio 43.4813% and average gross exposure 56.5187%.
+
+Phase30 entry evidence is now explicitly separated: the completed Phase29-K
+100BD remains the completed 100BD reference, while the L21T-Y run is available
+only as partial long-horizon evidence for read-only attribution scoping.
+
+Strategy Performance Judgment: capital utilization improved, especially by the
+final observed state, but return is not enough. Phase30 must distinguish capital
+deployment from deployed-capital quality before any performance change.
+```
+
+Phase30 entry evidence status:
+
+```text
+100BD Baseline Status:
+  Phase29-K completed 100BD reference remains available.
+
+Long-Horizon Partial Evidence Status:
+  AVAILABLE / PERFORMANCE_EVIDENCE_PARTIAL.
+
+Long-Horizon Full Completion Status:
+  NOT COMPLETE.
+
+Phase30 Attribution:
+  READ_ONLY attribution may use partial evidence with explicit partial label.
+  Do not treat the halted 977BD run as final performance acceptance.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_to_phase30_partial_long_horizon_performance_handoff.md
+docs/phase_reports/phase29_l21t_y_phase30_handoff_long_horizon_partial_performance_evidence_update.md
+docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+```
+
+---
+
+## Phase29-L21T-BM Phase30 Entry Material Refresh / Clean Baseline Reset / Performance Research Roadmap Update
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY CONSOLIDATION / DOCUMENTATION UPDATE
+PHASE30 MIGRATION USER-APPROVED
+TASK ID REMAINS PHASE29-L21T-BM
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO FRESH-RUN / RESUME / REPLAY / RECOVERY / LONG HISTORICAL BY CODEX
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_BM_PHASE30_ENTRY_MATERIAL_REFRESHED_CLEAN_BASELINE_RESET_REQUIRED_RESEARCH_ROADMAP_UPDATED
+```
+
+Summary:
+
+```text
+Phase29-L21T-BM refreshed Phase30-facing entry material after the late
+Phase29 valuation and basis repairs.  The previous long Historical run
+runtime-test-historical-extended-smoke-20260814T131647480030Z is invalid as
+formal performance evidence because Phase29-L21T-BF classified it as
+CAPITAL_AUTHORITY_CONTAMINATED from 2022-08-10, covering 104 symbols and
+299 / 300 contaminated days.  It may be retained only as runtime forensic /
+defect-discovery evidence.
+
+The current clean validation candidate is
+runtime-test-historical-extended-smoke-20260815T030154161245Z.  Read-only
+evidence showed run_state RUNNING with next_job 2022-08-24:market_refresh and
+early post-BL valuation plausibility, but 20BD completion and a formal 4-year
+clean baseline are not assumed.
+
+Phase30 performance tuning is blocked until clean measurement and a clean
+long-horizon baseline exist.  Immediate Strategy and threshold changes are
+not authorized.  The Phase30 research roadmap was reset around clean
+performance measurement, clean long-horizon baseline, deployed-capital
+quality, momentum trajectory outcome, winner profit retention, clean regime
+attribution, and SELL / Position Management market-context authority.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+docs/phase_reports/phase30_a_phase29_final_state_clean_baseline_reset_and_research_roadmap.md
+reports/phase30_a_phase29_final_state_clean_baseline_reset_and_research_roadmap/summary.json
+```
+
+---
+
+## Phase29-L21T-BN Phase29 Final Retrospective / Closure Summary / Phase30 Handoff
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY DOCUMENTATION / RETROSPECTIVE / HANDOFF
+PHASE29 CLOSED
+PHASE30 MIGRATION USER-APPROVED
+PHASE30 TUNING NOT STARTED
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO FRESH-RUN / RESUME / REPLAY / RECOVERY / HISTORICAL BY CODEX
+```
+
+Primary Judgment:
+
+```text
+PHASE29_CLOSED_PHASE30_CLEAN_PERFORMANCE_IMPROVEMENT_HANDOFF_READY
+```
+
+Summary:
+
+```text
+Phase29-L21T-BN created the canonical Phase29 retrospective and Phase30
+handoff.  Phase29 started from Phase28 ADD / capital deployment continuation,
+then repaired major Production-common contracts across lot-aware capital
+conversion, low-price / semantic REENTRY risk, Expected Edge relative
+semantics, multi-horizon Momentum Trajectory / BUY_WAIT, valid no-order
+Execution continuity, and valuation / price-quantity-basis authority.
+
+The main retrospective conclusion is that Phase29 performance improvement was
+not only a Strategy problem.  Phase29 repaired real Strategy and capital
+deployment issues, but later discovered that old long-horizon performance
+evidence was contaminated by Current valuation authority defects.  The old run
+runtime-test-historical-extended-smoke-20260814T131647480030Z remains invalid
+as formal performance evidence and may be used only for runtime forensic /
+defect discovery.
+
+The post-BL clean 20BD candidate
+runtime-test-historical-extended-smoke-20260815T030154161245Z is handed to
+Phase30 with user-provided final evidence: 20BD processed from 2022-08-10 to
+2022-09-07, final equity 972,510 JPY, return -2.75%, final cash 431,770 JPY,
+final exposure 55.60%, final positions 7, and close REVIEW_REQUIRED still
+unresolved.  Negative performance is not a Phase30 blocker; Phase30-A should
+first perform read-only clean baseline integrity, close review, and
+performance attribution.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_final_summary_and_phase30_handoff.md
+docs/phase_reports/phase29_to_phase30_chatgpt_handoff.md
+reports/phase_reports/phase29_final_summary_and_phase30_handoff.json
+docs/01_requirements/phase_roadmap.md
+```
+
+---
+
+## Phase29-L21T-AA Phase30 Entry Gate Partial Long-Horizon Deployed-Capital / Exit Outcome Evidence Update
+
+Status:
+
+```text
+COMPLETE
+DOCUMENTATION / EVIDENCE CONSOLIDATION ONLY
+PERFORMANCE_EVIDENCE_PARTIAL
+NO RUNTIME / STRATEGY / CONFIG / MODEL CHANGE
+NO LONG-RUN / RESUME / REPLAY / RECOVERY BY CODEX
+PHASE30 NOT ENTERED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_AA_PHASE30_ENTRY_GATE_UPDATED_WITH_PARTIAL_LONG_HORIZON_DEPLOYED_CAPITAL_AND_EXIT_OUTCOME_EVIDENCE
+```
+
+Summary:
+
+```text
+L21T-AA updated docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+with partial long-horizon performance evidence from
+runtime-test-historical-smoke-20260812T212155604711Z.
+
+The run remains Phase29 and long-horizon final completion is not established.
+Current observed run_state during the update was RUNNING, next_job
+2023-07-24:market_refresh, with 233 completed business days through 2023-07-21.
+All added performance evidence is labeled PERFORMANCE_EVIDENCE_PARTIAL.
+
+Interim evidence shows later-window exposure above 90% on multiple days,
+suggesting capital deployment constraints have materially improved, but not
+that capital deployment is fully solved.  Equity path remained volatile:
+roughly 1.00M -> 0.91M -> 1.27M -> 1.02M -> 1.10M+, making profit retention
+and deployed-capital quality key Phase30 research candidates.
+
+Symbol/campaign evidence shows large-winner capture exists, especially 59350
+at approximately +160,800 JPY, while multiple small/medium losing campaigns
+remain.  Exit Forward Return partial audit found 45 closed campaigns, 38
+price-resolved exits, and average post-exit returns of about -2.46% 1BD,
+-4.30% 3BD, -7.04% 5BD, -7.23% 10BD, and -8.12% 20BD.  This does not support
+blanket slower loss-cutting.  It instead introduces Exit Outcome Separability
+and Recovery Re-entry Quality as Phase30 read-only research candidates.
+
+Phase30 Entry remains NOT YET.  No Strategy change is approved by L21T-AA.
+```
+
+---
+
+## Phase29-L21T-AE Runtime Test Operator Stop / Stale RUNNING Lifecycle Repair
+
+Status:
+
+```text
+COMPLETE
+RUNTIME TEST OPERATOR LIFECYCLE ONLY
+NO STRATEGY / PORTFOLIO / TRADING LOGIC CHANGE
+NO TARGET RUN MUTATION BY CODEX
+NO RESUME / REPLAY / RECOVERY / FRESH-RUN / LONG HISTORICAL BY CODEX
+PHASE30 NOT ENTERED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_AE_RUNTIME_TEST_OPERATOR_STOP_LIFECYCLE_REPAIRED_FOCUSED_REGRESSION_PASS
+```
+
+Summary:
+
+```text
+L21T-AE confirmed a multi-causal Runtime Test operator lifecycle defect:
+run-status reads active profile-scoped RUNNING/HALT state, show --run-id reads
+run-scoped run_state.json, abandon required RUNNING to be halted or stopped,
+but no formal stop CLI existed.
+
+The repair adds runtime_test.py stop. It does not introduce a new top-level
+STOPPED run_state status; operator stop materializes as HALT with
+halted_at.runtime_test_job_status=OPERATOR_STOPPED. Evidence is preserved,
+resume remains possible if baseline gates pass, and abandon is allowed after
+stop. Direct RUNNING abandon remains rejected.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l21t_ae_runtime_test_operator_stop_stale_running_lifecycle_repair.md
+docs/03_operations/runtime_test_command_guide.md
+docs/02_architecture/runtime_test_specification.md
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+```
+
+---
+
+## Phase29-L21T-AH Expected Edge Relative Allocation Semantics Implementation
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON IMPLEMENTATION
+FOCUSED REGRESSION PASS
+NO CONFIG / MODEL / RETRAINING CHANGE
+NO TARGET LONG RUN MUTATION BY CODEX
+NO LONG HISTORICAL / RESUME / REPLAY / RECOVERY BY CODEX
+PHASE30 NOT ENTERED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_AH_EXPECTED_EDGE_RELATIVE_ALLOCATION_SEMANTICS_IMPLEMENTED_FOCUSED_REGRESSION_PASS
+```
+
+Summary:
+
+```text
+L21T-AH implemented the AG relative-allocation design.  Runtime BUY opportunity
+eligibility no longer treats uncalibrated runtime_opportunity_score <= 0 as an
+absolute BUY_NEW rejection when calibration_applied=false and
+economic_units_available=false.
+
+runtime_opportunity_score remains the canonical score field.
+expected_edge_score and expected_return remain compatibility aliases and are
+not economic-return authorities unless explicit calibrated economic metadata is
+present.  A calibrated future score with economic_units_available=true still
+preserves the economic zero boundary.
+
+below_opportunity_top20 is metadata / observability / diagnostic shortlist
+evidence in the uncalibrated contract, not a hard BUY_NEW rejection authority.
+top20 is not automatic BUY permission.
+
+Buy Quality relative_opportunity_quality remains the canonical relative
+competition authority.  Portfolio Construction, Position Sizing, lot/safety,
+Submit, Execution, ADD, SELL, REDUCE, EXIT, and REENTRY safeguards remain
+preserved.  No forced BUY count or forced exposure was introduced.
+```
+
+Formal long-horizon validation:
+
+```text
+Fresh post-AH long-horizon validation is required before treating performance
+evidence as a formal post-AH baseline.  The currently running
+runtime-test-historical-extended-smoke-20260814T005603520480Z contains pre-AH
+completed days and is mixed-code for this change.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l21t_ah_expected_edge_relative_allocation_semantics_implementation.md
+docs/02_architecture/portfolio_construction_and_position_sizing_contract.md
+docs/02_architecture/strategy_architecture_v1.md
+docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+```
+
+---
+
+## Phase29-L21T-AK Post-AH Downstream Portfolio Construction Relative Allocation Authority Completion
+
+Status:
+
+```text
+COMPLETE
+PRODUCTION-COMMON MINIMAL IMPLEMENTATION
+FOCUSED REGRESSION PASS
+NO CONFIG / MODEL / THRESHOLD / RETRAINING CHANGE
+NO TARGET LONG RUN MUTATION BY CODEX
+NO LONG HISTORICAL / RESUME / REPLAY / RECOVERY / FRESH-RUN BY CODEX
+PHASE30 NOT ENTERED
+```
+
+Primary Judgment:
+
+```text
+PHASE29_L21T_AK_POST_AH_DOWNSTREAM_PORTFOLIO_CONSTRUCTION_RELATIVE_ALLOCATION_AUTHORITY_COMPLETED_FOCUSED_REGRESSION_PASS
+```
+
+Summary:
+
+```text
+L21T-AK completed the AH score semantic migration at the Portfolio
+Construction and Runtime Planning consumers.  Portfolio Construction now
+consumes canonical_score_field, score_semantic_role, calibration_applied, and
+economic_units_available before classifying Opportunity no_buy_reason and
+target-member eligibility.
+
+Under the active uncalibrated relative score contract, runtime_opportunity_score
+<= 0, non_positive_expected_edge_score, and standalone below_opportunity_top20
+are not absolute BUY_NEW hard rejection authorities.  They remain metadata /
+relative competition evidence.  Negative score candidates are not auto-BUY,
+BUY count is not fixed, and exposure is not forced.
+
+Hard no-buy reasons such as high_downside_risk_score, Buy Quality REJECT,
+missing / malformed semantic metadata, and future calibrated economic negative
+score semantics remain fail-closed.  ADD, SELL, REDUCE, EXIT, REENTRY, lot,
+Safety, and broker/execution contracts are preserved.
+```
+
+Formal long-horizon validation:
+
+```text
+Fresh post-AK 4-year validation is required before treating performance
+evidence as a formal post-AK baseline.  The current run
+runtime-test-historical-extended-smoke-20260814T032532992929Z contains pre-AK
+completed days and is pre-AK evidence only.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase29_l21t_ak_post_ah_downstream_portfolio_construction_relative_allocation_authority_completion.md
+reports/phase29_l21t_ak_post_ah_downstream_portfolio_construction_relative_allocation_authority_completion/summary.json
+docs/02_architecture/portfolio_construction_and_position_sizing_contract.md
+docs/02_architecture/strategy_architecture_v1.md
+docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
+```

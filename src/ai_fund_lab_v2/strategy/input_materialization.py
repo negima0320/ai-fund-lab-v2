@@ -18,11 +18,21 @@ PRODUCER_VERSION = "phase22_qe_strategy_input_materializer.v1"
 REFERENCE_PRICE_AUTHORITY = "REFERENCE_PRICE_AUTHORITY"
 REFERENCE_PRICE_FIELD = "reference_price"
 REFERENCE_PRICE_TYPE = "planning_reference_close"
+LIQUIDITY_CAPACITY_AUTHORITY = "LIQUIDITY_CAPACITY_AUTHORITY"
+ROLLING_MEDIAN_TRADED_VALUE_FIELD = "rolling_median_traded_value_20"
+ROLLING_TRADED_VALUE_LOOKBACK_BUSINESS_DAYS = 20
 PRICE_LOOKBACK_BUSINESS_DAYS = 20
 MINIMUM_PRICE_OBSERVATIONS = 21
 PM_TECHNICAL_REQUIRED_COLUMNS = (
+    "price_momentum_return_1d",
+    "price_momentum_return_3d",
     "price_momentum_return_5d",
+    "price_momentum_return_10d",
     "price_momentum_return_20d",
+    "recent_move_volatility_z_1d",
+    "recent_move_volatility_z_3d",
+    "momentum_5d_vs_20d_delta",
+    "momentum_1d_vs_5d_delta",
     "trend_close_over_ma_20d",
     "trend_ma_5_20_ratio",
     "volume_momentum_ratio_5d",
@@ -262,6 +272,7 @@ def _calculation_rows(
             continue
         close = pd.to_numeric(symbol_frame["close"], errors="coerce")
         volume = pd.to_numeric(symbol_frame["volume"], errors="coerce")
+        traded_value = close * volume
         returns = close.pct_change()
         vol20 = _finite_or_none(returns.tail(PRICE_LOOKBACK_BUSINESS_DAYS).std())
         latest = symbol_frame.iloc[-1]
@@ -293,6 +304,13 @@ def _calculation_rows(
             "volatility_value": round(vol20, 10),
             "volatility_return_std_20d": round(vol20, 10),
             **reference_price_payload,
+            **_liquidity_capacity_payload(
+                symbol=symbol,
+                traded_value=traded_value,
+                feature_date=feature_date,
+                source_path=source_path,
+                source_hash=source_hash,
+            ),
             "decision_resolution": "RESOLVED",
         }
         if include_pm_features:
@@ -300,14 +318,26 @@ def _calculation_rows(
             ma20 = _finite_or_none(close.tail(20).mean())
             vol5 = _finite_or_none(volume.tail(5).mean())
             vol20_avg = _finite_or_none(volume.tail(20).mean())
+            return_1d = _return_over(close, 1)
+            return_3d = _return_over(close, 3)
+            return_5d = _return_over(close, 5)
+            return_10d = _return_over(close, 10)
+            return_20d = _return_over(close, 20)
             row.update(
                 {
                     "target_date": feature_date,
                     "feature_as_of_date": feature_date,
                     "data_until": feature_date,
                     "feature_version": "runtime_v2_pm_feature_input_v2_technical_complete",
-                    "price_momentum_return_5d": _return_over(close, 5),
-                    "price_momentum_return_20d": _return_over(close, 20),
+                    "price_momentum_return_1d": return_1d,
+                    "price_momentum_return_3d": return_3d,
+                    "price_momentum_return_5d": return_5d,
+                    "price_momentum_return_10d": return_10d,
+                    "price_momentum_return_20d": return_20d,
+                    "recent_move_volatility_z_1d": _volatility_z(return_1d, vol20, scale=1.0),
+                    "recent_move_volatility_z_3d": _volatility_z(return_3d, vol20, scale=3.0**0.5),
+                    "momentum_5d_vs_20d_delta": _difference_or_none(return_5d, return_20d),
+                    "momentum_1d_vs_5d_delta": _difference_or_none(return_1d, return_5d),
                     "trend_close_over_ma_20d": _ratio_or_none(_finite_or_none(close.iloc[-1]), ma20),
                     "trend_ma_5_20_ratio": _ratio_or_none(ma5, ma20),
                     "volume_momentum_ratio_5d": _ratio_or_none(vol5, vol20_avg),
@@ -320,6 +350,47 @@ def _calculation_rows(
                 row["decision_resolution"] = "UNRESOLVED"
         rows.append(row)
     return rows
+
+
+def _liquidity_capacity_payload(
+    *,
+    symbol: str,
+    traded_value: pd.Series,
+    feature_date: str,
+    source_path: Path,
+    source_hash: str,
+) -> dict[str, Any]:
+    window = pd.to_numeric(traded_value.tail(ROLLING_TRADED_VALUE_LOOKBACK_BUSINESS_DAYS), errors="coerce")
+    valid = window.dropna()
+    rolling_value = _finite_or_none(valid.median()) if len(valid) == ROLLING_TRADED_VALUE_LOOKBACK_BUSINESS_DAYS else None
+    status = "PASS" if rolling_value is not None and rolling_value > 0 else "REVIEW_REQUIRED"
+    reason = "rolling_median_traded_value_resolved" if status == "PASS" else "rolling_median_traded_value_missing_or_invalid"
+    return {
+        ROLLING_MEDIAN_TRADED_VALUE_FIELD: round(rolling_value, 2) if rolling_value is not None and rolling_value > 0 else None,
+        "rolling_median_traded_value_20_authority": {
+            "authority_type": LIQUIDITY_CAPACITY_AUTHORITY,
+            "canonical_field": ROLLING_MEDIAN_TRADED_VALUE_FIELD,
+            "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+            "source_dataset": "J-Quants equities_bars_daily",
+            "source_formula": "median(close * volume over last 20 PIT rows)",
+            "source_fields": ["close", "volume"],
+            "lookback_business_days": ROLLING_TRADED_VALUE_LOOKBACK_BUSINESS_DAYS,
+            "source_path": str(source_path),
+            "source_hash": source_hash,
+            "symbol": symbol,
+            "business_date": feature_date,
+            "PIT_status": "PASS",
+            "latest_fallback_used": False,
+        },
+        "rolling_median_traded_value_20_resolution": {
+            "status": status,
+            "reason": reason,
+            "resolved_value": round(rolling_value, 2) if rolling_value is not None and rolling_value > 0 else None,
+            "source_fields": ["close", "volume"],
+            "capacity_required_for": "reentry_capacity_ratio",
+            "review_reason": "" if status == "PASS" else reason,
+        },
+    }
 
 
 def _reference_price_payload(
@@ -454,6 +525,18 @@ def _return_over(values: pd.Series, periods: int) -> float | None:
     current = _finite_or_none(values.iloc[-1])
     previous = _finite_or_none(values.iloc[-periods - 1])
     return None if current is None or previous in (None, 0.0) else round((current / previous) - 1.0, 10)
+
+
+def _difference_or_none(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    return round(left - right, 10)
+
+
+def _volatility_z(value: float | None, volatility: float | None, *, scale: float) -> float | None:
+    if value is None or volatility in (None, 0.0):
+        return None
+    return round(value / (float(volatility) * scale), 10)
 
 
 def _ratio_or_none(numerator: float | None, denominator: float | None) -> float | None:

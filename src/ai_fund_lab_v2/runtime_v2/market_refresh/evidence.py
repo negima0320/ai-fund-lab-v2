@@ -246,6 +246,7 @@ def _load_quotes(
     quote_source_path: Path | str | None = None,
 ) -> tuple[list[dict[str, Any]], set[str], str]:
     source_path = Path(quote_source_path) if quote_source_path else operations_root / "jquants" / "raw_normalized" / "jquants" / "equities_bars_daily" / "data.parquet"
+    economic_source_path = _economic_source_path_for_normalized(source_path=source_path, operations_root=operations_root)
     if not source_path.exists() or not market_date:
         return [], set(required_symbols), str(source_path)
     try:
@@ -259,11 +260,17 @@ def _load_quotes(
     date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
     code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
     close_column = _first_column(frame, ("close", "Close", "AdjustmentClose", "adjustment_close", "price"))
+    price_source_column = _first_column(frame, ("PriceSource", "price_source"))
     if not date_column or not code_column or not close_column:
         return [], set(required_symbols), str(source_path)
     rows = frame[frame[date_column].astype(str) == market_date].copy()
     if rows.empty:
         return [], set(required_symbols), str(source_path)
+    economic_rows = _economic_rows_from_parquet(
+        source_path=economic_source_path,
+        market_date=market_date,
+        required_symbols=required_symbols,
+    )
     quotes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows.to_dict(orient="records"):
@@ -275,6 +282,16 @@ def _load_quotes(
         price = row.get(close_column)
         if price is None:
             continue
+        price_source = str(row.get(price_source_column) or "").lower() if price_source_column else ""
+        adjusted = close_column.lower().startswith("adjust") or price_source == "adjusted"
+        price_metadata = _normalized_quote_price_metadata(
+            adjusted=adjusted,
+            price_source=price_source,
+            source_column=close_column,
+            row=row,
+            economic_row=economic_rows.get(symbol),
+            economic_source_path=economic_source_path,
+        )
         quotes.append(
             {
                 "symbol": symbol,
@@ -284,7 +301,8 @@ def _load_quotes(
                 "observed_at": market_date,
                 "source": str(source_path),
                 "freshness_status": FreshnessStatus.READY.value,
-                "adjusted": close_column.lower().startswith("adjust"),
+                "adjusted": adjusted,
+                **price_metadata,
                 "age_seconds": 0,
                 "stale": False,
             }
@@ -292,6 +310,48 @@ def _load_quotes(
         seen.add(symbol)
     missing = set(required_symbols) - seen
     return quotes, missing, str(source_path)
+
+
+def _economic_source_path_for_normalized(*, source_path: Path, operations_root: Path) -> Path:
+    text = str(source_path)
+    if "/raw_normalized/" in text:
+        return Path(text.replace("/raw_normalized/", "/raw/", 1))
+    default = operations_root / "jquants" / "raw" / "jquants" / "equities_bars_daily" / "data.parquet"
+    return default
+
+
+def _economic_rows_from_parquet(
+    *,
+    source_path: Path,
+    market_date: str,
+    required_symbols: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not source_path.is_file():
+        return {}
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return {}
+    if frame.empty:
+        return {}
+    date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
+    code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
+    if not date_column or not code_column:
+        return {}
+    rows = frame[frame[date_column].astype(str) == market_date].copy()
+    if rows.empty:
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows.to_dict(orient="records"):
+        symbol = _normalize_symbol(str(row.get(code_column) or ""))
+        if not symbol:
+            continue
+        if required_symbols and symbol not in required_symbols:
+            continue
+        result[symbol] = row
+    return result
 
 
 def _latest_available_daily_quote_date(operations_root: Path) -> str:
@@ -402,6 +462,120 @@ def _first_column(frame: Any, candidates: tuple[str, ...]) -> str:
         if match:
             return match
     return ""
+
+
+def _normalized_quote_price_metadata(
+    *,
+    adjusted: bool,
+    price_source: str,
+    source_column: str,
+    row: dict[str, Any],
+    economic_row: dict[str, Any] | None = None,
+    economic_source_path: Path | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "normalized_price_source": price_source or ("adjusted" if adjusted else "unadjusted"),
+        "price_source_column": source_column,
+    }
+    normalized_price = row.get(source_column)
+    if not adjusted:
+        metadata.update(
+            {
+                "price_role": "economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": "normalized_ohlcv_unadjusted_close",
+                "economic_valuation_price": normalized_price,
+                "price_basis": "RAW",
+                "adjusted_basis_reconciliation_status": "NOT_REQUIRED",
+            }
+        )
+        return metadata
+    explicit_status = str(
+        row.get("economic_price_reconciliation_status") or row.get("EconomicPriceReconciliationStatus") or ""
+    )
+    explicit_price = row.get("economic_valuation_price", row.get("EconomicValuationPrice"))
+    explicit_provenance = str(row.get("economic_price_provenance") or row.get("EconomicPriceProvenance") or "")
+    if explicit_status == "PASS" and explicit_provenance and _positive_float(explicit_price) is not None:
+        metadata.update(
+            {
+                "price_role": "reconciled_adjusted_economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": explicit_provenance,
+                "economic_valuation_price": float(explicit_price),
+                "price_basis": "RECONCILED",
+            }
+        )
+        return metadata
+    raw_close_column = _first_mapping_key(economic_row or {}, ("C", "Close", "close", "price"))
+    raw_close = _positive_float((economic_row or {}).get(raw_close_column)) if raw_close_column else None
+    raw_open = _positive_float((economic_row or {}).get("O"))
+    raw_high = _positive_float((economic_row or {}).get("H"))
+    raw_low = _positive_float((economic_row or {}).get("L"))
+    raw_adjusted_close = _positive_float((economic_row or {}).get("AdjC"))
+    raw_adjusted_open = _positive_float((economic_row or {}).get("AdjO"))
+    raw_adjusted_high = _positive_float((economic_row or {}).get("AdjH"))
+    raw_adjusted_low = _positive_float((economic_row or {}).get("AdjL"))
+    if raw_close is not None and economic_source_path and economic_source_path.is_file():
+        adjusted_basis_price = _positive_float(normalized_price) or raw_adjusted_close
+        adjusted_provenance = (
+            f"normalized_adjusted_ohlcv_close:{source_column}|raw_ohlcv_adjusted_close:{economic_source_path}:AdjC"
+            if adjusted_basis_price is not None
+            else ""
+        )
+        metadata.update(
+            {
+                "price_role": "reconciled_raw_economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": f"raw_ohlcv_close:{economic_source_path}:{raw_close_column}",
+                "economic_valuation_price": raw_close,
+                "price_basis": "RAW",
+                "raw_economic_open": raw_open,
+                "raw_economic_high": raw_high,
+                "raw_economic_low": raw_low,
+                "raw_adjusted_open": raw_adjusted_open,
+                "raw_adjusted_high": raw_adjusted_high,
+                "raw_adjusted_low": raw_adjusted_low,
+                "raw_adjusted_close": raw_adjusted_close,
+                "raw_adjusted_close_ratio": raw_close / adjusted_basis_price if adjusted_basis_price else None,
+                "adjusted_analytical_open": row.get("Open", raw_adjusted_open),
+                "adjusted_analytical_high": row.get("High", raw_adjusted_high),
+                "adjusted_analytical_low": row.get("Low", raw_adjusted_low),
+                "adjusted_analytical_price": normalized_price,
+                "adjusted_basis_valuation_price": adjusted_basis_price,
+                "adjusted_basis_reconciliation_status": "PASS" if adjusted_basis_price is not None and adjusted_provenance else "REVIEW_REQUIRED",
+                "adjusted_basis_price_role": "reconciled_adjusted_basis_valuation_price",
+                "adjusted_basis_price_provenance": adjusted_provenance,
+            }
+        )
+        return metadata
+    metadata.update(
+        {
+            "price_role": "adjusted_analytical_price",
+            "economic_price_reconciliation_status": "REVIEW_REQUIRED",
+            "economic_price_provenance": "",
+        }
+    )
+    return metadata
+
+
+def _first_mapping_key(row: dict[str, Any], candidates: tuple[str, ...]) -> str:
+    exact = {str(key): str(key) for key in row}
+    lower = {str(key).lower(): str(key) for key in row}
+    for candidate in candidates:
+        if candidate in exact:
+            return exact[candidate]
+        match = lower.get(candidate.lower())
+        if match:
+            return match
+    return ""
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

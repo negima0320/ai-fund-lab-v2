@@ -31,6 +31,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_review_sell_continuation_pending
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import validate_materialized_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
@@ -305,6 +306,16 @@ def run_submit_pipeline(
             pending_path=str(pending_read.path),
             pending=pending,
             evidence=no_order_evidence,
+            pending_read_valid=pending_read.valid,
+            pending_classification=pending_read.classification,
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            no_action_reason=_payload_text(pending_read.payload, "no_action_reason"),
+        )
+    if _is_buy_item_scoped_review_no_submission_pending(pending, business_date=business_date):
+        return _buy_item_scoped_review_no_submission_result(
+            runtime_root=runtime_root_path,
+            pending_path=str(pending_read.path),
+            pending=pending,
             pending_read_valid=pending_read.valid,
             pending_classification=pending_read.classification,
             pending_active=_payload_bool(pending_read.payload, "active_pending"),
@@ -771,6 +782,101 @@ def _authorized_no_order_result(
         review_required=False,
         halt_required=False,
     )
+
+
+def _buy_item_scoped_review_no_submission_result(
+    *,
+    runtime_root: Path,
+    pending_path: str,
+    pending: PendingOrderPlan,
+    pending_read_valid: bool,
+    pending_classification: str,
+    pending_active: bool | None,
+    no_action_reason: str,
+) -> SubmitPipelineResult:
+    evidence = _buy_item_scoped_review_no_submission_evidence(pending)
+    return SubmitPipelineResult(
+        status="PASS",
+        reason="BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION_REQUIRED",
+        pending_plan_id=pending.pending_plan_id,
+        pending_path=pending_path,
+        orders_ledger_path=str(runtime_root / "persistent_ledger" / "orders.jsonl"),
+        demo_submit_executed=False,
+        submitted_count=0,
+        accepted_count=0,
+        rejected_count=0,
+        unknown_count=0,
+        blocked_count=0,
+        pending_consumed=False,
+        submitted_order_ids=(),
+        ledger_order_record_ids=(),
+        submitted_symbols=(),
+        item_results=(),
+        pending_read_valid=pending_read_valid,
+        pending_classification=pending_classification,
+        pending_active=pending_active,
+        pending_plan_present=True,
+        pending_item_count=len(pending.items),
+        no_action_reason=no_action_reason or "buy_item_scoped_review_no_approved_items",
+        no_order_authority_status="PASS",
+        no_order_authority_reason="buy_item_scoped_review_no_approved_items",
+        no_order_authority_evidence=evidence,
+        submit_action="NO_SUBMISSION_REQUIRED",
+        review_required=False,
+        halt_required=False,
+    )
+
+
+def _is_buy_item_scoped_review_no_submission_pending(pending: PendingOrderPlan, *, business_date: str) -> bool:
+    if not is_buy_item_scoped_review_sell_continuation_pending(
+        pending,
+        business_date=business_date,
+        target_session_date=business_date,
+    ):
+        return False
+    if pending.approved_item_ids or pending.approved_buy_item_ids or pending.approved_sell_item_ids:
+        return False
+    if any(item.approved for item in pending.items):
+        return False
+    if any(item.side.upper() != "BUY" for item in pending.items):
+        return False
+    return True
+
+
+def _buy_item_scoped_review_no_submission_evidence(pending: PendingOrderPlan) -> dict[str, Any]:
+    return {
+        "authority_type": "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION",
+        "status": "PASS",
+        "pending_plan_id": pending.pending_plan_id,
+        "state": pending.state.value,
+        "review_scope": pending.review_scope,
+        "review_scope_reason": pending.review_scope_reason,
+        "sell_continuation_allowed": bool(pending.sell_continuation_allowed),
+        "approved_item_ids": list(pending.approved_item_ids),
+        "approved_buy_item_ids": list(pending.approved_buy_item_ids),
+        "approved_sell_item_ids": list(pending.approved_sell_item_ids),
+        "review_required_buy_item_ids": list(pending.review_required_buy_item_ids),
+        "review_required_sell_item_ids": list(pending.review_required_sell_item_ids),
+        "buy_batch_atomicity_preserved": True,
+        "partial_buy_submit_allowed": False,
+        "reviewed_buy_submitted": False,
+        "submitted_count": 0,
+        "item_count": len(pending.items),
+        "items": [
+            {
+                "pending_item_id": item.pending_item_id,
+                "symbol": item.symbol,
+                "side": item.side,
+                "quantity": item.quantity,
+                "approved": item.approved,
+                "state": item.state,
+                "feasibility_status": item.feasibility_status,
+                "batch_submit_status": item.batch_submit_status,
+                "item_review_reason": item.item_review_reason,
+            }
+            for item in pending.items
+        ],
+    }
 
 
 def _validate_authorized_no_order(
@@ -1589,6 +1695,7 @@ def _submit_guard_item_evidence(
 ) -> dict[str, Any]:
     side = str(item.side).upper()
     estimated_amount = float(item.estimated_amount)
+    reserved_notional = float(getattr(item, "reserved_notional", None) or estimated_amount)
     evidence = {
         "guard_policy_version": "submit_guard_policy_v1",
         "submit_authority_source": "pending_approval_planning_materialized_evidence",
@@ -1628,6 +1735,11 @@ def _submit_guard_item_evidence(
         "quantity": float(item.quantity),
         "estimated_amount": estimated_amount,
         "capital_allocation_amount": estimated_amount,
+        "reference_price": getattr(item, "reference_price", None) or getattr(item, "estimated_price", None),
+        "reservation_price": getattr(item, "reservation_price", None) or getattr(item, "estimated_price", None),
+        "reservation_price_authority": dict(getattr(item, "reservation_price_authority", None) or {}),
+        "reservation_reason": str(getattr(item, "reservation_reason", "") or ""),
+        "reserved_notional": reserved_notional,
         "quantity_contract": dict(getattr(item, "quantity_contract", None) or {}),
         "max_buy_order_amount": policy.max_buy_order_amount,
         "max_sell_liquidation_amount": policy.max_sell_liquidation_amount,
@@ -1916,10 +2028,17 @@ def _submit_opportunity_buy_eligibility(*, item: Any, business_date: str):
         "feature_date": feature_date,
         "opportunity_authority": listed_info.get("opportunity_authority"),
         "opportunity_row_id": listed_info.get("opportunity_row_id"),
+        "runtime_opportunity_score": listed_info.get("runtime_opportunity_score"),
         "expected_edge_score": listed_info.get("opportunity_expected_edge_score"),
         "expected_return": listed_info.get("opportunity_expected_return"),
         "no_buy_reason": listed_info.get("opportunity_no_buy_reason"),
         "buy_rank": listed_info.get("opportunity_buy_rank"),
+        "canonical_score_field": listed_info.get("opportunity_canonical_score_field") or "runtime_opportunity_score",
+        "score_semantic_role": listed_info.get("opportunity_score_semantic_role"),
+        "calibration_applied": listed_info.get("opportunity_calibration_applied"),
+        "economic_units_available": listed_info.get("opportunity_economic_units_available"),
+        "expected_edge_score_semantic_role": listed_info.get("expected_edge_score_semantic_role"),
+        "expected_return_semantic_role": listed_info.get("expected_return_semantic_role"),
     }
     return evaluate_opportunity_buy_eligibility(
         symbol=item.symbol,
@@ -1942,8 +2061,17 @@ def _opportunity_buy_eligibility_evidence_fields(payload: Mapping[str, Any]) -> 
         "opportunity_buy_eligibility_reason": str(payload.get("reason") or ""),
         "opportunity_expected_edge_score": payload.get("expected_edge_score"),
         "opportunity_expected_return": payload.get("expected_return"),
+        "runtime_opportunity_score": payload.get("runtime_opportunity_score"),
         "opportunity_no_buy_reason": str(payload.get("no_buy_reason") or ""),
         "opportunity_buy_rank": payload.get("buy_rank"),
+        "opportunity_canonical_score_field": str(payload.get("canonical_score_field") or ""),
+        "opportunity_score_semantic_role": str(payload.get("score_semantic_role") or ""),
+        "opportunity_calibration_applied": bool(payload.get("calibration_applied")),
+        "opportunity_economic_units_available": bool(payload.get("economic_units_available")),
+        "opportunity_absolute_economic_gate_applicable": bool(payload.get("absolute_economic_gate_applicable")),
+        "opportunity_relative_competition_eligible": bool(payload.get("relative_competition_eligible")),
+        "expected_edge_score_semantic_role": str(payload.get("expected_edge_score_semantic_role") or ""),
+        "expected_return_semantic_role": str(payload.get("expected_return_semantic_role") or ""),
         "opportunity_artifact_path": str(payload.get("opportunity_artifact_path") or ""),
         "opportunity_artifact_hash": str(payload.get("opportunity_artifact_hash") or ""),
         "opportunity_row_id": str(payload.get("opportunity_row_id") or ""),

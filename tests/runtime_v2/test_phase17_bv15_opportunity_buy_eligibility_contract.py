@@ -33,7 +33,7 @@ BUSINESS_DATE = "2026-07-01"
 FEATURE_DATE = "2026-06-30"
 
 
-def test_phase17_bv15_resolver_blocks_36810_negative_edge_top5() -> None:
+def test_phase29_l21t_ah_resolver_allows_uncalibrated_negative_score_for_relative_competition() -> None:
     artifact = _opportunity_payload(
         [
             _opportunity_row(
@@ -53,14 +53,19 @@ def test_phase17_bv15_resolver_blocks_36810_negative_edge_top5() -> None:
         opportunity_payload=artifact,
     )
 
-    assert result.status == "BLOCKED"
-    assert result.buy_eligibility == "BUY_INELIGIBLE"
-    assert result.reason_code == "non_positive_expected_edge_score"
+    assert result.status == "PASS"
+    assert result.buy_eligibility == "BUY_ELIGIBLE"
+    assert result.reason_code == "uncalibrated_relative_score_competition_eligible"
+    assert result.runtime_opportunity_score == -0.06934237
+    assert result.score_semantic_role == "uncalibrated_relative_model_score"
+    assert result.economic_units_available is False
+    assert result.absolute_economic_gate_applicable is False
+    assert result.relative_competition_eligible is True
     assert result.buy_rank == 2
     assert result.is_top5 is True
 
 
-def test_phase17_bv15_loader_does_not_treat_rank_as_buy_permission(tmp_path: Path) -> None:
+def test_phase29_l21t_ah_loader_keeps_uncalibrated_relative_candidates(tmp_path: Path) -> None:
     path = _write_opportunity_artifact(
         tmp_path / "opportunity_rankings.json",
         [
@@ -71,8 +76,118 @@ def test_phase17_bv15_loader_does_not_treat_rank_as_buy_permission(tmp_path: Pat
 
     signals = load_ai_planning_signals_from_opportunity_artifact(path, selected_rank_limit=10)
 
-    assert [signal.symbol for signal in signals] == ["7203"]
-def test_phase17_bv15_submit_blocks_negative_opportunity_before_broker(tmp_path: Path) -> None:
+    assert [signal.symbol for signal in signals] == ["36810", "7203"]
+
+
+def test_phase29_l21t_ah_calibrated_economic_negative_score_still_blocks() -> None:
+    artifact = _opportunity_payload(
+        [
+            _opportunity_row(
+                "36810",
+                expected_edge=-0.01,
+                no_buy_reason="non_positive_expected_edge_score",
+                buy_rank=1,
+                calibration_applied=True,
+                economic_units_available=True,
+                score_semantic_role="calibrated_economic_expected_return",
+            )
+        ],
+        calibration_applied=True,
+        economic_units_available=True,
+        score_semantic_role="calibrated_economic_expected_return",
+    )
+
+    result = evaluate_opportunity_buy_eligibility(
+        symbol="36810",
+        business_date=BUSINESS_DATE,
+        feature_date=FEATURE_DATE,
+        opportunity_payload=artifact,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.reason_code == "non_positive_expected_edge_score"
+    assert result.absolute_economic_gate_applicable is True
+    assert result.economic_units_available is True
+
+
+def test_phase29_l21t_ah_not_top20_uncalibrated_is_metadata_not_hard_block() -> None:
+    artifact = _opportunity_payload(
+        [
+            _opportunity_row(
+                "36810",
+                expected_edge=-0.20,
+                no_buy_reason="below_opportunity_top20|non_positive_expected_edge_score",
+                buy_rank=30,
+            )
+        ]
+    )
+
+    result = evaluate_opportunity_buy_eligibility(
+        symbol="36810",
+        business_date=BUSINESS_DATE,
+        feature_date=FEATURE_DATE,
+        opportunity_payload=artifact,
+    )
+
+    assert result.status == "PASS"
+    assert result.buy_eligibility == "BUY_ELIGIBLE"
+    assert result.reason_code == "uncalibrated_relative_score_competition_eligible"
+    assert result.buy_rank == 30
+
+
+def test_phase29_l21t_ah_high_downside_risk_still_blocks() -> None:
+    artifact = _opportunity_payload(
+        [
+            _opportunity_row(
+                "36810",
+                expected_edge=-0.20,
+                no_buy_reason="high_downside_risk_score",
+                buy_rank=3,
+            )
+        ]
+    )
+
+    result = evaluate_opportunity_buy_eligibility(
+        symbol="36810",
+        business_date=BUSINESS_DATE,
+        feature_date=FEATURE_DATE,
+        opportunity_payload=artifact,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.reason_code == "opportunity_no_buy_reason_present"
+
+
+def test_phase29_l21t_ah_malformed_economic_metadata_fails_closed() -> None:
+    artifact = _opportunity_payload(
+        [
+            _opportunity_row(
+                "36810",
+                expected_edge=0.20,
+                no_buy_reason="",
+                buy_rank=1,
+                calibration_applied=False,
+                economic_units_available=True,
+                score_semantic_role="uncalibrated_relative_model_score",
+            )
+        ],
+        calibration_applied=False,
+        economic_units_available=True,
+        score_semantic_role="uncalibrated_relative_model_score",
+    )
+
+    result = evaluate_opportunity_buy_eligibility(
+        symbol="36810",
+        business_date=BUSINESS_DATE,
+        feature_date=FEATURE_DATE,
+        opportunity_payload=artifact,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.reason_code == "opportunity_score_semantic_metadata_malformed"
+
+
+def test_phase29_l21t_ah_submit_allows_uncalibrated_negative_score_to_reach_broker(tmp_path: Path) -> None:
     runtime_root = _runtime_root(tmp_path)
     _write_current_state(runtime_root, positions=[], cash=1_000_000, market_value=0)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
@@ -88,12 +203,16 @@ def test_phase17_bv15_submit_blocks_negative_opportunity_before_broker(tmp_path:
         listed_info={
             "code": "36810",
             "current_listed": True,
+            "runtime_opportunity_score": -0.06934237,
             "opportunity_expected_edge_score": -0.06934237,
             "opportunity_expected_return": -0.06934237,
             "opportunity_no_buy_reason": "non_positive_expected_edge_score",
             "opportunity_buy_rank": 2,
             "opportunity_business_date": "2026-07-09",
             "opportunity_feature_date": "2026-07-09",
+            "opportunity_score_semantic_role": "uncalibrated_relative_model_score",
+            "opportunity_calibration_applied": False,
+            "opportunity_economic_units_available": False,
         },
     )
     from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
@@ -112,11 +231,9 @@ def test_phase17_bv15_submit_blocks_negative_opportunity_before_broker(tmp_path:
     )
 
     evidence = result.submit_guard_item_evidence[0]
-    assert result.status == "REVIEW_REQUIRED"
-    assert result.submitted_count == 0
-    assert evidence["guard_decision"] == "BLOCKED"
-    assert evidence["violated_policy"] == "opportunity_buy_eligibility"
-    assert evidence["opportunity_buy_eligibility"] == "BUY_INELIGIBLE"
+    assert evidence["violated_policy"] != "opportunity_buy_eligibility"
+    assert evidence["opportunity_buy_eligibility"] == "BUY_ELIGIBLE"
+    assert evidence["opportunity_buy_eligibility_reason_code"] == "uncalibrated_relative_score_competition_eligible"
 
 
 def test_phase17_bv15_submit_blocks_opportunity_hash_mismatch(tmp_path: Path) -> None:
@@ -221,6 +338,9 @@ def _opportunity_row(
     reason: str = "opportunity_ranked",
     business_date: str = BUSINESS_DATE,
     feature_date: str = FEATURE_DATE,
+    calibration_applied: bool = False,
+    economic_units_available: bool = False,
+    score_semantic_role: str = "uncalibrated_relative_model_score",
 ) -> dict:
     return {
         "schema_name": "runtime_v2_buy_opportunity_ranking",
@@ -233,10 +353,16 @@ def _opportunity_row(
         "code": symbol,
         "symbol": symbol,
         "expected_edge_score": expected_edge,
+        "runtime_opportunity_score": expected_edge,
         "opportunity_score": expected_edge,
         "buy_rank": buy_rank,
         "rank": buy_rank,
         "expected_return": expected_edge,
+        "score_semantic_role": score_semantic_role,
+        "economic_units_available": economic_units_available,
+        "calibration_applied": calibration_applied,
+        "expected_edge_score_semantic_role": "deprecated_alias_uncalibrated_runtime_opportunity_score",
+        "expected_return_semantic_role": "deprecated_alias_uncalibrated_runtime_opportunity_score_not_economic_return",
         "downside_risk_score": 0.67089625,
         "no_buy_reason": no_buy_reason,
         "is_top5": buy_rank <= 5,
@@ -244,7 +370,15 @@ def _opportunity_row(
     }
 
 
-def _opportunity_payload(rows: list[dict], *, business_date: str = BUSINESS_DATE, feature_date: str = FEATURE_DATE) -> dict:
+def _opportunity_payload(
+    rows: list[dict],
+    *,
+    business_date: str = BUSINESS_DATE,
+    feature_date: str = FEATURE_DATE,
+    calibration_applied: bool = False,
+    economic_units_available: bool = False,
+    score_semantic_role: str = "uncalibrated_relative_model_score",
+) -> dict:
     return {
         "schema_name": "runtime_v2_buy_opportunity_ranking",
         "schema_version": "runtime_v2_opportunity_ranking_v1",
@@ -258,6 +392,10 @@ def _opportunity_payload(rows: list[dict], *, business_date: str = BUSINESS_DATE
         "generated_at": "2026-07-01T00:00:00+00:00",
         "status": "PASS",
         "reason": "",
+        "canonical_score_field": "runtime_opportunity_score",
+        "score_semantic_role": score_semantic_role,
+        "economic_units_available": economic_units_available,
+        "calibration_applied": calibration_applied,
         "ranking_count": len(rows),
         "rankings": rows,
     }

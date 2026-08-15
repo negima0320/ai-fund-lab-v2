@@ -181,6 +181,173 @@ def compose_with_existing_buy_pending(
     return composed, order_plan_path, approval_path, evidence
 
 
+def compose_with_buy_item_scoped_review_pending(
+    *,
+    existing_review_pending: PendingOrderPlan | None,
+    pending: PendingOrderPlan,
+    artifact_dir: Path,
+    business_date: str,
+    target_session_date: str,
+    environment: str,
+    reason: str,
+    planning_submit_feasibility_current: RuntimeCurrentExposure | None = None,
+    planning_submit_feasibility_policy: CapitalDeploymentPolicy | None = None,
+    accepted_generation_binding: dict | None = None,
+) -> tuple[PendingOrderPlan, Path, Path, dict]:
+    if not _is_buy_item_scoped_review_sell_continuation_pending(
+        existing_review_pending,
+        business_date=business_date,
+        target_session_date=target_session_date,
+    ):
+        return pending, Path(pending.source_order_plan.path), Path(pending.approval.approval_path if pending.approval else ""), {
+            "composition_model": "BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION",
+            "composition_status": "NOT_ELIGIBLE",
+            "preserved_buy_review_pending": False,
+            "composite_pending": False,
+        }
+    assert existing_review_pending is not None
+    sell_items = tuple(item for item in pending.items if item.side.upper() == "SELL" and float(item.quantity or 0.0) > 0)
+    if not sell_items:
+        return pending, Path(pending.source_order_plan.path), Path(pending.approval.approval_path if pending.approval else ""), {
+            "composition_model": "BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION",
+            "composition_status": "NO_SELL_ITEMS",
+            "preserved_buy_review_pending": False,
+            "composite_pending": False,
+        }
+
+    existing_buy_items = tuple(item for item in existing_review_pending.items if item.side.upper() == "BUY")
+    composed_items = _dedupe_items(existing_buy_items + sell_items)
+    order_plan_id = f"order-plan-buy-review-sell-continuation-{business_date}-{_short_items_hash(composed_items)}"
+    order_plan_path = artifact_dir / "buy_review_sell_continuation_order_plan.json"
+    approval_path = artifact_dir / "buy_review_sell_continuation_approval_artifact.json"
+    order_plan_payload = {
+        "schema_version": "1",
+        "order_plan_id": order_plan_id,
+        "environment": environment,
+        "business_date": business_date,
+        "target_session_date": target_session_date,
+        "status": "PASS",
+        "composition_model": "BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION_COMPOSITE_PENDING_PLAN",
+        "composition_reason": reason,
+        "source_buy_review_pending_plan_id": existing_review_pending.pending_plan_id,
+        "source_buy_review_pending_path": "pending_order_plan/pending_order_plan.json",
+        "source_sell_order_plan_id": pending.source_order_plan.order_plan_id,
+        "source_sell_order_plan_path": pending.source_order_plan.path,
+        "items": [asdict(item) for item in composed_items],
+    }
+    order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
+    composed = promote_order_plan_to_pending(
+        order_plan_id=order_plan_id,
+        source_order_plan_path=str(order_plan_path),
+        source_order_plan_hash=_hash(order_plan_path.read_text(encoding="utf-8")),
+        environment=environment,
+        plan_created_date=business_date,
+        intended_submit_date=target_session_date,
+        target_session_date=target_session_date,
+        items=composed_items,
+        submit_policy_context=pending.submit_policy_context,
+    )
+    composed = _attach_accepted_generation_binding(
+        pending=composed,
+        accepted_generation_binding=accepted_generation_binding,
+    )
+    approved_sell_item_ids = tuple(item.pending_item_id for item in sell_items)
+    request = build_approval_request(
+        pending_plan=composed,
+        business_date=business_date,
+        expires_at=f"{business_date}T15:00:00+09:00",
+    )
+    approval = build_approval_artifact(
+        request=request,
+        decision=ApprovalDecision(
+            status=ApprovalStatus.APPROVED,
+            approved_item_ids=approved_sell_item_ids,
+            rejected_item_ids=(),
+            reason="runtime v2 buy item scoped review sell continuation approval",
+            operator="runtime_v2_pending_composition_job",
+            decided_at=f"{business_date}T08:46:00+09:00",
+            approved_order_conditions=build_approved_order_conditions(
+                pending_items=sell_items,
+                target_session_date=target_session_date,
+            ),
+        ),
+    )
+    approval_path.write_text(_json_dumps(_jsonable(approval)), encoding="utf-8")
+    linked = link_approval_to_pending(
+        pending_plan=composed,
+        approval_artifact=approval,
+        planning_submit_feasibility_current=planning_submit_feasibility_current,
+        planning_submit_feasibility_policy=planning_submit_feasibility_policy,
+    )
+    review_by_id = {item.pending_item_id: item for item in existing_buy_items}
+    restored_items = tuple(
+        review_by_id[item.pending_item_id]
+        if item.pending_item_id in review_by_id
+        else item
+        for item in linked.items
+    )
+    linked_policy_context = dict(linked.policy_context or {})
+    linked_policy_context["buy_item_scoped_review_sell_continuation"] = {
+        "status": "PASS",
+        "source_buy_review_pending_plan_id": existing_review_pending.pending_plan_id,
+        "source_sell_pending_plan_id": pending.pending_plan_id,
+        "approved_sell_item_ids": list(approved_sell_item_ids),
+        "review_required_buy_item_ids": list(existing_review_pending.review_required_buy_item_ids),
+        "buy_batch_atomicity_preserved": True,
+        "partial_buy_approval_implemented": False,
+        "sell_lane_planning_submit_feasibility": linked.planning_submit_feasibility or {},
+        "buy_review_planning_submit_feasibility": existing_review_pending.planning_submit_feasibility or {},
+    }
+    composed = replace(
+        linked,
+        items=restored_items,
+        policy_context=linked_policy_context,
+        approved_item_ids=approved_sell_item_ids,
+        buy_items_status=existing_review_pending.buy_items_status or "REVIEW_REQUIRED",
+        sell_items_status="APPROVED",
+        plan_overall_status="APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW",
+        approved_buy_item_ids=(),
+        approved_sell_item_ids=approved_sell_item_ids,
+        review_required_buy_item_ids=existing_review_pending.review_required_buy_item_ids,
+        review_required_sell_item_ids=(),
+        review_scope=existing_review_pending.review_scope,
+        review_scope_source=existing_review_pending.review_scope_source,
+        review_scope_reason=existing_review_pending.review_scope_reason,
+        sell_continuation_allowed=True,
+    )
+    evidence = {
+        "composition_model": "BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION_COMPOSITE_PENDING_PLAN",
+        "composition_status": "PASS" if composed.state == PendingPlanState.APPROVED else composed.state.value,
+        "preserved_buy_review_pending": True,
+        "preserved_existing_buy_pending": True,
+        "composite_pending": True,
+        "approved_sell_item_ids": list(approved_sell_item_ids),
+        "approved_buy_item_ids": [],
+        "review_required_buy_item_ids": list(composed.review_required_buy_item_ids),
+        "source_buy_review_pending_plan_id": existing_review_pending.pending_plan_id,
+        "source_sell_pending_plan_id": pending.pending_plan_id,
+        "composed_buy_item_count": sum(1 for item in composed.items if item.side.upper() == "BUY"),
+        "composed_sell_item_count": sum(1 for item in composed.items if item.side.upper() == "SELL"),
+        "composed_item_count": len(composed.items),
+        "buy_batch_atomicity_preserved": True,
+        "partial_buy_approval_implemented": False,
+    }
+    return composed, order_plan_path, approval_path, evidence
+
+
+def is_buy_item_scoped_review_sell_continuation_pending(
+    plan: PendingOrderPlan | None,
+    *,
+    business_date: str,
+    target_session_date: str,
+) -> bool:
+    return _is_buy_item_scoped_review_sell_continuation_pending(
+        plan,
+        business_date=business_date,
+        target_session_date=target_session_date,
+    )
+
+
 def reconcile_with_existing_sell_pending(
     *,
     runtime_root: Path,
@@ -398,20 +565,78 @@ def active_pending_snapshot(
     snapshot = {
         "path": str(path),
         "valid": True,
+        "read_classification": read_result.classification,
         "active": active,
         "same_date": same_date,
         "pending_plan_id": plan.pending_plan_id,
         "pending_plan_hash": _file_hash(path) if path.is_file() else "",
         "state": plan.state.value,
+        "plan_created_date": plan.plan_created_date,
+        "target_session_date": plan.target_session_date,
+        "consume_consumed": bool(plan.consume.consumed),
+        "approved_item_ids": list(plan.approved_item_ids),
+        "approved_buy_item_ids": list(plan.approved_buy_item_ids),
+        "approved_sell_item_ids": list(plan.approved_sell_item_ids),
         "item_ids": [item.pending_item_id for item in plan.items],
+        "items": [
+            {
+                "pending_item_id": item.pending_item_id,
+                "symbol": item.symbol,
+                "side": item.side,
+                "quantity": item.quantity,
+                "approved": item.approved,
+                "state": item.state,
+                "approved_by_top_level": item.pending_item_id in set(plan.approved_item_ids),
+            }
+            for item in plan.items
+        ],
         "buy_item_count": sum(1 for item in plan.items if item.side.upper() == "BUY"),
         "sell_item_count": sum(1 for item in plan.items if item.side.upper() == "SELL"),
+        "approved_buy_item_count": sum(
+            1
+            for item in plan.items
+            if item.side.upper() == "BUY" and item.pending_item_id in set(plan.approved_item_ids) and item.quantity > 0
+        ),
+        "approved_sell_item_count": sum(
+            1
+            for item in plan.items
+            if item.side.upper() == "SELL" and item.pending_item_id in set(plan.approved_item_ids) and item.quantity > 0
+        ),
     }
     if not active:
         return None, f"inactive_state:{plan.state.value}", snapshot
     if not same_date:
         return None, "date_mismatch", snapshot
     return plan, "PASS", snapshot
+
+
+def _is_buy_item_scoped_review_sell_continuation_pending(
+    plan: PendingOrderPlan | None,
+    *,
+    business_date: str,
+    target_session_date: str,
+) -> bool:
+    if plan is None:
+        return False
+    if plan.state != PendingPlanState.REVIEW_REQUIRED:
+        return False
+    if plan.consume.consumed:
+        return False
+    if plan.plan_created_date != business_date or plan.target_session_date != target_session_date:
+        return False
+    if plan.review_scope != "BUY_ITEM_SCOPED_REVIEW" or not plan.sell_continuation_allowed:
+        return False
+    if plan.approved_buy_item_ids or any(
+        item.side.upper() == "BUY" and item.pending_item_id in set(plan.approved_item_ids)
+        for item in plan.items
+    ):
+        return False
+    if plan.review_required_sell_item_ids:
+        return False
+    buy_items = tuple(item for item in plan.items if item.side.upper() == "BUY" and float(item.quantity or 0.0) > 0)
+    if not buy_items or not plan.review_required_buy_item_ids:
+        return False
+    return all(item.pending_item_id not in set(plan.approved_item_ids) for item in buy_items)
 
 
 def _dedupe_items(items: tuple[PendingOrderItem, ...]) -> tuple[PendingOrderItem, ...]:

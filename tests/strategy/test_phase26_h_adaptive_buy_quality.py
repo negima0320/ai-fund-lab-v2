@@ -185,6 +185,266 @@ def test_phase28_d51_buy_quality_preserves_listed_info_from_opportunity_and_cand
     assert decision["quality_score"] > 0
 
 
+def test_phase29_l21i_uncalibrated_negative_high_rank_uses_relative_quality_not_economic_sign_gate(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[-0.01, -0.08, -0.16, -0.25, -0.36],
+        market="BULL",
+        calibration_applied=False,
+        prediction_semantics="runtime_opportunity_score",
+    )
+    top = _decision(payload, "1000")
+
+    assert top["runtime_opportunity_score"] < 0
+    assert top["quality_band"] != "UNUSABLE"
+    assert "non_positive_or_missing_raw_opportunity_score" not in top["quality_reason_codes"]
+    assert "uncalibrated_relative_score_non_positive_not_economic_gate" in top["quality_reason_codes"]
+    assert top["runtime_opportunity_score_authority"]["economic_units_available"] is False
+
+
+def test_phase29_l21i_uncalibrated_weak_low_rank_can_still_reject(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[-0.01 * index for index in range(1, 51)],
+        market="BEAR",
+        calibration_applied=False,
+        prediction_semantics="runtime_opportunity_score",
+        no_buy_reason_by_symbol={"1049": "below_opportunity_top20|non_positive_expected_edge_score"},
+        liquidity_by_symbol={"1049": 0.05},
+    )
+    weak = _decision(payload, "1049")
+
+    assert weak["quality_action"] == "REJECT"
+    assert "non_positive_or_missing_raw_opportunity_score" not in weak["quality_reason_codes"]
+    assert "uncalibrated_relative_score_non_positive_not_economic_gate" in weak["quality_reason_codes"]
+
+
+def test_phase29_l21i_positive_high_downside_risk_remains_rejected(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.20, 0.18, 0.12],
+        market="BULL",
+        calibration_applied=False,
+        prediction_semantics="runtime_opportunity_score",
+        no_buy_reason_by_symbol={"1000": "high_downside_risk_score"},
+        downside_by_symbol={"1000": 0.92},
+    )
+    risky = _decision(payload, "1000")
+
+    assert risky["quality_action"] == "REJECT"
+    assert risky["quality_band"] == "UNUSABLE"
+    assert "opportunity_no_buy_reason_present:high_downside_risk_score" in risky["quality_reason_codes"]
+
+
+def test_phase29_l21i_calibrated_non_positive_expected_return_rejects(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[-0.01, 0.10, 0.08],
+        market="BULL",
+        calibration_applied=True,
+        prediction_semantics="calibrated_expected_return",
+    )
+    negative = _decision(payload, "1000")
+
+    assert negative["quality_action"] == "REJECT"
+    assert "calibrated_non_positive_expected_return" in negative["quality_reason_codes"]
+    assert negative["runtime_opportunity_score_authority"]["economic_units_available"] is True
+
+
+def test_phase29_l21i_calibrated_positive_expected_return_reaches_quality_checks(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.12, -0.01, -0.02],
+        market="BULL",
+        calibration_applied=True,
+        prediction_semantics="calibrated_expected_return",
+    )
+    positive = _decision(payload, "1000")
+
+    assert positive["quality_action"] in {"FULL_ALLOCATION_ELIGIBLE", "REDUCED_ALLOCATION_ONLY", "REJECT"}
+    assert "calibrated_non_positive_expected_return" not in positive["quality_reason_codes"]
+    assert positive["runtime_opportunity_score_authority"]["economic_units_available"] is True
+
+
+def test_phase29_l21i_malformed_calibration_semantics_fails_closed(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.12, 0.10, 0.08],
+        market="BULL",
+        calibration_applied=True,
+        prediction_semantics="runtime_opportunity_score",
+    )
+    malformed = _decision(payload, "1000")
+
+    assert malformed["quality_action"] == "REVIEW_REQUIRED"
+    assert "calibrated_opportunity_score_semantics_malformed" in malformed["quality_reason_codes"]
+
+
+def test_phase29_l21t_av_53800_type_fading_prior_winner_becomes_buy_wait(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.20, 0.10],
+        market="BULL",
+        calibration_applied=False,
+        trajectory_by_symbol={
+            "1000": {
+                "price_momentum_return_1d": -0.111,
+                "price_momentum_return_3d": -0.20,
+                "price_momentum_return_5d": -0.298,
+                "price_momentum_return_20d": 0.87,
+                "price_momentum_return_60d": 1.00,
+                "volatility_return_std_20d": 0.13,
+                "trend_close_over_ma_20d": 0.896,
+            }
+        },
+    )
+    decision = _decision(payload, "1000")
+
+    assert decision["momentum_trajectory_classification"] == "FADING_PRIOR_WINNER"
+    assert decision["momentum_trajectory_action"] == "TEMPORARY_BUY_INELIGIBLE"
+    assert decision["quality_action"] == "BUY_WAIT"
+    assert decision["quality_status"] == "PASS"
+    assert decision["quality_allocation_adjustment"] == 0.0
+
+
+def test_phase29_l21t_av_78780_type_fading_prior_winner_becomes_buy_wait(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.20, 0.10],
+        market="BULL",
+        calibration_applied=False,
+        trajectory_by_symbol={
+            "1000": {
+                "price_momentum_return_1d": -0.081,
+                "price_momentum_return_3d": -0.237,
+                "price_momentum_return_5d": -0.055,
+                "price_momentum_return_20d": 1.355,
+                "price_momentum_return_60d": 2.25,
+                "volatility_return_std_20d": 0.13,
+                "trend_close_over_ma_20d": 1.17,
+            }
+        },
+    )
+    decision = _decision(payload, "1000")
+
+    assert decision["momentum_trajectory_classification"] == "FADING_PRIOR_WINNER"
+    assert decision["quality_action"] == "BUY_WAIT"
+    assert "momentum_trajectory_buy_wait" in decision["quality_reason_codes"]
+
+
+def test_phase29_l21t_av_healthy_continuation_does_not_wait(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.20, 0.10],
+        market="BULL",
+        calibration_applied=False,
+        trajectory_by_symbol={
+            "1000": {
+                "price_momentum_return_1d": 0.01,
+                "price_momentum_return_3d": 0.03,
+                "price_momentum_return_5d": 0.06,
+                "price_momentum_return_20d": 0.24,
+                "price_momentum_return_60d": 0.30,
+                "volatility_return_std_20d": 0.04,
+                "trend_close_over_ma_20d": 1.05,
+            }
+        },
+    )
+    decision = _decision(payload, "1000")
+
+    assert decision["momentum_trajectory_classification"] == "HEALTHY_CONTINUATION"
+    assert decision["momentum_trajectory_action"] == "BUY_ELIGIBLE"
+    assert decision["quality_action"] != "BUY_WAIT"
+
+
+def test_phase29_l21t_av_recent_acceleration_overheat_becomes_buy_wait(tmp_path: Path) -> None:
+    payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.20, 0.10],
+        market="BULL",
+        calibration_applied=False,
+        trajectory_by_symbol={
+            "1000": {
+                "price_momentum_return_1d": 0.18,
+                "price_momentum_return_3d": 0.28,
+                "price_momentum_return_5d": 0.32,
+                "price_momentum_return_20d": 0.45,
+                "price_momentum_return_60d": 0.70,
+                "recent_move_volatility_z_1d": 3.0,
+                "recent_move_volatility_z_3d": 3.5,
+                "volatility_return_std_20d": 0.05,
+                "trend_close_over_ma_20d": 1.25,
+            }
+        },
+    )
+    decision = _decision(payload, "1000")
+
+    assert decision["momentum_trajectory_classification"] == "RECENT_ACCELERATION_OVERHEAT"
+    assert decision["quality_action"] == "BUY_WAIT"
+    assert decision["quality_allocation_adjustment"] == 0.0
+
+
+def test_phase29_l21t_av_buy_wait_is_zero_allocation_not_review() -> None:
+    row = _sized_row("2004", adjustment=0.0, score=0.0, action="BUY_WAIT")
+    row["momentum_trajectory_classification"] = "FADING_PRIOR_WINNER"
+    result = resolve_adaptive_buy_quality(row)
+
+    assert result["quality_action"] == "BUY_WAIT"
+    assert result["quality_status"] == "PASS"
+    assert result["quality_allocation_adjustment"] == 0.0
+    assert result["review_reason"] == "adaptive_buy_quality_buy_wait"
+
+
+def test_phase29_l21t_av_buy_wait_excludes_buy_new_without_review_pending(tmp_path: Path) -> None:
+    quality_payload = _quality_payload(
+        tmp_path,
+        scores=[0.90, 0.20, 0.10],
+        market="BULL",
+        calibration_applied=False,
+        trajectory_by_symbol={
+            "1000": {
+                "price_momentum_return_1d": -0.10,
+                "price_momentum_return_3d": -0.20,
+                "price_momentum_return_5d": -0.30,
+                "price_momentum_return_20d": 0.80,
+                "volatility_return_std_20d": 0.10,
+                "trend_close_over_ma_20d": 0.90,
+            }
+        },
+    )
+    artifact_path = _write_json(tmp_path / "buy_quality_decisions.json", quality_payload)
+    summary = _pc_summary(
+        {
+            "status": "PASS",
+            "business_date": BUSINESS_DATE,
+            "feature_date": BUSINESS_DATE,
+            "artifact_path": str(artifact_path),
+            "artifact_hash": buy_quality.buy_quality_hash(quality_payload),
+        },
+        BUSINESS_DATE,
+    )
+    [attached] = portfolio_construction._attach_buy_quality(
+        [
+            {
+                "security_code": "1000",
+                "membership_intent": "ADD_CANDIDATE",
+                "target_membership": True,
+                "weight_intent": "INCREASE",
+                "current_position": False,
+                "semantic_buy_type": "BUY_NEW",
+                "reason_codes": ["candidate_eligible"],
+            }
+        ],
+        summary,
+    )
+
+    assert attached["quality_action"] == "BUY_WAIT"
+    assert attached["membership_intent"] == "EXCLUDE"
+    assert attached["weight_intent"] == "AVOID"
+    assert "buy_quality_wait" in attached["reason_codes"]
+    assert "buy_quality_review_required" not in attached["reason_codes"]
+
+
 def _quality_payload(
     tmp_path: Path,
     *,
@@ -193,6 +453,11 @@ def _quality_payload(
     calibration_applied: bool,
     binding_status: str = "PASS",
     listed_info_by_symbol: dict[str, dict[str, object]] | None = None,
+    prediction_semantics: str | None = None,
+    no_buy_reason_by_symbol: dict[str, str] | None = None,
+    downside_by_symbol: dict[str, float] | None = None,
+    liquidity_by_symbol: dict[str, float] | None = None,
+    trajectory_by_symbol: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, object]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     market_path = _write_json(
@@ -224,17 +489,36 @@ def _quality_payload(
         {"schema_version": "corporate_event.v1", "business_date": BUSINESS_DATE, "feature_date": BUSINESS_DATE, "producer_result_status": "PASS"},
     )
     listed_info_by_symbol = listed_info_by_symbol or {}
+    no_buy_reason_by_symbol = no_buy_reason_by_symbol or {}
+    downside_by_symbol = downside_by_symbol or {}
+    liquidity_by_symbol = liquidity_by_symbol or {}
+    trajectory_by_symbol = trajectory_by_symbol or {}
     opportunity_rows = []
     for index, score in enumerate(scores):
         symbol = f"{1000 + index}"
+        trajectory = {
+            "price_momentum_return_1d": 0.01,
+            "price_momentum_return_3d": 0.03,
+            "price_momentum_return_5d": 0.06,
+            "price_momentum_return_20d": 0.24,
+            "price_momentum_return_60d": 0.30,
+            "volatility_return_std_20d": 0.04,
+            "trend_close_over_ma_20d": 1.05,
+            **trajectory_by_symbol.get(symbol, {}),
+        }
         row = {
             "symbol": symbol,
             "buy_rank": index + 1,
+            "runtime_opportunity_score": score,
             "expected_edge_score": score,
             "confidence": 0.96,
-            "downside_risk_score": 0.18,
+            "downside_risk_score": downside_by_symbol.get(symbol, 0.18),
+            "no_buy_reason": no_buy_reason_by_symbol.get(symbol, ""),
             "opportunity_id": f"opp-{index}",
+            **trajectory,
         }
+        if prediction_semantics is not None:
+            row["prediction_semantics"] = prediction_semantics
         if symbol in listed_info_by_symbol:
             row["listed_info"] = listed_info_by_symbol[symbol]
         opportunity_rows.append(row)
@@ -243,6 +527,7 @@ def _quality_payload(
         candidate = {"symbol": row["symbol"], "candidate_id": f"candidate-{row['symbol']}", "confidence": 0.95}
         if row["symbol"] in listed_info_by_symbol:
             candidate["listed_info"] = listed_info_by_symbol[row["symbol"]]
+        candidate.update({field: row[field] for field in trajectory if field in row})
         candidate_rows.append(candidate)
     payload, _ = buy_quality.build_buy_quality_payload(
         business_date=BUSINESS_DATE,
@@ -251,7 +536,11 @@ def _quality_payload(
             tmp_path,
             "opportunity",
             rows=opportunity_rows,
-            summary={"accepted_generation_binding": {"status": binding_status}, "calibration_applied": calibration_applied},
+            summary={
+                "accepted_generation_binding": {"status": binding_status},
+                "calibration_applied": calibration_applied,
+                **({"prediction_semantics": prediction_semantics} if prediction_semantics is not None else {}),
+            },
         ),
         market_context_artifact_path=market_path,
         portfolio_policy_artifact_path=policy_path,
@@ -260,7 +549,7 @@ def _quality_payload(
         price_volatility_summary=_summary(
             tmp_path,
             "price_volatility",
-            rows=[{"symbol": row["symbol"], "liquidity_score": 0.92} for row in opportunity_rows],
+            rows=[{"symbol": row["symbol"], "liquidity_score": liquidity_by_symbol.get(str(row["symbol"]), 0.92)} for row in opportunity_rows],
         ),
         corporate_event_artifact_path=corporate_path,
     )

@@ -105,6 +105,45 @@ position_lifecycle_event = REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY
 
 Sell Planning writes this evidence to the no-action Order Plan and Pending Plan under `non_executable_sell_decisions`. The Pending Plan remains empty and inactive. Position Campaign remains open and no realized slice or execution event is created.
 
+## Phase29-L21T-AD Intentional No-Order Semantics
+
+The Production/Demo/Historical common REDUCE contract distinguishes PM intent from executable broker quantity. A valid PM `REDUCE` can intentionally materialize as no order when the partial sell is not expressible under market constraints.
+
+Canonical intentional no-order semantics:
+
+```text
+REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT
+REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL
+```
+
+Compatibility fields such as `reason = REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY` remain valid for existing Sell Planning quantity-contract consumers, but AD-era lifecycle classification must use the explicit semantic evidence when present.
+
+Required observability for intentional no-order REDUCE:
+
+- source PM decision and decision id;
+- symbol;
+- reduce intensity;
+- target reduce ratio;
+- position quantity before;
+- raw reduce quantity;
+- tradable unit;
+- rounded executable quantity;
+- final sell quantity;
+- execution semantic;
+- intentional no-order reason;
+- position effect.
+
+Authority rules:
+
+- `REDUCE` remains partial exposure-reduction intent and must not silently become `EXIT`.
+- Runtime must not ceil a sub-lot `REDUCE` to one lot.
+- Runtime must not persist reduce debt or force a later catch-up order.
+- The position remains unchanged for the day and the next day receives a fresh PM reevaluation.
+- Missing semantic or lifecycle evidence is not fail-open; it remains `REVIEW_REQUIRED`.
+- Explicit `EXIT` and mandatory executable SELL paths are unchanged.
+- BUY and SELL authorities remain independent.
+- This is common runtime behavior, not a Historical-only workaround.
+
 ## Fail-Closed Conditions
 
 Sell Planning must stop with `REVIEW_REQUIRED` instead of silently changing PM intent when quantity authority or calculation safety is uncertain:

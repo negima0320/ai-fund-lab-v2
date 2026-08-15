@@ -805,7 +805,38 @@ Trade-level realized PnL must not be guessed. If it cannot be traced from accept
 
 `--write-evidence` is allowed only for summary evidence under `reports/runtime_tests/summaries/<summary_id>/` and must not write into Runtime Trading State or run evidence.
 
-### 26.2.2 HALT Run Abandon Contract
+### 26.2.2 Operator Stop Contract
+
+`RUNNING` in Runtime Test run state means the persisted run lifecycle has not reached `HALT`, `COMPLETED`, `CLOSED`, or `ABANDONED`. The runner executes Runtime jobs as foreground subprocesses and has no background worker registry or active process ownership pointer. Therefore a stale `RUNNING` run can remain when the invoking process is externally interrupted.
+
+Operator stop is the formal lifecycle command for a `RUNNING` run that the operator does not want to continue immediately:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py stop \
+  --run-id <RUN_ID> \
+  --dry-run
+
+PYTHONPATH=src python3 scripts/runtime_test.py stop \
+  --run-id <RUN_ID> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+The command does not create a new top-level `STOPPED` run_state status. It records operator stop as:
+
+```text
+run_state.status = HALT
+run_state.halted_at.runtime_test_job_status = OPERATOR_STOPPED
+run_state.halted_at.operator_stop = true
+```
+
+This uses the existing HALT transition authority so existing `resume` and `abandon` contracts remain valid. A stopped run is resume-eligible if source baseline gates pass, and abandon-eligible when the operator chooses not to resume.
+
+Operator stop must preserve all run evidence. It must not roll back Ledger, Current, Pending, broker snapshots, daily artifacts, execution evidence, position campaigns, summary artifacts, completed business days, or performance evidence. It may only append an operator stop lifecycle record and update `run_state.json`.
+
+Dry-run must report the current status, stop eligibility, target transition, files that would be modified, and `dry_run_no_mutation=true`. Double stop is idempotent: an already HALT run returns `ALREADY_STOPPED` and does not rewrite evidence. Unknown, closed, completed, or abandoned runs are rejected fail-closed.
+
+### 26.2.3 HALT Run Abandon Contract
 
 A HALT Runtime Test may be explicitly abandoned only when the operator will not resume that run. Abandon is not evidence deletion and is not a test result conversion.
 
@@ -1011,6 +1042,7 @@ Partial restore is prohibited. Current-only restore, Ledger-only restore, Pendin
 | `run` | Yes | Invoke the normal Runtime v2 CLI by business date and job. |
 | `validate` | No | Validate run, state, temporal, authority, and evidence consistency; never repair. |
 | `resume` | Yes | Continue from the last valid checkpoint if baselines match; never skip failed jobs. |
+| `stop` | Evidence only | Mark a RUNNING run as operator-stopped HALT without deleting evidence or mutating Trading State. |
 | `abandon` | Evidence only | Mark a non-resumed HALT run abandoned without deleting evidence or mutating Trading State. |
 | `rollback` | Yes | Restore the full resettable Trading State bundle from backup. |
 | `close` | No | Freeze final evidence, validity judgment, acceptance gate judgment, and lifecycle recommendation. |

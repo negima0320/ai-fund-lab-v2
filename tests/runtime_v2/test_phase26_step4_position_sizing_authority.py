@@ -124,6 +124,144 @@ def test_phase26_step4_mode_parity_uses_same_position_sizing_authority_contract(
     assert {authority.selected_position_amount for authority in authorities} == {180_000}
 
 
+def test_phase29_l21t_h_position_sizing_consumes_authorized_one_lot_soft_cap_overshoot() -> None:
+    authority = resolve_position_sizing_authority(
+        symbol="78780",
+        business_date="2022-08-24",
+        runtime_mode="historical",
+        active_deployment_capital=995_110,
+        selected_dynamic_exposure_ratio=1.0,
+        selected_runtime_exposure_limit=995_110,
+        selected_dynamic_position_count=0,
+        current_position_market_value=0.0,
+        policy_context=_position_sizing_context(amount=241_999.81, symbol="78780")
+        | {
+            "target_weight": 0.243189,
+            "selected_position_weight": 0.243189,
+            "semantic_buy_type": "BUY_NEW",
+            "quantity_delta_candidate": 100,
+            "discrete_authorized_quantity": 100,
+            "discrete_authorized_notional": 242_000.0,
+            "phase29_l19_lot_resolution": _one_lot_resolution(),
+        },
+        consumer="phase29_l21t_h_test",
+    )
+
+    assert authority.status == "PASS"
+    assert authority.reason == "one_lot_strategy_soft_cap_overshoot_authority_consumed"
+    assert authority.selected_position_amount == 242_000.0
+    assert authority.one_lot_authority_consumed is True
+
+
+def test_phase29_l21t_h_position_sizing_blocks_unauthorized_soft_cap_overshoot() -> None:
+    authority = resolve_position_sizing_authority(
+        symbol="78780",
+        business_date="2022-08-24",
+        runtime_mode="historical",
+        active_deployment_capital=995_110,
+        selected_dynamic_exposure_ratio=1.0,
+        selected_runtime_exposure_limit=995_110,
+        selected_dynamic_position_count=0,
+        current_position_market_value=0.0,
+        policy_context=_position_sizing_context(amount=242_000.0, symbol="78780")
+        | {
+            "target_weight": 0.243189,
+            "selected_position_weight": 0.243189,
+            "semantic_buy_type": "BUY_NEW",
+            "quantity_delta_candidate": 100,
+        },
+        consumer="phase29_l21t_h_test",
+    )
+
+    assert authority.status == "REVIEW_REQUIRED"
+    assert authority.reason == "position_sizing_above_effective_maximum_position_weight"
+
+
+def test_phase29_l21t_h_position_sizing_blocks_one_lot_above_safety_hard_cap() -> None:
+    lot_resolution = _one_lot_resolution() | {
+        "post_trade_weight": 0.251,
+        "safety_margin_after_trade": -0.001,
+    }
+    authority = resolve_position_sizing_authority(
+        symbol="78780",
+        business_date="2022-08-24",
+        runtime_mode="historical",
+        active_deployment_capital=995_110,
+        selected_dynamic_exposure_ratio=1.0,
+        selected_runtime_exposure_limit=995_110,
+        selected_dynamic_position_count=0,
+        current_position_market_value=0.0,
+        policy_context=_position_sizing_context(amount=242_000.0, symbol="78780")
+        | {
+            "target_weight": 0.251,
+            "selected_position_weight": 0.251,
+            "semantic_buy_type": "BUY_NEW",
+            "quantity_delta_candidate": 100,
+            "phase29_l19_lot_resolution": lot_resolution,
+        },
+        consumer="phase29_l21t_h_test",
+    )
+
+    assert authority.status == "REVIEW_REQUIRED"
+    assert authority.reason == "position_sizing_above_effective_maximum_position_weight"
+
+
+def test_phase29_l21t_h_position_sizing_blocks_multi_lot_abuse() -> None:
+    authority = resolve_position_sizing_authority(
+        symbol="78780",
+        business_date="2022-08-24",
+        runtime_mode="historical",
+        active_deployment_capital=995_110,
+        selected_dynamic_exposure_ratio=1.0,
+        selected_runtime_exposure_limit=995_110,
+        selected_dynamic_position_count=0,
+        current_position_market_value=0.0,
+        policy_context=_position_sizing_context(amount=484_000.0, symbol="78780")
+        | {
+            "target_weight": 0.243189,
+            "selected_position_weight": 0.243189,
+            "semantic_buy_type": "BUY_NEW",
+            "quantity_delta_candidate": 200,
+            "phase29_l19_lot_resolution": _one_lot_resolution(),
+        },
+        consumer="phase29_l21t_h_test",
+    )
+
+    assert authority.status == "REVIEW_REQUIRED"
+    assert authority.reason == "position_sizing_above_effective_maximum_position_weight"
+
+
+@pytest.mark.parametrize("intent", ["BUY_ADD", "REENTRY"])
+def test_phase29_l21t_h_position_sizing_consumes_authorized_one_lot_buy_add_and_reentry(intent: str) -> None:
+    lot_resolution = _one_lot_resolution() | {"semantic_type": intent}
+    authority = resolve_position_sizing_authority(
+        symbol="78780",
+        business_date="2022-08-24",
+        runtime_mode="demo",
+        active_deployment_capital=995_110,
+        selected_dynamic_exposure_ratio=1.0,
+        selected_runtime_exposure_limit=995_110,
+        selected_dynamic_position_count=0,
+        current_position_market_value=50_000.0 if intent == "BUY_ADD" else 0.0,
+        policy_context=_position_sizing_context(amount=241_999.81, symbol="78780")
+        | {
+            "target_weight": 0.243189,
+            "selected_position_weight": 0.243189,
+            "semantic_buy_type": intent,
+            "quantity_delta_candidate": 100,
+            "discrete_authorized_quantity": 100,
+            "discrete_authorized_notional": 242_000.0,
+            "phase29_l19_lot_resolution": lot_resolution,
+        },
+        consumer="phase29_l21t_h_test",
+    )
+
+    assert authority.status == "PASS"
+    assert authority.reason == "one_lot_strategy_soft_cap_overshoot_authority_consumed"
+    assert authority.one_lot_authority_consumed is True
+    assert authority.phase29_l19_lot_resolution["semantic_type"] == intent
+
+
 def test_phase26_step4_policy_rejects_legacy_fixed_position_weight_config(tmp_path: Path) -> None:
     path = _policy(tmp_path / "capital_policy.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -209,4 +347,23 @@ def _position_sizing_context(*, amount: float, symbol: str) -> dict:
         "incremental_buy_notional": amount,
         "maximum_position_weight": 0.18,
         "portfolio_policy_source": "phase26_step4_fixture_portfolio_policy",
+    }
+
+
+def _one_lot_resolution() -> dict:
+    return {
+        "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+        "semantic_type": "BUY_NEW",
+        "strategy_cap_overshoot_applied": True,
+        "one_lot_fallback_applied": True,
+        "one_lot_feasibility_status": "PASS",
+        "one_lot_quantity": 100,
+        "one_lot_notional": 242_000.0,
+        "final_allocated_quantity": 100,
+        "post_trade_weight": 0.243189,
+        "safety_hard_cap": 0.25,
+        "safety_hard_cap_weight": 0.25,
+        "safety_hard_cap_preserved": True,
+        "safety_margin_after_trade": 0.006811,
+        "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
     }

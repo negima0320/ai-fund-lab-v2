@@ -147,6 +147,12 @@ POSITION_QUANTITY_EPSILON = 1e-6
 REDUCE_NON_EXECUTABLE_FEASIBILITY_STATUS = "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
 REDUCE_NON_EXECUTABLE_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
 REDUCE_NON_EXECUTABLE_LIFECYCLE_EVENT = "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY"
+REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL = "REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL"
+REDUCE_INTENTIONAL_NO_ORDER_SEMANTICS = {
+    REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
+    REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL,
+}
 SUMMARY_SCOPES = ("overview", "performance", "positions", "lifecycle", "strategy", "strategy-trace", "strategy-attribution", "strategy-readiness", "strategy-shadow", "full")
 LEGACY_RUN_STATE_SCHEMA_VERSIONS = {"phase17_k_run_state_v1"}
 LEGACY_PLAN_SCHEMA_VERSIONS = {"phase17_k_runtime_test_plan_v1"}
@@ -175,6 +181,8 @@ JOB_SEQUENCE = (
 )
 FEATURE_DATE_JOBS = {"data_readiness", "morning", "sell_planning", "submit"}
 SUBMIT_ENABLED_JOBS = {"submit"}
+PENDING_LIFECYCLE_REQUIRED_STATUS = "PENDING_LIFECYCLE_REQUIRED"
+PENDING_LIFECYCLE_COMPLETION_STATUSES = {"CONSUMED", "EXPIRED", "CANCELLED", "SUPERSEDED", "NOOP"}
 
 
 @dataclass(frozen=True)
@@ -374,12 +382,48 @@ def build_parser() -> argparse.ArgumentParser:
     add_mutation_safety(resume)
     resume.add_argument("--run-id", required=True)
 
+    stop = subparsers.add_parser("stop")
+    add_common(stop)
+    add_mutation_safety(stop)
+    stop.add_argument("--run-id", required=True)
+    stop.add_argument("--reason", default="operator_requested_stop")
+
     ca_repair = subparsers.add_parser("repair-ca-quarantine-continuation")
     add_common(ca_repair)
     add_mutation_safety(ca_repair)
     ca_repair.add_argument("--run-id", required=True)
     ca_repair.add_argument("--business-date", required=True)
     ca_repair.add_argument("--job", default="submit")
+
+    recovery = subparsers.add_parser("recover-failed-execution")
+    add_common(recovery)
+    add_mutation_safety(recovery)
+    recovery.add_argument("--run-id", required=True)
+    recovery.add_argument("--business-date", required=True)
+    recovery.add_argument("--rewind-to-job", default="morning")
+    recovery.add_argument("--expected-recovery-date", default="")
+    recovery.add_argument("--expected-cash", type=float, default=None)
+    recovery.add_argument("--expected-position-count", type=int, default=None)
+    recovery.add_argument("--expected-negative-cash", type=float, default=None)
+
+    stale_pending_recovery = subparsers.add_parser("recover-stale-pending")
+    add_common(stale_pending_recovery)
+    add_mutation_safety(stale_pending_recovery)
+    stale_pending_recovery.add_argument("--run-id", required=True)
+    stale_pending_recovery.add_argument("--business-date", required=True)
+    stale_pending_recovery.add_argument("--rewind-to-job", default="morning")
+    stale_pending_recovery.add_argument("--expected-pending-plan-id", default="")
+
+    replay = subparsers.add_parser("replay-recovered-day")
+    add_common(replay)
+    add_mutation_safety(replay)
+    replay.add_argument("--run-id", required=True)
+    replay.add_argument("--business-date", required=True)
+    replay.add_argument(
+        "--jobs",
+        default="morning,sell_planning,submit,execution",
+        help="Comma-separated planned jobs to replay for the recovered business date.",
+    )
 
     abandon = subparsers.add_parser("abandon")
     add_common(abandon)
@@ -419,7 +463,7 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
     if args.subcommand == "list-backups":
         return list_backups()
     if args.subcommand == "show":
-        return show(args)
+        return show(args, evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))))
 
     profile = load_profile(args.profile)
     runtime_root = Path(args.runtime_root or profile["runtime_root"])
@@ -458,8 +502,31 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return validate_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "resume":
         return resume_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "stop":
+        return stop_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "repair-ca-quarantine-continuation":
         return repair_ca_quarantine_continuation_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
+    if args.subcommand == "recover-failed-execution":
+        return recover_failed_execution_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
+    if args.subcommand == "recover-stale-pending":
+        return recover_stale_pending_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
+    if args.subcommand == "replay-recovered-day":
+        return replay_recovered_day_command(
             args,
             profile=profile,
             runtime_root=runtime_root,
@@ -1746,6 +1813,7 @@ def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[st
         contract = item.get("quantity_contract") if isinstance(item.get("quantity_contract"), dict) else {}
         feasibility_status = str(item.get("execution_feasibility_status") or contract.get("execution_feasibility_status") or "")
         reason = str(contract.get("reason") or item.get("reason") or "")
+        execution_semantic = str(item.get("execution_semantic") or contract.get("execution_semantic") or contract.get("reduce_execution_semantic") or "")
         terminal_counter[feasibility_status or "UNKNOWN"] += 1
         non_executable_rows.append(
             {
@@ -1754,6 +1822,9 @@ def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[st
                 "source_decision": contract.get("source_decision") or item.get("original_decision") or "",
                 "source_decision_id": item.get("source_decision_id") or contract.get("source_decision_id") or "",
                 "execution_feasibility_status": feasibility_status,
+                "execution_semantic": execution_semantic,
+                "intentional_no_order": item.get("intentional_no_order", contract.get("intentional_no_order")),
+                "intentional_no_order_reason": item.get("intentional_no_order_reason") or contract.get("intentional_no_order_reason") or "",
                 "reason": reason,
                 "status": contract.get("status") or item.get("status") or "",
                 "effective_action": item.get("effective_action") or contract.get("effective_action") or "",
@@ -1762,6 +1833,9 @@ def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[st
                 "position_lifecycle_event": contract.get("position_lifecycle_event") or item.get("position_lifecycle_event") or "",
                 "position_quantity_before": _float(contract.get("position_quantity_before")),
                 "position_quantity_after": _float(item.get("position_quantity_after", contract.get("position_quantity_after"))),
+                "target_reduce_ratio": _float(contract.get("target_reduce_ratio")),
+                "raw_reduce_quantity": _float(contract.get("raw_reduce_quantity")),
+                "tradable_unit": _float(contract.get("tradable_unit")),
                 "expected_remaining_quantity": _float(contract.get("expected_remaining_quantity")),
                 "final_sell_quantity": _float(contract.get("final_sell_quantity")),
                 "rounded_executable_quantity": _float(contract.get("rounded_executable_quantity", contract.get("rounded_reduce_quantity"))),
@@ -1777,6 +1851,7 @@ def _summarize_reduce_exit(*, plans: dict[str, list[dict[str, Any]]]) -> dict[st
         "non_executable_sell_decision_count": len(non_executable_rows),
         "non_executable_reduce_terminal_count": len([row for row in non_executable_rows if row.get("source_decision") == "REDUCE"]),
         "non_executable_reduce_reason_distribution": dict(sorted(Counter(str(row.get("reason") or "UNKNOWN") for row in non_executable_rows if row.get("source_decision") == "REDUCE").items())),
+        "non_executable_reduce_semantic_distribution": dict(sorted(Counter(str(row.get("execution_semantic") or "UNKNOWN") for row in non_executable_rows if row.get("source_decision") == "REDUCE").items())),
         "non_executable_reduce_feasibility_distribution": dict(sorted(terminal_counter.items())),
         "non_executable_items": non_executable_rows,
         "items": rows,
@@ -2151,10 +2226,14 @@ def _is_approved_non_executable_reduce_terminal(row: dict[str, Any]) -> bool:
     before = _float(row.get("position_quantity_before"))
     after = _float(row.get("position_quantity_after"))
     expected_remaining = _float(row.get("expected_remaining_quantity"))
+    semantic = str(row.get("execution_semantic") or "")
+    semantic_valid = semantic in REDUCE_INTENTIONAL_NO_ORDER_SEMANTICS
     return (
         str(row.get("source_decision") or "") == "REDUCE"
         and str(row.get("execution_feasibility_status") or "") == REDUCE_NON_EXECUTABLE_FEASIBILITY_STATUS
         and str(row.get("reason") or "") == REDUCE_NON_EXECUTABLE_REASON
+        and semantic_valid
+        and str(row.get("intentional_no_order_reason") or "") == semantic
         and str(row.get("status") or "") == "NOT_EXECUTABLE"
         and str(row.get("effective_action") or "") == "NO_SELL_ORDER"
         and row.get("pending_order_generated") is False
@@ -4435,6 +4514,27 @@ def run_command(
                     status="HALT",
                     exit_code=EXIT_HALT,
                 )
+            if job["job"] == "execution":
+                lifecycle_record = _maybe_run_required_pending_lifecycle(
+                    run_dir=run_dir,
+                    runtime_root=runtime_root,
+                    evidence_root=evidence_root,
+                    run_id=run_id,
+                    profile=profile,
+                    business_date=day["business_date"],
+                    historical_evaluation_authority=historical_authority,
+                    resumed=False,
+                )
+                if lifecycle_record:
+                    run_state["completed_jobs"].append(lifecycle_record)
+                    write_json_atomic(run_dir / "run_state.json", run_state)
+                    if int(lifecycle_record.get("exit_code", 1)) != 0:
+                        _mark_run_halted(run_dir, run_state, lifecycle_record)
+                        raise RuntimeTestError(
+                            f"Runtime Test stopped at {day['business_date']}:pending_lifecycle because required Pending lifecycle did not complete",
+                            status="HALT",
+                            exit_code=EXIT_HALT,
+                        )
         run_state["next_job"] = f"{day['business_date']}:strategy_shadow_generation"
         write_json_atomic(run_dir / "run_state.json", run_state)
         shadow_feature_authority = resolve_strategy_shadow_feature_date_authority(
@@ -4472,6 +4572,30 @@ def run_command(
         if shadow_summary.get("runtime_mutation_performed"):
             _mark_run_halted(run_dir, run_state, shadow_record)
             raise RuntimeTestError("Strategy shadow generation mutated Runtime authority state", status="HALT", exit_code=EXIT_HALT)
+        day_completion = _write_day_completion_evidence(
+            run_dir=run_dir,
+            runtime_root=runtime_root,
+            business_date=day["business_date"],
+        )
+        if day_completion["status"] != "PASS":
+            completion_record = {
+                "business_date": day["business_date"],
+                "job": "day_completion_gate",
+                "exit_code": EXIT_HALT,
+                "command": ["runtime_test.py", "internal:day_completion_gate"],
+                "planned_command": {},
+                "runtime_test_job_status": day_completion["status"],
+                "reason": day_completion["reason"],
+                "day_completion_evidence_path": day_completion["evidence_path"],
+            }
+            run_state["completed_jobs"].append(completion_record)
+            write_json_atomic(run_dir / "run_state.json", run_state)
+            _mark_run_halted(run_dir, run_state, completion_record)
+            raise RuntimeTestError(
+                f"Runtime Test day completion gate failed for {day['business_date']}: {day_completion['reason']}",
+                status="HALT",
+                exit_code=EXIT_HALT,
+            )
         run_state["completed_business_days"].append(day["business_date"])
     run_state["status"] = "COMPLETED"
     run_state["next_job"] = ""
@@ -4598,6 +4722,27 @@ def resume_command(
         for job in day.get("jobs", []):
             identity = (day["business_date"], job["job"])
             if identity in completed_success:
+                if job["job"] == "execution":
+                    lifecycle_record = _maybe_run_required_pending_lifecycle(
+                        run_dir=run_dir,
+                        runtime_root=runtime_root,
+                        evidence_root=evidence_root,
+                        run_id=str(args.run_id),
+                        profile=profile,
+                        business_date=day["business_date"],
+                        historical_evaluation_authority=historical_authority,
+                        resumed=True,
+                    )
+                    if lifecycle_record:
+                        run_state.setdefault("completed_jobs", []).append(lifecycle_record)
+                        write_json_atomic(run_dir / "run_state.json", run_state)
+                        if int(lifecycle_record.get("exit_code", 1)) != 0:
+                            _mark_run_halted(run_dir, run_state, lifecycle_record)
+                            raise RuntimeTestError(
+                                f"resume stopped at {day['business_date']}:pending_lifecycle because required Pending lifecycle did not complete",
+                                status="HALT",
+                                exit_code=EXIT_HALT,
+                            )
                 continue
             run_state["next_job"] = f"{day['business_date']}:{job['job']}"
             write_json_atomic(run_dir / "run_state.json", run_state)
@@ -4686,6 +4831,27 @@ def resume_command(
                     status="HALT",
                     exit_code=EXIT_HALT,
                 )
+            if job["job"] == "execution":
+                lifecycle_record = _maybe_run_required_pending_lifecycle(
+                    run_dir=run_dir,
+                    runtime_root=runtime_root,
+                    evidence_root=evidence_root,
+                    run_id=str(args.run_id),
+                    profile=profile,
+                    business_date=day["business_date"],
+                    historical_evaluation_authority=historical_authority,
+                    resumed=True,
+                )
+                if lifecycle_record:
+                    run_state.setdefault("completed_jobs", []).append(lifecycle_record)
+                    write_json_atomic(run_dir / "run_state.json", run_state)
+                    if int(lifecycle_record.get("exit_code", 1)) != 0:
+                        _mark_run_halted(run_dir, run_state, lifecycle_record)
+                        raise RuntimeTestError(
+                            f"resume stopped at {day['business_date']}:pending_lifecycle because required Pending lifecycle did not complete",
+                            status="HALT",
+                            exit_code=EXIT_HALT,
+                        )
         shadow_identity = (day["business_date"], "strategy_shadow_generation")
         if shadow_identity not in completed_success:
             run_state["next_job"] = f"{day['business_date']}:strategy_shadow_generation"
@@ -4727,6 +4893,31 @@ def resume_command(
                 _mark_run_halted(run_dir, run_state, shadow_record)
                 raise RuntimeTestError("Strategy shadow generation mutated Runtime authority state", status="HALT", exit_code=EXIT_HALT)
         if day["business_date"] not in run_state.get("completed_business_days", []):
+            day_completion = _write_day_completion_evidence(
+                run_dir=run_dir,
+                runtime_root=runtime_root,
+                business_date=day["business_date"],
+            )
+            if day_completion["status"] != "PASS":
+                completion_record = {
+                    "business_date": day["business_date"],
+                    "job": "day_completion_gate",
+                    "exit_code": EXIT_HALT,
+                    "command": ["runtime_test.py", "internal:day_completion_gate"],
+                    "planned_command": {},
+                    "runtime_test_job_status": day_completion["status"],
+                    "reason": day_completion["reason"],
+                    "day_completion_evidence_path": day_completion["evidence_path"],
+                    "resumed": True,
+                }
+                run_state.setdefault("completed_jobs", []).append(completion_record)
+                write_json_atomic(run_dir / "run_state.json", run_state)
+                _mark_run_halted(run_dir, run_state, completion_record)
+                raise RuntimeTestError(
+                    f"resume day completion gate failed for {day['business_date']}: {day_completion['reason']}",
+                    status="HALT",
+                    exit_code=EXIT_HALT,
+                )
             run_state.setdefault("completed_business_days", []).append(day["business_date"])
     run_state["status"] = "COMPLETED"
     run_state["next_job"] = ""
@@ -4734,6 +4925,883 @@ def resume_command(
     payload = base_payload("resume", "PASS")
     payload.update({"run_id": args.run_id, "evidence_path": str(run_dir), "completed_business_days": run_state.get("completed_business_days", [])})
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def stop_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    run_id = str(args.run_id)
+    run_state = load_run_state(evidence_root, run_id)
+    run_dir = runs_root(evidence_root) / run_id
+    current_status = str(run_state.get("status") or "")
+    already_abandoned = is_run_abandoned(evidence_root=evidence_root, run_id=run_id)
+    active = active_run_for_profile(evidence_root, profile_id=str(profile["profile_id"]))
+    active_run = str(active.get("run_id") or "") == run_id
+    reason = str(getattr(args, "reason", "") or "operator_requested_stop")
+    stop_record = _operator_stop_record(run_state=run_state, reason=reason)
+    hashes_before = state_hashes(runtime_root)
+    payload = base_payload("stop", "DRY_RUN" if args.dry_run else "STOPPED")
+    payload.update(
+        {
+            "run_id": run_id,
+            "profile_id": profile["profile_id"],
+            "current_status": current_status,
+            "previous_status": current_status,
+            "target_status": "HALT",
+            "operator_stop_semantic": "RUNNING_TO_OPERATOR_STOPPED_HALT",
+            "stop_state_model": "HALT_WITH_OPERATOR_STOPPED_RECORD",
+            "resume_eligibility_after_stop": "YES",
+            "abandon_eligibility_after_stop": "YES",
+            "active_run": active_run,
+            "already_abandoned": already_abandoned,
+            "dry_run_no_mutation": bool(args.dry_run),
+            "files_to_modify": [str(run_dir / "run_state.json")] if current_status == "RUNNING" else [],
+            "files_to_create": [],
+            "evidence_to_preserve": [
+                str(run_dir / "run_state.json"),
+                str(run_dir / "plan.json"),
+                str(run_dir / "daily"),
+                str(run_dir / "fresh_run_summary.json"),
+                str(run_dir / "final_summary.json"),
+                str(run_dir / "abandonment.json"),
+            ],
+            "trading_state_mutation": False,
+            "trading_state_mutated": False,
+            "broker_access": False,
+            "broker_write": False,
+            "external_delivery": False,
+            "completed_business_days_changed": False,
+            "daily_evidence_deleted": False,
+            "ledger_rollback": False,
+            "current_rollback": False,
+            "pending_deleted": False,
+            "evidence_preserved": True,
+            "process_ownership_status": "NO_BACKGROUND_WORKER_REGISTRY_FOUND",
+            "process_safety_contract": "runtime_test_runner_executes_foreground_jobs; stop mutates only persisted run lifecycle evidence",
+            "stop_record": stop_record,
+            "state_hashes_before": hashes_before,
+        }
+    )
+    if already_abandoned or is_run_closed(evidence_root=evidence_root, run_id=run_id):
+        raise RuntimeTestError(
+            f"stop rejected; run is already closed or abandoned: {run_id}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    if current_status == "RUNNING":
+        if args.dry_run:
+            payload.update({"status": "DRY_RUN", "stop_eligible": True, "state_hashes_after": hashes_before})
+            return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+        require_confirm(args)
+        original_completed_days = list(run_state.get("completed_business_days") or [])
+        run_state.setdefault("completed_jobs", []).append(stop_record)
+        _mark_run_halted(run_dir, run_state, stop_record)
+        updated = load_run_state(evidence_root, run_id)
+        payload.update(
+            {
+                "status": "STOPPED",
+                "final_judgment": "STOPPED",
+                "stop_eligible": True,
+                "current_status": str(updated.get("status") or ""),
+                "halted_at": updated.get("halted_at") or {},
+                "completed_business_days_changed": list(updated.get("completed_business_days") or []) != original_completed_days,
+                "state_hashes_after": state_hashes(runtime_root),
+            }
+        )
+        return CommandResult("STOPPED", EXIT_PASS, runner_response(payload))
+    if current_status == "HALT":
+        halted_at = run_state.get("halted_at") if isinstance(run_state.get("halted_at"), dict) else {}
+        payload.update(
+            {
+                "status": "ALREADY_STOPPED",
+                "final_judgment": "ALREADY_STOPPED",
+                "stop_eligible": True,
+                "already_stopped": True,
+                "halted_at": halted_at,
+                "files_to_modify": [],
+                "state_hashes_after": hashes_before,
+            }
+        )
+        return CommandResult("ALREADY_STOPPED", EXIT_PASS, runner_response(payload))
+    raise RuntimeTestError(
+        f"stop rejected; run status is not RUNNING or HALT: {current_status or '<missing>'}",
+        status="PRECONDITION_FAILURE",
+        exit_code=EXIT_PRECONDITION_FAILURE,
+    )
+
+
+def _operator_stop_record(*, run_state: dict[str, Any], reason: str) -> dict[str, Any]:
+    next_job = str(run_state.get("next_job") or "")
+    business_date, _, job = next_job.partition(":")
+    if not business_date:
+        business_date = str(run_state.get("next_business_date") or "")
+    return {
+        "business_date": business_date,
+        "job": job,
+        "exit_code": EXIT_HALT,
+        "command": [],
+        "planned_command": {},
+        "runtime_test_job_status": "OPERATOR_STOPPED",
+        "reason": reason,
+        "stopped_at": utc_now(),
+        "completed_runtime_cli_evidence": False,
+        "orphan_process_status": "NO_BACKGROUND_WORKER_REGISTRY_FOUND",
+        "operator_stop": True,
+    }
+
+
+RECOVERABLE_REPLAY_JOBS = ("morning", "sell_planning", "submit", "execution")
+
+
+def recover_failed_execution_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_dir = runs_root(evidence_root) / str(args.run_id)
+    run_state_path = run_dir / "run_state.json"
+    run_state = load_run_state(evidence_root, args.run_id)
+    business_date = str(args.business_date)
+    rewind_to_job = str(args.rewind_to_job or "morning")
+    if rewind_to_job not in RECOVERABLE_REPLAY_JOBS:
+        raise RuntimeTestError(
+            f"unsupported rewind target job: {rewind_to_job}",
+            status="INVALID_ARGUMENT",
+            exit_code=EXIT_INVALID_ARGUMENT,
+        )
+    recovery = build_failed_execution_recovery_plan(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_state=run_state,
+        run_id=str(args.run_id),
+        business_date=business_date,
+        rewind_to_job=rewind_to_job,
+        expected_recovery_date=str(args.expected_recovery_date or ""),
+        expected_cash=args.expected_cash,
+        expected_position_count=args.expected_position_count,
+        expected_negative_cash=args.expected_negative_cash,
+    )
+    payload = base_payload("recover-failed-execution", "DRY_RUN" if args.dry_run else recovery["status"])
+    payload.update(recovery)
+    payload["dry_run"] = bool(args.dry_run)
+    if recovery["status"] != "PASS":
+        payload["status"] = recovery["status"]
+        return CommandResult(payload["status"], EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        payload["dry_run_no_mutation"] = True
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    recovery_id = str(recovery["recovery_id"])
+    recovery_dir = run_dir / "recovery" / recovery_id
+    recovery_dir.mkdir(parents=True, exist_ok=True)
+    _preserve_failed_attempt_evidence(
+        recovery_dir=recovery_dir,
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        recovery=recovery,
+    )
+    _apply_failed_execution_ledger_recovery(runtime_root=runtime_root, recovery=recovery)
+    _retire_failed_pending(runtime_root=runtime_root, recovery=recovery)
+    _retire_failed_historical_broker_evidence(runtime_root=runtime_root, recovery_dir=recovery_dir, business_date=business_date)
+    _restore_runtime_current_metadata(runtime_root=runtime_root, run_dir=run_dir, business_date=business_date)
+    before_run_state = dict(run_state)
+    run_state["status"] = "HALT"
+    run_state["next_job"] = f"{business_date}:{rewind_to_job}"
+    run_state["completed_jobs"] = [
+        record
+        for record in run_state.get("completed_jobs", [])
+        if not (
+            str(record.get("business_date") or "") == business_date
+            and str(record.get("job") or "") in RECOVERABLE_REPLAY_JOBS
+        )
+    ]
+    run_state["completed_business_days"] = [
+        day for day in run_state.get("completed_business_days", []) if str(day) != business_date
+    ]
+    run_state["scoped_recovery"] = {
+        "schema_version": "runtime_test_scoped_failed_execution_recovery_state_v1",
+        "recovery_id": recovery_id,
+        "business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "status": "RECOVERY_APPLIED",
+        "created_at": utc_now(),
+        "evidence_path": str(recovery_dir / "recovery_evidence.json"),
+    }
+    run_state.pop("halt_summary", None)
+    run_state["halted_at"] = {
+        "business_date": business_date,
+        "job": rewind_to_job,
+        "exit_code": EXIT_HALT,
+        "runtime_test_job_status": "SCOPED_RECOVERY_READY_FOR_REPLAY",
+        "reason": "scoped failed execution recovery rewound run to replay boundary",
+    }
+    write_json_atomic(run_state_path, run_state)
+    applied = {
+        **recovery,
+        "status": "PASS",
+        "recovery_applied": True,
+        "run_state_rewind_from": before_run_state.get("next_job", ""),
+        "run_state_rewind_to": run_state["next_job"],
+        "post_recovery_hashes": _recovery_state_hashes(runtime_root),
+    }
+    write_json_atomic(recovery_dir / "recovery_evidence.json", applied)
+    payload.update(applied)
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def recover_stale_pending_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_dir = runs_root(evidence_root) / str(args.run_id)
+    run_state_path = run_dir / "run_state.json"
+    run_state = load_run_state(evidence_root, args.run_id)
+    business_date = str(args.business_date)
+    rewind_to_job = str(args.rewind_to_job or "morning")
+    if rewind_to_job not in RECOVERABLE_REPLAY_JOBS:
+        raise RuntimeTestError(
+            f"unsupported rewind target job: {rewind_to_job}",
+            status="INVALID_ARGUMENT",
+            exit_code=EXIT_INVALID_ARGUMENT,
+        )
+    recovery = build_stale_pending_recovery_plan(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_state=run_state,
+        run_id=str(args.run_id),
+        business_date=business_date,
+        rewind_to_job=rewind_to_job,
+        expected_pending_plan_id=str(args.expected_pending_plan_id or ""),
+    )
+    payload = base_payload("recover-stale-pending", "DRY_RUN" if args.dry_run else recovery["status"])
+    payload.update(recovery)
+    payload["dry_run"] = bool(args.dry_run)
+    if recovery["status"] != "PASS":
+        payload["status"] = recovery["status"]
+        return CommandResult(payload["status"], EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        payload["dry_run_no_mutation"] = True
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    recovery_id = str(recovery["recovery_id"])
+    recovery_dir = run_dir / "recovery" / recovery_id
+    recovery_dir.mkdir(parents=True, exist_ok=True)
+    _preserve_stale_pending_evidence(
+        recovery_dir=recovery_dir,
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        recovery=recovery,
+    )
+    _retire_stale_pending(runtime_root=runtime_root, recovery=recovery)
+    before_run_state = dict(run_state)
+    run_state["status"] = "HALT"
+    run_state["next_job"] = f"{business_date}:{rewind_to_job}"
+    run_state["completed_jobs"] = [
+        record
+        for record in run_state.get("completed_jobs", [])
+        if not (
+            str(record.get("business_date") or "") == business_date
+            and str(record.get("job") or "") in RECOVERABLE_REPLAY_JOBS
+        )
+    ]
+    run_state["completed_business_days"] = [
+        day for day in run_state.get("completed_business_days", []) if str(day) != business_date
+    ]
+    run_state["scoped_stale_pending_recovery"] = {
+        "schema_version": "runtime_test_scoped_stale_pending_recovery_state_v1",
+        "recovery_id": recovery_id,
+        "business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "status": "RECOVERY_APPLIED",
+        "created_at": utc_now(),
+        "evidence_path": str(recovery_dir / "recovery_evidence.json"),
+    }
+    run_state.pop("halt_summary", None)
+    run_state["halted_at"] = {
+        "business_date": business_date,
+        "job": rewind_to_job,
+        "exit_code": EXIT_HALT,
+        "runtime_test_job_status": "SCOPED_STALE_PENDING_RECOVERY_READY_FOR_REPLAY",
+        "reason": "scoped stale pending recovery rewound run to replay boundary",
+    }
+    write_json_atomic(run_state_path, run_state)
+    applied = {
+        **recovery,
+        "status": "PASS",
+        "recovery_applied": True,
+        "run_state_rewind_from": before_run_state.get("next_job", ""),
+        "run_state_rewind_to": run_state["next_job"],
+        "post_recovery_hashes": _recovery_state_hashes(runtime_root),
+    }
+    write_json_atomic(recovery_dir / "recovery_evidence.json", applied)
+    payload.update(applied)
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def replay_recovered_day_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_state = load_run_state(evidence_root, args.run_id)
+    run_dir = runs_root(evidence_root) / str(args.run_id)
+    business_date = str(args.business_date)
+    jobs = tuple(job.strip() for job in str(args.jobs or "").split(",") if job.strip())
+    if not jobs or any(job not in RECOVERABLE_REPLAY_JOBS for job in jobs):
+        raise RuntimeTestError("replay jobs must be a subset of morning,sell_planning,submit,execution", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    if args.dry_run:
+        payload = base_payload("replay-recovered-day", "DRY_RUN")
+        payload.update(
+            {
+                "run_id": args.run_id,
+                "business_date": business_date,
+                "jobs": list(jobs),
+                "dry_run_no_mutation": True,
+                "next_job": run_state.get("next_job", ""),
+            }
+        )
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    replay = _run_scoped_replay_jobs(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        evidence_root=evidence_root,
+        run_id=str(args.run_id),
+        profile=profile,
+        run_state=run_state,
+        business_date=business_date,
+        jobs=jobs,
+    )
+    payload = base_payload("replay-recovered-day", replay["status"])
+    payload.update(replay)
+    return CommandResult(replay["status"], EXIT_PASS if replay["status"] == "PASS" else EXIT_HALT, runner_response(payload))
+
+
+def build_failed_execution_recovery_plan(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_state: dict[str, Any],
+    run_id: str,
+    business_date: str,
+    rewind_to_job: str,
+    expected_recovery_date: str = "",
+    expected_cash: float | None = None,
+    expected_position_count: int | None = None,
+    expected_negative_cash: float | None = None,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    state = read_json_optional(runtime_root / "persistent_ledger" / "state.json")
+    pending = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    recovery_date = _previous_completed_business_day(run_dir=run_dir, business_date=business_date)
+    state_business_date = str(state.get("as_of") or state.get("business_date") or "")
+    if not recovery_date:
+        errors.append("previous completed business day recovery boundary missing")
+    if state_business_date != recovery_date:
+        errors.append("persistent state is not at last completed coherent boundary")
+    if expected_recovery_date and state_business_date != expected_recovery_date:
+        errors.append("persistent state recovery date mismatch")
+    if expected_cash is not None and abs(float(state.get("cash") or 0.0) - expected_cash) > 1e-9:
+        errors.append("persistent state cash mismatch")
+    if expected_position_count is not None and len(state.get("positions") or []) != expected_position_count:
+        errors.append("persistent state position count mismatch")
+    if str(run_state.get("status") or "") != "HALT":
+        errors.append("run_state is not HALT")
+    if str(run_state.get("next_job") or "") != f"{business_date}:execution":
+        errors.append("run_state next_job is not failed execution boundary")
+    if str(pending.get("state") or "").upper() != "CONSUMED":
+        errors.append("pending is not consumed failed-attempt state")
+    applied_keys = set(
+        str(value)
+        for value in (state.get("runtime_owned_projection") or {}).get("applied_execution_dedup_keys", ())
+        if str(value)
+    )
+    rows_by_file = {
+        name: _recovery_rows_for_business_date(runtime_root / "persistent_ledger" / f"{name}.jsonl", business_date)
+        for name in ("orders", "executions", "positions", "cash", "events")
+    }
+    submit_only_precommit_halt = (
+        not rows_by_file["executions"]
+        and bool(rows_by_file["orders"])
+        and not rows_by_file["positions"]
+        and not rows_by_file["cash"]
+        and not rows_by_file["events"]
+    )
+    failed_execution_partial_mutation = len(rows_by_file["executions"]) == 4
+    if not failed_execution_partial_mutation and not submit_only_precommit_halt:
+        errors.append("expected four failed execution rows or submit-only precommit halt rows")
+    negative_cash_values = [float(row.get("cash") or 0.0) for row in rows_by_file["cash"] if float(row.get("cash") or 0.0) < 0.0]
+    if failed_execution_partial_mutation and not negative_cash_values:
+        errors.append("negative cash row missing")
+    if expected_negative_cash is not None and not any(abs(value - expected_negative_cash) <= 1e-9 for value in negative_cash_values):
+        errors.append("expected negative cash row missing")
+    failed_execution_keys = {
+        str(row.get("dedup_key") or "")
+        for row in rows_by_file["executions"]
+        if str(row.get("dedup_key") or "")
+    }
+    if not failed_execution_keys:
+        if failed_execution_partial_mutation:
+            errors.append("failed execution dedup keys missing")
+    if failed_execution_keys & applied_keys:
+        errors.append("failed execution keys already applied to Current")
+    recovery_transaction_keys = {
+        str(row.get("dedup_key") or row.get("record_id") or row.get("ledger_record_id") or "")
+        for rows in rows_by_file.values()
+        for row in rows
+        if str(row.get("dedup_key") or row.get("record_id") or row.get("ledger_record_id") or "")
+    }
+    recovery_id = _scoped_recovery_id(run_id=run_id, business_date=business_date, failed_execution_keys=recovery_transaction_keys)
+    status = "PASS" if not errors else "PRECONDITION_FAILURE"
+    return {
+        "schema_version": "runtime_test_scoped_failed_execution_recovery_plan_v1",
+        "status": status,
+        "errors": errors,
+        "recovery_id": recovery_id,
+        "target_run_id": run_id,
+        "target_business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "source_recovery_point": {
+            "business_date": recovery_date,
+            "cash": state.get("cash"),
+            "buying_power": state.get("buying_power"),
+            "position_count": len(state.get("positions") or []),
+        },
+        "expected_preconditions": {
+            "recovery_date": expected_recovery_date,
+            "cash": expected_cash,
+            "position_count": expected_position_count,
+            "negative_cash": expected_negative_cash,
+        },
+        "observed_negative_cash_values": negative_cash_values,
+        "source_current_hash": _semantic_hash(state),
+        "recovery_classification": "SUBMIT_ONLY_PRECOMMIT_HALT"
+        if submit_only_precommit_halt
+        else "FAILED_EXECUTION_PARTIAL_MUTATION",
+        "failed_execution_dedup_keys": sorted(failed_execution_keys),
+        "recovery_transaction_keys": sorted(recovery_transaction_keys),
+        "failed_ledger_rows": {name: [row for row in rows] for name, rows in rows_by_file.items()},
+        "superseded_ledger_record_ids": sorted(
+            str(row.get("record_id") or row.get("ledger_record_id") or "")
+            for rows in rows_by_file.values()
+            for row in rows
+            if row.get("record_id") or row.get("ledger_record_id")
+        ),
+        "superseded_pending_plan_id": str(pending.get("pending_plan_id") or ""),
+        "pre_recovery_hashes": _recovery_state_hashes(runtime_root),
+        "manual_file_edit_required": False,
+        "production_common_recovery": True,
+    }
+
+
+def build_stale_pending_recovery_plan(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_state: dict[str, Any],
+    run_id: str,
+    business_date: str,
+    rewind_to_job: str,
+    expected_pending_plan_id: str = "",
+) -> dict[str, Any]:
+    errors: list[str] = []
+    state = read_json_optional(runtime_root / "persistent_ledger" / "state.json")
+    pending = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    recovery_date = _previous_completed_business_day(run_dir=run_dir, business_date=business_date)
+    state_business_date = str(state.get("as_of") or state.get("business_date") or "")
+    pending_state = str(pending.get("state") or pending.get("status") or "").upper()
+    pending_plan_id = str(pending.get("pending_plan_id") or "")
+    pending_target = str(pending.get("target_session_date") or pending.get("business_date") or "")
+    pending_created = str(pending.get("plan_created_date") or pending.get("created_at") or "")
+    pending_items = pending.get("items") if isinstance(pending.get("items"), list) else []
+    ledger_rows = {
+        name: _recovery_rows_for_business_date(runtime_root / "persistent_ledger" / f"{name}.jsonl", business_date)
+        for name in ("orders", "executions", "positions", "cash", "events")
+    }
+    halted_at = run_state.get("halted_at") if isinstance(run_state.get("halted_at"), dict) else {}
+    if not recovery_date:
+        errors.append("previous completed business day recovery boundary missing")
+    if state_business_date != recovery_date:
+        errors.append("persistent state is not at last completed coherent boundary")
+    if str(run_state.get("status") or "") != "HALT":
+        errors.append("run_state is not HALT")
+    if str(run_state.get("next_job") or "") != f"{business_date}:sell_planning":
+        errors.append("run_state next_job is not stale pending sell_planning boundary")
+    if str(halted_at.get("business_date") or "") != business_date:
+        errors.append("halted_at business_date does not match target")
+    if str(halted_at.get("job") or "") != "sell_planning":
+        errors.append("halted_at job is not sell_planning")
+    if pending_state != "REVIEW_REQUIRED":
+        errors.append("pending is not REVIEW_REQUIRED stale candidate")
+    if pending_target != business_date:
+        errors.append("pending target_session_date does not match recovery business_date")
+    if pending_created and pending_created != business_date:
+        errors.append("pending plan_created_date does not match recovery business_date")
+    if expected_pending_plan_id and pending_plan_id != expected_pending_plan_id:
+        errors.append("pending_plan_id mismatch")
+    if not pending_items:
+        errors.append("pending has no items to supersede")
+    if any(ledger_rows.values()):
+        errors.append("target business date already has ledger rows; use failed-execution recovery or audit first")
+    recovery_id = _scoped_stale_pending_recovery_id(
+        run_id=run_id,
+        business_date=business_date,
+        pending_plan_id=pending_plan_id,
+    )
+    status = "PASS" if not errors else "PRECONDITION_FAILURE"
+    return {
+        "schema_version": "runtime_test_scoped_stale_pending_recovery_plan_v1",
+        "status": status,
+        "errors": errors,
+        "recovery_id": recovery_id,
+        "target_run_id": run_id,
+        "target_business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "recovery_classification": "STALE_REVIEW_REQUIRED_PENDING_REPLAY",
+        "source_recovery_point": {
+            "business_date": recovery_date,
+            "cash": state.get("cash"),
+            "buying_power": state.get("buying_power"),
+            "position_count": len(state.get("positions") or []),
+        },
+        "stale_pending": {
+            "pending_plan_id": pending_plan_id,
+            "state": pending_state,
+            "target_session_date": pending_target,
+            "plan_created_date": pending_created,
+            "item_count": len(pending_items),
+            "review_scope": str(pending.get("review_scope") or ""),
+            "sell_continuation_allowed": bool(pending.get("sell_continuation_allowed")),
+            "approved_item_ids": list(pending.get("approved_item_ids") or []),
+            "review_required_buy_item_ids": list(pending.get("review_required_buy_item_ids") or []),
+        },
+        "target_ledger_rows": {name: [row for row in rows] for name, rows in ledger_rows.items()},
+        "superseded_pending_plan_id": pending_plan_id,
+        "pre_recovery_hashes": _recovery_state_hashes(runtime_root),
+        "manual_file_edit_required": False,
+        "ledger_current_recovery_required": False,
+        "production_common_recovery": True,
+    }
+
+
+def _run_scoped_replay_jobs(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    evidence_root: Path,
+    run_id: str,
+    profile: dict[str, Any],
+    run_state: dict[str, Any],
+    business_date: str,
+    jobs: tuple[str, ...],
+) -> dict[str, Any]:
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        raise RuntimeTestError("replay requires original plan.json", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    plan_payload = load_plan(plan_path)
+    historical_authority = run_state.get("historical_evaluation_authority") if isinstance(run_state.get("historical_evaluation_authority"), dict) else {}
+    day = next((item for item in plan_payload.get("business_dates", []) if str(item.get("business_date") or "") == business_date), None)
+    if day is None:
+        raise RuntimeTestError("business date missing from plan", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    planned_jobs = {str(job.get("job") or ""): job for job in day.get("jobs", [])}
+    executed: list[dict[str, Any]] = []
+    run_state["status"] = "RUNNING"
+    write_json_atomic(run_dir / "run_state.json", run_state)
+    for job_name in jobs:
+        job = planned_jobs.get(job_name)
+        if job is None:
+            raise RuntimeTestError(f"job missing from plan: {job_name}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+        run_state["next_job"] = f"{business_date}:{job_name}"
+        write_json_atomic(run_dir / "run_state.json", run_state)
+        command_resolution = resolve_run_job_command(
+            runtime_root=runtime_root,
+            job_record=job,
+            historical_evaluation_authority=historical_authority,
+        )
+        command = command_resolution["command"]
+        subprocess_trace_path = run_dir / "daily" / business_date / job_name / "subprocess_trace.json"
+        completed = _invoke_runtime_cli_job(
+            command,
+            cwd=Path.cwd(),
+            trace_path=subprocess_trace_path,
+            context={
+                "run_id": run_id,
+                "profile_id": str(profile["profile_id"]),
+                "business_date": business_date,
+                "job": job_name,
+                "runtime_root": str(runtime_root),
+                "evidence_root": str(evidence_root),
+                "source_commit": git_commit(),
+                "source_dirty": source_dirty(),
+                "scoped_recovery_replay": True,
+            },
+        )
+        record = {
+            "business_date": business_date,
+            "job": job_name,
+            "exit_code": completed.returncode,
+            "command": command,
+            "planned_command": job.get("command", []),
+            "feature_date_command_resolution": command_resolution["resolution"],
+            "subprocess_trace_path": str(subprocess_trace_path),
+            "subprocess_trace": getattr(completed, "runtime_test_subprocess_trace", {}),
+            "scoped_recovery_replay": True,
+        }
+        collect_runtime_cli_job_evidence(
+            completed=completed,
+            run_dir=run_dir,
+            runtime_root=runtime_root,
+            business_date=business_date,
+            job=job_name,
+        )
+        write_performance_observability_evidence(
+            run_dir=run_dir,
+            runtime_root=runtime_root,
+            run_id=run_id,
+            business_date=business_date,
+            job=job_name,
+        )
+        run_state.setdefault("completed_jobs", []).append(record)
+        executed.append(record)
+        write_json_atomic(run_dir / "run_state.json", run_state)
+        if completed.returncode != 0:
+            _mark_run_halted(run_dir, run_state, record)
+            return {
+                "status": "HALT",
+                "run_id": run_id,
+                "business_date": business_date,
+                "executed_jobs": executed,
+                "stopped_at": f"{business_date}:{job_name}",
+                "reason": f"scoped replay stopped with exit code {completed.returncode}",
+            }
+    run_state["status"] = "HALT"
+    run_state["next_job"] = f"{business_date}:strategy_shadow_generation"
+    run_state["scoped_recovery_replay"] = {
+        "status": "PASS",
+        "business_date": business_date,
+        "jobs": list(jobs),
+        "completed_at": utc_now(),
+        "next_operator_action": "resume remaining run from strategy_shadow_generation",
+    }
+    write_json_atomic(run_dir / "run_state.json", run_state)
+    return {
+        "status": "PASS",
+        "run_id": run_id,
+        "business_date": business_date,
+        "executed_jobs": executed,
+        "next_job": run_state["next_job"],
+        "post_replay_hashes": _recovery_state_hashes(runtime_root),
+    }
+
+
+def _preserve_failed_attempt_evidence(
+    *,
+    recovery_dir: Path,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    recovery: dict[str, Any],
+) -> None:
+    write_json_atomic(recovery_dir / "recovery_plan.json", recovery)
+    for name, rows in (recovery.get("failed_ledger_rows") or {}).items():
+        write_json_atomic(recovery_dir / f"failed_{name}.json", {"rows": rows})
+    daily = run_dir / "daily" / business_date
+    if daily.exists():
+        shutil.copytree(daily, recovery_dir / "failed_daily_evidence", dirs_exist_ok=True)
+    historical_broker = runtime_root / "runtime_state" / "historical_broker" / business_date
+    if historical_broker.exists():
+        shutil.copytree(historical_broker, recovery_dir / "failed_historical_broker", dirs_exist_ok=True)
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    if pending_path.exists():
+        shutil.copy2(pending_path, recovery_dir / "failed_pending_order_plan.json")
+
+
+def _apply_failed_execution_ledger_recovery(*, runtime_root: Path, recovery: dict[str, Any]) -> None:
+    failed_ids = {
+        str(row.get("record_id") or row.get("ledger_record_id") or "")
+        for rows in (recovery.get("failed_ledger_rows") or {}).values()
+        for row in rows
+    }
+    failed_dedup = {
+        str(row.get("dedup_key") or "")
+        for rows in (recovery.get("failed_ledger_rows") or {}).values()
+        for row in rows
+    }
+    for name in ("orders", "executions", "positions", "cash", "events"):
+        path = runtime_root / "persistent_ledger" / f"{name}.jsonl"
+        rows = _read_jsonl_rows(path)
+        active = [
+            row
+            for row in rows
+            if str(row.get("record_id") or row.get("ledger_record_id") or "") not in failed_ids
+            and str(row.get("dedup_key") or "") not in failed_dedup
+        ]
+        _write_jsonl_atomic(path, active)
+
+
+def _retire_failed_pending(*, runtime_root: Path, recovery: dict[str, Any]) -> None:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    payload = {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "state": "EMPTY",
+        "status": "EMPTY",
+        "active_pending": False,
+        "items": [],
+        "superseded_pending_plan_id": recovery.get("superseded_pending_plan_id", ""),
+        "recovery_id": recovery.get("recovery_id", ""),
+        "no_action_reason": "scoped_failed_execution_recovery_retired_consumed_pending_for_replay",
+    }
+    write_json_atomic(pending_path, payload)
+
+
+def _preserve_stale_pending_evidence(
+    *,
+    recovery_dir: Path,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    recovery: dict[str, Any],
+) -> None:
+    write_json_atomic(recovery_dir / "recovery_plan.json", recovery)
+    daily = run_dir / "daily" / business_date
+    if daily.exists():
+        shutil.copytree(daily, recovery_dir / "stale_daily_evidence", dirs_exist_ok=True)
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    if pending_path.exists():
+        shutil.copy2(pending_path, recovery_dir / "stale_pending_order_plan.json")
+
+
+def _retire_stale_pending(*, runtime_root: Path, recovery: dict[str, Any]) -> None:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    payload = {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "state": "EMPTY",
+        "status": "EMPTY",
+        "active_pending": False,
+        "items": [],
+        "superseded_pending_plan_id": recovery.get("superseded_pending_plan_id", ""),
+        "recovery_id": recovery.get("recovery_id", ""),
+        "no_action_reason": "scoped_stale_pending_recovery_retired_review_pending_for_replay",
+    }
+    write_json_atomic(pending_path, payload)
+
+
+def _retire_failed_historical_broker_evidence(*, runtime_root: Path, recovery_dir: Path, business_date: str) -> None:
+    path = runtime_root / "runtime_state" / "historical_broker" / business_date
+    if not path.exists():
+        return
+    target = recovery_dir / "retired_historical_broker_active_path"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(path, target)
+    shutil.rmtree(path)
+
+
+def _restore_runtime_current_metadata(*, runtime_root: Path, run_dir: Path, business_date: str) -> None:
+    previous_day = _previous_completed_business_day(run_dir=run_dir, business_date=business_date)
+    evidence = read_json_optional(run_dir / "daily" / previous_day / "execution" / "current_apply_evidence.json")
+    current_state = {
+        "schema_version": "runtime_v2_current_apply_state_v1",
+        "business_date": previous_day,
+        "runtime_mode": "historical",
+        "environment": "historical",
+        "job": "current_apply",
+        "state": "CURRENT_APPLIED",
+        "exit_code": 0,
+        "current_pointer": str(runtime_root / "persistent_ledger" / "state.json"),
+        "current_path": str(runtime_root / "persistent_ledger" / "state.json"),
+        "current_hash": evidence.get("current_hash", ""),
+        "current_version": evidence.get("current_version", ""),
+        "runtime_state_version": evidence.get("runtime_state_version", ""),
+        "execution_references": evidence.get("execution_references", []),
+        "pending_consumed": True,
+        "updated_at": previous_day,
+    }
+    write_json_atomic(runtime_root / "runtime_state" / "current_state.json", current_state)
+
+
+def _previous_completed_business_day(*, run_dir: Path, business_date: str) -> str:
+    run_state = read_json_optional(run_dir / "run_state.json")
+    days = [str(day) for day in run_state.get("completed_business_days", []) if str(day) < business_date]
+    return days[-1] if days else ""
+
+
+def _recovery_rows_for_business_date(path: Path, business_date: str) -> list[dict[str, Any]]:
+    rows = []
+    for row in _read_jsonl_rows(path):
+        if business_date in json.dumps(row, ensure_ascii=False):
+            rows.append(row)
+    return rows
+
+
+def _read_jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rows.append(json.loads(line))
+    return rows
+
+
+def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
+    text = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    _write_text_atomic(path, text)
+
+
+def _scoped_recovery_id(*, run_id: str, business_date: str, failed_execution_keys: set[str]) -> str:
+    raw = json.dumps({"run_id": run_id, "business_date": business_date, "keys": sorted(failed_execution_keys)}, sort_keys=True)
+    return "scoped-recovery-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _scoped_stale_pending_recovery_id(*, run_id: str, business_date: str, pending_plan_id: str) -> str:
+    raw = json.dumps(
+        {
+            "run_id": run_id,
+            "business_date": business_date,
+            "pending_plan_id": pending_plan_id,
+            "recovery_type": "stale_pending",
+        },
+        sort_keys=True,
+    )
+    return "scoped-stale-pending-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _recovery_state_hashes(runtime_root: Path) -> dict[str, str]:
+    targets = (
+        "persistent_ledger/state.json",
+        "persistent_ledger/orders.jsonl",
+        "persistent_ledger/executions.jsonl",
+        "persistent_ledger/positions.jsonl",
+        "persistent_ledger/cash.jsonl",
+        "persistent_ledger/events.jsonl",
+        "pending_order_plan/pending_order_plan.json",
+        "runtime_state/current_state.json",
+    )
+    return {rel: sha256_file(runtime_root / rel) if (runtime_root / rel).exists() else "" for rel in targets}
+
+
+def _semantic_hash(payload: dict[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def repair_ca_quarantine_continuation_command(
@@ -6033,12 +7101,12 @@ def _maybe_auto_abandon_fresh_run(
     return result
 
 
-def show(args: argparse.Namespace) -> CommandResult:
+def show(args: argparse.Namespace, *, evidence_root: Path = EVIDENCE_ROOT) -> CommandResult:
     if args.backup_id:
-        path = BACKUP_ROOT / args.backup_id / "backup_manifest.json"
+        path = backups_root(evidence_root) / args.backup_id / "backup_manifest.json"
     elif args.run_id:
         if str(getattr(args, "artifact", "") or "") == "strategy":
-            run_dir = RUNS_ROOT / args.run_id
+            run_dir = runs_root(evidence_root) / args.run_id
             if getattr(args, "business_date", ""):
                 path = run_dir / "daily" / str(args.business_date) / "strategy" / "strategy_shadow_summary.json"
                 payload = read_json(path)
@@ -6053,11 +7121,11 @@ def show(args: argparse.Namespace) -> CommandResult:
             payload = read_json(path)
             return CommandResult("PASS", EXIT_PASS, runner_response(payload))
         if str(getattr(args, "artifact", "") or "") == "run":
-            run_dir = RUNS_ROOT / args.run_id
+            run_dir = runs_root(evidence_root) / args.run_id
             payload = read_json(run_dir / "run_state.json")
             payload["halt_summary"] = _runtime_halt_summary(run_dir)
             return CommandResult("PASS", EXIT_PASS, runner_response(payload))
-        path = RUNS_ROOT / args.run_id / "run_state.json"
+        path = runs_root(evidence_root) / args.run_id / "run_state.json"
     else:
         raise RuntimeTestError("show requires --run-id or --backup-id", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
     payload = read_json(path)
@@ -6813,6 +7881,223 @@ def resolve_business_dates(
             date_to=date_to,
         )["resolved_business_dates"]
     )
+
+
+def _maybe_run_required_pending_lifecycle(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    evidence_root: Path,
+    run_id: str,
+    profile: dict[str, Any],
+    business_date: str,
+    historical_evaluation_authority: dict[str, Any] | None,
+    resumed: bool,
+) -> dict[str, Any] | None:
+    requirement = _pending_lifecycle_requirement(run_dir=run_dir, business_date=business_date)
+    if requirement["status"] != PENDING_LIFECYCLE_REQUIRED_STATUS:
+        return None
+    existing = _pending_lifecycle_result_evidence(run_dir=run_dir, business_date=business_date)
+    if existing["status"] in PENDING_LIFECYCLE_COMPLETION_STATUSES:
+        return None
+    command = _pending_lifecycle_command(
+        profile=profile,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        run_id=run_id,
+        evidence_root=evidence_root,
+        historical_evaluation_authority=historical_evaluation_authority,
+    )
+    subprocess_trace_path = run_dir / "daily" / business_date / "pending_lifecycle" / "subprocess_trace.json"
+    completed = _invoke_runtime_cli_job(
+        command,
+        cwd=Path.cwd(),
+        trace_path=subprocess_trace_path,
+        context={
+            "run_id": run_id,
+            "profile_id": str(profile.get("profile_id") or ""),
+            "business_date": business_date,
+            "job": "pending_lifecycle",
+            "runtime_root": str(runtime_root),
+            "evidence_root": str(evidence_root),
+            "source_commit": git_commit(),
+            "source_dirty": source_dirty(),
+            "trigger": PENDING_LIFECYCLE_REQUIRED_STATUS,
+            **({"resumed": True} if resumed else {}),
+        },
+    )
+    collect_runtime_cli_job_evidence(
+        completed=completed,
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        job="pending_lifecycle",
+    )
+    result = _pending_lifecycle_result_evidence(run_dir=run_dir, business_date=business_date)
+    status = result["status"]
+    acceptable = completed.returncode == 0 and status in PENDING_LIFECYCLE_COMPLETION_STATUSES
+    record = {
+        "business_date": business_date,
+        "job": "pending_lifecycle",
+        "exit_code": completed.returncode if acceptable else (completed.returncode or EXIT_HALT),
+        "command": command,
+        "planned_command": {
+            "trigger": PENDING_LIFECYCLE_REQUIRED_STATUS,
+            "trigger_evidence_path": requirement["evidence_path"],
+            "execution_order": "after_execution_before_current_valuation_refresh",
+            "state_mutation_owner": "runtime_v2_pending_lifecycle",
+        },
+        "runtime_test_job_status": "PASS" if acceptable else "HALT_PENDING_LIFECYCLE_REQUIRED_UNRESOLVED",
+        "pending_lifecycle_trigger": requirement,
+        "pending_lifecycle_result": result,
+        "subprocess_trace_path": str(subprocess_trace_path),
+        "subprocess_trace": getattr(completed, "runtime_test_subprocess_trace", {}),
+    }
+    if resumed:
+        record["resumed"] = True
+    if not acceptable:
+        record["reason"] = (
+            result.get("reason")
+            or f"required pending_lifecycle did not reach terminal status: {status or 'MISSING'}"
+        )
+    return record
+
+
+def _pending_lifecycle_command(
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    business_date: str,
+    run_id: str,
+    evidence_root: Path,
+    historical_evaluation_authority: dict[str, Any] | None,
+) -> list[str]:
+    command = runtime_cli_command(
+        profile=profile,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        feature_date="",
+        evaluation_time=_pending_lifecycle_evaluation_time(profile=profile, business_date=business_date),
+        job="pending_lifecycle",
+        run_id=run_id,
+        evidence_root=evidence_root,
+    )
+    command.extend(["--pending-action", "review"])
+    return command_with_historical_evaluation_authority(command, historical_evaluation_authority)
+
+
+def _pending_lifecycle_evaluation_time(*, profile: dict[str, Any], business_date: str) -> str:
+    execution_time = str((profile.get("evaluation_times") or {}).get("execution") or "15:30:00+09:00")
+    return f"{business_date}T{execution_time}"
+
+
+def _pending_lifecycle_requirement(*, run_dir: Path, business_date: str) -> dict[str, Any]:
+    path = run_dir / "daily" / business_date / "execution" / "pending_terminalization_evidence.json"
+    payload = read_json_optional(path)
+    status = str(payload.get("status") or "")
+    return {
+        "schema_version": "runtime_test_pending_lifecycle_requirement_v1",
+        "status": status,
+        "required": status == PENDING_LIFECYCLE_REQUIRED_STATUS,
+        "evidence_path": str(path) if path.is_file() else "",
+        "pending_plan_present": bool(payload.get("pending_plan_present")),
+        "pending_item_count": int(payload.get("pending_item_count") or 0),
+        "pending_consumed": payload.get("pending_consumed"),
+        "pending_mutated": payload.get("pending_mutated"),
+        "pending_read_valid": bool(payload.get("pending_read_valid")),
+        "reason": "" if path.is_file() else "pending_terminalization_evidence_missing",
+    }
+
+
+def _pending_lifecycle_result_evidence(*, run_dir: Path, business_date: str) -> dict[str, Any]:
+    job_dir = run_dir / "daily" / business_date / "pending_lifecycle"
+    manifest_path = job_dir / "runtime_manifest.json"
+    cli_path = job_dir / "cli_result.json"
+    manifest = read_json_optional(manifest_path)
+    cli_result = read_json_optional(cli_path)
+    details = _stage_details(manifest, "pending_lifecycle")
+    status = str(
+        manifest.get("pending_lifecycle_status")
+        or details.get("pending_lifecycle_status")
+        or details.get("status")
+        or ""
+    )
+    reason = str(
+        manifest.get("pending_lifecycle_reason")
+        or details.get("pending_lifecycle_reason")
+        or details.get("reason")
+        or ""
+    )
+    return {
+        "schema_version": "runtime_test_pending_lifecycle_result_v1",
+        "status": status,
+        "reason": reason,
+        "runtime_manifest_path": str(manifest_path) if manifest_path.is_file() else "",
+        "cli_result_path": str(cli_path) if cli_path.is_file() else "",
+        "exit_code": int(cli_result.get("exit_code", 0) or 0) if cli_result else None,
+        "history_path": str(manifest.get("history_path") or details.get("history_path") or ""),
+        "current_pending_path": str(manifest.get("current_pending_path") or details.get("current_pending_path") or ""),
+        "previous_state": str(manifest.get("previous_state") or details.get("previous_state") or ""),
+        "new_state": str(manifest.get("new_state") or details.get("new_state") or ""),
+        "idempotent_noop": bool(manifest.get("idempotent_noop") or details.get("idempotent_noop")),
+    }
+
+
+def _write_day_completion_evidence(*, run_dir: Path, runtime_root: Path, business_date: str) -> dict[str, Any]:
+    requirement = _pending_lifecycle_requirement(run_dir=run_dir, business_date=business_date)
+    lifecycle = _pending_lifecycle_result_evidence(run_dir=run_dir, business_date=business_date)
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = read_json_optional(pending_path)
+    pending_state = str(pending.get("state") or pending.get("status") or "")
+    pending_target = str(pending.get("target_session_date") or "")
+    pending_active = _pending_slot_active(pending)
+    reasons: list[str] = []
+    if requirement["required"]:
+        if lifecycle["status"] not in PENDING_LIFECYCLE_COMPLETION_STATUSES:
+            reasons.append("required_pending_lifecycle_not_terminal")
+        if pending_active and pending_state == "APPROVED" and pending_target == business_date:
+            reasons.append("required_pending_lifecycle_left_active_approved_pending")
+        if pending_active and pending_state in {"POST_SEND_UNKNOWN", "REVIEW_REQUIRED"}:
+            reasons.append("required_pending_lifecycle_left_fail_closed_pending")
+    payload = {
+        "schema_version": "runtime_test_day_completion_gate_v1",
+        "business_date": business_date,
+        "status": "PASS" if not reasons else "HALT",
+        "reason": ";".join(reasons),
+        "pending_lifecycle_requirement": requirement,
+        "pending_lifecycle_result": lifecycle,
+        "pending_post_state": {
+            "path": str(pending_path),
+            "state": pending_state,
+            "active_pending": pending_active,
+            "target_session_date": pending_target,
+            "pending_plan_id": str(pending.get("pending_plan_id") or ""),
+            "item_count": len(pending.get("items") or []) if isinstance(pending.get("items"), list) else 0,
+        },
+        "completion_contract": {
+            "completed_business_days_append_allowed": not reasons,
+            "required_lifecycle_work_resolved": (not requirement["required"]) or lifecycle["status"] in PENDING_LIFECYCLE_COMPLETION_STATUSES,
+            "execution_detector": "execution/pending_terminalization_evidence.json",
+            "lifecycle_state_owner": "runtime_v2_pending_lifecycle",
+            "day_completion_owner": "runtime_test_runner",
+        },
+    }
+    path = run_dir / "daily" / business_date / "day_completion" / "day_completion_evidence.json"
+    write_json_atomic(path, payload)
+    payload["evidence_path"] = str(path)
+    write_json_atomic(path, payload)
+    return payload
+
+
+def _pending_slot_active(payload: dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    state = str(payload.get("state") or payload.get("status") or "")
+    if state == "EMPTY":
+        return False
+    if "active_pending" in payload:
+        return bool(payload.get("active_pending"))
+    return bool(payload.get("items"))
 
 
 def resolve_business_window(

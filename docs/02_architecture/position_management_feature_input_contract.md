@@ -18,8 +18,15 @@ The PM adapter must not recalculate market technical features. Technical feature
 
 For held positions, the following PM feature columns are required:
 
+- `price_momentum_return_1d`
+- `price_momentum_return_3d`
 - `price_momentum_return_5d`
+- `price_momentum_return_10d`
 - `price_momentum_return_20d`
+- `recent_move_volatility_z_1d`
+- `recent_move_volatility_z_3d`
+- `momentum_5d_vs_20d_delta`
+- `momentum_1d_vs_5d_delta`
 - `trend_close_over_ma_20d`
 - `trend_ma_5_20_ratio`
 - `volume_momentum_ratio_5d`
@@ -47,6 +54,12 @@ Position-state fields that appear inside `position_feature_input.parquet` are no
 `no_position_reason` is optional. It is used only for explicit no-position evidence and is not a scoring feature.
 
 No PM scoring feature may be implicitly defaulted by the Runtime PM producer. `defaulted_features` must be empty for held-position inference.
+
+Phase29-L21T-AV keeps the existing 5BD / 20BD feature meanings unchanged and
+adds 1BD / 3BD / 10BD momentum, recent volatility-adjusted move, and momentum
+delta facts as Production-common technical features. These fields are raw PIT
+feature facts; BUY_NEW trajectory classification authority belongs to Adaptive
+BUY Quality, not to PM, PC, PS, or Runtime Planning.
 
 ## Temporal Contract
 

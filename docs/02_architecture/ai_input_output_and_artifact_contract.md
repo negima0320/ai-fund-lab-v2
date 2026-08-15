@@ -110,6 +110,16 @@ Required logical fields:
 - `rows[].reason`
 - `point_in_time_evidence`
 
+BUY Quality feature passthrough:
+
+Candidate AI Decision Artifact must preserve the PIT multi-horizon feature
+subset needed by downstream Adaptive BUY Quality when those fields are present
+in `candidate_features.parquet`. It must not recalculate, zero-fill, or infer
+these values. True missing values remain absent so BUY Quality can fail closed.
+The propagated subset includes price momentum horizons, volatility, recent-move
+z-scores, momentum deltas, trend, and volume momentum fields used by the
+Momentum Trajectory authority.
+
 Current gap:
 
 - Current implementation records model path and feature path, but a formal Artifact Registry and required artifact hashes are not yet enforced in this contract.
@@ -181,6 +191,15 @@ Required logical fields:
 - `rankings[].confidence`
 - `rankings[].reason`
 - `point_in_time_evidence`
+
+BUY Quality feature passthrough:
+
+Opportunity AI Ranking Artifact must preserve the PIT multi-horizon feature
+subset needed by downstream Adaptive BUY Quality when those fields are present
+in `opportunity_feature_input.parquet`. Opportunity AI must pass through the
+canonical feature values, not recompute them from prices or model outputs. True
+missing or malformed source fields remain absent/malformed for BUY Quality
+fail-closed handling.
 
 Current gap:
 
@@ -363,6 +382,25 @@ Artifact types:
 | Candidate Decision Artifact | Runtime buy_ai producer | `.runtime/runtime_state/buy_ai/<date>/candidate_decisions.json` | Opportunity AI, Planning evidence | ACCEPTED_WITH_REGISTRY_GAP |
 | Opportunity Decision Artifact | Runtime buy_ai producer | `.runtime/runtime_state/buy_ai/<date>/opportunity_rankings.json` | Morning Planning | ACCEPTED_WITH_METRICS_GAP |
 | PM Decision Artifact | Runtime PM producer | `.runtime/runtime_state/position_management/<date>/position_management_decisions.json` | Sell Planning | ACCEPTED_WITH_REGISTRY_GAP |
+
+Phase29-L21T-AY requires the actual Runtime market_refresh Feature Refresh
+producer to materialize the Phase29-L21T-AV multi-horizon trajectory feature
+facts in both Candidate and Opportunity feature artifacts:
+
+```text
+price_momentum_return_1d
+price_momentum_return_3d
+price_momentum_return_10d
+recent_move_volatility_z_1d
+recent_move_volatility_z_3d
+momentum_5d_vs_20d_delta
+momentum_1d_vs_5d_delta
+```
+
+These columns are raw PIT feature facts. They are not model retraining,
+threshold policy, BUY_WAIT classification, Pending authority, Submit authority,
+or SELL authority. Consumer readiness must remain fail-closed: the fix is to
+materialize the producer columns, not to relax the consumer schema.
 
 ## Point-in-Time Rules
 

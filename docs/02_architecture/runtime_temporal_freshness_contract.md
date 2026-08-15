@@ -290,6 +290,103 @@ freshness_status
 adjusted
 ```
 
+Phase29-L21T-BE adds explicit economic valuation price authority:
+
+```text
+normalized_price_source
+price_source_column
+price_role
+economic_price_reconciliation_status
+economic_price_provenance
+economic_valuation_price
+```
+
+`adjusted=false` quotes are eligible for Current valuation as economic yen prices
+when the quote freshness and source checks pass.
+
+`adjusted=true` quotes are analytical adjusted prices by default. Current
+valuation must not consume them as economic yen prices unless
+`economic_price_reconciliation_status=PASS`,
+`economic_price_provenance` is non-empty, and `economic_valuation_price` is a
+positive value. If this evidence is missing or malformed, Current valuation
+fails closed with quote invalid evidence. This preserves adjusted OHLCV for
+feature / return analysis without silently using adjusted analytical prices for
+portfolio market value.
+
+Phase29-L21T-BH connects the production-common economic valuation source
+producer. When normalized quote evidence is adjusted, the producer may reconcile
+raw/economic source evidence only by reading the same symbol/date from the raw
+OHLCV authority and materializing:
+
+```text
+price_role=reconciled_raw_economic_valuation_price
+economic_price_reconciliation_status=PASS
+economic_price_provenance=raw_ohlcv_close:<source>:<column>
+economic_valuation_price=<raw close>
+adjusted_analytical_price=<normalized adjusted close>
+```
+
+Phase29-L21T-BJ adds the price/quantity adjustment-basis contract. Current
+valuation must not blindly consume the raw/economic close or the adjusted close.
+It may apply valuation only when the selected valuation price basis matches the
+runtime-owned quantity basis, or when explicit reconciliation evidence proves a
+common basis.
+
+Each adjusted quote with raw source reconciliation should expose both basis
+candidates:
+
+```text
+price_basis=RAW
+raw_economic_open/high/low
+raw_adjusted_open/high/low/close
+raw_adjusted_close_ratio
+adjusted_analytical_open/high/low
+adjusted_basis_valuation_price=<adjusted close>
+adjusted_basis_reconciliation_status=PASS
+adjusted_basis_price_role=reconciled_adjusted_basis_valuation_price
+adjusted_basis_price_provenance=<non-empty source evidence>
+```
+
+Current valuation resolves position quantity basis from explicit position
+metadata when available. If absent, it may infer basis from runtime-owned
+position unit-price evidence such as `average_price`, `current_price`, or
+`market_value / quantity`, compared to raw and adjusted quote candidates. If the
+basis is ambiguous or unresolved, valuation fails closed.
+
+For adjusted-basis quantities, Current valuation uses
+`adjusted_basis_valuation_price`. For raw-basis quantities, it uses
+`economic_valuation_price`. Missing raw source, symbol/date mismatch,
+non-positive source price, stale/future authority, absent provenance, or
+price/quantity basis mismatch remain fail-closed conditions.
+
+Phase29-L21T-BL adds persistence for position basis metadata. Once
+`quantity_basis` has been authoritatively established for a runtime-owned
+position, state transitions must not drop it:
+
+```text
+quantity_basis
+quantity_basis_provenance
+execution_price_basis
+fill_price_basis
+valuation_price_basis
+valuation_price_role
+valuation_price_provenance
+current_price
+```
+
+Runtime-owned fill projection carries these fields forward for existing
+positions. BUY / ADD materializes quantity basis from the execution/fill price
+authority, and REDUCE / partial SELL preserves the remaining position basis.
+EXIT removes the position as usual. `current_price` may be retained only as
+basis/provenance evidence; same-day Current valuation must still select the
+valuation price from same-day market evidence under the BJ basis contract.
+
+Fallback basis inference is a fail-closed safety check for legacy or malformed
+metadata, not the normal authority path. If persisted basis and execution/fill
+basis conflict, or if basis is unknown after all authoritative evidence is
+considered, Runtime must require review rather than choosing raw or adjusted by
+default.
+
 Supported price types:
 
 ```text

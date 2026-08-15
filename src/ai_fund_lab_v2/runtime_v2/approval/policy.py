@@ -31,6 +31,11 @@ def build_approved_order_conditions(
 
 def build_approved_order_condition(*, item: Any, target_session_date: str) -> dict[str, Any]:
     order_type = str(getattr(item, "order_type", "") or "").upper()
+    estimated_price = getattr(item, "estimated_price", 0)
+    estimated_amount = getattr(item, "estimated_amount", 0)
+    reservation_price = getattr(item, "reservation_price", None)
+    reserved_notional = getattr(item, "reserved_notional", None)
+    reservation_price_authority = getattr(item, "reservation_price_authority", None) or {}
     return {
         "schema_version": "runtime_v2_approved_order_condition.v1",
         "condition_authority": "strategy_planning_approval_order_conditions",
@@ -42,10 +47,25 @@ def build_approved_order_condition(*, item: Any, target_session_date: str) -> di
         "quantity": getattr(item, "quantity", 0),
         "target_session": target_session_date,
         "price_condition": "MARKET" if order_type == "MARKET" else "LIMIT",
-        "limit_price": None if order_type == "MARKET" else getattr(item, "estimated_price", None),
+        "limit_price": None if order_type == "MARKET" else estimated_price,
         "time_in_force": "DAY",
-        "estimated_amount": getattr(item, "estimated_amount", 0),
-        "estimated_price": getattr(item, "estimated_price", 0),
+        "estimated_amount": estimated_amount,
+        "estimated_price": estimated_price,
+        "reference_price": getattr(item, "reference_price", None) or estimated_price,
+        "reference_price_authority": getattr(item, "reference_price_authority", None) or {},
+        "reservation_price": reservation_price if reservation_price is not None else estimated_price,
+        "reservation_price_authority": reservation_price_authority
+        if reservation_price_authority
+        else {
+            "authority_type": "ORDER_CONDITION_DERIVED_RESERVATION_PRICE_AUTHORITY",
+            "reservation_price_type": "approved_order_estimated_price_cash_estimate",
+            "source_field": "estimated_price",
+            "future_execution_price_used": False,
+            "runtime_path": "Production/Demo/Historical common runtime_v2",
+        },
+        "reservation_reason": getattr(item, "reservation_reason", "")
+        or "approved order cash reservation uses order-condition estimated price until execution authority is known",
+        "reserved_notional": reserved_notional if reserved_notional is not None else estimated_amount,
         "approval_runtime_path": "Production/Demo/Historical common runtime_v2",
         "approval_fallback_used": False,
         "legacy_approval_used": False,

@@ -109,6 +109,268 @@ def test_phase23_bo_strategy_authority_uses_runtime_plan_price_authority_without
     assert item.quantity_contract["reference_price_authority"]["PIT_status"] == "PASS"
 
 
+def test_phase29_l21t_b_strategy_authority_commits_one_lot_buy_new_soft_cap_plan(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    strategy_dir = tmp_path / "strategy"
+    strategy_dir.mkdir(parents=True)
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp_l21t_b",
+        pm_actions={},
+        pc_members={"78780": ("ADD_CANDIDATE", False)},
+        current_codes=(),
+        position_sizing_positions={
+            "78780": _position_sizing_row(
+                target_notional=242_000.0,
+                target_quantity=100,
+                quantity_delta=100,
+                reference_price=2420.0,
+            )
+            | {
+                "target_weight": 0.243189,
+                "maximum_position_weight": 0.18,
+                "semantic_buy_type": "BUY_NEW",
+                "phase29_l19_lot_resolution": {
+                    "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+                    "semantic_type": "BUY_NEW",
+                    "strategy_cap_overshoot_applied": True,
+                    "one_lot_fallback_applied": True,
+                    "one_lot_feasibility_status": "PASS",
+                    "one_lot_quantity": 100,
+                    "final_allocated_quantity": 100,
+                    "post_trade_weight": 0.243189,
+                    "safety_hard_cap": 0.25,
+                    "safety_hard_cap_preserved": True,
+                    "safety_margin_after_trade": 0.006811,
+                    "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+                },
+            },
+        },
+    )
+    Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
+    _write_position_sizing(strategy_dir / "position_sizing.json", symbol="78780", target_notional=242_000.0, reference_price=2420.0)
+    sizing_payload = json.loads((strategy_dir / "position_sizing.json").read_text(encoding="utf-8"))
+    sizing_payload["positions"][0].update(
+        {
+            "target_weight": 0.243189,
+            "selected_position_weight": 0.243189,
+            "target_notional": 241_999.81,
+            "incremental_buy_notional": 241_999.81,
+            "selected_position_amount": 241_999.81,
+            "remaining_add_capacity": 241_999.81,
+            "maximum_position_weight": 0.18,
+            "semantic_buy_type": "BUY_NEW",
+            "discrete_authorized_quantity": 100,
+            "discrete_authorized_notional": 242_000.0,
+            "phase29_l19_lot_resolution": {
+                "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+                "semantic_type": "BUY_NEW",
+                "strategy_cap_overshoot_applied": True,
+                "one_lot_fallback_applied": True,
+                "one_lot_feasibility_status": "PASS",
+                "one_lot_quantity": 100,
+                "one_lot_notional": 242_000.0,
+                "final_allocated_quantity": 100,
+                "post_trade_weight": 0.243189,
+                "safety_hard_cap": 0.25,
+                "safety_hard_cap_preserved": True,
+                "safety_margin_after_trade": 0.006811,
+                "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+            },
+        }
+    )
+    _write_json(strategy_dir / "position_sizing.json", sizing_payload)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context={"broker_write": False},
+    )
+
+    pending = read_pending_order_plan_path(path=runtime_root / "pending_order_plan" / "pending_order_plan.json", environment="historical")
+    assert result.status == "PASS"
+    assert result.reason_codes == ()
+    assert result.pending_item_count == 1
+    assert pending.plan is not None
+    item = pending.plan.items[0]
+    assert item.symbol == "78780"
+    assert item.quantity == 100
+    assert item.source_decision_type == "BUY_NEW"
+    assert item.approved is True
+    assert pending.plan.approved_buy_item_ids == (item.pending_item_id,)
+    assert item.quantity_contract["quantity_status"] == "RESOLVED_EXECUTABLE"
+
+
+def test_phase29_l21t_k_strategy_authority_preserves_one_lot_authority_to_pending_submit_feasibility(tmp_path: Path) -> None:
+    runtime_root = _runtime_root_for_data_readiness(tmp_path)
+    _write_current_cash(runtime_root, cash=1_000_000)
+    strategy_dir = tmp_path / "strategy"
+    strategy_dir.mkdir(parents=True)
+    policy_path = _write_capital_policy(
+        tmp_path / "capital_deployment_policy.json",
+        evaluation_capital=1_000_000,
+        max_exposure=1_000_000,
+    )
+    policy = load_capital_deployment_policy(policy_path)
+    lot_resolution = {
+        "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+        "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+        "semantic_type": "BUY_NEW",
+        "strategy_cap_overshoot_applied": True,
+        "strategy_cap_weight": 0.18,
+        "strategy_target_cap": 0.18,
+        "one_lot_fallback_applied": True,
+        "one_lot_feasibility_status": "PASS",
+        "one_lot_quantity": 100,
+        "one_lot_notional": 227_400.0,
+        "one_lot_weight": 0.230339,
+        "final_allocated_quantity": 100,
+        "executable_quantity_delta": 100,
+        "preflight_executable_quantity_delta": 100,
+        "post_trade_weight": 0.230339,
+        "safety_hard_cap": 0.25,
+        "safety_hard_cap_weight": 0.25,
+        "safety_hard_cap_preserved": True,
+        "safety_margin_after_trade": 0.019661,
+        "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+        "blocked_reason": "",
+        "blocker_reason": "",
+    }
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp_l21t_k",
+        pm_actions={},
+        pc_members={"30410": ("ADD_CANDIDATE", False)},
+        current_codes=(),
+        position_sizing_positions={
+            "30410": _position_sizing_row(
+                target_notional=186_617.98,
+                target_quantity=100,
+                quantity_delta=100,
+                quantity_status="RESOLVED_EXECUTABLE",
+                reference_price=2274.0,
+            )
+            | {
+                "target_weight": 0.18903,
+                "selected_position_weight": 0.18903,
+                "maximum_position_weight": 0.18,
+                "semantic_buy_type": "BUY_NEW",
+                "transaction_target_notional": 227_400.0,
+                "discrete_authorized_quantity": 100,
+                "discrete_authorized_notional": 227_400.0,
+                "one_lot_authority_consumed": True,
+                "one_lot_authority_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+                "phase29_l19_lot_resolution": lot_resolution,
+            },
+        },
+    )
+    Path(runtime_plan.artifact_path).replace(strategy_dir / "runtime_planning.json")
+    runtime_plan_path = strategy_dir / "runtime_planning.json"
+    runtime_plan_payload = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
+    runtime_plan_payload["plans"][0].update(
+        {
+            "planned_quantity": 100,
+            "planned_notional": 227_400.0,
+            "target_quantity_candidate": 100,
+            "quantity_delta_candidate": 100,
+            "quantity_status": "RESOLVED_EXECUTABLE",
+            "quantity_resolution": {
+                "status": "PASS",
+                "resolved_quantity": 100,
+                "resolved_notional": 227_400.0,
+                "reason": "one_lot_authority_materialized",
+            },
+        }
+    )
+    _write_json(runtime_plan_path, runtime_plan_payload)
+    _write_json(
+        strategy_dir / "position_sizing.json",
+        {
+            "schema_version": "phase22_position_sizing.v1",
+            "business_date": BUSINESS_DATE,
+            "portfolio_total_equity": 987_240.0,
+            "portfolio_value": 987_240.0,
+            "aggregate_exposure_cap": 1.0,
+            "target_gross_exposure_ratio": 1.0,
+            "effective_maximum_position_weight": 0.18,
+            "strategy_maximum_position_weight": 0.18,
+            "safety_maximum_position_weight": 0.25,
+            "positions": [
+                _position_sizing_row(
+                    target_notional=186_617.98,
+                    target_quantity=100,
+                    quantity_delta=100,
+                    quantity_status="RESOLVED_CANDIDATE",
+                    reference_price=2274.0,
+                )
+                | {
+                    "symbol": "30410",
+                    "security_code": "30410",
+                    "position_reference": "phase22-e-2023-05-16-30410",
+                    "position_type": "NEW_POSITION",
+                    "current_quantity": 0,
+                    "target_weight": 0.18903,
+                    "selected_position_weight": 0.18903,
+                    "current_weight": 0.0,
+                    "weight_delta": 0.18903,
+                    "incremental_buy_notional": 186_617.98,
+                    "selected_position_amount": 186_617.98,
+                    "remaining_add_capacity": 186_617.98,
+                    "transaction_target_notional": 227_400.0,
+                    "maximum_position_weight": 0.18,
+                    "semantic_buy_type": "BUY_NEW",
+                    "discrete_authorized_quantity": 100,
+                    "discrete_authorized_notional": 227_400.0,
+                    "one_lot_authority_consumed": True,
+                    "one_lot_authority_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+                    "phase29_l19_lot_resolution": lot_resolution,
+                },
+            ],
+        },
+    )
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+
+    assert result.status == "PASS", (
+        result.status,
+        result.reason,
+        result.reason_codes,
+        result.pending_item_count,
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    raw_pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending = read_pending_order_plan_path(path=pending_path, environment="historical")
+    assert pending.plan is not None
+    assert pending.plan.state.value == "APPROVED"
+    item = pending.plan.items[0]
+    assert pending.plan.approved_buy_item_ids == (item.pending_item_id,)
+    quantity_contract = item.quantity_contract
+    assert quantity_contract is not None
+    assert item.symbol == "30410"
+    assert item.quantity == 100
+    assert item.source_decision_type == "BUY_NEW"
+    assert quantity_contract["position_sizing_authority"]["phase29_l19_lot_resolution"]["one_lot_quantity"] == 100
+    assert quantity_contract["position_sizing_authority"]["one_lot_authority_consumed"] is True
+    assert quantity_contract["position_sizing_authority"]["discrete_authorized_notional"] == 227_400.0
+    assert raw_pending["policy_context"]["position_sizing_authority"]["phase29_l19_lot_resolution"]["one_lot_quantity"] == 100
+    item_evidence = raw_pending["planning_submit_feasibility"]["items"][0]
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["selected_position_amount"] == 227_400.0
+    assert item_evidence["estimated_amount"] == 227_400.0
+    assert item_evidence["one_lot_authority_consumed"] is True
+    assert item_evidence["position_sizing_binding_constraint"] == "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+
+
 def test_phase23_bq_strategy_authority_accepts_carry_forward_current_position_no_action(tmp_path: Path) -> None:
     runtime_root = tmp_path / ".runtime"
     strategy_dir = tmp_path / "strategy"

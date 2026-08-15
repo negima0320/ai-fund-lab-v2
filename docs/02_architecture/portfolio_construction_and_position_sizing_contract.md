@@ -57,6 +57,96 @@ Contract:
 | population scope dependency | lineage must disclose population scope |
 | PIT authority | business date point-in-time |
 
+Phase29-L21T-AH clarifies the active Runtime contract:
+
+```text
+runtime_opportunity_score = canonical score field
+expected_edge_score = deprecated compatibility alias
+expected_return = deprecated compatibility alias, not economic return unless
+  explicit calibrated economic metadata says otherwise
+```
+
+When `calibration_applied=false` and `economic_units_available=false`,
+`runtime_opportunity_score` is an `uncalibrated_relative_model_score`.  Its sign
+is not an absolute BUY_NEW authority.  A value `<= 0` must not by itself reject
+a BUY_NEW candidate before BUY Quality, Portfolio Construction, Position
+Sizing, lot/safety, and Submit feasibility evaluate the candidate.
+
+An absolute economic zero boundary is allowed only when the score authority
+explicitly states calibrated economic units:
+
+```text
+calibration_applied = true
+economic_units_available = true
+semantic_role = calibrated economic expected return / edge
+```
+
+`below_opportunity_top20` is ranking metadata / diagnostic shortlist evidence
+for uncalibrated opportunity artifacts.  It is not a hard BUY_NEW eligibility
+rejection by itself, and `top20` membership is not automatic BUY permission.
+
+Phase29-L21T-AK completes this contract at the Portfolio Construction consumer:
+
+```text
+Portfolio Construction must consume the canonical opportunity score metadata:
+
+canonical_score_field
+score_semantic_role
+calibration_applied
+economic_units_available
+```
+
+When the active contract is:
+
+```text
+canonical_score_field = runtime_opportunity_score
+score_semantic_role = uncalibrated_relative_model_score
+calibration_applied = false
+economic_units_available = false
+```
+
+Portfolio Construction must not use `runtime_opportunity_score <= 0`,
+`non_positive_expected_edge_score`, or standalone `below_opportunity_top20` as
+absolute BUY_NEW hard rejection authority.  They remain relative ranking /
+diagnostic metadata and may still affect documented relative competition through
+existing Buy Quality and Portfolio Construction reasoning.
+
+Hard no-buy reasons remain authoritative.  A combined reason such as
+`below_opportunity_top20|high_downside_risk_score|non_positive_expected_edge_score`
+must still block because `high_downside_risk_score` is independently hard.
+Missing or malformed semantic metadata must not fail open.  A future calibrated
+economic artifact may use an economic zero boundary only when calibration and
+economic units are explicit.
+
+Phase29-L21T-AM fixes the Production-common adapter boundary for this contract:
+
+```text
+Opportunity source artifact
+-> Runtime / Strategy adapter source summary
+-> Portfolio Construction
+```
+
+When the Opportunity source artifact contains the four canonical score semantic
+fields, the runtime adapter must preserve them in the Portfolio Construction
+source-summary contract:
+
+```text
+canonical_score_field
+score_semantic_role
+calibration_applied
+economic_units_available
+```
+
+The adapter must not strip source-present metadata at consumer boundaries.  It
+also must not infer, fabricate, or silently default semantic metadata from the
+score value, score field name, reason codes, or score sign.  Explicit boolean
+values such as `calibration_applied=false` and `economic_units_available=false`
+are meaningful authority values and must not be converted to missing values.
+
+If the Opportunity source artifact truly lacks required semantic metadata, or
+the metadata is malformed / unsupported, Portfolio Construction must remain
+fail-closed and must not assume uncalibrated relative semantics.
+
 `runtime_opportunity_score` is not:
 
 ```text

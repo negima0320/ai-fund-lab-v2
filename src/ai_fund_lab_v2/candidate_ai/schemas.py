@@ -27,6 +27,8 @@ OPTIONAL_FEATURE_METADATA_COLUMNS = frozenset(
 
 ALLOWED_FEATURE_PREFIXES = (
     "price_momentum_",
+    "momentum_",
+    "recent_move_",
     "volume_momentum_",
     "volatility_",
     "trend_",
@@ -35,6 +37,7 @@ ALLOWED_FEATURE_PREFIXES = (
     "sector_relative_",
     "fundamental_",
     "liquidity_",
+    "rolling_",
     "missing_flags_",
 )
 

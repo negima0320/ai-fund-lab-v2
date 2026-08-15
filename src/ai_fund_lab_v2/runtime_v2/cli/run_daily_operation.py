@@ -2454,6 +2454,7 @@ def _write_execution_manifest_evidence(
             "pending_item_count": execution.get("pending_item_count", 0),
             "no_action_reason": execution.get("no_action_reason") or "",
             "execution_references": execution.get("execution_references") or [],
+            "item_lifecycle_authority": execution.get("item_lifecycle_authority") or {"status": "NOT_APPLICABLE"},
         },
     )
 

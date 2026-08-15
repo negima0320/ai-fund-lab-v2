@@ -19,6 +19,9 @@ from ai_fund_lab_v2.runtime_v2.symbol_identity import same_symbol_identity
 
 AUTHORITY_WINNER = "strategy_position_sizing"
 MISSING_AUTHORITY_WINNER = "REVIEW_REQUIRED"
+ONE_LOT_SOFT_CAP_REASON = "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+LEGACY_ONE_LOT_SOFT_CAP_REASON = "LOT_AWARE_STRATEGY_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+TARGET_WEIGHT_ABSOLUTE_TOLERANCE = 0.000001
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,11 @@ class PositionSizingAuthority:
     runtime_path: str
     authority_source: str
     authority_hash: str
+    one_lot_authority_consumed: bool = False
+    one_lot_authority_reason: str = ""
+    discrete_authorized_quantity: float = 0.0
+    discrete_authorized_notional: float = 0.0
+    phase29_l19_lot_resolution: dict[str, Any] | None = None
 
     @property
     def passed(self) -> bool:
@@ -98,6 +106,11 @@ class PositionSizingAuthority:
             "position_sizing_runtime_path": self.runtime_path,
             "position_sizing_authority_source": self.authority_source,
             "position_sizing_authority_hash": self.authority_hash,
+            "one_lot_authority_consumed": self.one_lot_authority_consumed,
+            "one_lot_authority_reason": self.one_lot_authority_reason,
+            "discrete_authorized_quantity": self.discrete_authorized_quantity,
+            "discrete_authorized_notional": self.discrete_authorized_notional,
+            "phase29_l19_lot_resolution": dict(self.phase29_l19_lot_resolution or {}),
         }
 
 
@@ -172,7 +185,13 @@ def resolve_position_sizing_authority(
     target_weight = _optional_float(row.get("target_weight"), row.get("selected_position_weight"))
     target_notional = _optional_float(row.get("target_notional"), row.get("selected_position_amount"))
     incremental_buy = _optional_float(row.get("incremental_buy_notional"), row.get("remaining_add_capacity"))
-    maximum_weight = _optional_float(row.get("maximum_position_weight"), payload.get("effective_maximum_position_weight"))
+    lot_resolution = _lot_resolution(row)
+    maximum_weight = _optional_float(
+        row.get("maximum_position_weight"),
+        payload.get("effective_maximum_position_weight"),
+        lot_resolution.get("strategy_cap_weight") if lot_resolution else None,
+        lot_resolution.get("strategy_target_cap") if lot_resolution else None,
+    )
     if target_weight is None or target_notional is None or incremental_buy is None:
         return _missing(
             reason="position_sizing_notional_unresolved",
@@ -191,12 +210,18 @@ def resolve_position_sizing_authority(
     selected_amount = max(float(incremental_buy), 0.0)
     binding = "PORTFOLIO_POLICY"
     reason = "position_sizing_authority_resolved"
+    one_lot_authority = _one_lot_strategy_soft_cap_authority(row, target_weight=target_weight, maximum_weight=maximum_weight)
     if selected_amount <= 0:
         binding = "NO_NEW_DEPLOYMENT"
         reason = "position_sizing_no_new_deployment"
     if maximum_weight is not None and target_weight > maximum_weight:
-        binding = "SAFETY_CONCENTRATION_LIMIT"
-        reason = "position_sizing_above_effective_maximum_position_weight"
+        if one_lot_authority["status"] == "PASS":
+            binding = "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+            reason = "one_lot_strategy_soft_cap_overshoot_authority_consumed"
+            selected_amount = max(selected_amount, float(one_lot_authority["authorized_notional"]))
+        else:
+            binding = "SAFETY_CONCENTRATION_LIMIT"
+            reason = "position_sizing_above_effective_maximum_position_weight"
     portfolio_policy_source = _portfolio_policy_source(payload, row)
     authority = PositionSizingAuthority(
         status="PASS",
@@ -228,6 +253,11 @@ def resolve_position_sizing_authority(
         runtime_path="Production/Demo/Historical common runtime_v2",
         authority_source=source,
         authority_hash=_stable_hash(dict(payload)),
+        one_lot_authority_consumed=one_lot_authority["status"] == "PASS",
+        one_lot_authority_reason=str(one_lot_authority.get("reason") or ""),
+        discrete_authorized_quantity=float(one_lot_authority.get("authorized_quantity") or 0.0),
+        discrete_authorized_notional=float(one_lot_authority.get("authorized_notional") or 0.0),
+        phase29_l19_lot_resolution=dict(one_lot_authority.get("lot_resolution") or {}),
     )
     if binding == "SAFETY_CONCENTRATION_LIMIT":
         return replace(authority, status="REVIEW_REQUIRED")
@@ -365,6 +395,146 @@ def _portfolio_policy_source(payload: Mapping[str, Any], row: Mapping[str, Any])
         if isinstance(item, Mapping) and str(item.get("role") or "") == "portfolio_policy":
             return str(item.get("path") or item.get("source_ref") or "")
     return str(payload.get("portfolio_policy_source") or "")
+
+
+def _one_lot_strategy_soft_cap_authority(
+    row: Mapping[str, Any],
+    *,
+    target_weight: float,
+    maximum_weight: float | None,
+) -> dict[str, Any]:
+    empty = {
+        "status": "NOT_APPLICABLE",
+        "reason": "",
+        "authorized_quantity": 0.0,
+        "authorized_notional": 0.0,
+        "lot_resolution": {},
+    }
+    if maximum_weight is None or target_weight <= maximum_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    lot_resolution = _lot_resolution(row)
+    if not lot_resolution:
+        return empty
+    semantic = str(
+        row.get("semantic_buy_type")
+        or row.get("planning_intent")
+        or lot_resolution.get("semantic_type")
+        or ""
+    ).upper()
+    if semantic not in {"BUY_NEW", "BUY_ADD", "REENTRY"}:
+        return empty
+    if _explicit_hard_blocker_present(row, semantic=semantic):
+        return empty
+    if str(lot_resolution.get("boundary_classification") or "") != "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX":
+        return empty
+    if lot_resolution.get("strategy_cap_overshoot_applied") is not True:
+        return empty
+    if lot_resolution.get("one_lot_fallback_applied") is not True:
+        return empty
+    if str(lot_resolution.get("one_lot_feasibility_status") or "") != "PASS":
+        return empty
+    reason = str(
+        row.get("strategy_cap_overshoot_reason")
+        or row.get("one_lot_authority_reason")
+        or lot_resolution.get("lot_overshoot_reason")
+        or ""
+    )
+    if reason not in {ONE_LOT_SOFT_CAP_REASON, LEGACY_ONE_LOT_SOFT_CAP_REASON}:
+        return empty
+    one_lot_quantity = _optional_float(lot_resolution.get("one_lot_quantity"))
+    if one_lot_quantity is None or one_lot_quantity <= 0:
+        return empty
+    requested_quantity = _optional_float(
+        row.get("discrete_authorized_quantity"),
+        row.get("final_quantity_delta"),
+        row.get("final_allocated_quantity"),
+        row.get("executable_quantity_delta"),
+        row.get("quantity_delta_candidate"),
+        row.get("transaction_quantity_candidate"),
+        row.get("target_quantity_candidate"),
+        row.get("lot_adjusted_quantity"),
+        row.get("planned_quantity"),
+        row.get("selected_quantity"),
+        lot_resolution.get("final_allocated_quantity"),
+        lot_resolution.get("executable_quantity_delta"),
+    )
+    if requested_quantity is None or requested_quantity <= 0:
+        return empty
+    if abs(requested_quantity - one_lot_quantity) > TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    safety_cap = _optional_float(lot_resolution.get("safety_hard_cap"), lot_resolution.get("safety_hard_cap_weight"))
+    post_trade_weight = _optional_float(lot_resolution.get("post_trade_weight"), lot_resolution.get("one_lot_weight"), target_weight)
+    if safety_cap is None or post_trade_weight is None or post_trade_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if lot_resolution.get("safety_hard_cap_preserved") is False:
+        return empty
+    safety_margin = _optional_float(lot_resolution.get("safety_margin_after_trade"))
+    if safety_margin is not None and safety_margin < -TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    authorized_notional = _optional_float(
+        row.get("discrete_authorized_notional"),
+        lot_resolution.get("one_lot_notional"),
+        row.get("lot_adjusted_notional"),
+    )
+    if authorized_notional is None or authorized_notional <= 0:
+        return empty
+    return {
+        "status": "PASS",
+        "reason": reason,
+        "authorized_quantity": float(one_lot_quantity),
+        "authorized_notional": float(authorized_notional),
+        "lot_resolution": dict(lot_resolution),
+    }
+
+
+def _lot_resolution(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = row.get("phase29_l19_lot_resolution")
+    if isinstance(direct, Mapping):
+        return direct
+    resolution = row.get("target_weight_resolution")
+    if isinstance(resolution, Mapping):
+        lot_aware = resolution.get("lot_aware_final_reallocation")
+        if isinstance(lot_aware, Mapping):
+            nested = lot_aware.get("phase29_l19_lot_resolution")
+            if isinstance(nested, Mapping):
+                return nested
+    nested_authority = row.get("position_sizing_authority")
+    if isinstance(nested_authority, Mapping):
+        nested = nested_authority.get("phase29_l19_lot_resolution")
+        if isinstance(nested, Mapping):
+            return nested
+    return {}
+
+
+def _explicit_hard_blocker_present(row: Mapping[str, Any], *, semantic: str) -> bool:
+    quality_status = str(row.get("quality_status") or row.get("buy_quality_status") or "").upper()
+    quality_action = str(row.get("quality_action") or row.get("reentry_buy_quality_action") or "").upper()
+    if quality_status in {"REJECT", "REJECTED", "BLOCK", "BLOCKED", "REVIEW_REQUIRED", "FAIL", "FAILED"}:
+        return True
+    if quality_action in {"REJECT", "REJECTED", "BLOCK", "BLOCKED", "NO_BUY", "INELIGIBLE"}:
+        return True
+    for field in (
+        "liquidity_capacity_status",
+        "capacity_status",
+        "reentry_capacity_status",
+    ):
+        value = str(row.get(field) or "").upper()
+        if value in {"SEVERE", "EXCESSIVE", "BLOCK", "BLOCKED", "REVIEW_REQUIRED", "FAIL", "FAILED"}:
+            return True
+    corporate_action = str(row.get("corporate_action_status") or row.get("reentry_corporate_action_status") or "").upper()
+    if any(marker in corporate_action for marker in ("HALT", "QUARANTINE", "BLOCK", "REVIEW", "SUSPEND")):
+        return True
+    if semantic == "REENTRY":
+        for field in (
+            "reentry_cooldown_status",
+            "reentry_recovery_status",
+            "reentry_momentum_recovery_status",
+            "reentry_opportunity_qualification_status",
+        ):
+            value = str(row.get(field) or "").upper()
+            if value in {"FAIL", "FAILED", "BLOCK", "BLOCKED", "REVIEW_REQUIRED", "COOLDOWN_ACTIVE", "NOT_ELIGIBLE"}:
+                return True
+    return False
 
 
 def _optional_float(*values: Any) -> float | None:

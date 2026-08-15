@@ -18,6 +18,9 @@ POLICY_VERSION = "phase26_h_adaptive_buy_quality_policy.v1"
 PRODUCER = "Production Strategy BUY Quality Resolver"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
+MOMENTUM_TRAJECTORY_SCHEMA_VERSION = "momentum_trajectory_quality.v1"
+BUY_WAIT_ACTION = "BUY_WAIT"
+TEMPORARY_BUY_INELIGIBLE = "TEMPORARY_BUY_INELIGIBLE"
 
 COMPONENT_WEIGHTS = {
     "relative_opportunity_quality": 0.35,
@@ -25,6 +28,7 @@ COMPONENT_WEIGHTS = {
     "signal_reliability": 0.25,
     "execution_feasibility": 0.10,
     "portfolio_fit": 0.15,
+    "momentum_trajectory_quality": 0.0,
 }
 
 BAND_BOUNDARIES = {
@@ -343,8 +347,9 @@ def _decision_for_row(
     candidate_source: BuyQualitySourceSummary,
 ) -> dict[str, Any]:
     symbol = _symbol(opportunity)
-    score = _finite_float(opportunity.get("expected_edge_score", opportunity.get("runtime_opportunity_score")))
+    score = _finite_float(opportunity.get("runtime_opportunity_score", opportunity.get("expected_edge_score")))
     rank = _int_or_none(opportunity.get("buy_rank", opportunity.get("opportunity_buy_rank", opportunity.get("rank"))))
+    score_contract = _opportunity_score_contract(opportunity=opportunity, opportunity_source=opportunity_source)
     row_hash = stable_payload_hash(dict(opportunity))
     source_opportunity_id = str(opportunity.get("opportunity_id") or opportunity.get("source_ref") or f"opportunity-{business_date}-{symbol}-{row_hash[:20]}")
     source_candidate_id = str(candidate.get("candidate_id") or candidate.get("source_ref") or opportunity.get("candidate_id") or "")
@@ -353,30 +358,54 @@ def _decision_for_row(
     reliability = _signal_reliability(opportunity=opportunity, candidate=candidate, opportunity_source=opportunity_source, business_date=business_date)
     execution = _execution_feasibility(opportunity=opportunity, price_volatility=price_volatility, corporate_payload=corporate_payload)
     fit = _portfolio_fit(symbol=symbol, current=current, pending_symbols=pending_symbols, policy_payload=policy_payload)
+    trajectory = _momentum_trajectory_quality(opportunity=opportunity, candidate=candidate, business_date=business_date, symbol=symbol)
     components = {
         "relative_opportunity_quality": relative,
         "market_context_quality_modifier": market,
         "signal_reliability": reliability,
         "execution_feasibility": execution,
         "portfolio_fit": fit,
+        "momentum_trajectory_quality": trajectory["component"],
     }
     component_scores = {name: item["score"] for name, item in components.items()}
     component_statuses = {name: item["status"] for name, item in components.items()}
     reason_codes = sorted({reason for item in components.values() for reason in item["reason_codes"]})
     critical_review = [name for name in CRITICAL_COMPONENTS if component_statuses.get(name) != "PASS"]
     no_buy_reason = str(opportunity.get("no_buy_reason") or "").strip()
-    if score is None or score <= 0:
+    no_buy_reasons = _split_no_buy_reasons(no_buy_reason)
+    if score is None:
         critical_review.append("relative_opportunity_quality")
-        reason_codes.append("non_positive_or_missing_raw_opportunity_score")
-    if no_buy_reason:
+        reason_codes.append("missing_or_invalid_opportunity_score")
+    elif score_contract["status"] != "PASS":
+        critical_review.append("signal_reliability")
+        reason_codes.append(str(score_contract["reason_code"]))
+    elif score_contract["economic_units_available"] and score <= 0:
+        critical_review.append("relative_opportunity_quality")
+        reason_codes.append("calibrated_non_positive_expected_return")
+    elif not score_contract["economic_units_available"] and score <= 0:
+        reason_codes.append("uncalibrated_relative_score_non_positive_not_economic_gate")
+    elif not score_contract["economic_units_available"]:
+        reason_codes.append("uncalibrated_relative_score_eligible")
+    if score_contract["status"] == "PASS" and not score_contract["economic_units_available"] and float(component_scores["relative_opportunity_quality"]) < 0.20:
+        critical_review.append("relative_opportunity_quality")
+        reason_codes.append("uncalibrated_relative_score_weak")
+    if _no_buy_reason_blocks_quality(no_buy_reasons, economic_units_available=bool(score_contract["economic_units_available"])):
         critical_review.append("relative_opportunity_quality")
         reason_codes.append(f"opportunity_no_buy_reason_present:{no_buy_reason}")
     if critical_review:
         quality_score = 0.0
         quality_band = "REVIEW_REQUIRED" if "relative_opportunity_quality" not in critical_review else "UNUSABLE"
-        quality_action = "REJECT" if no_buy_reason or score is None or score <= 0 else "REVIEW_REQUIRED"
+        quality_action = "REJECT" if "relative_opportunity_quality" in critical_review else "REVIEW_REQUIRED"
         quality_status = "REJECTED" if quality_action == "REJECT" else "REVIEW_REQUIRED"
         allocation_adjustment = 0.0
+    elif trajectory["action"] == TEMPORARY_BUY_INELIGIBLE:
+        weighted = sum(float(component_scores[name]) * float(COMPONENT_WEIGHTS[name]) for name in COMPONENT_WEIGHTS)
+        quality_score = round(max(0.0, min(1.0, weighted)), 6)
+        quality_band = "BUY_WAIT"
+        quality_action = BUY_WAIT_ACTION
+        quality_status = "PASS"
+        allocation_adjustment = 0.0
+        reason_codes.append("momentum_trajectory_buy_wait")
     else:
         weighted = sum(float(component_scores[name]) * float(COMPONENT_WEIGHTS[name]) for name in COMPONENT_WEIGHTS)
         quality_score = round(max(0.0, min(1.0, weighted)), 6)
@@ -410,6 +439,19 @@ def _decision_for_row(
         "component_weights": COMPONENT_WEIGHTS,
         "component_details": components,
         "quality_allocation_adjustment": allocation_adjustment,
+        "momentum_trajectory_schema_version": MOMENTUM_TRAJECTORY_SCHEMA_VERSION,
+        "momentum_trajectory_classification": trajectory["classification"],
+        "momentum_trajectory_status": trajectory["status"],
+        "momentum_trajectory_action": trajectory["action"],
+        "momentum_trajectory_component_score": trajectory["component"]["score"],
+        "momentum_trajectory_reason_codes": trajectory["component"]["reason_codes"],
+        "momentum_trajectory_required_features": trajectory["required_features"],
+        "momentum_trajectory_missing_features": trajectory["missing_features"],
+        "momentum_trajectory_optional_features": trajectory["optional_features"],
+        "momentum_trajectory_feature_snapshot": trajectory["feature_snapshot"],
+        "momentum_trajectory_authority": trajectory["authority"],
+        "momentum_trajectory_pit_status": trajectory["authority"]["PIT_status"],
+        "momentum_trajectory_temporal_validation_status": trajectory["authority"]["temporal_validation_status"],
         "input_authority_refs": {
             "opportunity": opportunity_source.source_ref,
             "candidate": candidate_source.source_ref,
@@ -425,6 +467,15 @@ def _decision_for_row(
         "source_opportunity_hash": row_hash,
         "opportunity_buy_rank": rank,
         "runtime_opportunity_score": score,
+        "runtime_opportunity_score_authority": {
+            "authority_type": "OPPORTUNITY_SCORE_SEMANTIC_CONTRACT",
+            "canonical_field": "runtime_opportunity_score",
+            "prediction_semantics": score_contract["prediction_semantics"],
+            "calibration_applied": score_contract["calibration_applied"],
+            "economic_units_available": score_contract["economic_units_available"],
+            "semantic_role": score_contract["semantic_role"],
+            "source_field": score_contract["source_field"],
+        },
         "accepted_generation_binding": dict(opportunity_source.summary.get("accepted_generation_binding") or {}),
         "temporal_authority_binding": {
             "business_date": business_date,
@@ -445,6 +496,88 @@ def _decision_for_row(
         "fixed_raw_score_threshold_used": False,
         **_listed_info_metadata(opportunity, candidate),
     }
+
+
+def _opportunity_score_contract(*, opportunity: Mapping[str, Any], opportunity_source: BuyQualitySourceSummary) -> dict[str, Any]:
+    summary = opportunity_source.summary if isinstance(opportunity_source.summary, Mapping) else {}
+    calibration_applied = bool(opportunity.get("calibration_applied", summary.get("calibration_applied", False)))
+    semantics_explicit = "prediction_semantics" in opportunity or "prediction_semantics" in summary
+    semantics = str(opportunity.get("prediction_semantics") or summary.get("prediction_semantics") or ("calibrated_expected_edge" if calibration_applied else "runtime_opportunity_score"))
+    source_field = _score_source_field(opportunity)
+    calibrated_economic_semantics = {
+        "calibrated_expected_edge",
+        "calibrated_expected_return",
+        "expected_edge",
+        "expected_return",
+        "economic_expected_edge",
+        "economic_expected_return",
+    }
+    uncalibrated_semantics = {
+        "runtime_opportunity_score",
+        "standardized_score",
+        "relative_opportunity_score",
+        "model_score",
+        "raw_model_score",
+        "opportunity_score",
+    }
+    if calibration_applied and semantics_explicit and semantics not in calibrated_economic_semantics:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason_code": "calibrated_opportunity_score_semantics_malformed",
+            "prediction_semantics": semantics,
+            "calibration_applied": calibration_applied,
+            "economic_units_available": False,
+            "semantic_role": "malformed_calibrated_score_contract",
+            "source_field": source_field,
+        }
+    if not calibration_applied and semantics not in uncalibrated_semantics:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason_code": "uncalibrated_opportunity_score_semantics_unknown",
+            "prediction_semantics": semantics,
+            "calibration_applied": calibration_applied,
+            "economic_units_available": False,
+            "semantic_role": "unknown_uncalibrated_score_contract",
+            "source_field": source_field,
+        }
+    economic_units_available = calibration_applied and semantics in calibrated_economic_semantics
+    return {
+        "status": "PASS",
+        "reason_code": "",
+        "prediction_semantics": semantics,
+        "calibration_applied": calibration_applied,
+        "economic_units_available": economic_units_available,
+        "semantic_role": "calibrated_economic_expected_return" if economic_units_available else "uncalibrated_relative_model_score",
+        "source_field": source_field,
+    }
+
+
+def _score_source_field(opportunity: Mapping[str, Any]) -> str:
+    for field in ("runtime_opportunity_score", "expected_edge_score", "opportunity_score"):
+        if field in opportunity:
+            return field
+    return ""
+
+
+def _split_no_buy_reasons(no_buy_reason: str) -> set[str]:
+    return {part.strip() for part in no_buy_reason.split("|") if part.strip()}
+
+
+def _no_buy_reason_blocks_quality(reasons: set[str], *, economic_units_available: bool) -> bool:
+    if not reasons:
+        return False
+    risk_reasons = {
+        "high_downside_risk_score",
+        "corporate_event_block",
+        "corporate_action_block",
+        "liquidity_block",
+        "not_currently_listed",
+    }
+    if reasons & risk_reasons:
+        return True
+    if economic_units_available and "non_positive_expected_edge_score" in reasons:
+        return True
+    return False
 
 
 def _listed_info_metadata(*rows: Mapping[str, Any]) -> dict[str, Any]:
@@ -621,6 +754,111 @@ def _band(score: float) -> str:
     return "UNUSABLE"
 
 
+def _momentum_trajectory_quality(
+    *, opportunity: Mapping[str, Any], candidate: Mapping[str, Any], business_date: str, symbol: str
+) -> dict[str, Any]:
+    required = (
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_5d",
+        "price_momentum_return_20d",
+        "volatility_return_std_20d",
+        "trend_close_over_ma_20d",
+    )
+    optional = (
+        "price_momentum_return_10d",
+        "price_momentum_return_60d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
+        "gap_prev_close_to_reference",
+        "gap_volatility_z",
+    )
+    snapshot = {field: _first_finite(opportunity, candidate, field) for field in (*required, *optional)}
+    missing = [field for field in required if snapshot.get(field) is None]
+    reasons: list[str] = []
+    if missing:
+        classification = "MIXED_OR_UNRESOLVED"
+        status = "BUY_WAIT"
+        action = TEMPORARY_BUY_INELIGIBLE
+        score = 0.0
+        reasons.extend(f"momentum_trajectory_required_feature_missing:{field}" for field in missing)
+    else:
+        r1 = float(snapshot["price_momentum_return_1d"])
+        r3 = float(snapshot["price_momentum_return_3d"])
+        r5 = float(snapshot["price_momentum_return_5d"])
+        r20 = float(snapshot["price_momentum_return_20d"])
+        r60 = snapshot.get("price_momentum_return_60d")
+        z1 = snapshot.get("recent_move_volatility_z_1d")
+        z3 = snapshot.get("recent_move_volatility_z_3d")
+        long_positive = r20 > 0 or (r60 is not None and float(r60) > 0)
+        short_negative = r1 < 0 and r3 < 0 and r5 < 0
+        overheated = long_positive and r1 > 0 and r3 > 0 and r5 > 0 and (
+            (z1 is not None and float(z1) >= 2.0) or (z3 is not None and float(z3) >= 2.0)
+        )
+        healthy = r20 > 0 and r1 >= 0 and r3 >= 0 and r5 >= 0 and not overheated
+        if long_positive and short_negative:
+            classification = "FADING_PRIOR_WINNER"
+            status = "BUY_WAIT"
+            action = TEMPORARY_BUY_INELIGIBLE
+            score = 0.0
+            reasons.append("prior_winner_short_horizon_deterioration")
+        elif overheated:
+            classification = "RECENT_ACCELERATION_OVERHEAT"
+            status = "BUY_WAIT"
+            action = TEMPORARY_BUY_INELIGIBLE
+            score = 0.0
+            reasons.append("recent_move_volatility_adjusted_overheat")
+        elif healthy:
+            classification = "HEALTHY_CONTINUATION"
+            status = "PASS"
+            action = "BUY_ELIGIBLE"
+            score = 1.0
+            reasons.append("healthy_multi_horizon_continuation")
+        else:
+            classification = "MIXED_OR_UNRESOLVED"
+            status = "PASS_WITH_REDUCTION"
+            action = "BUY_ELIGIBLE"
+            score = 0.5
+            reasons.append("momentum_trajectory_mixed_or_unresolved")
+    return {
+        "classification": classification,
+        "status": status,
+        "action": action,
+        "required_features": list(required),
+        "missing_features": missing,
+        "optional_features": list(optional),
+        "feature_snapshot": snapshot,
+        "authority": {
+            "authority_type": "MOMENTUM_TRAJECTORY_QUALITY_AUTHORITY",
+            "business_date": business_date,
+            "symbol": symbol,
+            "classification": classification,
+            "action": action,
+            "schema_version": MOMENTUM_TRAJECTORY_SCHEMA_VERSION,
+            "PIT_status": "PASS",
+            "temporal_validation_status": "PASS",
+            "future_information_used": False,
+            "historical_result_input_used": False,
+            "paper_ledger_input_used": False,
+        },
+        "component": _component(score, status, reasons),
+    }
+
+
+def _first_finite(primary: Mapping[str, Any], secondary: Mapping[str, Any], field: str) -> float | None:
+    for source in (primary, secondary):
+        value = _finite_float(source.get(field))
+        if value is not None:
+            return value
+    return None
+
+
 def _trend_score(state: str) -> float:
     if state in {"BULL", "UPTREND", "STRONG_UP"}:
         return 0.85
@@ -642,7 +880,7 @@ def _validate_decision(decision: Any, *, index: int) -> list[str]:
     score = _finite_float(decision.get("quality_score"))
     if score is None or not 0.0 <= score <= 1.0:
         errors.append(f"decision_quality_score_invalid:{index}")
-    if decision.get("quality_action") not in {"FULL_ALLOCATION_ELIGIBLE", "REDUCED_ALLOCATION_ONLY", "REVIEW_REQUIRED", "REJECT"}:
+    if decision.get("quality_action") not in {"FULL_ALLOCATION_ELIGIBLE", "REDUCED_ALLOCATION_ONLY", "REVIEW_REQUIRED", "REJECT", BUY_WAIT_ACTION}:
         errors.append(f"decision_quality_action_invalid:{index}")
     if decision.get("future_information_used") is not False:
         errors.append(f"future_information_used:{index}")

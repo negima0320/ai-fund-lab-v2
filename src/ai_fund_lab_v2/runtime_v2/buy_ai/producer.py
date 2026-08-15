@@ -64,6 +64,24 @@ BUY_AI_INFERENCE_VERSION = "candidate_opportunity_ai_regular_path_v1"
 DEFAULT_CANDIDATE_MODEL_PATH = Path(".runtime/candidate_ai/models/phase4bf_formal_candidate_model.pkl")
 DEFAULT_OPPORTUNITY_MODEL_PATH = Path("reports/opportunity_ai/phase5p/models/opportunity_model.pkl")
 PROHIBITED_OPPORTUNITY_PHASE5E_METRICS_PATH = Path("reports/opportunity_ai/phase5e/opportunity_training_metrics.json")
+BUY_QUALITY_PROPAGATED_FEATURE_COLUMNS = (
+    "price_momentum_return_1d",
+    "price_momentum_return_3d",
+    "price_momentum_return_5d",
+    "price_momentum_return_10d",
+    "price_momentum_return_20d",
+    "price_momentum_return_60d",
+    "volatility_return_std_20d",
+    "recent_move_volatility_z_1d",
+    "recent_move_volatility_z_3d",
+    "momentum_5d_vs_20d_delta",
+    "momentum_1d_vs_5d_delta",
+    "trend_close_over_ma_20d",
+    "trend_ma_5_20_ratio",
+    "trend_ma_20_60_ratio",
+    "volume_momentum_ratio_5d",
+    "volume_momentum_ratio_1d_20d",
+)
 
 
 @dataclass(frozen=True)
@@ -558,7 +576,7 @@ def load_ai_planning_signals_from_opportunity_artifact(
                 symbol=symbol,
                 side="BUY",
                 rank=rank,
-                score=float(row.get("opportunity_score") or row.get("expected_edge_score") or 0.0),
+                score=float(row.get("runtime_opportunity_score", row.get("opportunity_score", row.get("expected_edge_score", 0.0))) or 0.0),
                 reason=str(row.get("reason") or "opportunity_ai_ranked"),
                 source_ai="opportunity_ai",
             )
@@ -773,6 +791,9 @@ def _produce_candidate_artifact(
     rows = [
         {
             **row,
+            **_buy_quality_feature_metadata(
+                feature_rows_by_code.get(str(row.get("code") or ""), {})
+            ),
             **_candidate_listed_info_metadata(
                 feature_rows_by_code.get(str(row.get("code") or ""), {})
             ),
@@ -996,6 +1017,10 @@ def _produce_opportunity_artifact(
     )
     model_version = str(model_authority.get("model_version") or result_summary.get("model_version") or "")
     candidate_listed_info_by_code = _candidate_listed_info_by_code(candidate_artifact_path)
+    opportunity_feature_by_code = _feature_metadata_by_code(
+        opportunity_feature_path,
+        feature_date=feature_date,
+    )
     rows = []
     for row in output.sort_values(["buy_rank", "code"]).to_dict("records"):
         expected_edge_score = _required_float(row.get("expected_edge_score"), field_name="expected_edge_score")
@@ -1013,11 +1038,18 @@ def _produce_opportunity_artifact(
                 "feature_date": feature_date,
                 "code": code,
                 "symbol": code,
+                "runtime_opportunity_score": expected_edge_score,
                 "expected_edge_score": expected_edge_score,
                 "opportunity_score": expected_edge_score,
                 "buy_rank": buy_rank,
                 "rank": buy_rank,
                 "expected_return": expected_edge_score,
+                "score_semantic_role": "uncalibrated_relative_model_score",
+                "economic_units_available": False,
+                "calibration_applied": False,
+                "expected_edge_score_semantic_role": "deprecated_alias_uncalibrated_runtime_opportunity_score",
+                "expected_return_semantic_role": "deprecated_alias_uncalibrated_runtime_opportunity_score_not_economic_return",
+                "opportunity_score_semantic_role": "deprecated_alias_uncalibrated_runtime_opportunity_score",
                 "confidence": _confidence_from_rank(buy_rank),
                 "reason": str(row.get("buy_reason") or "opportunity_ai_ranked"),
                 "no_buy_reason": str(row.get("no_buy_reason") or ""),
@@ -1028,6 +1060,7 @@ def _produce_opportunity_artifact(
                 "candidate_score": float(row.get("candidate_score") or 0.0),
                 "candidate_rank": int(row.get("candidate_rank") or 0),
                 "downside_risk_score": downside_risk_score,
+                **_buy_quality_feature_metadata(opportunity_feature_by_code.get(code, {})),
                 **candidate_listed_info_by_code.get(code, {}),
             }
         )
@@ -1047,6 +1080,14 @@ def _produce_opportunity_artifact(
         "reason": "",
         "prediction_metric_name": "opportunity_score",
         "prediction_semantics": "runtime_opportunity_score",
+        "canonical_score_field": "runtime_opportunity_score",
+        "score_semantic_role": "uncalibrated_relative_model_score",
+        "economic_units_available": False,
+        "deprecated_score_aliases": {
+            "expected_edge_score": "uncalibrated_runtime_opportunity_score_alias_not_economic_edge",
+            "expected_return": "uncalibrated_runtime_opportunity_score_alias_not_economic_return",
+            "opportunity_score": "uncalibrated_runtime_opportunity_score_alias",
+        },
         "transformation_stage": (
             "accepted_generation_bound_imputer_scaler_model"
             if generation_binding is not None
@@ -1406,6 +1447,37 @@ def _listed_info_metadata_fields(info: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _feature_metadata_by_code(path: Path, *, feature_date: str) -> dict[str, dict[str, Any]]:
+    if not path.is_file():
+        return {}
+    frame = pd.read_parquet(path)
+    if "target_date" in frame.columns:
+        frame = frame[frame["target_date"].astype(str) == feature_date].copy()
+    if "code" not in frame.columns:
+        return {}
+    return {
+        str(row.get("code") or ""): row
+        for row in frame.to_dict("records")
+        if str(row.get("code") or "")
+    }
+
+
+def _buy_quality_feature_metadata(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, Mapping):
+        return {}
+    metadata: dict[str, Any] = {}
+    for column in BUY_QUALITY_PROPAGATED_FEATURE_COLUMNS:
+        if column not in row:
+            continue
+        value = row.get(column)
+        if value is None:
+            continue
+        if isinstance(value, float) and np.isnan(value):
+            continue
+        metadata[column] = value
+    return metadata
+
+
 def _listed_info_payload(parent: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
     product_category = str(row.get("product_category") or row.get("ProdCat") or "").strip()
     security_type = str(row.get("security_type") or row.get("SecType") or row.get("Type") or product_category).strip()
@@ -1469,6 +1541,7 @@ def _candidate_payload(
             "candidate_reason": str(row.get("candidate_reason") or ""),
             "reason": str(row.get("candidate_reason") or ""),
             "confidence": _confidence_from_rank(int(row.get("candidate_rank") or 999999)),
+            **_buy_quality_feature_metadata(row),
             **_candidate_listed_info_metadata(row),
         }
         for row in rows

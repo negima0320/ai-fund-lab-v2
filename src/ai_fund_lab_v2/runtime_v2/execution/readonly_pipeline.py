@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -31,6 +32,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExe
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_review_sell_continuation_pending
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     is_mode_rooted_runtime_root,
     reject_mode_rooted_runtime_root,
@@ -108,6 +110,26 @@ class ExecutionReadOnlyPipelineResult:
     submit_action: str = ""
     submit_authority_path: str = ""
     submit_authority_reason: str = ""
+    item_lifecycle_authority: dict[str, Any] | None = None
+    pre_commit_cash_feasibility_status: str = "NOT_EVALUATED"
+    pre_commit_cash_feasibility_reason: str = ""
+    pre_commit_starting_cash: float | None = None
+    aggregate_candidate_buy_notional: float = 0.0
+    aggregate_candidate_sell_notional: float = 0.0
+    candidate_projected_cash: float | None = None
+    transaction_validation_status: str = "NOT_EVALUATED"
+    transaction_validation_reason: str = ""
+    source_current_hash: str = ""
+    candidate_current_hash: str = ""
+    candidate_cash: float | None = None
+    candidate_position_count: int = 0
+    candidate_execution_count: int = 0
+    persistent_commit_started: bool = False
+    persistent_commit_completed: bool = False
+    ledger_commit_status: str = "NOT_EXECUTED"
+    current_commit_status: str = "NOT_EXECUTED"
+    transaction_consistency_status: str = "NOT_EVALUATED"
+    execution_transaction_id: str = ""
 
     def to_stage_details(self) -> dict[str, Any]:
         return asdict(self)
@@ -268,19 +290,100 @@ def run_execution_readonly_pipeline(
                 snapshot_status=snapshot_result.status,
                 snapshot_path=str(snapshot_path),
                 report_path=str(report_path),
-            )
+                )
     ledger_positions = (*ledger_positions, *historical_position_transitions)
 
-    orders_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "orders.jsonl", ledger_orders)
-    executions_appended = _append_ledger_records(
-        runtime_root_path / "persistent_ledger" / "executions.jsonl",
-        ledger_executions,
+    pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
+    item_lifecycle_authority = None
+    ledger_events = _execution_acceptance_events(
+        mode=mode,
+        as_of=as_of,
+        business_date=business_date,
+        acceptance=acceptance,
+        production_equivalent=bundle.production_equivalent,
     )
-    positions_appended = _append_ledger_records(
-        runtime_root_path / "persistent_ledger" / "positions.jsonl",
-        ledger_positions,
+    execution_transaction_id = _execution_transaction_id(
+        business_date=business_date,
+        ledger_orders=ledger_orders,
+        ledger_executions=ledger_executions,
+        ledger_positions=ledger_positions,
+        ledger_cash=ledger_cash,
+        ledger_events=ledger_events,
     )
-    cash_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "cash.jsonl", ledger_cash)
+    pre_commit_cash_feasibility = _evaluate_pre_commit_cash_feasibility(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        candidate_executions=equivalent_executions,
+    )
+    pre_commit_cash_feasibility_status = str(pre_commit_cash_feasibility["status"])
+    pre_commit_cash_feasibility_reason = str(pre_commit_cash_feasibility["reason"])
+    pre_commit_starting_cash = pre_commit_cash_feasibility.get("starting_cash")
+    aggregate_candidate_buy_notional = float(pre_commit_cash_feasibility.get("aggregate_candidate_buy_notional") or 0.0)
+    aggregate_candidate_sell_notional = float(pre_commit_cash_feasibility.get("aggregate_candidate_sell_notional") or 0.0)
+    candidate_projected_cash = pre_commit_cash_feasibility.get("candidate_projected_cash")
+    if pre_commit_cash_feasibility_status != "PASS":
+        return ExecutionReadOnlyPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=f"pre-commit execution cash feasibility failed: {pre_commit_cash_feasibility_reason}",
+            snapshot_status=snapshot_result.status,
+            snapshot_path=str(snapshot_path),
+            report_path=str(report_path),
+            orders_count=len(bundle.orders),
+            executions_count=len(bundle.executions),
+            positions_count=len(bundle.positions),
+            cash_present=bundle.cash is not None,
+            ledger_orders_appended=0,
+            ledger_executions_appended=0,
+            ledger_positions_appended=0,
+            ledger_cash_appended=0,
+            ledger_events_appended=0,
+            asset_current_written=False,
+            asset_policy="not_executed_pre_commit_cash_feasibility",
+            reconcile_status="NOT_EXECUTED",
+            reconcile_findings=0,
+            orderlist_readonly_connected=True,
+            execution_reflection_connected=True,
+            ledger_connected=True,
+            asset_connected=False,
+            positions_evidence_connected=len(bundle.positions) > 0,
+            cash_evidence_connected=bundle.cash is not None,
+            order_detail_required=False,
+            order_detail_status=str(acceptance["order_detail_status"]),
+            execution_acceptance_status=str(acceptance["status"]),
+            execution_acceptance_reason=str(acceptance["reason"]),
+            execution_acceptance_warnings=tuple(str(item) for item in acceptance["warnings"]),
+            execution_equivalent_count=len(equivalent_executions),
+            runtime_owned_projection_status="NOT_EXECUTED",
+            runtime_owned_projection_reason="pre-commit execution cash feasibility failed",
+            current_apply_status="NOT_EXECUTED",
+            current_apply_reason="pre-commit execution cash feasibility failed",
+            execution_action="EXECUTE",
+            orderlist_required=True,
+            orderlist_status="READY" if bundle.orders else "MISSING",
+            submitted_order_count=len(bundle.orders),
+            fill_count=len(ledger_executions),
+            pending_terminalization_status="NOT_EXECUTED",
+            pending_consumed=False,
+            pending_mutated=False,
+            pending_read_valid=bool(pending_read.valid),
+            pending_classification=str(pending_read.classification),
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=pending_read.plan is not None,
+            pending_item_count=_payload_item_count(pending_read.payload),
+            item_lifecycle_authority=item_lifecycle_authority,
+            pre_commit_cash_feasibility_status=pre_commit_cash_feasibility_status,
+            pre_commit_cash_feasibility_reason=pre_commit_cash_feasibility_reason,
+            pre_commit_starting_cash=pre_commit_starting_cash if pre_commit_starting_cash is None else float(pre_commit_starting_cash),
+            aggregate_candidate_buy_notional=aggregate_candidate_buy_notional,
+            aggregate_candidate_sell_notional=aggregate_candidate_sell_notional,
+            candidate_projected_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+            transaction_validation_status="REVIEW_REQUIRED",
+            transaction_validation_reason=pre_commit_cash_feasibility_reason,
+            candidate_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+            candidate_execution_count=len(equivalent_executions),
+            transaction_consistency_status="NOT_EXECUTED",
+            execution_transaction_id=execution_transaction_id,
+        )
 
     asset_policy = "broker_position_cash_evidence_recorded_only"
     asset_current_written = False
@@ -301,64 +404,233 @@ def run_execution_readonly_pipeline(
     runtime_state_version = ""
     execution_references: tuple[str, ...] = ()
 
-    ledger_events = _execution_acceptance_events(
-        mode=mode,
-        as_of=as_of,
-        business_date=business_date,
-        acceptance=acceptance,
-        production_equivalent=bundle.production_equivalent,
-    )
-    events_appended = _append_ledger_records(
-        runtime_root_path / "persistent_ledger" / "events.jsonl",
-        ledger_events,
-    )
     status = "PASS"
     reason = "execution readonly ingestion completed"
     if acceptance["status"] != "PASS":
         status = "REVIEW_REQUIRED"
         reason = str(acceptance["reason"])
+        return ExecutionReadOnlyPipelineResult(
+            status=status,
+            reason=reason,
+            snapshot_status=snapshot_result.status,
+            snapshot_path=str(snapshot_path),
+            report_path=str(report_path),
+            orders_count=len(bundle.orders),
+            executions_count=len(bundle.executions),
+            positions_count=len(bundle.positions),
+            cash_present=bundle.cash is not None,
+            ledger_orders_appended=0,
+            ledger_executions_appended=0,
+            ledger_positions_appended=0,
+            ledger_cash_appended=0,
+            ledger_events_appended=0,
+            asset_current_written=False,
+            asset_policy="not_executed_transaction_validation",
+            reconcile_status="NOT_EXECUTED",
+            reconcile_findings=0,
+            orderlist_readonly_connected=True,
+            execution_reflection_connected=True,
+            ledger_connected=True,
+            asset_connected=False,
+            positions_evidence_connected=len(bundle.positions) > 0,
+            cash_evidence_connected=bundle.cash is not None,
+            order_detail_required=False,
+            order_detail_status=str(acceptance["order_detail_status"]),
+            execution_acceptance_status=str(acceptance["status"]),
+            execution_acceptance_reason=str(acceptance["reason"]),
+            execution_acceptance_warnings=tuple(str(item) for item in acceptance["warnings"]),
+            execution_equivalent_count=len(equivalent_executions),
+            runtime_owned_projection_status="NOT_EXECUTED",
+            runtime_owned_projection_reason="execution acceptance failed before transaction commit",
+            current_apply_status="NOT_EXECUTED",
+            current_apply_reason="execution acceptance failed before transaction commit",
+            execution_action="EXECUTE",
+            orderlist_required=True,
+            orderlist_status="READY" if bundle.orders else "MISSING",
+            submitted_order_count=len(bundle.orders),
+            fill_count=len(ledger_executions),
+            pending_terminalization_status="NOT_EXECUTED",
+            pending_consumed=False,
+            pending_mutated=False,
+            pending_read_valid=bool(pending_read.valid),
+            pending_classification=str(pending_read.classification),
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=pending_read.plan is not None,
+            pending_item_count=_payload_item_count(pending_read.payload),
+            item_lifecycle_authority=item_lifecycle_authority,
+            pre_commit_cash_feasibility_status=pre_commit_cash_feasibility_status,
+            pre_commit_cash_feasibility_reason=pre_commit_cash_feasibility_reason,
+            pre_commit_starting_cash=pre_commit_starting_cash if pre_commit_starting_cash is None else float(pre_commit_starting_cash),
+            aggregate_candidate_buy_notional=aggregate_candidate_buy_notional,
+            aggregate_candidate_sell_notional=aggregate_candidate_sell_notional,
+            candidate_projected_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+            transaction_validation_status="REVIEW_REQUIRED",
+            transaction_validation_reason=reason,
+            candidate_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+            candidate_execution_count=len(equivalent_executions),
+            transaction_consistency_status="NOT_EXECUTED",
+            execution_transaction_id=execution_transaction_id,
+        )
 
-    if status == "PASS":
-        projection = project_runtime_owned_fills_to_current(
+    projection = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+        write=False,
+        candidate_orders=ledger_orders,
+        candidate_executions=ledger_executions,
+        candidate_positions=ledger_positions,
+    )
+    runtime_owned_projection_status = projection.status
+    runtime_owned_projection_reason = projection.reason
+    projected_position_count = len(projection.projected_positions)
+    projected_cash = projection.projected_cash
+    projected_market_value = projection.projected_market_value
+    projected_total_equity = projection.projected_total_equity
+    projected_runtime_owned_symbols = projection.runtime_owned_symbols
+    excluded_broker_position_symbols = projection.excluded_broker_position_symbols
+    source_ledger_records = tuple(
+        str(record)
+        for record in (projection.current_sot_after.get("generated_from") or ())
+        if record
+    )
+    source_current_hash = _payload_hash(projection.current_sot_before)
+    candidate_current_hash = _payload_hash(projection.current_sot_after)
+    if projection.status != "PASS":
+        return ExecutionReadOnlyPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=f"runtime owned current projection failed before transaction commit: {projection.reason}",
+            snapshot_status=snapshot_result.status,
+            snapshot_path=str(snapshot_path),
+            report_path=str(report_path),
+            orders_count=len(bundle.orders),
+            executions_count=len(bundle.executions),
+            positions_count=len(bundle.positions),
+            cash_present=bundle.cash is not None,
+            ledger_orders_appended=0,
+            ledger_executions_appended=0,
+            ledger_positions_appended=0,
+            ledger_cash_appended=0,
+            ledger_events_appended=0,
+            asset_current_written=False,
+            asset_policy="not_executed_transaction_validation",
+            reconcile_status="NOT_EXECUTED",
+            reconcile_findings=0,
+            orderlist_readonly_connected=True,
+            execution_reflection_connected=True,
+            ledger_connected=True,
+            asset_connected=False,
+            positions_evidence_connected=len(bundle.positions) > 0,
+            cash_evidence_connected=bundle.cash is not None,
+            order_detail_required=False,
+            order_detail_status=str(acceptance["order_detail_status"]),
+            execution_acceptance_status=str(acceptance["status"]),
+            execution_acceptance_reason=str(acceptance["reason"]),
+            execution_acceptance_warnings=tuple(str(item) for item in acceptance["warnings"]),
+            execution_equivalent_count=len(equivalent_executions),
+            runtime_owned_projection_status=runtime_owned_projection_status,
+            runtime_owned_projection_reason=runtime_owned_projection_reason,
+            projected_position_count=projected_position_count,
+            projected_cash=projected_cash,
+            projected_market_value=projected_market_value,
+            projected_total_equity=projected_total_equity,
+            projected_runtime_owned_symbols=projected_runtime_owned_symbols,
+            excluded_broker_position_symbols=excluded_broker_position_symbols,
+            source_ledger_records=source_ledger_records,
+            demo_execution_fallback=fallback_policy_summary(demo_fallback_authority),
+            current_apply_status="NOT_EXECUTED",
+            current_apply_reason="runtime owned current projection failed before transaction commit",
+            execution_action="EXECUTE",
+            orderlist_required=True,
+            orderlist_status="READY" if bundle.orders else "MISSING",
+            submitted_order_count=len(bundle.orders),
+            fill_count=len(ledger_executions),
+            pending_terminalization_status="NOT_EXECUTED",
+            pending_consumed=False,
+            pending_mutated=False,
+            pending_read_valid=bool(pending_read.valid),
+            pending_classification=str(pending_read.classification),
+            pending_active=_payload_bool(pending_read.payload, "active_pending"),
+            pending_plan_present=pending_read.plan is not None,
+            pending_item_count=_payload_item_count(pending_read.payload),
+            item_lifecycle_authority=item_lifecycle_authority,
+            pre_commit_cash_feasibility_status=pre_commit_cash_feasibility_status,
+            pre_commit_cash_feasibility_reason=pre_commit_cash_feasibility_reason,
+            pre_commit_starting_cash=pre_commit_starting_cash if pre_commit_starting_cash is None else float(pre_commit_starting_cash),
+            aggregate_candidate_buy_notional=aggregate_candidate_buy_notional,
+            aggregate_candidate_sell_notional=aggregate_candidate_sell_notional,
+            candidate_projected_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+            transaction_validation_status="REVIEW_REQUIRED",
+            transaction_validation_reason=projection.reason,
+            source_current_hash=source_current_hash,
+            candidate_current_hash=candidate_current_hash,
+            candidate_cash=projection.projected_cash,
+            candidate_position_count=len(projection.projected_positions),
+            candidate_execution_count=len(equivalent_executions),
+            transaction_consistency_status="NOT_EXECUTED",
+            execution_transaction_id=execution_transaction_id,
+        )
+
+    transaction_validation_status = "PASS"
+    transaction_validation_reason = "execution transaction candidate validated before persistent commit"
+    persistent_commit_started = True
+    persistent_commit_completed = False
+    orders_appended = 0
+    executions_appended = 0
+    positions_appended = 0
+    cash_appended = 0
+    events_appended = 0
+    ledger_commit_status = "NOT_EXECUTED"
+    current_commit_status = "NOT_EXECUTED"
+    transaction_consistency_status = "NOT_EVALUATED"
+    try:
+        orders_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "orders.jsonl", ledger_orders)
+        executions_appended = _append_ledger_records(
+            runtime_root_path / "persistent_ledger" / "executions.jsonl",
+            ledger_executions,
+        )
+        positions_appended = _append_ledger_records(
+            runtime_root_path / "persistent_ledger" / "positions.jsonl",
+            ledger_positions,
+        )
+        cash_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "cash.jsonl", ledger_cash)
+        events_appended = _append_ledger_records(
+            runtime_root_path / "persistent_ledger" / "events.jsonl",
+            ledger_events,
+        )
+        ledger_commit_status = "PASS"
+        _write_current_projection_payload(runtime_root_path / "persistent_ledger" / "state.json", projection.current_sot_after)
+        asset_current_written = True
+        asset_policy = "runtime_owned_fill_projection"
+        current_commit_status = "CURRENT_WRITTEN"
+        execution_references = tuple(
+            record.execution_id for record in ledger_executions if getattr(record, "execution_id", "")
+        )
+        current_apply = apply_current_projection_to_runtime_state(
             runtime_root=runtime_root_path,
             business_date=business_date,
             mode=mode,
-            write=True,
+            execution_references=execution_references,
         )
-        runtime_owned_projection_status = projection.status
-        runtime_owned_projection_reason = projection.reason
-        projected_position_count = len(projection.projected_positions)
-        projected_cash = projection.projected_cash
-        projected_market_value = projection.projected_market_value
-        projected_total_equity = projection.projected_total_equity
-        projected_runtime_owned_symbols = projection.runtime_owned_symbols
-        excluded_broker_position_symbols = projection.excluded_broker_position_symbols
-        source_ledger_records = tuple(
-            str(record)
-            for record in (projection.current_sot_after.get("generated_from") or ())
-            if record
-        )
-        asset_current_written = projection.status == "PASS"
-        asset_policy = "runtime_owned_fill_projection"
-        if projection.status != "PASS":
-            status = "REVIEW_REQUIRED"
-            reason = f"runtime owned current projection failed: {projection.reason}"
-        else:
-            execution_references = tuple(
-                record.execution_id for record in ledger_executions if getattr(record, "execution_id", "")
-            )
-            current_apply = apply_current_projection_to_runtime_state(
-                runtime_root=runtime_root_path,
-                business_date=business_date,
-                mode=mode,
-                execution_references=execution_references,
-            )
-            current_apply_status = current_apply.status
-            current_apply_reason = current_apply.reason
-            current_hash = current_apply.current_hash
-            current_version = current_apply.current_version
-            runtime_state_path = current_apply.runtime_state_path
-            runtime_state_version = current_apply.runtime_state_version
+        current_apply_status = current_apply.status
+        current_apply_reason = current_apply.reason
+        current_hash = current_apply.current_hash
+        current_version = current_apply.current_version
+        runtime_state_path = current_apply.runtime_state_path
+        runtime_state_version = current_apply.runtime_state_version
+        current_commit_status = current_apply.status
+        persistent_commit_completed = current_apply.status in {"APPLIED", "NOOP_ALREADY_APPLIED"}
+        transaction_consistency_status = "PASS" if persistent_commit_completed else "REVIEW_REQUIRED"
+    except Exception as exc:
+        status = "REVIEW_REQUIRED"
+        reason = f"execution transaction commit failed: {exc}"
+        transaction_consistency_status = "REVIEW_REQUIRED"
+        current_apply_status = "NOT_EXECUTED" if current_apply_status == "NOT_EXECUTED" else current_apply_status
+        current_apply_reason = str(exc)
+    if status == "PASS" and not persistent_commit_completed:
+        status = "REVIEW_REQUIRED"
+        reason = "execution transaction commit did not complete"
+        transaction_consistency_status = "REVIEW_REQUIRED"
 
     asset_state = _read_asset_state(runtime_root_path / "persistent_ledger" / "state.json")
     pending_read = read_pending_order_plan(mode=mode, environment=mode, base_dir=runtime_root_path.parent)
@@ -375,12 +647,27 @@ def run_execution_readonly_pipeline(
         broker_cash=bundle.cash,
         asset_state=asset_state,
     )
-    if reconciliation.findings and status == "PASS" and mode != "demo":
+    if persistent_commit_completed and reconciliation.findings and status == "PASS" and mode != "demo":
         status = "REVIEW_REQUIRED"
         reason = f"reconciliation findings={len(reconciliation.findings)}"
     reconcile_status = "PASS" if not reconciliation.findings else "REVIEW_REQUIRED"
-    if reconciliation.findings and status == "PASS" and mode == "demo":
+    if not persistent_commit_completed:
+        reconcile_status = "NOT_EXECUTED"
+    if persistent_commit_completed and reconciliation.findings and status == "PASS" and mode == "demo":
         reconcile_status = "PASS_WITH_WARNINGS"
+    item_lifecycle_authority = _historical_mixed_item_lifecycle_authority(
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+        orders=bundle.orders,
+    )
+    pending_terminalization_status = (
+        "PENDING_LIFECYCLE_REQUIRED"
+        if persistent_commit_completed and item_lifecycle_authority.get("status") == "PASS"
+        else "NOT_REQUIRED"
+    )
+    if not persistent_commit_completed:
+        pending_terminalization_status = "NOT_EXECUTED"
 
     return ExecutionReadOnlyPipelineResult(
         status=status,
@@ -435,9 +722,34 @@ def run_execution_readonly_pipeline(
         orderlist_status="READY" if bundle.orders else "MISSING",
         submitted_order_count=len(bundle.orders),
         fill_count=len(ledger_executions),
-        pending_terminalization_status="NOT_REQUIRED",
+        pending_terminalization_status=pending_terminalization_status,
         pending_consumed=False,
         pending_mutated=False,
+        pending_read_valid=bool(pending_read.valid),
+        pending_classification=str(pending_read.classification),
+        pending_active=_payload_bool(pending_read.payload, "active_pending"),
+        pending_plan_present=pending_read.plan is not None,
+        pending_item_count=_payload_item_count(pending_read.payload),
+        item_lifecycle_authority=item_lifecycle_authority,
+        pre_commit_cash_feasibility_status=pre_commit_cash_feasibility_status,
+        pre_commit_cash_feasibility_reason=pre_commit_cash_feasibility_reason,
+        pre_commit_starting_cash=pre_commit_starting_cash if pre_commit_starting_cash is None else float(pre_commit_starting_cash),
+        aggregate_candidate_buy_notional=aggregate_candidate_buy_notional,
+        aggregate_candidate_sell_notional=aggregate_candidate_sell_notional,
+        candidate_projected_cash=candidate_projected_cash if candidate_projected_cash is None else float(candidate_projected_cash),
+        transaction_validation_status=transaction_validation_status,
+        transaction_validation_reason=transaction_validation_reason,
+        source_current_hash=source_current_hash,
+        candidate_current_hash=candidate_current_hash,
+        candidate_cash=projection.projected_cash,
+        candidate_position_count=len(projection.projected_positions),
+        candidate_execution_count=len(equivalent_executions),
+        persistent_commit_started=persistent_commit_started,
+        persistent_commit_completed=persistent_commit_completed,
+        ledger_commit_status=ledger_commit_status,
+        current_commit_status=current_commit_status,
+        transaction_consistency_status=transaction_consistency_status,
+        execution_transaction_id=execution_transaction_id,
     )
 
 
@@ -459,10 +771,22 @@ def _resolve_no_action_execution_authority(
         "pending_item_count": _payload_item_count(pending_read.payload),
         "no_action_reason": _payload_text(pending_read.payload, "no_action_reason"),
     }
+    if mode == "historical":
+        quarantine_authority = _load_historical_quarantine_no_submitted_authority(
+            runtime_root=runtime_root,
+            business_date=business_date,
+            pending_evidence=evidence,
+        )
+        if quarantine_authority["status"] in {"PASS", "REVIEW_REQUIRED"}:
+            return quarantine_authority
     if not pending_read.valid:
         return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
     active_no_order = pending_read.plan is not None and pending_read.plan.state == PendingPlanState.EMPTY
-    if pending_read.classification != "EMPTY" and not active_no_order:
+    active_buy_item_review_no_submission = (
+        pending_read.plan is not None
+        and _is_buy_item_scoped_review_no_submission_pending(pending_read.plan, business_date=business_date)
+    )
+    if pending_read.classification != "EMPTY" and not active_no_order and not active_buy_item_review_no_submission:
         return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
     if pending_read.classification == "EMPTY":
         empty_reason = _validate_empty_pending_payload(
@@ -472,11 +796,14 @@ def _resolve_no_action_execution_authority(
         )
         if empty_reason:
             return {"status": "BLOCKED", "reason": empty_reason, **evidence}
-    elif pending_read.plan is not None:
+    elif active_no_order and pending_read.plan is not None:
         if pending_read.plan.target_session_date != business_date:
             return {"status": "BLOCKED", "reason": "pending EMPTY target_session_date mismatch", **evidence}
         if pending_read.plan.items:
             return {"status": "BLOCKED", "reason": "pending EMPTY active no-order requires empty items", **evidence}
+    elif active_buy_item_review_no_submission and pending_read.plan is not None:
+        if pending_read.plan.target_session_date != business_date:
+            return {"status": "BLOCKED", "reason": "pending BUY_ITEM_SCOPED_REVIEW target_session_date mismatch", **evidence}
     submit = _load_submit_no_action_authority(runtime_root=runtime_root, business_date=business_date)
     evidence.update(
         {
@@ -526,6 +853,7 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
                     and bool(payload.get("pending_active")) is False
                     and bool(payload.get("pending_plan_present")) is False
                     and submit_action == "NO_ACTION"
+                    and _int_value(payload.get("pending_item_count"), 0) == 0
                 )
                 or (
                     str(payload.get("pending_classification") or "") == "VALID"
@@ -533,9 +861,43 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
                     and submit_action == "NO_SUBMISSION_REQUIRED"
                     and str(payload.get("no_order_authority_status") or "") == "PASS"
                     and str((payload.get("no_order_authority_evidence") or {}).get("status") or "") == "PASS"
+                    and (
+                        (
+                            str((payload.get("no_order_authority_evidence") or {}).get("authority_type") or "")
+                            == "AUTHORIZED_NO_ORDER"
+                            and str((payload.get("no_order_authority_evidence") or {}).get("order_plan_status") or "")
+                            == "NO_ORDER_AUTHORIZED"
+                            and str(
+                                (payload.get("no_order_authority_evidence") or {}).get(
+                                    "planning_consumer_eligibility"
+                                )
+                                or ""
+                            )
+                            == "NO_ORDER_AUTHORIZED"
+                            and str((payload.get("no_order_authority_evidence") or {}).get("approval_status") or "")
+                            == "NO_ORDER_AUTHORIZED"
+                            and str((payload.get("no_order_authority_evidence") or {}).get("pending_state") or "")
+                            == "EMPTY"
+                            and _int_value(
+                                (payload.get("no_order_authority_evidence") or {}).get("pending_item_count"),
+                                -1,
+                            )
+                            == 0
+                            and _int_value(
+                                (payload.get("no_order_authority_evidence") or {}).get("pending_approved_item_count"),
+                                -1,
+                            )
+                            == 0
+                            and _int_value(payload.get("pending_item_count"), -1) == 0
+                        )
+                        or (
+                            str((payload.get("no_order_authority_evidence") or {}).get("authority_type") or "")
+                            == "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION"
+                            and _int_value(payload.get("pending_item_count"), 0) > 0
+                        )
+                    )
                 )
             )
-            and _int_value(payload.get("pending_item_count"), 0) == 0
             and _int_value(payload.get("submitted_count"), 0) == 0
             and _int_value(payload.get("blocked_count"), 0) == 0
             and bool(payload.get("review_required")) is False
@@ -563,7 +925,173 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
     }
 
 
+def _is_buy_item_scoped_review_no_submission_pending(pending, *, business_date: str) -> bool:
+    if not is_buy_item_scoped_review_sell_continuation_pending(
+        pending,
+        business_date=business_date,
+        target_session_date=business_date,
+    ):
+        return False
+    if pending.approved_item_ids or pending.approved_buy_item_ids or pending.approved_sell_item_ids:
+        return False
+    if any(item.approved for item in pending.items):
+        return False
+    if any(item.side.upper() != "BUY" for item in pending.items):
+        return False
+    return True
+
+
+def _load_historical_quarantine_no_submitted_authority(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    pending_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    submit = _latest_submit_manifest(runtime_root=runtime_root, business_date=business_date)
+    if submit is None:
+        return {"status": "NOT_APPLICABLE", "reason": "historical quarantine submit authority missing", **pending_evidence}
+    path, payload = submit
+    if str(payload.get("job") or "") != "submit" or str(payload.get("business_date") or "") != business_date:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "reason": "historical quarantine submit authority business_date mismatch",
+            **pending_evidence,
+            "submit_authority_status": "REVIEW_REQUIRED",
+            "submit_action": str(payload.get("submit_action") or ""),
+            "submit_authority_path": str(path),
+            "submit_authority_reason": "historical quarantine submit authority business_date mismatch",
+        }
+    if not _manifest_indicates_historical(payload):
+        return {"status": "NOT_APPLICABLE", "reason": "historical quarantine authority not applicable", **pending_evidence}
+    if _int_value(payload.get("submitted_count"), 0) != 0:
+        return {"status": "NOT_APPLICABLE", "reason": "submitted_orders_present", **pending_evidence}
+
+    continuation_path = _historical_quarantine_continuation_path(payload, business_date)
+    continuation = _load_json_optional(continuation_path)
+    checks = _historical_quarantine_no_submitted_checks(
+        submit_payload=payload,
+        continuation=continuation,
+        business_date=business_date,
+        submit_manifest_path=path,
+    )
+    if not all(checks.values()):
+        return {"status": "NOT_APPLICABLE", "reason": "historical quarantine no-submitted authority not applicable", **pending_evidence}
+
+    affected_symbols = tuple(str(symbol) for symbol in continuation.get("affected_symbols") or ())
+    return {
+        "status": "PASS",
+        "reason": "historical_corporate_action_quarantine_no_submitted_orders",
+        **pending_evidence,
+        "submit_authority_status": "PASS",
+        "submit_action": str(payload.get("submit_action") or ""),
+        "submit_authority_path": str(path),
+        "submit_authority_reason": "historical_corporate_action_quarantine_no_submitted_orders",
+        "historical_quarantine_continuation_path": str(continuation_path),
+        "historical_quarantine_continuation_status": str(continuation.get("status") or ""),
+        "historical_quarantine_affected_symbols": affected_symbols,
+    }
+
+
+def _latest_submit_manifest(*, runtime_root: Path, business_date: str) -> tuple[Path, dict[str, Any]] | None:
+    manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
+    manifests = sorted(manifest_dir.glob("runtime-v2-submit-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in manifests:
+        payload = _load_json_optional(path)
+        if payload and str(payload.get("job") or "") == "submit":
+            return path, payload
+    return None
+
+
+def _historical_quarantine_continuation_path(submit_payload: dict[str, Any], business_date: str) -> Path:
+    evidence_root = str(submit_payload.get("runtime_test_evidence_root") or "")
+    run_id = str(submit_payload.get("runtime_test_run_id") or "")
+    if evidence_root and Path(evidence_root).name == run_id:
+        run_dir = Path(evidence_root)
+    else:
+        run_dir = Path(evidence_root) / "runs" / run_id if evidence_root and run_id else Path()
+    return run_dir / "daily" / business_date / "submit" / "corporate_action_symbol_quarantine_continuation.json"
+
+
+def _historical_quarantine_no_submitted_checks(
+    *,
+    submit_payload: dict[str, Any],
+    continuation: dict[str, Any],
+    business_date: str,
+    submit_manifest_path: Path,
+) -> dict[str, bool]:
+    guard_items = submit_payload.get("submit_guard_item_evidence")
+    guard_items = guard_items if isinstance(guard_items, list) else []
+    affected_symbols = [str(symbol).strip().upper() for symbol in continuation.get("affected_symbols") or () if str(symbol).strip()]
+    continuation_checks = continuation.get("checks") if isinstance(continuation.get("checks"), dict) else {}
+    prohibited = submit_payload.get("prohibited_actions") if isinstance(submit_payload.get("prohibited_actions"), dict) else {}
+    blocked_count = _int_value(submit_payload.get("blocked_count"), 0)
+    submitted_count = _int_value(submit_payload.get("submitted_count"), 0)
+    pending_item_count = _int_value(submit_payload.get("pending_item_count"), 0)
+    ca_blocked_items = [
+        item
+        for item in guard_items
+        if str(item.get("submit_item_status") or "") == "REVIEW_REQUIRED"
+        and str(item.get("guard_decision") or "") == "BLOCKED"
+        and str(item.get("guard_reason") or item.get("blocked_at_submit_reason") or "") == "corporate_action_event_not_resolved"
+        and str(item.get("violated_policy") or "") == "historical_corporate_action_symbol_quarantine"
+    ]
+    return {
+        "mode_historical": _manifest_indicates_historical(submit_payload),
+        "continuation_artifact_present": bool(continuation),
+        "continuation_status": str(continuation.get("status") or "") == "COMPLETED_WITH_SYMBOL_QUARANTINE",
+        "continuation_business_date": str(continuation.get("business_date") or "") == business_date,
+        "continuation_job": str(continuation.get("job") or "") == "submit",
+        "continuation_scope": str(continuation.get("scope") or "") == "CORPORATE_ACTION_SYMBOL_ONLY",
+        "production_never": str(continuation.get("production_applicability") or "") == "NEVER",
+        "run_continuation_historical_only": (
+            str(continuation.get("corporate_action_run_continuation_eligibility") or "")
+            == "ALLOWED_FOR_HISTORICAL_REPLAY_ONLY"
+        ),
+        "affected_symbols_present": bool(affected_symbols),
+        "submitted_count_zero": submitted_count == 0,
+        "blocked_count_positive": blocked_count > 0,
+        "pending_count_matches_guard": pending_item_count > 0 and len(guard_items) == pending_item_count,
+        "all_pending_items_classified_ca_blocked": len(ca_blocked_items) == pending_item_count == blocked_count,
+        "no_generic_review_mixed_in": blocked_count == len(ca_blocked_items),
+        "submit_review_required": str(submit_payload.get("final_state") or "") == "REVIEW_REQUIRED",
+        "submit_nonzero": _int_value(submit_payload.get("exit_code"), -1) != 0,
+        "no_broker_write": (
+            not bool(submit_payload.get("broker_write"))
+            and not bool(submit_payload.get("external_delivery"))
+            and not bool(prohibited.get("demo_submit_executed"))
+            and not bool(prohibited.get("production_order_executed"))
+            and not bool(prohibited.get("broker_write"))
+            and not bool(prohibited.get("external_delivery"))
+        ),
+        "continuation_runtime_manifest_bound": (
+            str(continuation.get("runtime_manifest_path") or "") in {"", str(submit_manifest_path)}
+            or Path(str(continuation.get("runtime_manifest_path") or "")).name == submit_manifest_path.name
+            or str(continuation.get("runtime_manifest_path") or "").endswith(
+                f"/daily/{business_date}/submit/runtime_manifest.json"
+            )
+        ),
+        "classifier_checks_pass": all(bool(value) for value in continuation_checks.values()) if continuation_checks else False,
+    }
+
+
+def _manifest_indicates_historical(payload: dict[str, Any]) -> bool:
+    if str(payload.get("run_type") or "").upper() == "HISTORICAL":
+        return True
+    if str(payload.get("runtime_mode") or payload.get("mode") or "").lower() == "historical":
+        return True
+    for stage in payload.get("stages") or ():
+        if not isinstance(stage, dict):
+            continue
+        details = stage.get("details") if isinstance(stage.get("details"), dict) else {}
+        if bool(details.get("historical_replay")) or str(details.get("run_type") or "").upper() == "HISTORICAL":
+            return True
+    return False
+
+
 def _no_action_result(*, runtime_root: Path, business_date: str, no_action: dict[str, Any]) -> ExecutionReadOnlyPipelineResult:
+    pending_terminalization_status = "ALREADY_TERMINAL"
+    if bool(no_action.get("pending_plan_present")) and int(no_action.get("pending_item_count") or 0) > 0:
+        pending_terminalization_status = "PENDING_LIFECYCLE_REQUIRED"
     return ExecutionReadOnlyPipelineResult(
         status="PASS",
         reason="no_submitted_orders",
@@ -603,7 +1131,7 @@ def _no_action_result(*, runtime_root: Path, business_date: str, no_action: dict
         orderlist_status="NOT_REQUIRED",
         submitted_order_count=0,
         fill_count=0,
-        pending_terminalization_status="ALREADY_TERMINAL",
+        pending_terminalization_status=pending_terminalization_status,
         pending_consumed=False,
         pending_mutated=False,
         pending_read_valid=bool(no_action.get("pending_read_valid")),
@@ -894,6 +1422,117 @@ def _execution_equivalent_records(
     return tuple(records)
 
 
+def _evaluate_pre_commit_cash_feasibility(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    candidate_executions: Iterable[LedgerExecutionRecord],
+) -> dict[str, Any]:
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    state = _load_json_dict(state_path)
+    applied_execution_keys = _current_applied_execution_keys(state)
+    raw_cash = state.get("cash")
+    if raw_cash in (None, ""):
+        return {
+            "schema_version": "runtime_v2_pre_commit_execution_cash_feasibility.v1",
+            "status": "REVIEW_REQUIRED",
+            "reason": "current cash missing",
+            "business_date": business_date,
+            "current_state_path": str(state_path),
+            "persistent_execution_commit_allowed": False,
+        }
+    starting_cash = _float(raw_cash)
+    cash = starting_cash
+    buy_notional = 0.0
+    sell_notional = 0.0
+    items: list[dict[str, Any]] = []
+    already_applied_count = 0
+    selected_count = 0
+    for execution in candidate_executions:
+        side = str(getattr(execution, "side", "") or "").upper()
+        quantity = _float(getattr(execution, "filled_quantity", 0.0) or getattr(execution, "quantity", 0.0))
+        price = _float(getattr(execution, "price", 0.0) or getattr(execution, "average_price", 0.0))
+        notional = _float(getattr(execution, "cash_effect", None)) or quantity * price
+        execution_id = str(getattr(execution, "execution_id", "") or "")
+        dedup_key = str(getattr(execution, "dedup_key", "") or "")
+        if side == "BUY":
+            cash_effect = -notional
+        elif side == "SELL":
+            cash_effect = notional
+        else:
+            return {
+                "schema_version": "runtime_v2_pre_commit_execution_cash_feasibility.v1",
+                "status": "REVIEW_REQUIRED",
+                "reason": f"candidate execution side invalid: {side}",
+                "business_date": business_date,
+                "current_state_path": str(state_path),
+                "starting_cash": starting_cash,
+                "persistent_execution_commit_allowed": False,
+            }
+        already_applied = bool(
+            (execution_id and execution_id in applied_execution_keys)
+            or (dedup_key and dedup_key in applied_execution_keys)
+        )
+        selected = not already_applied
+        if already_applied:
+            already_applied_count += 1
+        else:
+            selected_count += 1
+            cash += cash_effect
+            if side == "BUY":
+                buy_notional += notional
+            elif side == "SELL":
+                sell_notional += notional
+        items.append(
+            {
+                "symbol": str(getattr(execution, "symbol", "") or ""),
+                "side": side,
+                "quantity": quantity,
+                "actual_candidate_execution_price": price,
+                "actual_candidate_notional": notional,
+                "cash_effect_if_selected": cash_effect,
+                "execution_id": execution_id,
+                "dedup_key": dedup_key,
+                "already_applied": already_applied,
+                "selected_into_candidate_projection": selected,
+            }
+        )
+    status = "PASS" if cash >= -0.000001 else "REVIEW_REQUIRED"
+    reason = (
+        "pre_commit_execution_cash_feasibility_pass"
+        if status == "PASS"
+        else f"candidate execution cash projection negative: {cash}"
+    )
+    return {
+        "schema_version": "runtime_v2_pre_commit_execution_cash_feasibility.v1",
+        "status": status,
+        "reason": reason,
+        "business_date": business_date,
+        "current_state_path": str(state_path),
+        "starting_cash": starting_cash,
+        "aggregate_candidate_buy_notional": buy_notional,
+        "aggregate_candidate_sell_notional": sell_notional,
+        "candidate_projected_cash": cash,
+        "candidate_execution_count": len(items),
+        "selected_candidate_execution_count": selected_count,
+        "already_applied_candidate_execution_count": already_applied_count,
+        "items": items,
+        "persistent_execution_commit_allowed": status == "PASS",
+    }
+
+
+def _current_applied_execution_keys(current_state: dict[str, Any]) -> set[str]:
+    projection = current_state.get("runtime_owned_projection") or {}
+    raw_values = (
+        *(projection.get("applied_execution_ids") or ()),
+        *(projection.get("applied_execution_dedup_keys") or ()),
+        *(current_state.get("applied_execution_ids") or ()),
+        *(current_state.get("applied_execution_dedup_keys") or ()),
+        *(current_state.get("execution_references") or ()),
+    )
+    return {str(value) for value in raw_values if str(value)}
+
+
 def _historical_position_transition_records(
     *,
     runtime_root: Path,
@@ -961,6 +1600,8 @@ def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
     status = str(order.get("status") or order.get("order_status") or "")
     return {
         "order_id": order.get("order_id_hash") or order.get("order_id") or order.get("order_ref") or _stable_json_ref(order),
+        "pending_plan_id": order.get("pending_plan_id") or "",
+        "pending_item_id": order.get("pending_item_id") or "",
         "symbol": order.get("issue_code") or order.get("symbol") or "",
         "side": _normalize_side(str(order.get("side") or "")),
         "quantity": _float(order.get("quantity")),
@@ -972,10 +1613,238 @@ def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _historical_mixed_item_lifecycle_authority(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+    orders: Iterable[Any],
+) -> dict[str, Any]:
+    if mode != "historical":
+        return {"status": "NOT_APPLICABLE", "reason": "not_historical"}
+    pending_payload = _load_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    pending_items = pending_payload.get("items") if isinstance(pending_payload.get("items"), list) else []
+    if not pending_items:
+        return {"status": "NOT_APPLICABLE", "reason": "pending_items_missing"}
+    if str(pending_payload.get("target_session_date") or "") != business_date:
+        return {"status": "NOT_APPLICABLE", "reason": "target_session_date_not_current_business_date"}
+    submit = _latest_submit_manifest(runtime_root=runtime_root, business_date=business_date)
+    if submit is None:
+        return {"status": "NOT_APPLICABLE", "reason": "submit_manifest_missing"}
+    submit_path, submit_payload = submit
+    if str(submit_payload.get("final_state") or "") == "POST_SEND_UNKNOWN":
+        return {"status": "REVIEW_REQUIRED", "reason": "post_send_unknown"}
+    submitted_count = _int_value(submit_payload.get("submitted_count"), 0)
+    blocked_count = _int_value(submit_payload.get("blocked_count"), 0)
+    if submitted_count <= 0 or blocked_count <= 0:
+        return {"status": "NOT_APPLICABLE", "reason": "not_mixed_submitted_and_blocked"}
+    continuation_path = _historical_quarantine_continuation_path(submit_payload, business_date)
+    continuation = _load_json_optional(continuation_path)
+    base_checks = _historical_mixed_item_lifecycle_checks(
+        submit_payload=submit_payload,
+        continuation=continuation,
+        business_date=business_date,
+        submit_manifest_path=submit_path,
+    )
+    item_outcomes = _derive_mixed_item_outcomes(
+        pending_items=pending_items,
+        submit_payload=submit_payload,
+        continuation=continuation,
+        orders=tuple(orders),
+    )
+    terminal_count = sum(1 for item in item_outcomes if bool(item.get("terminal")))
+    broker_uncertain = any(bool(item.get("broker_uncertainty")) for item in item_outcomes)
+    checks = {
+        **base_checks,
+        "all_items_classified": len(item_outcomes) == len(pending_items) > 0,
+        "all_items_terminal": terminal_count == len(pending_items) > 0,
+        "no_broker_uncertainty": not broker_uncertain,
+        "has_filled_item": any(str(item.get("outcome") or "") == "FILLED" for item in item_outcomes),
+        "has_quarantined_not_submitted_item": any(
+            str(item.get("outcome") or "") == "QUARANTINED_NOT_SUBMITTED" for item in item_outcomes
+        ),
+        "no_unresolved_review_required_item": not any(
+            str(item.get("outcome") or "") == "REVIEW_REQUIRED" for item in item_outcomes
+        ),
+    }
+    if not all(checks.values()):
+        return {
+            "status": "NOT_APPLICABLE",
+            "reason": "historical_mixed_item_lifecycle_checks_failed",
+            "checks": checks,
+            "item_outcomes": item_outcomes,
+            "submit_manifest_path": str(submit_path),
+            "continuation_path": str(continuation_path),
+        }
+    return {
+        "status": "PASS",
+        "reason": "historical_mixed_filled_and_ca_quarantined_items_terminal",
+        "checks": checks,
+        "item_outcomes": item_outcomes,
+        "submit_manifest_path": str(submit_path),
+        "continuation_path": str(continuation_path),
+        "derived_plan_state": "CONSUMED",
+    }
+
+
+def _historical_mixed_item_lifecycle_checks(
+    *,
+    submit_payload: dict[str, Any],
+    continuation: dict[str, Any],
+    business_date: str,
+    submit_manifest_path: Path,
+) -> dict[str, bool]:
+    prohibited = submit_payload.get("prohibited_actions") if isinstance(submit_payload.get("prohibited_actions"), dict) else {}
+    continuation_checks = continuation.get("checks") if isinstance(continuation.get("checks"), dict) else {}
+    text = json.dumps(submit_payload, ensure_ascii=False)
+    return {
+        "mode_historical": _manifest_indicates_historical(submit_payload),
+        "same_business_date": str(submit_payload.get("business_date") or "") == business_date,
+        "submit_review_required": str(submit_payload.get("final_state") or "") == "REVIEW_REQUIRED",
+        "submitted_count_positive": _int_value(submit_payload.get("submitted_count"), 0) > 0,
+        "blocked_count_positive": _int_value(submit_payload.get("blocked_count"), 0) > 0,
+        "no_post_send_unknown": "POST_SEND_UNKNOWN" not in text,
+        "no_broker_write": (
+            not bool(submit_payload.get("broker_write"))
+            and not bool(submit_payload.get("external_delivery"))
+            and not bool(prohibited.get("demo_submit_executed"))
+            and not bool(prohibited.get("production_order_executed"))
+            and not bool(prohibited.get("broker_write"))
+            and not bool(prohibited.get("external_delivery"))
+        ),
+        "continuation_artifact_present": bool(continuation),
+        "continuation_status": str(continuation.get("status") or "") == "COMPLETED_WITH_SYMBOL_QUARANTINE",
+        "continuation_business_date": str(continuation.get("business_date") or "") == business_date,
+        "continuation_scope": str(continuation.get("scope") or "") == "CORPORATE_ACTION_SYMBOL_ONLY",
+        "production_never": str(continuation.get("production_applicability") or "") == "NEVER",
+        "run_continuation_historical_only": (
+            str(continuation.get("corporate_action_run_continuation_eligibility") or "")
+            == "ALLOWED_FOR_HISTORICAL_REPLAY_ONLY"
+        ),
+        "classifier_checks_pass": all(bool(value) for value in continuation_checks.values()) if continuation_checks else False,
+        "continuation_runtime_manifest_bound": (
+            str(continuation.get("runtime_manifest_path") or "") in {"", str(submit_manifest_path)}
+            or Path(str(continuation.get("runtime_manifest_path") or "")).name == submit_manifest_path.name
+            or str(continuation.get("runtime_manifest_path") or "").endswith(
+                f"/daily/{business_date}/submit/runtime_manifest.json"
+            )
+        ),
+    }
+
+
+def _derive_mixed_item_outcomes(
+    *,
+    pending_items: list[Any],
+    submit_payload: dict[str, Any],
+    continuation: dict[str, Any],
+    orders: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    guard_items = submit_payload.get("submit_guard_item_evidence")
+    guard_items = guard_items if isinstance(guard_items, list) else []
+    affected_symbols = {str(symbol).strip().upper() for symbol in continuation.get("affected_symbols") or () if str(symbol).strip()}
+    outcomes: list[dict[str, Any]] = []
+    for item in pending_items:
+        if not isinstance(item, dict):
+            continue
+        pending_item_id = str(item.get("pending_item_id") or "")
+        symbol = str(item.get("symbol") or "").strip().upper()
+        side = str(item.get("side") or "").strip().upper()
+        quantity = _float(item.get("quantity"))
+        guard = next((guard_item for guard_item in guard_items if str(guard_item.get("pending_item_id") or "") == pending_item_id), {})
+        base = {
+            "pending_item_id": pending_item_id,
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "terminal": False,
+            "broker_uncertainty": False,
+            "source": "",
+        }
+        if _is_ca_quarantine_guard_item(guard) and symbol in affected_symbols:
+            outcomes.append(
+                {
+                    **base,
+                    "outcome": "QUARANTINED_NOT_SUBMITTED",
+                    "terminal": True,
+                    "source": "submit_guard_historical_corporate_action_quarantine",
+                }
+            )
+            continue
+        order = _matching_filled_order(
+            orders=orders,
+            pending_item_id=pending_item_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+        )
+        if order is not None:
+            outcomes.append(
+                {
+                    **base,
+                    "outcome": "FILLED",
+                    "terminal": True,
+                    "source": "execution_orderlist_full_fill",
+                    "order_id": str(getattr(order, "order_ref_hash", "") or ""),
+                    "filled_quantity": float(getattr(order, "filled_quantity", 0.0) or 0.0),
+                }
+            )
+            continue
+        if str(guard.get("submit_item_status") or "") == "PASS":
+            outcomes.append({**base, "outcome": "REVIEW_REQUIRED", "source": "submitted_item_fill_not_confirmed"})
+            continue
+        outcomes.append({**base, "outcome": "REVIEW_REQUIRED", "source": "unclassified_submit_item"})
+    return outcomes
+
+
+def _is_ca_quarantine_guard_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    return (
+        str(item.get("submit_item_status") or "") == "REVIEW_REQUIRED"
+        and str(item.get("guard_decision") or "") == "BLOCKED"
+        and str(item.get("guard_reason") or item.get("blocked_at_submit_reason") or "") == "corporate_action_event_not_resolved"
+        and str(item.get("violated_policy") or "") == "historical_corporate_action_symbol_quarantine"
+        and str(item.get("submit_status") or "NOT_SUBMITTED") in {"", "NOT_SUBMITTED"}
+    )
+
+
+def _matching_filled_order(
+    *,
+    orders: tuple[Any, ...],
+    pending_item_id: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+) -> Any | None:
+    for order in orders:
+        order_pending_item_id = str(getattr(order, "pending_item_id", "") or "")
+        order_symbol = str(getattr(order, "symbol", "") or "").strip().upper()
+        order_side = str(getattr(order, "side", "") or "").strip().upper()
+        order_quantity = float(getattr(order, "quantity", 0.0) or 0.0)
+        filled_quantity = float(getattr(order, "filled_quantity", 0.0) or 0.0)
+        remaining_quantity = float(getattr(order, "remaining_quantity", 0.0) or 0.0)
+        order_status = str(getattr(order, "order_status", "") or "").lower()
+        id_match = bool(pending_item_id and order_pending_item_id == pending_item_id)
+        symbol_match = order_symbol == symbol and order_side == side and abs(order_quantity - quantity) < 0.000001
+        if (id_match or symbol_match) and filled_quantity > 0 and remaining_quantity == 0 and order_status == "filled":
+            return order
+    return None
+
+
 def _load_json_dict(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_json_optional(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _runtime_execution_payload(execution: dict[str, Any]) -> dict[str, Any]:
@@ -1030,6 +1899,13 @@ def _append_ledger_records(path: Path, records: Iterable[object]) -> int:
     return appended
 
 
+def _write_current_projection_payload(path: Path, payload: dict[str, Any]) -> None:
+    if _is_mode_rooted_runtime_path(path):
+        raise ValueError("Current projection writer does not write mode-rooted runtime paths")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _existing_dedup_keys(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -1044,6 +1920,40 @@ def _existing_dedup_keys(path: Path) -> set[str]:
         if payload.get("dedup_key"):
             keys.add(str(payload["dedup_key"]))
     return keys
+
+
+def _execution_transaction_id(
+    *,
+    business_date: str,
+    ledger_orders: tuple[object, ...],
+    ledger_executions: tuple[object, ...],
+    ledger_positions: tuple[object, ...],
+    ledger_cash: tuple[object, ...],
+    ledger_events: tuple[object, ...],
+) -> str:
+    payload = {
+        "business_date": business_date,
+        "orders": _record_dedup_keys(ledger_orders),
+        "executions": _record_dedup_keys(ledger_executions),
+        "positions": _record_dedup_keys(ledger_positions),
+        "cash": _record_dedup_keys(ledger_cash),
+        "events": _record_dedup_keys(ledger_events),
+    }
+    return "execution-tx-" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _record_dedup_keys(records: tuple[object, ...]) -> tuple[str, ...]:
+    keys: list[str] = []
+    for record in records:
+        payload = record if isinstance(record, dict) else ledger_record_to_payload(record)
+        key = str(payload.get("dedup_key") or payload.get("record_id") or "")
+        if key:
+            keys.append(key)
+    return tuple(sorted(keys))
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _read_asset_state(path: Path) -> CurrentAssetState | None:

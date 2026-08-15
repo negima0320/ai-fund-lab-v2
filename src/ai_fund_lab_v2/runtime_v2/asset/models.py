@@ -13,6 +13,14 @@ class CurrentAssetPosition:
     market_value: float
     source: str
     as_of: str
+    current_price: float | None = None
+    quantity_basis: str = ""
+    quantity_basis_provenance: str = ""
+    valuation_price_basis: str = ""
+    valuation_price_role: str = ""
+    valuation_price_provenance: str = ""
+    execution_price_basis: str = ""
+    fill_price_basis: str = ""
 
 
 @dataclass(frozen=True)
@@ -35,4 +43,3 @@ class CurrentAssetState:
     buying_power_unknown: bool
     generated_from: tuple[str, ...]
     created_at: str
-

@@ -29,6 +29,8 @@ from ai_fund_lab_v2.runtime_v2.reconcile.models import (
     ReconciliationSeverity,
 )
 
+MONEY_RECONCILIATION_TOLERANCE = 0.000001
+
 
 def check_pending_vs_ledger_orders(
     *,
@@ -180,7 +182,7 @@ def check_broker_positions_vs_asset_state(
             findings.append(_review("BROKER_POSITION_MISSING_IN_ASSET", "broker_position", broker_position.position_ref_hash, "asset position exists", "none", broker_position.as_of))
         elif asset_position.quantity != broker_position.quantity:
             findings.append(_review("POSITION_QUANTITY_MISMATCH", "asset_position", symbol, str(asset_position.quantity), str(broker_position.quantity), asset_state.created_at))
-        elif asset_position.market_value != broker_position.market_value:
+        elif not _same_money(asset_position.market_value, broker_position.market_value):
             findings.append(_review("POSITION_MARKET_VALUE_MISMATCH", "asset_position", symbol, str(asset_position.market_value), str(broker_position.market_value), asset_state.created_at))
     for symbol, asset_position in asset_by_symbol.items():
         if symbol not in broker_by_symbol:
@@ -197,7 +199,7 @@ def check_broker_total_equity_vs_asset_state(
     if broker_cash is None or asset_state is None or asset_state.total_equity is None:
         return ()
     broker_total_equity = broker_cash.cash + sum(position.market_value for position in broker_positions)
-    if asset_state.total_equity != broker_total_equity:
+    if not _same_money(asset_state.total_equity, broker_total_equity):
         return (
             _review(
                 "TOTAL_EQUITY_MISMATCH",
@@ -223,11 +225,11 @@ def check_broker_cash_vs_asset_state(
     findings: list[ReconciliationFinding] = []
     if asset_state.cash is None:
         findings.append(_review("ASSET_CASH_UNKNOWN", "asset_state", asset_state.asset_state_id, "cash known", "unknown", asset_state.created_at))
-    elif asset_state.cash != broker_cash.cash:
+    elif not _same_money(asset_state.cash, broker_cash.cash):
         findings.append(_review("CASH_MISMATCH", "asset_state", asset_state.asset_state_id, str(asset_state.cash), str(broker_cash.cash), asset_state.created_at))
     if asset_state.buying_power is None:
         findings.append(_review("ASSET_BUYING_POWER_UNKNOWN", "asset_state", asset_state.asset_state_id, "buying_power known", "unknown", asset_state.created_at))
-    elif asset_state.buying_power != broker_cash.buying_power:
+    elif not _same_money(asset_state.buying_power, broker_cash.buying_power):
         findings.append(_review("BUYING_POWER_MISMATCH", "asset_state", asset_state.asset_state_id, str(asset_state.buying_power), str(broker_cash.buying_power), asset_state.created_at))
     return tuple(findings)
 
@@ -283,6 +285,12 @@ def _review(
         actual=actual,
         created_at=created_at,
     )
+
+
+def _same_money(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return abs(float(left) - float(right)) <= MONEY_RECONCILIATION_TOLERANCE
 
 
 def _finding(

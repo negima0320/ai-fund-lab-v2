@@ -42,6 +42,77 @@ Phase22 Strategy shadow generation is orchestration only. The runner calls the p
 | Phase22 Strategy shadow readiness | `system-status --scope strategy` |
 | Phase22 Strategy artifact inspection | `show --run-id <RUN_ID> --artifact strategy [--business-date <DATE>]` |
 
+## Read-Only Audit Scripts
+
+Some Phase29 attribution tasks add standalone read-only audit scripts outside
+the Runtime Test runner.  These scripts must not mutate Runtime state, Pending,
+Ledger, Current, Registry, Accepted Generation, Broker state, credentials, or
+notifications.
+
+Phase29-L21T-AO Buy Quality x Relative Opportunity Score forward-outcome audit:
+
+```bash
+python3 scripts/audits/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_audit.py
+```
+
+Optional explicit inputs:
+
+```bash
+python3 scripts/audits/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_audit.py \
+  --run-dir reports/runtime_tests/runs/<RUN_ID> \
+  --price-path .runtime/market_data_acquisition/runs/jquants-acquisition-20220517-20260807/raw/jquants/equities_bars_daily/data.parquet \
+  --output-dir reports/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_attribution_audit \
+  --anchor-date 2022-08-10
+```
+
+Outputs:
+
+```text
+reports/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_attribution_audit/summary.json
+reports/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_attribution_audit/per_entry.csv
+reports/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_attribution_audit/group_summary.csv
+reports/phase29_l21t_ao_buy_quality_relative_score_forward_outcome_attribution_audit/anchor_2022_08_10.csv
+```
+
+Forward returns from this script are post-hoc audit evidence only and must not
+be fed back into Runtime decisions.
+
+Phase29-L21T-AW Post-AV short fresh validation:
+
+Use this operator-run command to validate AV Momentum Trajectory BUY_WAIT
+semantics over a short window near earlier observed 78780 / 53800 examples.
+The deleted old-run runtime artifacts are not required, and artifact-level
+comparison against `runtime-test-historical-extended-smoke-20260814T054658313415Z`
+is not an AW pass condition. Codex must not run this command, and `--json` must
+not be added to the fresh-run command.
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py fresh-run \
+  --profile historical-extended-smoke \
+  --start-date 2022-08-10 \
+  --business-days 20 \
+  --initial-cash 1000000 \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+After the operator captures `<NEW_RUN_ID>`, use read-only inspection:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <NEW_RUN_ID> --scope overview
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <NEW_RUN_ID> --scope performance
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <NEW_RUN_ID> --scope positions
+PYTHONPATH=src python3 scripts/runtime_test.py summarize --run-id <NEW_RUN_ID> --scope lifecycle
+```
+
+Required review points are BUY_NEW count, BUY_WAIT count, trajectory class
+counts, Cash, Gross Exposure, Positions, Pending state, Runtime Judgment, SELL
+continuation, AV feature/classification materialization, and at least one
+HEALTHY_CONTINUATION candidate remaining BUY-eligible when other authorities
+pass. Check 78780 / 53800 fading-to-wait behavior only if comparable cases
+naturally appear; absence of those symbols/cases in the short window is not a
+failure.
+
 ## Phase22 Strategy Shadow
 
 Runtime Test commands include a shadow-only Phase22 Strategy job. It is visible in `plan`, runs after each normal daily Runtime job sequence in `run`, `fresh-run`, and `resume`, and writes to:
@@ -425,6 +496,59 @@ PYTHONPATH=src python3 scripts/analyze_pm_cross_regime.py analyze-runs \
 
 The comparison command is read-only. It reads run evidence under `reports/runtime_tests/runs/<RUN_ID>/` and writes the cross-regime analysis JSON. It does not mutate Runtime State, Accepted Generation, Registry, Broker state, or strategy logic.
 
+## Stop RUNNING Run
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py stop \
+  --run-id <RUN_ID> \
+  --dry-run
+```
+
+Actual stop:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py stop \
+  --run-id <RUN_ID> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+`stop` is the formal operator command for a `RUNNING` Runtime Test run that
+should not continue immediately.  It is evidence-only and does not roll back or
+delete Ledger, Current, Pending, broker snapshots, daily artifacts, execution
+evidence, position campaigns, completed business days, or performance evidence.
+
+The command uses the existing HALT state model:
+
+```text
+RUNNING -> HALT
+halted_at.runtime_test_job_status = OPERATOR_STOPPED
+```
+
+No separate top-level `STOPPED` run_state status is introduced.  A stopped run
+is resume-compatible (`resume --dry-run` may be used if source baselines still
+match) and abandon-compatible (`abandon --dry-run` then confirmed `abandon` when
+the operator chooses not to resume).
+
+Allowed source states:
+
+- `RUNNING`: transitions to operator-stopped `HALT`;
+- `HALT`: returns `ALREADY_STOPPED` without rewriting evidence.
+
+Invalid transition behavior:
+
+- unknown run id: rejected fail-closed;
+- `COMPLETED`, closed, or `ABANDONED`: rejected fail-closed;
+- corrupted or schema-invalid `run_state.json`: rejected fail-closed by run-state loading.
+
+Dry-run reports the current run-scoped status, whether stop is eligible, the
+target transition, files that would be modified, and `dry_run_no_mutation=true`.
+Double stop is idempotent.  `run-status` reads the active profile-scoped
+RUNNING/HALT run, while `show --run-id <RUN_ID>` reads the requested run's
+run-scoped `run_state.json`.
+
 ## Abandon HALT Run
 
 Dry run:
@@ -517,6 +641,139 @@ PYTHONPATH=src python3 scripts/runtime_test.py resume \
 ```
 
 Resume validates source baseline, Registry hash, and accepted artifact hash. If any baseline changed, resume is rejected. Failed jobs are never skipped.
+
+## Scoped Recovery / Replay
+
+Scoped recovery commands are for halted Historical Runtime Test runs where a
+specific day must be formally rewound before replay. Always create a backup
+before applying an actual scoped recovery. Dry-run first.
+
+### Failed Execution Recovery
+
+Use `recover-failed-execution` only for failed execution or submit-only
+precommit halt shapes. It requires the halted run to be at
+`<business-date>:execution`, the current Pending to be a consumed failed-attempt
+state, and target-date Ledger rows matching the failed execution or submit-only
+precommit pattern.
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-failed-execution \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --dry-run \
+  --json
+```
+
+Actual recovery:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-failed-execution \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state \
+  --json
+```
+
+### Stale Pending Recovery
+
+Use `recover-stale-pending` when a halted run contains a same-day
+`REVIEW_REQUIRED` Pending generated under stale semantics and the day must be
+regenerated from the Pending producer boundary. It does not edit Ledger or
+Current. It preserves the stale Pending and daily evidence, retires the current
+Pending slot to `EMPTY`, removes target-day replay jobs from `completed_jobs`,
+and rewinds `run_state.next_job` to the requested replay boundary.
+
+Required shape:
+
+```text
+run_state.status = HALT
+run_state.next_job = <business-date>:sell_planning
+current Pending state = REVIEW_REQUIRED
+current Pending target_session_date = <business-date>
+target-date Ledger rows = none
+```
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-stale-pending \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --expected-pending-plan-id <PENDING_PLAN_ID> \
+  --dry-run \
+  --json
+```
+
+Actual recovery:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-stale-pending \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --expected-pending-plan-id <PENDING_PLAN_ID> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state \
+  --json
+```
+
+Do not use `recover-stale-pending` if the target date already has Ledger rows;
+audit the state and use the failed-execution recovery path if applicable.
+
+### Replay Recovered Day
+
+After an actual scoped recovery rewinds the run, use `replay-recovered-day` to
+re-execute the allowed day jobs.
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py replay-recovered-day \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --jobs morning,sell_planning,submit,execution \
+  --dry-run \
+  --json
+```
+
+Actual replay:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py replay-recovered-day \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --jobs morning,sell_planning,submit,execution \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state \
+  --json
+```
+
+After replay, inspect the regenerated Pending, Submit, Execution, and run_state
+evidence before considering `resume --dry-run`.
 
 ## Rollback
 
@@ -625,10 +882,14 @@ Phase20-H implemented the Phase20-G recommendations for `run-status` and `summar
 | `fresh-run` | Start a complete clean Historical Runtime Test from one command? | Orchestrate status, backup, reset, plan, run, validate, close | Full historical lifecycle | Mutating unless `--dry-run` | Yes for actual | Profile, runtime root, evidence root, window args | `runtime_test_fresh_run_summary_v1` | `reports/runtime_tests/runs/<run_id>/fresh_run_summary.json` | `0`, `30`, `40`, `50`, `60`, `70`, `80`, `90` | `fresh_run_command` | default emit / fresh run summary schema | `test_phase18v_runtime_test_fresh_run.py`, `test_phase19_bh_fresh_run_namespace.py` | Documented | `run --auto-prepare` | Keep canonical full restart command |
 | `validate` | Is the current run state and evidence consistent enough to accept? | Read-only validation | Current state, pending, runtime state, external effects, run state presence | Read-only | No | Runtime root, optional run state | runner payload | None | `0`, `40` | `validate_command` | default emit / runner schema | `test_phase17_k_runtime_test_runner.py`, `test_phase18v_runtime_test_fresh_run.py` | Documented | `close` internal validation | Keep |
 | `resume` | Can a halted compatible run continue from remaining jobs? | Resume incomplete job sequence | Original plan, run state, baseline consistency | Mutating unless `--dry-run` | Yes for actual | Existing run state, original plan, current baseline | `runtime_test_run_state_v1` updates | `reports/runtime_tests/runs/<run_id>/` | `0`, `30`, `60`, `70`, `80`, `90` | `resume_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py`, `test_phase19_bj_runtime_test_abandon.py` | Documented | `run` execution loop | Keep |
+| `stop` | Should a RUNNING run be formally stopped before resume or abandon? | Operator stop lifecycle transition | Run-scoped `run_state.json` only | Evidence mutation only; no Trading State mutation | Yes for actual | Existing RUNNING/HALT run state | `runtime_test_run_state_v1` operator stop HALT record | `reports/runtime_tests/runs/<run_id>/run_state.json` | `0`, `60`, `70` | `stop_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py` Phase29-L21T-AE tests | Documented | `resume`, `abandon`, `run-status`, `show` | Keep; no separate STOPPED top-level status |
+| `recover-failed-execution` | Can a failed execution or submit-only precommit halt be rewound for scoped replay? | Scoped failed execution recovery | Target-day failed Ledger/Pending/Broker evidence and run_state rewind | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:execution`, consumed failed-attempt Pending, target-date failed rows | `runtime_test_scoped_failed_execution_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_failed_execution_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` Q3B/Q1B recovery tests | Documented | `rollback`, `resume`, `recover-stale-pending` | Keep; do not use for stale REVIEW_REQUIRED Pending |
+| `recover-stale-pending` | Can a same-day stale REVIEW_REQUIRED Pending be superseded so the day can be regenerated? | Scoped stale Pending recovery | Current Pending slot and target-day run_state replay records only | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:sell_planning`, same-day REVIEW_REQUIRED Pending, no target-date Ledger rows | `runtime_test_scoped_stale_pending_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_stale_pending_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` stale pending tests | Documented | `recover-failed-execution`, `resume` | Keep; do not use when target-date Ledger rows exist |
+| `replay-recovered-day` | Can the officially rewound day be replayed from selected jobs? | Scoped day replay | Planned jobs subset: morning, sell_planning, submit, execution | Mutating unless `--dry-run` | Yes for actual | Existing run plan, run_state after scoped recovery | `runtime_test_run_state_v1` updates plus replay payload | `reports/runtime_tests/runs/<run_id>/daily/<date>/` | `0`, `70` | `replay_recovered_day_command` | default emit / replay payload | `test_phase17_k_runtime_test_runner.py` recovery coverage | Documented | `resume`, `run` | Keep scoped to recovered day jobs |
 | `abandon` | Should a halted run be finalized as abandoned without touching trading state? | Abandon halted run | Run evidence finalization | Evidence mutation only, no trading mutation | Yes for actual except idempotent existing abandon | Existing halted run state | `runtime_test_abandonment_v1`, final summary | `reports/runtime_tests/runs/<run_id>/` | `0`, `60`, `70` | `abandon_command` | default emit / abandonment and final summary schemas | `test_phase19_bj_runtime_test_abandon.py` | Documented | `close`, `resume` | Keep |
 | `rollback` | Restore resettable state from a backup? | Restore backup | Resettable trading state only | Mutating unless `--dry-run` | Yes for actual | Backup manifest | runner payload | Runtime root restored from backup | `0`, `50`, `60`, `70`, `90` | `rollback_command` | default emit / runner schema | `test_phase17_k_runtime_test_runner.py`, `test_phase17_ae_reset_scope_plan_gate.py` | Documented | `reset` backup dependency | Keep |
 | `close` | Can this run be formally closed with final summary? | Finalize run evidence | Final summary and validation result | Evidence write only | No | Run state, validation result, current hashes | `runtime_test_final_summary_v1` | `reports/runtime_tests/runs/<run_id>/final_summary.json` | `0`, `10`, `70` | `close_command` | default emit / final summary schema | `test_phase17_k_runtime_test_runner.py`, `test_phase18v_runtime_test_fresh_run.py` | Documented | `abandon`, `summarize` | Keep |
-| `show` | Show a raw run or backup artifact? | Artifact display | `run_state.json` or `backup_manifest.json` | Read-only | No | Default `reports/runtime_tests` constants, `--run-id` or `--backup-id` | Source artifact wrapped by runner response | None | `0`, `60`, error codes | `show` | default emit / source artifact schema | Covered indirectly by runner tests; no focused test identified | Now documented here | `list-runs`, `list-backups` | Keep as low-level inspection; add focused parser tests in later phase |
+| `show` | Show a raw run or backup artifact? | Artifact display | `run_state.json` or `backup_manifest.json` | Read-only | No | `--evidence-root`, `--run-id` or `--backup-id` | Source artifact wrapped by runner response | None | `0`, `60`, error codes | `show` | default emit / source artifact schema | `test_phase17_k_runtime_test_runner.py` Phase29-L21T-AE observability test | Documented | `list-runs`, `list-backups` | Keep as low-level inspection |
 | `list-runs` | What Runtime Test run ids exist? | List run ids and statuses | Default `reports/runtime_tests/runs` | Read-only | No | Default constants only | runner payload | None | `0` | `list_runs` | default emit / runner schema | Covered indirectly; no focused test identified | Now documented here | `show` | Keep; future common `--evidence-root` could be considered |
 | `list-backups` | What backup ids exist? | List backup ids | Default `reports/runtime_tests/backups` | Read-only | No | Default constants only | runner payload | None | `0` | `list_backups` | default emit / runner schema | Covered indirectly; no focused test identified | Now documented here | `show` | Keep; future common `--evidence-root` could be considered |
 
@@ -653,6 +914,8 @@ Aliases and deprecated aliases:
 | Can I inspect a completed run? | `summarize --run-id <RUN_ID>` |
 | Can I inspect raw run or backup evidence? | `show`, `list-runs`, `list-backups` |
 | Can I continue a halted compatible run? | `resume --dry-run`, then `resume --confirm ...` |
+| Can I rewind a failed execution day for scoped replay? | `recover-failed-execution --dry-run`, then `recover-failed-execution --confirm ...`, then `replay-recovered-day` |
+| Can I supersede a stale same-day REVIEW_REQUIRED Pending and regenerate the day? | `recover-stale-pending --dry-run`, then `recover-stale-pending --confirm ...`, then `replay-recovered-day` |
 | Can I finalize a halted run as abandoned? | `abandon --dry-run`, then `abandon --confirm ...` |
 | Can I restore the previous resettable state? | `rollback --dry-run`, then `rollback --confirm ...` |
 
@@ -673,7 +936,7 @@ Performance observability and position lifecycle analysis: Option A is recommend
 | Specialist Inspection | `ai-status` | AI artifact authority and readiness |
 | Planning | `plan`, `prepare-isolated` | Read-only plan creation and historical root preparation |
 | Lifecycle Execution | `run`, `fresh-run`, `resume` | Runtime job execution via normal Runtime v2 CLI |
-| Safety / Recovery | `backup`, `reset`, `rollback`, `abandon`, `close`, `validate` | Resettable state, evidence finalization, validation, recovery |
+| Safety / Recovery | `backup`, `reset`, `rollback`, `abandon`, `close`, `validate`, `recover-failed-execution`, `recover-stale-pending`, `replay-recovered-day` | Resettable state, evidence finalization, validation, scoped recovery and replay |
 | Artifact Inspection | `show`, `list-runs`, `list-backups` | Low-level evidence discovery |
 | Post-run Analysis | `summarize` | Run-scoped summaries, future performance and lifecycle scopes |
 

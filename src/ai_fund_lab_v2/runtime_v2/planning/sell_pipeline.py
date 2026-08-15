@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,7 +21,9 @@ from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, Current
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.composition import (
     active_pending_snapshot,
+    compose_with_buy_item_scoped_review_pending,
     compose_with_existing_buy_pending,
+    is_buy_item_scoped_review_sell_continuation_pending,
     read_active_buy_pending,
     reconcile_with_existing_sell_pending,
 )
@@ -68,6 +70,7 @@ class SellExitDecision:
 REDUCE_QUANTITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_quantity_v1"
 DEFAULT_TRADABLE_UNIT = 100.0
 REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,7 @@ class SellPlanningPipelineResult:
     add_consumer_reason: str = ""
     add_accepted_count: int = 0
     add_rejected_count: int = 0
+    pre_sell_pending_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_stage_details(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -334,6 +338,14 @@ def run_sell_planning_pending_pipeline(
         business_date=business_date,
         target_session_date=target_session_date,
     )
+    pre_sell_active_pending, pre_sell_active_reason, pre_sell_pending_snapshot = active_pending_snapshot(
+        runtime_root=runtime_root_path,
+        environment=mode,
+        business_date=business_date,
+        target_session_date=target_session_date,
+    )
+    pre_sell_pending_snapshot["active_pending_reason"] = pre_sell_active_reason
+    pre_sell_pending_snapshot["active_buy_pending_reason"] = existing_buy_pending_reason
     add_result = build_add_pending_items(
         add_decisions=exit_decisions,
         asset_state=asset_state,
@@ -385,6 +397,7 @@ def run_sell_planning_pending_pipeline(
             existing_buy_pending=existing_buy_pending,
             existing_buy_pending_reason=existing_buy_pending_reason,
             add_result=add_result,
+            pre_sell_pending_snapshot=pre_sell_pending_snapshot,
         )
 
     quantity_decisions = tuple(
@@ -461,6 +474,10 @@ def run_sell_planning_pending_pipeline(
     order_plan_path = artifact_dir / "order_plan.json"
     approval_path = artifact_dir / "approval_artifact.json"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    _write_pre_sell_pending_snapshot_evidence(
+        artifact_dir=artifact_dir,
+        snapshot=pre_sell_pending_snapshot,
+    )
     order_plan_payload = _jsonable(planning_result.order_plan)
     if non_executable_decisions:
         order_plan_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
@@ -557,6 +574,106 @@ def run_sell_planning_pending_pipeline(
             add_consumer_reason=add_result.reason,
             add_accepted_count=add_result.accepted_count,
             add_rejected_count=add_result.rejected_count,
+            pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+            **_result_safety_fields(runtime_safety_decision),
+        )
+    if (
+        pre_sell_active_pending is not None
+        and existing_buy_pending is None
+        and existing_buy_pending_reason == "active_buy_missing"
+        and int(pre_sell_pending_snapshot.get("buy_item_count") or 0) > 0
+    ):
+        scoped_pending, scoped_order_plan_path, scoped_approval_path, scoped_evidence = (
+            compose_with_buy_item_scoped_review_pending(
+                existing_review_pending=pre_sell_active_pending,
+                pending=reconciliation.pending,
+                artifact_dir=artifact_dir,
+                business_date=business_date,
+                target_session_date=target_session_date,
+                environment=mode,
+                reason="SELL Planning composed with BUY item-scoped review Pending",
+                planning_submit_feasibility_current=load_runtime_current_exposure(
+                    runtime_root_path / "persistent_ledger" / "state.json"
+                ),
+                planning_submit_feasibility_policy=capital_deployment_policy,
+                accepted_generation_binding=accepted_generation_binding,
+            )
+        )
+        if scoped_evidence.get("composition_status") == "PASS":
+            pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
+            write_pending_order_plan(pending_path, scoped_pending)
+            blocked_count = sum(1 for item in planning_result.order_plan.items if item.blocked)
+            return SellPlanningPipelineResult(
+                status="PASS",
+                reason="",
+                current_position_count=len(current_positions),
+                selected_count=len(tuple(item for item in scoped_pending.items if item.pending_item_id in scoped_pending.approved_item_ids)),
+                blocked_count=blocked_count,
+                pending_path=str(pending_path),
+                pending_plan_id=scoped_pending.pending_plan_id,
+                approval_artifact_path=str(scoped_approval_path),
+                order_plan_artifact_path=str(scoped_order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=tuple(item.symbol for item in scoped_pending.items if item.pending_item_id in scoped_pending.approved_item_ids),
+                current_exposure=current_exposure,
+                pending_composition_model=str(scoped_evidence.get("composition_model") or ""),
+                pending_composition_status=str(scoped_evidence.get("composition_status") or ""),
+                preserved_existing_buy_pending=bool(scoped_evidence.get("preserved_existing_buy_pending")),
+                composite_pending=bool(scoped_evidence.get("composite_pending")),
+                add_consumer_status=add_result.status,
+                add_consumer_reason=add_result.reason,
+                add_accepted_count=add_result.accepted_count,
+                add_rejected_count=add_result.rejected_count,
+                pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+                **_result_safety_fields(runtime_safety_decision),
+            )
+    if (
+        pre_sell_active_pending is not None
+        and existing_buy_pending is None
+        and int(pre_sell_pending_snapshot.get("buy_item_count") or 0) > 0
+    ):
+        reason = f"existing_buy_pending_not_preservable:{existing_buy_pending_reason};PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED"
+        evidence = {
+            **pre_sell_pending_snapshot,
+            "classification": "REVIEW_REQUIRED",
+            "resolution_action": "ORIGINAL_PENDING_PRESERVED",
+            "reason_codes": [
+                f"EXISTING_BUY_PENDING_NOT_PRESERVABLE:{existing_buy_pending_reason}",
+                "PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED",
+            ],
+            "review_required": True,
+            "no_signal_overwrite_prevented": True,
+            "opposite_side_preserved": True,
+        }
+        _write_pending_continuity_evidence(
+            artifact_dir=artifact_dir,
+            reason=reason,
+            status="REVIEW_REQUIRED",
+            evidence=evidence,
+        )
+        pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
+        return SellPlanningPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=reason,
+            current_position_count=len(current_positions),
+            selected_count=0,
+            blocked_count=0,
+            pending_path=str(pending_path),
+            pending_plan_id=pre_sell_active_pending.pending_plan_id,
+            approval_artifact_path=str(approval_path),
+            order_plan_artifact_path=str(order_plan_path),
+            target_session_date=target_session_date,
+            selected_symbols=tuple(item.symbol for item in pre_sell_active_pending.items),
+            current_exposure=current_exposure,
+            pending_composition_model="PRESERVE_ACTIVE_PENDING_ON_INVALID_BUY",
+            pending_composition_status="REVIEW_REQUIRED",
+            preserved_existing_buy_pending=False,
+            composite_pending=False,
+            add_consumer_status=add_result.status,
+            add_consumer_reason=add_result.reason,
+            add_accepted_count=add_result.accepted_count,
+            add_rejected_count=add_result.rejected_count,
+            pre_sell_pending_snapshot=pre_sell_pending_snapshot,
             **_result_safety_fields(runtime_safety_decision),
         )
     pending = reconciliation.pending
@@ -635,6 +752,7 @@ def run_sell_planning_pending_pipeline(
         add_consumer_reason=add_result.reason,
         add_accepted_count=add_result.accepted_count,
         add_rejected_count=add_result.rejected_count,
+        pre_sell_pending_snapshot=pre_sell_pending_snapshot,
         **_result_safety_fields(runtime_safety_decision),
     )
 
@@ -655,9 +773,15 @@ def _write_no_signal_pending(
     existing_buy_pending=None,
     existing_buy_pending_reason: str = "",
     add_result: AddConsumerResult | None = None,
+    pre_sell_pending_snapshot: Mapping[str, Any] | None = None,
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    if pre_sell_pending_snapshot:
+        _write_pre_sell_pending_snapshot_evidence(
+            artifact_dir=artifact_dir,
+            snapshot=pre_sell_pending_snapshot,
+        )
     order_plan_path = artifact_dir / "order_plan.json"
     approval_path = artifact_dir / "approval_artifact.json"
     order_plan_payload = {
@@ -737,6 +861,7 @@ def _write_no_signal_pending(
                 add_consumer_reason=add_result.reason if add_result is not None else active_reason,
                 add_accepted_count=add_result.accepted_count if add_result is not None else 0,
                 add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or snapshot),
                 **_result_safety_fields(safety_decision),
             )
     if existing_buy_pending is None and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
@@ -769,6 +894,109 @@ def _write_no_signal_pending(
             add_consumer_reason=add_result.reason if add_result is not None else existing_buy_pending_reason,
             add_accepted_count=add_result.accepted_count if add_result is not None else 0,
             add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+            pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or {}),
+            **_result_safety_fields(safety_decision),
+        )
+    active_pending, active_reason, active_snapshot = active_pending_snapshot(
+        runtime_root=runtime_root,
+        environment=environment,
+        business_date=business_date,
+        target_session_date=target_session_date,
+    )
+    if active_pending is not None and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
+        if is_buy_item_scoped_review_sell_continuation_pending(
+            active_pending,
+            business_date=business_date,
+            target_session_date=target_session_date,
+        ):
+            reason_codes = [
+                "BUY_ITEM_SCOPED_REVIEW_PRESERVED_ON_SELL_NO_SIGNAL",
+                "PENDING_PLAN_NO_SIGNAL_DID_NOT_OVERWRITE_ACTIVE",
+            ]
+            preservation_evidence = {
+                **dict(pre_sell_pending_snapshot or active_snapshot),
+                "classification": "NO_SIGNAL",
+                "resolution_action": "BUY_ITEM_SCOPED_REVIEW_ORIGINAL_PENDING_PRESERVED",
+                "reason_codes": reason_codes,
+                "review_required": False,
+                "buy_item_scoped_review_preserved": True,
+                "sell_continuation_allowed": True,
+                "no_signal_overwrite_prevented": True,
+                "opposite_side_preserved": True,
+            }
+            _write_pending_continuity_evidence(
+                artifact_dir=artifact_dir,
+                reason=f"{reason};" + ";".join(reason_codes),
+                status=status,
+                evidence=preservation_evidence,
+            )
+            pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+            return SellPlanningPipelineResult(
+                status=status,
+                reason=reason,
+                current_position_count=current_position_count,
+                selected_count=0,
+                blocked_count=0,
+                pending_path=str(pending_path),
+                pending_plan_id=active_pending.pending_plan_id,
+                approval_artifact_path=str(approval_path),
+                order_plan_artifact_path=str(order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=(),
+                current_exposure=current_exposure,
+                pending_composition_model="BUY_ITEM_SCOPED_REVIEW_SELL_NO_SIGNAL_PRESERVATION",
+                pending_composition_status="NO_SIGNAL",
+                preserved_existing_buy_pending=True,
+                composite_pending=False,
+                add_consumer_status=add_result.status if add_result is not None else "",
+                add_consumer_reason=add_result.reason if add_result is not None else (existing_buy_pending_reason or active_reason),
+                add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+                add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+                **_result_safety_fields(safety_decision),
+            )
+        reason_codes = [
+            f"ACTIVE_PENDING_NOT_EMPTY:{existing_buy_pending_reason or active_reason}",
+            "PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED",
+        ]
+        preservation_evidence = {
+            **dict(pre_sell_pending_snapshot or active_snapshot),
+            "classification": "REVIEW_REQUIRED",
+            "resolution_action": "ORIGINAL_PENDING_PRESERVED",
+            "reason_codes": reason_codes,
+            "review_required": True,
+            "no_signal_overwrite_prevented": True,
+            "opposite_side_preserved": bool(active_snapshot.get("buy_item_count") or active_snapshot.get("sell_item_count")),
+        }
+        _write_pending_continuity_evidence(
+            artifact_dir=artifact_dir,
+            reason=";".join(reason_codes),
+            status="REVIEW_REQUIRED",
+            evidence=preservation_evidence,
+        )
+        pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+        return SellPlanningPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=";".join(reason_codes),
+            current_position_count=current_position_count,
+            selected_count=0,
+            blocked_count=0,
+            pending_path=str(pending_path),
+            pending_plan_id=active_pending.pending_plan_id,
+            approval_artifact_path=str(approval_path),
+            order_plan_artifact_path=str(order_plan_path),
+            target_session_date=target_session_date,
+            selected_symbols=tuple(item.symbol for item in active_pending.items),
+            current_exposure=current_exposure,
+            pending_composition_model="PRESERVE_ACTIVE_PENDING_ON_NO_SIGNAL",
+            pending_composition_status="REVIEW_REQUIRED",
+            preserved_existing_buy_pending=False,
+            composite_pending=False,
+            add_consumer_status=add_result.status if add_result is not None else "",
+            add_consumer_reason=add_result.reason if add_result is not None else (existing_buy_pending_reason or active_reason),
+            add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+            add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+            pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
             **_result_safety_fields(safety_decision),
         )
     pending = promote_order_plan_to_pending(
@@ -843,6 +1071,7 @@ def _write_no_signal_pending(
         add_consumer_reason=add_result.reason if add_result is not None else "",
         add_accepted_count=add_result.accepted_count if add_result is not None else 0,
         add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+        pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
         **_result_safety_fields(safety_decision),
     )
 
@@ -1501,6 +1730,10 @@ def _non_executable_reduce_quantity_contract(
         **base,
         "status": "NOT_EXECUTABLE",
         "reason": REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON,
+        "execution_semantic": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
+        "reduce_execution_semantic": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
+        "intentional_no_order": True,
+        "intentional_no_order_reason": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
         "raw_reduce_quantity": raw_reduce_quantity,
         "rounded_reduce_quantity": rounded_reduce_quantity,
         "rounded_executable_quantity": 0.0,
@@ -1537,6 +1770,9 @@ def _non_executable_decision_payload(decisions: tuple[SellExitDecision, ...]) ->
                 "reason": decision.reason,
                 "quantity_contract": contract,
                 "execution_feasibility_status": contract.get("execution_feasibility_status") or "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+                "execution_semantic": contract.get("execution_semantic") or contract.get("reduce_execution_semantic") or "",
+                "intentional_no_order": bool(contract.get("intentional_no_order")),
+                "intentional_no_order_reason": contract.get("intentional_no_order_reason") or "",
                 "effective_action": contract.get("effective_action") or "NO_SELL_ORDER",
                 "pending_order_generated": bool(contract.get("pending_order_generated")),
                 "position_quantity_after": contract.get("position_quantity_after", contract.get("position_quantity_before")),
@@ -1818,6 +2054,23 @@ def _write_pending_continuity_evidence(
     }
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "pending_continuity_evidence.json").write_text(
+        _json_dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def _write_pre_sell_pending_snapshot_evidence(
+    *,
+    artifact_dir: Path,
+    snapshot: Mapping[str, Any],
+) -> None:
+    payload = {
+        "schema_version": "runtime_v2_pre_sell_pending_snapshot.v1",
+        "status": "PASS" if snapshot.get("valid") else "MISSING_OR_INVALID",
+        "pending_snapshot": dict(snapshot),
+    }
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "pre_sell_pending_snapshot_evidence.json").write_text(
         _json_dumps(payload),
         encoding="utf-8",
     )

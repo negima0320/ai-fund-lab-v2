@@ -198,6 +198,7 @@ def _normalize_cash(
     production_equivalent: bool,
 ) -> BrokerCashSnapshot:
     cash_ref_hash = _hash_ref(payload.get("cash_ref") or f"{environment}:{as_of}:cash")
+    cash_value = payload.get("cash", payload.get("cash_available", 0))
     return BrokerCashSnapshot(
         snapshot_id=_snapshot_id("cash", cash_ref_hash, as_of),
         schema_version="1",
@@ -208,7 +209,7 @@ def _normalize_cash(
         review_required=review_required,
         production_equivalent=production_equivalent,
         cash_ref_hash=cash_ref_hash,
-        cash=float(payload.get("cash", 0)),
+        cash=float(cash_value),
         buying_power=float(payload.get("buying_power", 0)),
         currency=str(payload.get("currency", "JPY")),
     )

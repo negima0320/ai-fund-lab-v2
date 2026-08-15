@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from ai_fund_lab_v2.paper_trading.feature_refresh import FEATURES_READY, FEATURE_REFRESH_REQUIRED, run_feature_refresh
+from ai_fund_lab_v2.runtime_v2.market_refresh.consumer_readiness import validate_feature_consumer_readiness
 
 
 def _write_quotes(path: Path, *, start: str = "2026-03-02", periods: int = 75) -> None:
@@ -97,6 +98,72 @@ def test_execute_generates_phase9_feature_artifacts(tmp_path: Path) -> None:
     assert result.broker_order_api_called is False
 
 
+def test_phase29_l21t_ay_actual_feature_refresh_materializes_av_multi_horizon_columns(tmp_path: Path) -> None:
+    quotes_path = tmp_path / "jquants/quotes.parquet"
+    listed_path = tmp_path / "jquants/listed.parquet"
+    operations_root = tmp_path / "operations"
+    _write_quotes(quotes_path)
+    _write_listed(listed_path)
+    _write_ready_empty_current(tmp_path, "2026-06-11")
+
+    result = run_feature_refresh(
+        target_data_until="2026-06-11",
+        dry_run=False,
+        execute=True,
+        daily_quotes_path=quotes_path,
+        listed_info_path=listed_path,
+        feature_output_root=operations_root / "feature_artifacts",
+        manifest_root=operations_root / "feature_refresh_detail",
+        markdown_report_path=tmp_path / "report.md",
+        json_report_path=tmp_path / "report.json",
+        runtime_root=tmp_path,
+    )
+
+    candidate = pd.read_parquet(operations_root / "feature_artifacts/2026-06-11/candidate_features.parquet")
+    opportunity = pd.read_parquet(operations_root / "feature_artifacts/2026-06-11/opportunity_feature_input.parquet")
+    source = pd.read_parquet(quotes_path)
+    source = source[(source["target_date"].astype(str) <= "2026-06-11") & (source["code"].astype(str) == "10010")].sort_values(
+        "target_date"
+    )
+    close = source["Close"].astype(float).reset_index(drop=True)
+    returns_20d = [close.iloc[index] / close.iloc[index - 1] - 1.0 for index in range(len(close) - 20, len(close))]
+    vol20 = pd.Series(returns_20d).std(ddof=0)
+    candidate_row = candidate[(candidate["target_date"].astype(str) == "2026-06-11") & (candidate["code"].astype(str) == "10010")].iloc[0]
+    opportunity_row = opportunity[
+        (opportunity["target_date"].astype(str) == "2026-06-11") & (opportunity["code"].astype(str) == "10010")
+    ].iloc[0]
+    av_columns = [
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_10d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
+    ]
+
+    assert result.status == FEATURES_READY
+    assert all(column in candidate.columns for column in av_columns)
+    assert all(column in opportunity.columns for column in av_columns)
+    assert candidate_row["price_momentum_return_1d"] == round(close.iloc[-1] / close.iloc[-2] - 1.0, 6)
+    assert candidate_row["price_momentum_return_3d"] == round(close.iloc[-1] / close.iloc[-4] - 1.0, 6)
+    assert candidate_row["price_momentum_return_10d"] == round(close.iloc[-1] / close.iloc[-11] - 1.0, 6)
+    assert candidate_row["price_momentum_return_5d"] == round(close.iloc[-1] / close.iloc[-6] - 1.0, 6)
+    assert candidate_row["price_momentum_return_20d"] == round(close.iloc[-1] / close.iloc[-21] - 1.0, 6)
+    assert candidate_row["recent_move_volatility_z_1d"] == round((close.iloc[-1] / close.iloc[-2] - 1.0) / vol20, 6)
+    assert candidate_row["recent_move_volatility_z_3d"] == round((close.iloc[-1] / close.iloc[-4] - 1.0) / (vol20 * (3.0**0.5)), 6)
+    assert candidate_row["momentum_5d_vs_20d_delta"] == round(
+        (close.iloc[-1] / close.iloc[-6] - 1.0) - (close.iloc[-1] / close.iloc[-21] - 1.0), 6
+    )
+    assert candidate_row["momentum_1d_vs_5d_delta"] == round(
+        (close.iloc[-1] / close.iloc[-2] - 1.0) - (close.iloc[-1] / close.iloc[-6] - 1.0), 6
+    )
+    for column in av_columns:
+        assert opportunity_row[column] == candidate_row[column]
+    readiness = validate_feature_consumer_readiness(operations_root=operations_root, feature_date="2026-06-11")
+    assert readiness.status == "READY"
+
+
 def test_execute_copies_candidate_technical_features_to_position_input(tmp_path: Path) -> None:
     quotes_path = tmp_path / "jquants/quotes.parquet"
     listed_path = tmp_path / "jquants/listed.parquet"
@@ -184,6 +251,17 @@ def test_execute_detects_insufficient_lookback(tmp_path: Path) -> None:
 
     assert result.status == FEATURE_REFRESH_REQUIRED
     assert "candidate_no_universe_eligible_rows" in result.blocked_reasons
+    candidate = pd.read_parquet(tmp_path / "features/2026-06-12/candidate_features.parquet")
+    av_columns = [
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_10d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
+    ]
+    assert candidate[av_columns].isna().all().all()
 
 
 def test_future_rows_are_ignored_during_generation(tmp_path: Path) -> None:
@@ -263,3 +341,27 @@ def test_candidate_universe_hard_gate_excludes_non_current_stale_missing_name_an
     assert "not_current_listed" in by_code["14000"]["universe_exclusion_reason"]
     assert "stale_price" in by_code["14000"]["universe_exclusion_reason"]
     assert "14000" not in set(candidate[candidate["universe_eligible"].astype(bool)]["code"])
+
+
+def _write_ready_empty_current(root: Path, business_date: str) -> None:
+    (root / "runtime_state").mkdir(parents=True, exist_ok=True)
+    (root / "persistent_ledger").mkdir(parents=True, exist_ok=True)
+    (root / "runtime_state/current_state.json").write_text(
+        json.dumps({"state": "CURRENT_STATE_LOADED", "asset_state_source": "persistent_ledger/state.json"}),
+        encoding="utf-8",
+    )
+    (root / "persistent_ledger/state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "runtime_v2_asset_state_v1",
+                "as_of": business_date,
+                "business_date": business_date,
+                "position_state_as_of": business_date,
+                "positions": [],
+                "current_state_confirmed_empty": True,
+                "current_positions_unknown": False,
+                "review_required": False,
+            }
+        ),
+        encoding="utf-8",
+    )

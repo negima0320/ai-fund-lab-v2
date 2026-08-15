@@ -75,6 +75,26 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
     assert opportunity["rankings"][0]["security_type"] == "011"
     assert opportunity["rankings"][0]["market_name"] == "プライム"
     assert opportunity["rankings"][0]["listed_info"] == candidate["rows"][0]["listed_info"]
+    for column in (
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_5d",
+        "price_momentum_return_10d",
+        "price_momentum_return_20d",
+        "price_momentum_return_60d",
+        "volatility_return_std_20d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
+    ):
+        assert candidate["rows"][0][column] == rows_by_code(feature_root, "7203")[column]
+        assert opportunity["rankings"][0][column] == rows_by_code(feature_root, "7203")[column]
     assert signals[0].source_ai == "opportunity_ai"
     assert signals[0].symbol == "7203"
 
@@ -375,8 +395,15 @@ def _feature_row(code: str, momentum: float, price: float) -> dict:
         "universe_eligible": True,
         "excluded_reason": "",
         "price_momentum_return_20d": momentum,
+        "price_momentum_return_10d": momentum * 0.75,
         "price_momentum_return_5d": momentum / 2,
+        "price_momentum_return_3d": momentum / 3,
+        "price_momentum_return_1d": momentum / 10,
         "price_momentum_return_60d": momentum * 1.5,
+        "recent_move_volatility_z_1d": 0.8,
+        "recent_move_volatility_z_3d": 0.9,
+        "momentum_5d_vs_20d_delta": momentum / 2 - momentum,
+        "momentum_1d_vs_5d_delta": momentum / 10 - momentum / 2,
         "trend_close_over_ma_20d": momentum / 3,
         "trend_ma_20_60_ratio": 1.01,
         "trend_ma_5_20_ratio": 1.02,
@@ -412,7 +439,33 @@ def _opportunity_feature_row(candidate_row: dict) -> dict:
             row[column] = False
         else:
             row[column] = 0.1
+    for column in (
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_5d",
+        "price_momentum_return_10d",
+        "price_momentum_return_20d",
+        "price_momentum_return_60d",
+        "volatility_return_std_20d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "volume_momentum_ratio_5d",
+        "volume_momentum_ratio_1d_20d",
+    ):
+        row[column] = candidate_row[column]
     return row
+
+
+def rows_by_code(feature_root: Path, code: str) -> dict:
+    frame = pd.read_parquet(feature_root / FEATURE_DATE / "candidate_features.parquet")
+    rows = frame[frame["code"].astype(str) == code].to_dict("records")
+    assert len(rows) == 1
+    return rows[0]
 
 
 def _write_candidate_model(path: Path) -> Path:

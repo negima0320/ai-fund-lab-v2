@@ -13,6 +13,7 @@ from ai_fund_lab_v2.runtime_v2.ledger.performance_events import (
     CanonicalPerformanceExecutionEvent,
     resolve_performance_fills,
 )
+from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 
 EXECUTION_READONLY_SOURCES = {
     "runtime_v2_execution_readonly",
@@ -49,6 +50,9 @@ def project_runtime_owned_fills_to_current(
     business_date: str,
     mode: str,
     write: bool = True,
+    candidate_orders: tuple[object, ...] = (),
+    candidate_executions: tuple[object, ...] = (),
+    candidate_positions: tuple[object, ...] = (),
 ) -> RuntimeOwnedFillProjectionResult:
     """Project Runtime-owned filled BUY/SELL positions into Current SoT.
 
@@ -64,9 +68,9 @@ def project_runtime_owned_fills_to_current(
     ledger_dir = root / "persistent_ledger"
     state_path = ledger_dir / "state.json"
     before = _load_json(state_path)
-    submit_orders = _load_jsonl(ledger_dir / "orders.jsonl")
-    ledger_executions = _load_jsonl(ledger_dir / "executions.jsonl")
-    ledger_positions = _load_jsonl(ledger_dir / "positions.jsonl")
+    submit_orders = _merge_candidate_rows(_load_jsonl(ledger_dir / "orders.jsonl"), candidate_orders)
+    ledger_executions = _merge_candidate_rows(_load_jsonl(ledger_dir / "executions.jsonl"), candidate_executions)
+    ledger_positions = _merge_candidate_rows(_load_jsonl(ledger_dir / "positions.jsonl"), candidate_positions)
 
     runtime_owned_symbols = _runtime_owned_broker_symbols(submit_orders)
     if not runtime_owned_symbols:
@@ -107,6 +111,14 @@ def project_runtime_owned_fills_to_current(
     )
     projection_errors = list(quantity_projection["errors"])
     projection_errors.extend(_current_acquisition_authority_errors(before))
+    projection_errors.extend(
+        _basis_projection_errors(
+            latest_positions=latest_positions,
+            current_sot_before=before,
+            canonical_events=pending_events,
+            projected_quantities=quantity_projection["quantities"],
+        )
+    )
     if pending_events:
         for symbol, quantity in quantity_projection["quantities"].items():
             cost_quantity = _number((cost_projection.get(symbol) or {}).get("quantity"))
@@ -130,6 +142,8 @@ def project_runtime_owned_fills_to_current(
             projected_cost=cost_projection.get(symbol),
             latest_positions=latest_positions,
             business_date=business_date,
+            current_sot_before=before,
+            canonical_events=pending_events,
         )
         for symbol, quantity in quantity_projection["quantities"].items()
         if quantity > 0
@@ -324,13 +338,26 @@ def _latest_positions_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[st
 
 
 def _current_position(row: dict[str, Any], *, business_date: str) -> CurrentAssetPosition:
+    quantity = _number(row.get("quantity"))
+    market_value = _number(row.get("market_value"))
+    current_price = _number(row.get("current_price"))
+    if current_price <= POSITION_QUANTITY_EPSILON and quantity > POSITION_QUANTITY_EPSILON:
+        current_price = market_value / quantity
     return CurrentAssetPosition(
         symbol=str(row.get("symbol") or ""),
-        quantity=_number(row.get("quantity")),
+        quantity=quantity,
         average_price=_number(row.get("average_price")),
-        market_value=_number(row.get("market_value")),
+        market_value=market_value,
         source="runtime_v2_runtime_owned_fill_projection",
         as_of=str(row.get("as_of") or row.get("recorded_at") or business_date),
+        current_price=current_price if current_price > POSITION_QUANTITY_EPSILON else None,
+        quantity_basis=str(row.get("quantity_basis") or ""),
+        quantity_basis_provenance=str(row.get("quantity_basis_provenance") or ""),
+        valuation_price_basis=str(row.get("valuation_price_basis") or ""),
+        valuation_price_role=str(row.get("valuation_price_role") or ""),
+        valuation_price_provenance=str(row.get("valuation_price_provenance") or ""),
+        execution_price_basis=str(row.get("execution_price_basis") or ""),
+        fill_price_basis=str(row.get("fill_price_basis") or ""),
     )
 
 
@@ -392,6 +419,8 @@ def _projected_position_row(
     projected_cost: dict[str, float] | None,
     latest_positions: dict[str, dict[str, Any]],
     business_date: str,
+    current_sot_before: dict[str, Any],
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
 ) -> dict[str, Any]:
     latest = latest_positions.get(symbol) or {}
     latest_quantity = _number(latest.get("quantity"))
@@ -408,8 +437,140 @@ def _projected_position_row(
     row["quantity"] = quantity
     row["average_price"] = average_price
     row["market_value"] = quantity * market_price
+    row["current_price"] = market_price
     row["as_of"] = row.get("as_of") or row.get("recorded_at") or business_date
+    row.update(
+        _position_basis_metadata(
+            symbol=symbol,
+            latest_position=latest,
+            current_sot_before=current_sot_before,
+            canonical_events=canonical_events,
+        )
+    )
     return row
+
+
+def _position_basis_metadata(
+    *,
+    symbol: str,
+    latest_position: dict[str, Any],
+    current_sot_before: dict[str, Any],
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+) -> dict[str, str]:
+    before_position = _current_position_payload(symbol, current_sot_before=current_sot_before)
+    before_basis = _basis_value(before_position)
+    latest_basis = _basis_value(latest_position)
+    event_basis = _basis_value_from_events(symbol=symbol, canonical_events=canonical_events)
+    basis = before_basis or latest_basis or event_basis or "ADJUSTED"
+    provenance = (
+        _basis_provenance(before_position)
+        or _basis_provenance(latest_position)
+        or _basis_provenance_from_events(symbol=symbol, canonical_events=canonical_events)
+        or "runtime_execution_price_authority:adjusted_reference_price_basis"
+    )
+    metadata = {
+        "quantity_basis": basis,
+        "quantity_basis_provenance": provenance,
+        "execution_price_basis": event_basis or latest_basis or before_basis or basis,
+        "fill_price_basis": event_basis or latest_basis or before_basis or basis,
+    }
+    valuation_basis = str(before_position.get("valuation_price_basis") or latest_position.get("valuation_price_basis") or "")
+    if valuation_basis:
+        metadata["valuation_price_basis"] = valuation_basis
+    valuation_role = str(before_position.get("valuation_price_role") or latest_position.get("valuation_price_role") or "")
+    if valuation_role:
+        metadata["valuation_price_role"] = valuation_role
+    valuation_provenance = str(
+        before_position.get("valuation_price_provenance") or latest_position.get("valuation_price_provenance") or ""
+    )
+    if valuation_provenance:
+        metadata["valuation_price_provenance"] = valuation_provenance
+    return metadata
+
+
+def _current_position_payload(symbol: str, *, current_sot_before: dict[str, Any]) -> dict[str, Any]:
+    for row in current_sot_before.get("positions") or ():
+        if str(row.get("symbol") or "").strip() == symbol:
+            return dict(row)
+    return {}
+
+
+def _basis_value(row: dict[str, Any]) -> str:
+    for key in (
+        "quantity_basis",
+        "position_quantity_basis",
+        "fill_price_basis",
+        "execution_price_basis",
+        "valuation_price_basis",
+        "price_basis",
+    ):
+        value = str(row.get(key) or "").upper()
+        if value in {"RAW", "ADJUSTED", "RECONCILED"}:
+            return "RAW" if value == "RECONCILED" else value
+    return ""
+
+
+def _basis_provenance(row: dict[str, Any]) -> str:
+    for key in (
+        "quantity_basis_provenance",
+        "position_quantity_basis_provenance",
+        "fill_price_basis_provenance",
+        "execution_price_basis_provenance",
+        "valuation_price_provenance",
+        "price_provenance",
+    ):
+        value = str(row.get(key) or "")
+        if value:
+            return value
+    return ""
+
+
+def _basis_value_from_events(
+    *,
+    symbol: str,
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+) -> str:
+    for event in reversed(canonical_events):
+        if event.symbol != symbol:
+            continue
+        value = _basis_value(event.lineage or {})
+        if value:
+            return value
+    return ""
+
+
+def _basis_provenance_from_events(
+    *,
+    symbol: str,
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+) -> str:
+    for event in reversed(canonical_events):
+        if event.symbol != symbol:
+            continue
+        value = _basis_provenance(event.lineage or {})
+        if value:
+            return value
+    return ""
+
+
+def _basis_projection_errors(
+    *,
+    latest_positions: dict[str, dict[str, Any]],
+    current_sot_before: dict[str, Any],
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+    projected_quantities: dict[str, float],
+) -> list[str]:
+    errors: list[str] = []
+    for symbol, quantity in projected_quantities.items():
+        if quantity <= POSITION_QUANTITY_EPSILON:
+            continue
+        before_basis = _basis_value(_current_position_payload(symbol, current_sot_before=current_sot_before))
+        latest_basis = _basis_value(latest_positions.get(symbol) or {})
+        event_basis = _basis_value_from_events(symbol=symbol, canonical_events=canonical_events)
+        explicit = [basis for basis in (before_basis, latest_basis, event_basis) if basis]
+        if len(set(explicit)) > 1:
+            errors.append(f"runtime_owned_position_basis_conflict:{symbol}")
+    return errors
 
 
 def _projected_open_costs(
@@ -684,7 +845,7 @@ def _state_payload_with_metadata(
 
 def _public_position(position: CurrentAssetPosition) -> dict[str, Any]:
     cost_basis = position.quantity * position.average_price
-    return {
+    payload = {
         "symbol": position.symbol,
         "quantity": position.quantity,
         "average_price": position.average_price,
@@ -694,6 +855,21 @@ def _public_position(position: CurrentAssetPosition) -> dict[str, Any]:
         "source": position.source,
         "as_of": position.as_of,
     }
+    if position.current_price is not None:
+        payload["current_price"] = position.current_price
+    for field in (
+        "quantity_basis",
+        "quantity_basis_provenance",
+        "valuation_price_basis",
+        "valuation_price_role",
+        "valuation_price_provenance",
+        "execution_price_basis",
+        "fill_price_basis",
+    ):
+        value = getattr(position, field)
+        if value:
+            payload[field] = value
+    return payload
 
 
 def _asset_state_id(*, environment: str, source: str, as_of: str, generated_from: tuple[str, ...]) -> str:
@@ -713,6 +889,22 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _merge_candidate_rows(existing_rows: list[dict[str, Any]], candidate_records: tuple[object, ...]) -> list[dict[str, Any]]:
+    if not candidate_records:
+        return list(existing_rows)
+    rows = list(existing_rows)
+    existing_dedup = {str(row.get("dedup_key") or "") for row in rows if row.get("dedup_key")}
+    for record in candidate_records:
+        payload = record if isinstance(record, dict) else ledger_record_to_payload(record)
+        dedup_key = str(payload.get("dedup_key") or "")
+        if dedup_key and dedup_key in existing_dedup:
+            continue
+        rows.append(payload)
+        if dedup_key:
+            existing_dedup.add(dedup_key)
+    return rows
 
 
 def _number(value: Any) -> float:

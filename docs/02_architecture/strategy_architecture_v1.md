@@ -363,6 +363,46 @@ PIT = business_date時点までのCandidate / Opportunity入力に限定
 
 `runtime_opportunity_score` は資金配分額、target weight、allocation quality、BUY確定、Submit許可ではない。Position Sizingは `runtime_opportunity_score` をquality multiplierやweight計算の直接入力として再解釈してはならない。
 
+Phase29-L21T-AHで、BUY_NEW eligibilityに対するscore signの意味を明確化した。
+
+```text
+runtime_opportunity_score = canonical uncalibrated relative opportunity signal
+expected_edge_score = deprecated alias
+expected_return = deprecated alias, not economic return unless calibrated
+calibration_applied = false
+economic_units_available = false
+```
+
+この状態では、`runtime_opportunity_score <= 0` またはaliasの
+`expected_edge_score <= 0` だけを理由にBUY_NEWをfail-closedしてはならない。
+候補はBUY Qualityの `relative_opportunity_quality`、Market Context、Signal
+Reliability、Execution Feasibility、Portfolio Fit、Portfolio Construction、
+Position Sizing、Lot/Safety、Submit feasibilityのProduction-common chainで評価する。
+
+`below_opportunity_top20` はranking metadata / observability / diagnostic
+shortlistであり、uncalibrated score環境ではhard BUY_NEW rejection authorityでは
+ない。同様に、top20であることはBUY permissionではない。
+
+将来formal calibrationが成立し、`calibration_applied=true` かつ
+`economic_units_available=true` が明示された場合のみ、calibrated economic
+expected return / edge のzero boundaryをBUY_NEW eligibilityで使える。
+
+Phase29-L21T-AKで、同じscore semantic contractをPortfolio Construction
+consumerまで拡張した。Portfolio ConstructionはOpportunityの
+`canonical_score_field`、`score_semantic_role`、`calibration_applied`、
+`economic_units_available`を消費し、uncalibrated relative score環境では
+`runtime_opportunity_score <= 0`、`non_positive_expected_edge_score`、
+standalone `below_opportunity_top20` を単独のBUY_NEW hard rejection authority
+として使わない。
+
+これはnegative score candidateの自動BUYやBUY件数固定を意味しない。
+Portfolio Constructionは引き続きBuy Quality、Portfolio Policy、Market
+Context、Current、Pending、hard no-buy reason、Corporate Event、Safety/lot
+feasibilityへ渡るProduction-common chainに従ってtarget membershipと
+target weightを決める。`high_downside_risk_score`等のhard reason、Buy
+Quality `REJECT`、missing / malformed semantic metadata、future calibrated
+economic negative scoreはfail-closedを維持する。
+
 ### Portfolio Construction Target Allocation Contract
 
 Opportunity RankingをPortfolio制約へ統合し、どの銘柄をTarget Portfolioに含め、どの比率で持つかを決めるAuthorityは `Portfolio Construction` である。
@@ -1521,3 +1561,36 @@ Momentum Continuation is introduced as a PIT-only foundation for HOLD / ADD / RE
 Re-entry is not a separate action. It is a new `BUY_NEW` after full EXIT and must pass the same canonical chain without preferential treatment. Prior campaign PnL, Paper Ledger results, future price, historical-test performance, and audit judgments must not become Strategy inputs.
 
 Future performance work must follow the Phase27-D1 sequence: repair BUY_ADD authority first, prove the canonical contract with targeted tests, then add observability/shadow foundations, and only then run controlled performance experiments one change at a time.
+
+## 30. Phase29-L21T-AV Multi-Horizon Momentum Trajectory Semantics
+
+Phase29-L21T-AV implements the AU/AU2 Production-common trajectory design as an
+Adaptive BUY Quality extension for BUY_NEW. The goal is to distinguish healthy
+momentum continuation from prior winners whose recent trajectory has faded and
+from names whose gains are concentrated into an overheated recent move.
+
+Technical Feature authority materializes PIT facts including 1BD / 3BD / 5BD /
+10BD / 20BD momentum, recent volatility-adjusted move, and momentum deltas.
+Existing 5BD / 20BD calculations remain unchanged.
+
+Adaptive BUY Quality is the classification owner:
+
+```text
+HEALTHY_CONTINUATION
+FADING_PRIOR_WINNER
+RECENT_ACCELERATION_OVERHEAT
+MIXED_OR_UNRESOLVED
+```
+
+`FADING_PRIOR_WINNER` and `RECENT_ACCELERATION_OVERHEAT` produce `BUY_WAIT` for
+BUY_NEW. `BUY_WAIT` means temporary BUY_NEW ineligibility only: no BUY_NEW order,
+no BUY Pending, no Human Review Pending, no Runtime halt, no SELL block, and
+normal next-business-day reevaluation from PIT features. `HEALTHY_CONTINUATION`
+does not boost allocation automatically; it allows the existing BUY Quality,
+Portfolio Construction, Position Sizing, Safety, Pending, Submit, and Execution
+chain to continue.
+
+Portfolio Construction, Position Sizing, Runtime Planning, Pending, Submit, and
+Execution must consume/copy the BUY Quality trajectory fields and must not
+recompute trajectory classification. BUY_ADD, REENTRY, HOLD, REDUCE, and EXIT
+authority remain unchanged.

@@ -25,6 +25,7 @@ from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
     materialize_historical_pending_safety_context,
 )
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.order_reservation import resolve_order_cash_reservation
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicyError,
     load_capital_deployment_policy,
@@ -479,6 +480,16 @@ def _pending_item_from_strategy_plan(
     )
     if side == "SELL" and listed_info is None:
         return None, f"{listed_info_reason or 'strategy_sell_canonical_listed_info_missing'}:{symbol}"
+    reservation = resolve_order_cash_reservation(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=symbol,
+        side=side,
+        order_type="MARKET",
+        quantity=float(planned_quantity),
+        reference_price=price,
+        reference_price_authority=dict(plan.get("reference_price_authority") or {}),
+    )
     return PendingOrderItem(
         pending_item_id=pending_item_id,
         symbol=symbol,
@@ -493,6 +504,13 @@ def _pending_item_from_strategy_plan(
         price_source="jquants_raw_normalized_daily_quotes_close",
         price_as_of=str(price_resolution.get("price_date") or business_date),
         price_confidence="PIT",
+        reference_price=price,
+        reference_price_authority=dict(plan.get("reference_price_authority") or {}),
+        reservation_price=reservation["reservation_price"],
+        reservation_price_type=reservation["reservation_price_type"],
+        reservation_price_authority=reservation["reservation_price_authority"],
+        reservation_reason=reservation["reservation_reason"],
+        reserved_notional=reservation["reserved_notional"],
         capital_allocation_amount=round(float(planned_quantity) * price, 2),
         policy_version="phase22_strategy_planning_authority",
         policy_source=str(plan.get("planning_id") or ""),

@@ -1,11 +1,16 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from ai_fund_lab_v2.runtime_v2.asset.runtime_owned_fill_projection import (
     project_runtime_owned_fills_to_current,
 )
 from ai_fund_lab_v2.runtime_v2.asset.models import CurrentAssetPosition, CurrentAssetState
 from ai_fund_lab_v2.runtime_v2.broker_readonly.normalizer import normalize_broker_readonly_payload
+from ai_fund_lab_v2.runtime_v2.current_state.temporal import CURRENT_TEMPORAL_SCHEMA_VERSION
+from ai_fund_lab_v2.runtime_v2.current_state.valuation import run_current_valuation_refresh
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
 from ai_fund_lab_v2.runtime_v2.reconcile.reconciler import run_reconciliation
 
@@ -176,6 +181,215 @@ def test_phase26_c_valuation_refresh_preserves_acquisition_authority(tmp_path):
     assert state["positions"][0]["market_value"] == 95060.0
     assert state["positions"][0]["unrealized_pnl"] == 5660.0
     assert state["positions"][0]["as_of"] == "2023-01-18"
+
+
+def test_phase29_l21t_bl_existing_adjusted_basis_persists_into_day2_valuation(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-day1",
+            "environment": "historical",
+            "source": "runtime_v2_current_valuation_refresh",
+            "as_of": "2022-08-10",
+            "positions": [
+                {
+                    **_current_position("94320", quantity=200, average_price=149.2, market_value=29960.0, as_of="2022-08-10"),
+                    "current_price": 149.8,
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "day1_current_valuation_adjusted_basis",
+                    "valuation_price_basis": "ADJUSTED",
+                    "valuation_price_role": "reconciled_adjusted_basis_valuation_price",
+                    "valuation_price_provenance": "day1_adjusted_basis_price",
+                },
+                {
+                    **_current_position("94340", quantity=100, average_price=151.4, market_value=15180.0, as_of="2022-08-10"),
+                    "current_price": 151.8,
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "day1_current_valuation_adjusted_basis",
+                    "valuation_price_basis": "ADJUSTED",
+                    "valuation_price_role": "reconciled_adjusted_basis_valuation_price",
+                    "valuation_price_provenance": "day1_adjusted_basis_price",
+                },
+            ],
+            "cash": 745820.0,
+            "buying_power": 745820.0,
+            "market_value": 45140.0,
+            "total_equity": 790960.0,
+        },
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "orders.jsonl",
+        [_accepted_order("94320", "94320"), _accepted_order("94340", "94340")],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [
+            _position("94320", quantity=200, average_price=149.2, market_value=29960.0, as_of="2022-08-12"),
+            _position("94340", quantity=100, average_price=151.4, market_value=15180.0, as_of="2022-08-12"),
+        ],
+    )
+
+    projection = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root,
+        business_date="2022-08-12",
+        mode="historical",
+    )
+    state = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    by_symbol = {position["symbol"]: position for position in state["positions"]}
+
+    assert projection.status == "PASS"
+    assert by_symbol["94320"]["quantity_basis"] == "ADJUSTED"
+    assert by_symbol["94320"]["quantity_basis_provenance"] == "day1_current_valuation_adjusted_basis"
+    assert by_symbol["94320"]["current_price"] == 149.8
+    assert by_symbol["94340"]["quantity_basis"] == "ADJUSTED"
+    state.update(
+        {
+            "schema_version": CURRENT_TEMPORAL_SCHEMA_VERSION,
+            "temporal_schema_version": CURRENT_TEMPORAL_SCHEMA_VERSION,
+            "business_date": "2022-08-12",
+            "position_state_as_of": "2022-08-12",
+            "valuation_as_of": "2022-08-10",
+            "source_market_date": "2022-08-10",
+            "last_execution_date": "2022-08-12",
+            "last_reconciled_at": "2022-08-12T06:30:00+00:00",
+            "updated_at": "2022-08-12T06:30:00+00:00",
+        }
+    )
+    _write_json(runtime_root / "persistent_ledger" / "state.json", state)
+
+    pd = pytest.importorskip("pandas")
+    asof_view = _write_historical_asof_view(
+        tmp_path,
+        pd,
+        business_date="2022-08-12",
+        rows=[
+            {"Date": "2022-08-12", "Code": "94320", "Open": 150.3, "High": 151.1, "Low": 147.8, "Close": 147.9, "PriceSource": "adjusted"},
+            {"Date": "2022-08-12", "Code": "94340", "Open": 152.5, "High": 153.5, "Low": 151.1, "Close": 151.4, "PriceSource": "adjusted"},
+        ],
+        raw_rows=[
+            {"Date": "2022-08-12", "Code": "94320", "O": 3758.0, "H": 3778.0, "L": 3696.0, "C": 3698.0, "AdjO": 150.3, "AdjH": 151.1, "AdjL": 147.8, "AdjC": 147.9},
+            {"Date": "2022-08-12", "Code": "94340", "O": 1525.0, "H": 1535.0, "L": 1511.0, "C": 1514.0, "AdjO": 152.5, "AdjH": 153.5, "AdjL": 151.1, "AdjC": 151.4},
+        ],
+    )
+    valuation = run_current_valuation_refresh(
+        runtime_root=runtime_root,
+        business_date="2022-08-12",
+        apply_current_valuation=True,
+        now=datetime(2022, 8, 12, 6, 35, tzinfo=timezone.utc),
+        market_evidence_path=asof_view,
+        safety_authority=_historical_safety_authority(),
+        runtime_test_context={
+            "run_id": "phase29-l21t-bl-test",
+            "profile_id": "focused",
+            "business_date": "2022-08-12",
+            "evidence_root": str(tmp_path / "phase29-l21t-bl-test"),
+        },
+        environment_context={
+            "mode": "historical",
+            "broker_environment": "historical_simulated",
+            "historical_replay": True,
+            "broker_write": False,
+            "external_delivery": False,
+        },
+        allow_legacy_temporal_current=True,
+    )
+    valued = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    valued_by_symbol = {position["symbol"]: position for position in valued["positions"]}
+
+    assert valuation.status == "READY"
+    assert valued_by_symbol["94320"]["current_price"] == 147.9
+    assert valued_by_symbol["94320"]["quantity_basis"] == "ADJUSTED"
+    assert valued_by_symbol["94320"]["valuation_price_basis"] == "ADJUSTED"
+
+
+def test_phase29_l21t_bl_new_buy_materializes_adjusted_quantity_basis(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-initial",
+            "environment": "historical",
+            "source": "runtime_v2_initial_current",
+            "as_of": "2022-08-10",
+            "positions": [],
+            "cash": 1_000_000.0,
+            "buying_power": 1_000_000.0,
+            "market_value": 0.0,
+            "total_equity": 1_000_000.0,
+        },
+    )
+    _write_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl", [_accepted_order("30100", "30100")])
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [_execution("30100", "BUY", quantity=200, price=101, cash_effect=20200, business_date="2022-08-12")],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [_position("30100", quantity=200, average_price=101, market_value=20200, as_of="2022-08-12")],
+    )
+
+    result = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root,
+        business_date="2022-08-12",
+        mode="historical",
+    )
+    state = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    position = state["positions"][0]
+
+    assert result.status == "PASS"
+    assert position["symbol"] == "30100"
+    assert position["quantity_basis"] == "ADJUSTED"
+    assert position["execution_price_basis"] == "ADJUSTED"
+    assert position["fill_price_basis"] == "ADJUSTED"
+    assert position["quantity_basis_provenance"] == "runtime_execution_price_authority:adjusted_reference_price_basis"
+
+
+def test_phase29_l21t_bl_explicit_basis_conflict_fails_closed(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-before",
+            "environment": "historical",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": "2022-08-10",
+            "positions": [
+                {
+                    **_current_position("94320", quantity=200, average_price=149.2, market_value=29960.0, as_of="2022-08-10"),
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "prior_current_basis",
+                }
+            ],
+            "cash": 745820.0,
+            "buying_power": 745820.0,
+            "market_value": 29960.0,
+            "total_equity": 775780.0,
+        },
+    )
+    _write_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl", [_accepted_order("94320", "94320")])
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [
+            {
+                **_position("94320", quantity=200, average_price=149.2, market_value=739600.0, as_of="2022-08-12"),
+                "quantity_basis": "RAW",
+                "quantity_basis_provenance": "conflicting_raw_basis_fixture",
+            }
+        ],
+    )
+
+    result = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root,
+        business_date="2022-08-12",
+        mode="historical",
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "runtime_owned_position_basis_conflict:94320" in result.reason
 
 
 def test_phase26_d_initial_day_same_date_prefill_current_applies_buy_cash_once(tmp_path):
@@ -389,7 +603,13 @@ def test_phase26_c_buy_add_recalculates_weighted_average_cost_and_uses_valuation
             "environment": "historical",
             "source": "runtime_v2_runtime_owned_fill_projection",
             "as_of": "2023-01-04",
-            "positions": [_current_position("72030", quantity=100, average_price=10, market_value=1000, as_of="2023-01-04")],
+            "positions": [
+                {
+                    **_current_position("72030", quantity=100, average_price=10, market_value=1000, as_of="2023-01-04"),
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "prior_current_basis",
+                }
+            ],
             "cash": 10000.0,
             "buying_power": 10000.0,
             "market_value": 1000.0,
@@ -427,6 +647,8 @@ def test_phase26_c_buy_add_recalculates_weighted_average_cost_and_uses_valuation
     assert position["cost_basis"] == 2000.0
     assert position["market_value"] == 3000.0
     assert position["unrealized_pnl"] == 1000.0
+    assert position["quantity_basis"] == "ADJUSTED"
+    assert position["quantity_basis_provenance"] == "prior_current_basis"
 
 
 def test_phase26_c_full_exit_removes_active_position_and_preserves_cash(tmp_path):
@@ -484,9 +706,21 @@ def test_phase26_b_mixed_fill_projection_uses_target_date_valuation_and_post_fil
             "source": "runtime_v2_runtime_owned_fill_projection",
             "as_of": "2023-01-17",
             "positions": [
-                _current_position("76470", quantity=5400, average_price=28, market_value=151200, as_of="2023-01-04"),
-                _current_position("83060", quantity=100, average_price=894, market_value=89400, as_of="2023-01-04"),
-                _current_position("94320", quantity=1000, average_price=150.5, market_value=150500, as_of="2023-01-04"),
+                {
+                    **_current_position("76470", quantity=5400, average_price=28, market_value=151200, as_of="2023-01-04"),
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "prior_current_basis_76470",
+                },
+                {
+                    **_current_position("83060", quantity=100, average_price=894, market_value=89400, as_of="2023-01-04"),
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "prior_current_basis_83060",
+                },
+                {
+                    **_current_position("94320", quantity=1000, average_price=150.5, market_value=150500, as_of="2023-01-04"),
+                    "quantity_basis": "ADJUSTED",
+                    "quantity_basis_provenance": "prior_current_basis_94320",
+                },
             ],
             "cash": 217800.0,
             "buying_power": 217800.0,
@@ -564,6 +798,11 @@ def test_phase26_b_mixed_fill_projection_uses_target_date_valuation_and_post_fil
         "94320": 149700.0,
         "93180": 178800.0,
     }
+    by_symbol = {position["symbol"]: position for position in state["positions"]}
+    assert by_symbol["76470"]["quantity_basis"] == "ADJUSTED"
+    assert by_symbol["76470"]["quantity_basis_provenance"] == "prior_current_basis_76470"
+    assert by_symbol["94320"]["quantity_basis"] == "ADJUSTED"
+    assert by_symbol["93180"]["quantity_basis"] == "ADJUSTED"
     assert {position["as_of"] for position in state["positions"]} == {"2023-01-18"}
     assert reconciliation.findings == ()
 
@@ -648,6 +887,102 @@ def test_phase26_b_reconciliation_detects_market_value_and_total_equity_mismatch
 
     assert [finding.finding_type for finding in reconciliation.findings] == [
         "POSITION_MARKET_VALUE_MISMATCH",
+        "TOTAL_EQUITY_MISMATCH",
+    ]
+
+
+def test_phase29_l21t_x_reconciliation_ignores_micro_yen_cash_float_noise(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-2023-06-23",
+            "environment": "historical",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": "2023-06-23",
+            "positions": [
+                _current_position("94320", quantity=1400, average_price=150.62142857142857, market_value=231700.0, as_of="2023-06-23"),
+                _current_position("37820", quantity=500, average_price=53, market_value=24500.0, as_of="2023-06-23"),
+                _current_position("76470", quantity=3700, average_price=25.883092394720297, market_value=107300.0, as_of="2023-06-23"),
+                _current_position("99840", quantity=100, average_price=1630, market_value=169680.0, as_of="2023-06-23"),
+                _current_position("83060", quantity=100, average_price=930, market_value=103350.0, as_of="2023-06-23"),
+                _current_position("21340", quantity=1500, average_price=13.24137931034483, market_value=46500.0, as_of="2023-06-23"),
+                _current_position("40520", quantity=100, average_price=1021, market_value=141900.0, as_of="2023-06-23"),
+                _current_position("94340", quantity=800, average_price=152.8, market_value=122240.00000000001, as_of="2023-06-23"),
+            ],
+            "cash": 129889.99999999999,
+            "buying_power": 129889.99999999999,
+            "market_value": 947170.0,
+            "total_equity": 1077060.0,
+        },
+    )
+    bundle = normalize_broker_readonly_payload(
+        environment="historical",
+        source="runtime_v2_execution_readonly_simulation",
+        as_of="2023-06-23",
+        positions=[
+            {"position_ref": "p-94320", "position_key": "94320", "symbol": "94320", "quantity": 1400, "average_price": 150.62142857142857, "market_value": 231700.0},
+            {"position_ref": "p-37820", "position_key": "37820", "symbol": "37820", "quantity": 500, "average_price": 53, "market_value": 24500.0},
+            {"position_ref": "p-76470", "position_key": "76470", "symbol": "76470", "quantity": 3700, "average_price": 25.883092394720297, "market_value": 107300.0},
+            {"position_ref": "p-99840", "position_key": "99840", "symbol": "99840", "quantity": 100, "average_price": 1630, "market_value": 169680.0},
+            {"position_ref": "p-83060", "position_key": "83060", "symbol": "83060", "quantity": 100, "average_price": 930, "market_value": 103350.0},
+            {"position_ref": "p-21340", "position_key": "21340", "symbol": "21340", "quantity": 1500, "average_price": 13.24137931034483, "market_value": 46500.0},
+            {"position_ref": "p-40520", "position_key": "40520", "symbol": "40520", "quantity": 100, "average_price": 1021, "market_value": 141900.0},
+            {"position_ref": "p-94340", "position_key": "94340", "symbol": "94340", "quantity": 800, "average_price": 152.8, "market_value": 122240.00000000001},
+        ],
+        cash={"cash_ref": "cash-2023-06-23", "cash": 129890.0, "buying_power": 129890.0},
+    )
+
+    reconciliation = run_reconciliation(
+        mode="historical",
+        environment="historical",
+        business_date="2023-06-23",
+        broker_positions=bundle.positions,
+        broker_cash=bundle.cash,
+        asset_state=_asset_state_from_payload(json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))),
+    )
+
+    assert reconciliation.findings == ()
+
+
+def test_phase29_l21t_x_reconciliation_preserves_cash_mismatch_protection(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-cash-mismatch",
+            "environment": "historical",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": "2023-06-23",
+            "positions": [],
+            "cash": 129889.99,
+            "buying_power": 129889.99,
+            "market_value": 0.0,
+            "total_equity": 129889.99,
+        },
+    )
+    bundle = normalize_broker_readonly_payload(
+        environment="historical",
+        source="runtime_v2_execution_readonly_simulation",
+        as_of="2023-06-23",
+        positions=[],
+        cash={"cash_ref": "cash-2023-06-23", "cash": 129890.0, "buying_power": 129890.0},
+    )
+
+    reconciliation = run_reconciliation(
+        mode="historical",
+        environment="historical",
+        business_date="2023-06-23",
+        broker_positions=bundle.positions,
+        broker_cash=bundle.cash,
+        asset_state=_asset_state_from_payload(json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))),
+    )
+
+    assert [finding.finding_type for finding in reconciliation.findings] == [
+        "CASH_MISMATCH",
+        "BUYING_POWER_MISMATCH",
         "TOTAL_EQUITY_MISMATCH",
     ]
 
@@ -764,6 +1099,16 @@ def _asset_state_from_payload(payload: dict) -> CurrentAssetState:
     )
 
 
+def _historical_safety_authority() -> dict:
+    return {
+        "safety_status": "PASS",
+        "safety_decision": "ALLOW",
+        "safety_policy_version": "historical_replay_neutral_safety_v1",
+        "safety_source": "data_readiness_historical_temporal_authority",
+        "safety_action_permissions": {"broker_write": "BLOCKED"},
+    }
+
+
 def _write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -772,3 +1117,47 @@ def _write_json(path: Path, payload):
 def _write_jsonl(path: Path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def _write_historical_asof_view(
+    tmp_path: Path,
+    pd,
+    *,
+    business_date: str,
+    rows: list[dict],
+    raw_rows: list[dict],
+) -> Path:
+    parquet = tmp_path / f"normalized_ohlcv_{business_date}.parquet"
+    pd.DataFrame(rows).to_parquet(parquet)
+    raw_parquet = tmp_path / f"raw_ohlcv_{business_date}.parquet"
+    pd.DataFrame(raw_rows).to_parquet(raw_parquet)
+    asof_view = tmp_path / f"historical_asof_view_{business_date}.json"
+    _write_json(
+        asof_view,
+        {
+            "schema_version": "runtime_historical_asof_view_v1",
+            "business_date": business_date,
+            "status": "PASS",
+            "authorities": [
+                {
+                    "authority": "normalized_ohlcv",
+                    "status": "PASS",
+                    "reason": "historical_asof_authority_ready",
+                    "business_date": business_date,
+                    "logical_cutoff": business_date,
+                    "logical_max_date": business_date,
+                    "physical_source_path": str(parquet),
+                },
+                {
+                    "authority": "raw_ohlcv",
+                    "status": "PASS",
+                    "reason": "historical_asof_authority_ready",
+                    "business_date": business_date,
+                    "logical_cutoff": business_date,
+                    "logical_max_date": business_date,
+                    "physical_source_path": str(raw_parquet),
+                },
+            ],
+        },
+    )
+    return asof_view

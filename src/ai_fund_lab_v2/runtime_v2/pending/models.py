@@ -92,6 +92,13 @@ class PendingOrderItem:
     price_as_of: str = ""
     price_confidence: str = ""
     price_required: bool = True
+    reference_price: float | None = None
+    reference_price_authority: dict[str, Any] | None = None
+    reservation_price: float | None = None
+    reservation_price_type: str = ""
+    reservation_price_authority: dict[str, Any] | None = None
+    reservation_reason: str = ""
+    reserved_notional: float | None = None
     capital_allocation_amount: float = 0.0
     policy_version: str = ""
     policy_source: str = ""

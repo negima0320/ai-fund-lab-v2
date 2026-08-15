@@ -24,6 +24,18 @@ def test_normalizer_returns_broker_readonly_bundle():
     assert bundle.cash.cash == 100000
 
 
+def test_phase29_l21t_x_normalizer_uses_cash_available_when_cash_field_missing():
+    bundle = normalize_broker_readonly_payload(
+        environment="historical",
+        source="runtime_v2_execution_readonly_simulation",
+        as_of="2023-06-23",
+        cash={"cash_ref": "historical-cash-2023-06-23", "cash_available": "129890.0", "buying_power": "129890.0"},
+    )
+
+    assert bundle.cash.cash == 129890.0
+    assert bundle.cash.buying_power == 129890.0
+
+
 def test_normalizer_requires_environment_source_and_as_of():
     with pytest.raises(ValueError, match="environment is required"):
         normalize_broker_readonly_payload(environment="", source="src", as_of="ts")
@@ -108,4 +120,3 @@ def _cash_payload():
         "buying_power": 50000,
         "currency": "JPY",
     }
-

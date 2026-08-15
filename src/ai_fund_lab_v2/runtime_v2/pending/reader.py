@@ -277,6 +277,21 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                 price_as_of=str(item.get("price_as_of") or ""),
                 price_confidence=str(item.get("price_confidence") or ""),
                 price_required=bool(item.get("price_required", True)),
+                reference_price=_optional_float(item.get("reference_price")),
+                reference_price_authority=(
+                    dict(item["reference_price_authority"])
+                    if isinstance(item.get("reference_price_authority"), Mapping)
+                    else None
+                ),
+                reservation_price=_optional_float(item.get("reservation_price")),
+                reservation_price_type=str(item.get("reservation_price_type") or ""),
+                reservation_price_authority=(
+                    dict(item["reservation_price_authority"])
+                    if isinstance(item.get("reservation_price_authority"), Mapping)
+                    else None
+                ),
+                reservation_reason=str(item.get("reservation_reason") or ""),
+                reserved_notional=_optional_float(item.get("reserved_notional")),
                 capital_allocation_amount=float(item.get("capital_allocation_amount") or item["estimated_amount"]),
                 policy_version=str(item.get("policy_version") or ""),
                 policy_source=str(item.get("policy_source") or ""),

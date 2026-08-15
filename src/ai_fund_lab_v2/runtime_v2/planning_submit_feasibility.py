@@ -266,7 +266,7 @@ def evaluate_planning_submit_feasibility(
                 runtime_mode=runtime_mode,
             )
             if evidence["status"] == "PASS":
-                estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
+                estimated_amount = _reserved_notional(item)
                 symbol = str(getattr(item, "symbol", "")).strip()
                 if reserved_cash is not None:
                     reserved_cash = reserved_cash - estimated_amount
@@ -373,10 +373,12 @@ def evaluate_buy_item_submit_feasibility(
     runtime_mode: str = "",
 ) -> dict[str, Any]:
     estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
+    reservation = _buy_reservation_authority(item)
+    reserved_notional = reservation["reserved_notional"]
     symbol = str(getattr(item, "symbol", "")).strip()
     active_capital = current.active_deployment_capital
     current_position_count = len(current.positions)
-    creates_new_position = bool(symbol and not contains_symbol_identity(current.positions.keys(), symbol) and estimated_amount > 0)
+    creates_new_position = bool(symbol and not contains_symbol_identity(current.positions.keys(), symbol) and reserved_notional > 0)
     resolved_position_count_authority = position_count_authority or _item_position_count_authority(
         position_count_authority=None,
         item=item,
@@ -409,12 +411,24 @@ def evaluate_buy_item_submit_feasibility(
     position_count_fields = resolved_position_count_authority.to_dict()
     cash_exposure_fields = resolved_cash_exposure_authority.to_dict()
     position_sizing_fields = resolved_position_sizing_authority.to_dict()
+    strategy_executable_notional = _strategy_executable_notional(
+        item=item,
+        estimated_amount=estimated_amount,
+        position_sizing_authority=resolved_position_sizing_authority,
+    )
     evidence = {
         "pending_item_id": str(getattr(item, "pending_item_id", "")),
         "symbol": symbol,
         "side": "BUY",
         "sequence_index": sequence_index,
+        "reference_price": reservation["reference_price"],
         "estimated_amount": estimated_amount,
+        "strategy_executable_notional": strategy_executable_notional,
+        "strategy_sizing_comparison_basis": "strategy_reference_executable_notional",
+        "reservation_price": reservation["reservation_price"],
+        "reservation_price_authority": reservation["reservation_price_authority"],
+        "reservation_reason": reservation["reservation_reason"],
+        "reserved_notional": reserved_notional,
         "selected_current_source": current.selected_current_source,
         "selected_cash_source": current.selected_cash_source,
         "selected_positions_source": current.selected_positions_source,
@@ -462,11 +476,11 @@ def evaluate_buy_item_submit_feasibility(
         **cash_exposure_fields,
         "creates_new_position": creates_new_position,
         "post_position_count": post_position_count,
-        "post_buy_exposure": current.current_exposure + estimated_amount,
-        "post_buy_cash": None if current.cash is None else current.cash - estimated_amount,
+        "post_buy_exposure": current.current_exposure + reserved_notional,
+        "post_buy_cash": None if current.cash is None else current.cash - reserved_notional,
         "post_buy_buying_power": None
         if current.buying_power is None
-        else current.buying_power - estimated_amount,
+        else current.buying_power - reserved_notional,
         "authority_source": authority_source,
         "policy_source": policy.policy_source,
         "policy_version": policy.policy_version,
@@ -477,24 +491,25 @@ def evaluate_buy_item_submit_feasibility(
         "violated_policy_source": "",
     }
     violations: list[tuple[str, str, str]] = []
+    amount_label = "estimated amount" if abs(reserved_notional - estimated_amount) <= 0.000001 else "reserved notional"
     if current.cash is None:
         violations.append(("cash_missing", "Current cash is missing", current.current_position_source))
-    elif estimated_amount > float(current.cash):
-        violations.append(("cash", "estimated amount exceeds Current cash", current.current_position_source))
+    elif reserved_notional > float(current.cash):
+        violations.append(("cash", f"{amount_label} exceeds Current cash", current.current_position_source))
     if current.buying_power is None:
         violations.append(("buying_power_missing", "Current buying_power is missing", current.current_position_source))
-    elif estimated_amount > float(current.buying_power):
-        violations.append(("buying_power", "estimated amount exceeds buying_power", current.current_position_source))
+    elif reserved_notional > float(current.buying_power):
+        violations.append(("buying_power", f"{amount_label} exceeds buying_power", current.current_position_source))
     if active_capital is None:
         violations.append(("active_deployment_capital_missing", "Current total equity authority is missing", current.current_position_source))
     if current.current_authority_status != "PASS":
         violations.append(("current_authority", current.current_authority_reason, current.current_position_source))
     if not resolved_cash_exposure_authority.passed:
         violations.append(("dynamic_cash_exposure", resolved_cash_exposure_authority.reason, resolved_cash_exposure_authority.authority_source))
-    elif estimated_amount > resolved_cash_exposure_authority.available_cash_after_target:
-        violations.append(("dynamic_cash", "estimated amount exceeds dynamic cash capacity", resolved_cash_exposure_authority.authority_source))
-    elif current.current_exposure + estimated_amount > resolved_cash_exposure_authority.selected_runtime_exposure_limit:
-        violations.append(("dynamic_exposure", "estimated amount exceeds selected_runtime_exposure_limit", resolved_cash_exposure_authority.authority_source))
+    elif reserved_notional > resolved_cash_exposure_authority.available_cash_after_target:
+        violations.append(("dynamic_cash", f"{amount_label} exceeds dynamic cash capacity", resolved_cash_exposure_authority.authority_source))
+    elif current.current_exposure + reserved_notional > resolved_cash_exposure_authority.selected_runtime_exposure_limit:
+        violations.append(("dynamic_exposure", f"{amount_label} exceeds selected_runtime_exposure_limit", resolved_cash_exposure_authority.authority_source))
     if creates_new_position and not resolved_position_count_authority.passed:
         violations.append(("safety_hard_maximum", resolved_position_count_authority.reason, resolved_position_count_authority.authority_source))
     elif (
@@ -505,10 +520,17 @@ def evaluate_buy_item_submit_feasibility(
         violations.append(("safety_hard_maximum", "BUY would exceed safety_hard_maximum", resolved_position_count_authority.authority_source))
     if not resolved_position_sizing_authority.passed:
         violations.append(("position_sizing", resolved_position_sizing_authority.reason, resolved_position_sizing_authority.authority_source))
-    elif estimated_amount > resolved_position_sizing_authority.selected_position_amount:
-        violations.append(("position_sizing", "estimated amount exceeds selected_position_amount", resolved_position_sizing_authority.authority_source))
-    if policy.max_buy_order_amount is not None and estimated_amount > policy.max_buy_order_amount:
-        violations.append(("max_buy_order_amount", "estimated amount exceeds max_buy_order_amount", policy.policy_source))
+    elif strategy_executable_notional > resolved_position_sizing_authority.selected_position_amount:
+        strategy_amount_label = (
+            "estimated amount"
+            if abs(strategy_executable_notional - estimated_amount) <= 0.000001
+            else "strategy executable notional"
+        )
+        violations.append(("position_sizing", f"{strategy_amount_label} exceeds selected_position_amount", resolved_position_sizing_authority.authority_source))
+    if policy.max_buy_order_amount is not None and reserved_notional > policy.max_buy_order_amount:
+        violations.append(("max_buy_order_amount", f"{amount_label} exceeds max_buy_order_amount", policy.policy_source))
+    if reservation["status"] != "PASS":
+        violations.append(("reservation_price_authority", reservation["reason"], reservation["authority_source"]))
     if not violations:
         return evidence
     policy_name, reason, source = violations[0]
@@ -591,6 +613,98 @@ def _sell_item_evidence(
         "reason": "sell_exposure_reducing_submit_feasibility_not_blocked_by_buy_dynamic_exposure",
         "violated_policy": "",
         "violated_policy_source": "",
+    }
+
+
+def _reserved_notional(item: Any) -> float:
+    return _buy_reservation_authority(item)["reserved_notional"]
+
+
+def _strategy_executable_notional(
+    *,
+    item: Any,
+    estimated_amount: float,
+    position_sizing_authority: PositionSizingAuthority,
+) -> float:
+    if estimated_amount > 0:
+        return estimated_amount
+    quantity_contract = getattr(item, "quantity_contract", None)
+    if isinstance(quantity_contract, Mapping):
+        for key in (
+            "lot_adjusted_notional",
+            "selected_notional",
+            "target_notional",
+            "incremental_buy_notional",
+        ):
+            value = _optional_float(quantity_contract.get(key))
+            if value is not None and value > 0:
+                return value
+    if position_sizing_authority.lot_adjusted_notional > 0:
+        return position_sizing_authority.lot_adjusted_notional
+    return estimated_amount
+
+
+def _buy_reservation_authority(item: Any) -> dict[str, Any]:
+    side = str(getattr(item, "side", "") or "").upper()
+    estimated_price = _float(getattr(item, "estimated_price", 0.0))
+    estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
+    quantity = _float(getattr(item, "quantity", 0.0))
+    reference_price = _optional_float(getattr(item, "reference_price", None))
+    reservation_price = _optional_float(getattr(item, "reservation_price", None))
+    reserved_notional = _optional_float(getattr(item, "reserved_notional", None))
+    authority = getattr(item, "reservation_price_authority", None)
+    if not isinstance(authority, Mapping):
+        authority = {}
+    if side != "BUY":
+        return {
+            "status": "PASS",
+            "reason": "reservation_not_required_for_sell",
+            "authority_source": "sell_exposure_reducing_item",
+            "reference_price": reference_price if reference_price is not None else estimated_price,
+            "reservation_price": reservation_price if reservation_price is not None else estimated_price,
+            "reservation_price_authority": dict(authority),
+            "reservation_reason": str(getattr(item, "reservation_reason", "") or ""),
+            "reserved_notional": reserved_notional if reserved_notional is not None else estimated_amount,
+        }
+    if reserved_notional is None and reservation_price is not None and quantity > 0:
+        reserved_notional = round(reservation_price * quantity, 2)
+    if reserved_notional is None:
+        reserved_notional = estimated_amount
+    if reservation_price is None and quantity > 0 and reserved_notional > 0:
+        reservation_price = round(reserved_notional / quantity, 8)
+    if reservation_price is None:
+        reservation_price = estimated_price
+    if reference_price is None:
+        reference_price = estimated_price
+    if not authority:
+        authority = {
+            "authority_type": "ORDER_CONDITION_DERIVED_RESERVATION_PRICE_AUTHORITY",
+            "reservation_price_type": "legacy_estimated_amount_cash_estimate",
+            "source_field": "estimated_amount",
+            "future_execution_price_used": False,
+            "runtime_path": "Production/Demo/Historical common runtime_v2",
+            "legacy_fallback_used": True,
+        }
+    status = "PASS"
+    reason = str(getattr(item, "reservation_reason", "") or "reservation_price_authority_resolved")
+    if quantity <= 0:
+        status = "REVIEW_REQUIRED"
+        reason = "BUY reservation quantity missing"
+    elif reserved_notional <= 0:
+        status = "REVIEW_REQUIRED"
+        reason = "BUY reserved notional missing"
+    elif reservation_price <= 0:
+        status = "REVIEW_REQUIRED"
+        reason = "BUY reservation price missing"
+    return {
+        "status": status,
+        "reason": reason,
+        "authority_source": str(authority.get("authority_type") or "reservation_price_authority"),
+        "reference_price": reference_price,
+        "reservation_price": reservation_price,
+        "reservation_price_authority": dict(authority),
+        "reservation_reason": reason,
+        "reserved_notional": reserved_notional,
     }
 
 

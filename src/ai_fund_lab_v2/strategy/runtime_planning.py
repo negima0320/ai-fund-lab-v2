@@ -27,6 +27,10 @@ ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
 QUANTITY_AUTHORITY = "PHASE22_J_POSITION_SIZING"
 CANONICAL_QUANTITY_AUTHORITY = "PHASE27_D2D_POSITION_SIZING_PLAN"
+REDUCE_INTENTIONAL_NO_ORDER_SEMANTICS = {
+    "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT",
+    "REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL",
+}
 
 PLANNING_INTENTS = {"BUY_NEW", "BUY_ADD", "SELL_REDUCE", "SELL_EXIT", "NO_ACTION", "NO_ORDER", "UNRESOLVED"}
 ORDER_SIDE_INTENTS = {"BUY", "SELL", "NONE", "UNRESOLVED"}
@@ -802,7 +806,13 @@ def _build_plans(
         )
         plan_reasons = list(dict.fromkeys([*intent_reasons, *quantity_reasons]))
         opportunity_no_buy_reason = str((opportunity_authority or {}).get("opportunity_no_buy_reason") or "").strip()
-        if intent in {"BUY_NEW", "BUY_ADD"} and opportunity_no_buy_reason_blocks_buy(opportunity_no_buy_reason):
+        economic_units_available = _optional_bool((opportunity_authority or {}).get("opportunity_economic_units_available"))
+        if economic_units_available is None:
+            economic_units_available = True
+        if intent in {"BUY_NEW", "BUY_ADD"} and opportunity_no_buy_reason_blocks_buy(
+            opportunity_no_buy_reason,
+            economic_units_available=economic_units_available,
+        ):
             intent = "NO_ORDER"
             quantity_status = "NOT_REQUIRED"
             planned_quantity = 0
@@ -870,6 +880,11 @@ def _build_plans(
             ),
             "pending_eligibility": pending_eligibility,
             "no_order_reason": no_order_reason,
+            "reduce_execution_semantic": str(sizing.get("reduce_execution_semantic") or ""),
+            "reduce_executability_status": str(sizing.get("reduce_executability_status") or ""),
+            "reduce_intentional_no_order": bool(sizing.get("reduce_intentional_no_order")),
+            "reduce_intentional_no_order_reason": str(sizing.get("reduce_intentional_no_order_reason") or ""),
+            "reduce_executability_evidence": dict(sizing.get("reduce_executability_evidence") or {}),
             "current_position_membership_authority": current_authority,
             "planning_reason": ";".join(sorted(set(plan_reasons))),
             "pending_candidate_contract": {
@@ -1202,6 +1217,15 @@ def _resolve_quantity_status(
         return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", ["canonical_position_sizing_plan_quantity_delta_missing"]
     if quantity_status in {"RESOLVED_CANDIDATE", "RESOLVED_ZERO_DELTA"} and quantity_delta is not None and target_quantity is not None:
         if quantity_delta == 0:
+            reduce_semantic = str(sizing.get("reduce_execution_semantic") or "")
+            if intent == "SELL_REDUCE" and reduce_semantic in REDUCE_INTENTIONAL_NO_ORDER_SEMANTICS:
+                return (
+                    "RESOLVED_ZERO_DELTA",
+                    0,
+                    quantity_delta,
+                    reduce_semantic,
+                    ["no_order_reduce_intentional_no_order", f"reduce_execution_semantic:{reduce_semantic}"],
+                )
             return "RESOLVED_ZERO_DELTA", 0, quantity_delta, "zero_quantity_delta", ["no_order_zero_quantity_delta"]
         return "RESOLVED_EXECUTABLE", abs(quantity_delta), quantity_delta, "", ["position_sizing_quantity_candidate_resolved"]
     if quantity_status == "NO_ORDER_MINIMUM_NOTIONAL_UNMET":
@@ -1250,6 +1274,9 @@ def _resolve_intent(
                 return "UNRESOLVED", [f"planning_conflict_review:full_liquidation_authority_missing:{code}"]
             return "SELL_REDUCE", ["canonical_negative_quantity_delta_maps_to_sell_reduce"]
         return "NO_ACTION", ["canonical_zero_quantity_delta_maps_to_no_action"]
+    reduce_semantic = str(sizing.get("reduce_execution_semantic") or "")
+    if pm_action == "REDUCE" and quantity_delta == 0 and reduce_semantic in REDUCE_INTENTIONAL_NO_ORDER_SEMANTICS:
+        return "SELL_REDUCE", ["pm_reduce_zero_delta_maps_to_intentional_no_order"]
     if quantity_delta is not None and quantity_delta != 0:
         if quantity_delta > 0:
             return ("BUY_ADD" if code in current_codes else "BUY_NEW"), ["position_sizing_positive_quantity_delta_maps_to_buy_add" if code in current_codes else "position_sizing_positive_quantity_delta_maps_to_buy_new"]
@@ -1462,6 +1489,20 @@ def _opportunity_rows_by_symbol(
             "opportunity_expected_edge_score": row.get("expected_edge_score"),
             "opportunity_expected_return": row.get("expected_return", row.get("expected_edge_score")),
             "opportunity_no_buy_reason": str(row.get("no_buy_reason") or ""),
+            "opportunity_canonical_score_field": str(row.get("canonical_score_field") or payload.get("canonical_score_field") or ""),
+            "opportunity_score_semantic_role": str(
+                row.get("score_semantic_role")
+                or row.get("semantic_role")
+                or payload.get("score_semantic_role")
+                or payload.get("semantic_role")
+                or ""
+            ),
+            "opportunity_calibration_applied": row.get("calibration_applied")
+            if isinstance(row.get("calibration_applied"), bool)
+            else payload.get("calibration_applied"),
+            "opportunity_economic_units_available": row.get("economic_units_available")
+            if isinstance(row.get("economic_units_available"), bool)
+            else payload.get("economic_units_available"),
             "opportunity_model_version": str(row.get("model_version") or ""),
             "ranking_schema_version": str(payload.get("schema_version") or ""),
             "ranking_schema_name": str(row.get("schema_name") or ""),
@@ -1476,6 +1517,14 @@ def _opportunity_rows_by_symbol(
                         "row_id": row_identity,
                         "buy_rank": buy_rank,
                         "expected_edge_score": row.get("expected_edge_score"),
+                        "canonical_score_field": row.get("canonical_score_field") or payload.get("canonical_score_field"),
+                        "score_semantic_role": row.get("score_semantic_role") or payload.get("score_semantic_role"),
+                        "calibration_applied": row.get("calibration_applied")
+                        if isinstance(row.get("calibration_applied"), bool)
+                        else payload.get("calibration_applied"),
+                        "economic_units_available": row.get("economic_units_available")
+                        if isinstance(row.get("economic_units_available"), bool)
+                        else payload.get("economic_units_available"),
                         "artifact_hash": artifact_hash,
                     },
                     ensure_ascii=True,
@@ -1684,6 +1733,12 @@ def _int_or_none(value: Any) -> int | None:
     if not number.is_integer():
         return None
     return int(number)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _source_hash_seed(*items: Any) -> str:

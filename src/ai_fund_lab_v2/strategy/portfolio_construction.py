@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ai_fund_lab_v2.broker.issue_code_normalizer import classify_broker_security
-from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import opportunity_no_buy_reason_blocks_buy
 from ai_fund_lab_v2.strategy.add_investment_evidence import resolve_add_investment_evidence
 from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     INCOMPATIBLE_DATE,
@@ -78,6 +77,16 @@ FORBIDDEN_CONCRETE_FIELDS = {
     "broker_quantity",
     "order_quantity",
     "lot_rounding_result",
+}
+OPPORTUNITY_RELATIVE_METADATA_NO_BUY_REASONS = {"non_positive_expected_edge_score", "below_opportunity_top20"}
+OPPORTUNITY_HARD_NO_BUY_REASONS = {
+    "high_downside_risk_score",
+    "corporate_event_block",
+    "corporate_action_block",
+    "liquidity_block",
+    "not_currently_listed",
+    "unsupported_broker_product_category",
+    "broker_product_category_unsupported",
 }
 
 
@@ -258,6 +267,7 @@ def build_portfolio_construction_payload(
         business_date=business_date,
         candidate_rows=candidate_summary.rows,
         opportunity_rows=opportunity_summary.rows,
+        opportunity_score_summary=opportunity_summary.summary or {},
         current_rows=current_portfolio_summary.rows,
         pm_rows=_pm_rows(position_management_artifact_path),
     )
@@ -708,6 +718,7 @@ def _reconcile_members(
     business_date: str,
     candidate_rows: Iterable[Mapping[str, Any]],
     opportunity_rows: Iterable[Mapping[str, Any]],
+    opportunity_score_summary: Mapping[str, Any],
     current_rows: Iterable[Mapping[str, Any]],
     pm_rows: Iterable[Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -755,6 +766,7 @@ def _reconcile_members(
                 pm=pm,
                 current=current_by_code.get(code),
                 reason_codes=[f"pm_action:{action}", *([f"candidate_duplicate_reconciled:{code}"] if candidate or opportunity else [])],
+                opportunity_score_summary=opportunity_score_summary,
             )
         )
         used_codes.add(code)
@@ -768,17 +780,24 @@ def _reconcile_members(
         code = _code(row)
         candidate = candidate_by_code.get(code)
         no_buy_reason = str(row.get("no_buy_reason") or "").strip()
-        no_buy_blocked = opportunity_no_buy_reason_blocks_buy(no_buy_reason)
+        no_buy_classification = _classify_opportunity_no_buy_reason(
+            no_buy_reason,
+            score_contract=_opportunity_score_semantic_contract(row=row, summary=opportunity_score_summary),
+        )
+        no_buy_blocked = bool(no_buy_classification["blocks_buy"])
         eligible = _candidate_eligible(candidate or row) and not no_buy_blocked
         membership_intent = "ADD_CANDIDATE" if eligible else "EXCLUDE"
         weight_intent = "INCREASE" if eligible else "AVOID"
         eligibility_reason = (
-            f"opportunity_no_buy_reason_present:{no_buy_reason}"
+            f"opportunity_no_buy_reason_hard_block:{no_buy_reason}"
             if no_buy_blocked
             else "candidate_eligible"
             if eligible
             else "candidate_ineligible"
         )
+        eligibility_reasons = ["opportunity_rank_preserved", eligibility_reason]
+        if no_buy_blocked:
+            eligibility_reasons.append(f"opportunity_no_buy_reason_present:{no_buy_reason}")
         members.append(
             _member(
                 business_date=business_date,
@@ -791,7 +810,9 @@ def _reconcile_members(
                 opportunity=row,
                 pm=None,
                 current=None,
-                reason_codes=["opportunity_rank_preserved", eligibility_reason],
+                reason_codes=eligibility_reasons,
+                no_buy_reason_classification=no_buy_classification,
+                opportunity_score_summary=opportunity_score_summary,
             )
         )
         used_codes.add(code)
@@ -817,6 +838,7 @@ def _reconcile_members(
                 pm=None,
                 current=None,
                 reason_codes=["candidate_without_opportunity_rank" if eligible else "candidate_ineligible"],
+                opportunity_score_summary=opportunity_score_summary,
             )
         )
         priority += 1
@@ -836,8 +858,23 @@ def _member(
     pm: Mapping[str, Any] | None,
     current: Mapping[str, Any] | None,
     reason_codes: list[str],
+    no_buy_reason_classification: Mapping[str, Any] | None = None,
+    opportunity_score_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     broker_listed_info = _broker_listed_info_payload(security_code, opportunity, candidate, current, pm)
+    classification = dict(no_buy_reason_classification or _classify_opportunity_no_buy_reason("", score_contract={}))
+    target_member_eligibility = {
+        "status": "PASS" if membership_intent in {"RETAIN", "ADD_CANDIDATE"} else "BLOCKED",
+        "reason": "target_member_competition_eligible" if membership_intent in {"RETAIN", "ADD_CANDIDATE"} else "not_target_member_eligible",
+        "hard_blocking_reasons": list(classification.get("hard_blocking_reasons") or []),
+        "soft_relative_reasons": list(classification.get("soft_relative_reasons") or []),
+    }
+    if classification.get("status") == "REVIEW_REQUIRED":
+        target_member_eligibility = {
+            **target_member_eligibility,
+            "status": "BLOCKED",
+            "reason": str(classification.get("review_reason") or "semantic_metadata_missing"),
+        }
     return {
         "member_id": f"phase22-e-{business_date}-{security_code}",
         "security_code": security_code,
@@ -874,7 +911,14 @@ def _member(
         "input_opportunity_rank": _canonical_opportunity_rank(opportunity or {}),
         **_opportunity_rank_authority_payload(opportunity or {}),
         "input_score": _score(opportunity or candidate or {}),
-        **_score_authority_payload(business_date=business_date, candidate=candidate, opportunity=opportunity),
+        **_score_authority_payload(
+            business_date=business_date,
+            candidate=candidate,
+            opportunity=opportunity,
+            opportunity_score_summary=opportunity_score_summary or {},
+        ),
+        "no_buy_reason_classification": classification,
+        "target_member_eligibility": target_member_eligibility,
         **_phase29_l16_observable_fields(opportunity, candidate, current, pm),
         **_add_allocation_evidence_payload(opportunity=opportunity, pm=pm, current=current),
         "pm_action": str((pm or {}).get("action") or ""),
@@ -948,6 +992,8 @@ def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str,
         "reference_price",
         "minimum_tick",
         "rolling_median_traded_value_20",
+        "rolling_median_traded_value_20_authority",
+        "rolling_median_traded_value_20_resolution",
         "price_momentum_return_20d",
         "trend_close_over_ma_20d",
         "prior_exit_business_date",
@@ -992,6 +1038,16 @@ def _resolve_low_price_reentry_allocation_guard(
     price_tier = _price_tick_risk_tier(single_tick_pct)
     price_tick_cap = PRICE_TICK_RISK_CAPS.get(price_tier)
     rolling_value = _positive_number_from_row(
+        row,
+        (
+            "rolling_median_traded_value_20",
+            "rolling_median_va_20",
+            "liquidity_rolling_median_traded_value_20",
+            "traded_value_median_20d",
+            "rolling_median_turnover_value_20",
+        ),
+    )
+    rolling_source_field = _positive_number_source_field(
         row,
         (
             "rolling_median_traded_value_20",
@@ -1098,6 +1154,10 @@ def _resolve_low_price_reentry_allocation_guard(
         "single_tick_pct": single_tick_pct,
         "price_tick_risk_tier": price_tier,
         "rolling_median_traded_value_20": rolling_value,
+        "rolling_median_traded_value_20_authority": row.get("rolling_median_traded_value_20_authority") or {},
+        "rolling_median_traded_value_20_resolution": row.get("rolling_median_traded_value_20_resolution") or {},
+        "capacity_source": str(row.get("technical_recovery_source") or row.get("capacity_source") or ""),
+        "capacity_source_field": rolling_source_field or "",
         "capacity_ratio": capacity_ratio,
         "liquidity_capacity_status": liquidity_status,
         "normal_target_weight": round(float(normal_target_weight or 0.0), TARGET_WEIGHT_DECIMALS),
@@ -1127,6 +1187,10 @@ def _resolve_low_price_reentry_allocation_guard(
             "price_tick_risk_tier": price_tier,
             "price_tick_cap_weight": price_tick_cap,
             "rolling_median_traded_value_20": rolling_value,
+            "rolling_median_traded_value_20_authority": row.get("rolling_median_traded_value_20_authority") or {},
+            "rolling_median_traded_value_20_resolution": row.get("rolling_median_traded_value_20_resolution") or {},
+            "capacity_source": str(row.get("technical_recovery_source") or row.get("capacity_source") or ""),
+            "capacity_source_field": rolling_source_field or "",
             "capacity_ratio": capacity_ratio,
             "liquidity_capacity_status": liquidity_status,
             "liquidity_capacity_target_participation": LIQUIDITY_CAPACITY_TARGET_PARTICIPATION,
@@ -1153,7 +1217,7 @@ def _semantic_reentry_evidence(*, row: Mapping[str, Any], business_date: str, is
             "reentry_cooldown_status": "NOT_APPLICABLE",
         }
     prior_exit = _prior_exit_business_date(row)
-    if not is_buy_new or not prior_exit or prior_exit >= business_date:
+    if not prior_exit or prior_exit >= business_date:
         return {
             "semantic_buy_type": "BUY_NEW",
             "prior_exit_business_date": "",
@@ -1178,16 +1242,28 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "")
     trend = _finite_number(row.get("trend_close_over_ma_20d"))
     momentum = _finite_number(row.get("price_momentum_return_20d"))
-    ca_status = _corporate_action_status(row)
+    ca_evidence = _corporate_action_evidence(row)
+    ca_status = ca_evidence["status"]
+    previous_exit_reason = _previous_exit_reason(row)
+    previous_exit_reason_class = _previous_exit_reason_class(previous_exit_reason, row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes"))
     base = {
         "reentry_recovery_status": "NOT_APPLICABLE",
         "reentry_recovery_reason": "not_reentry",
         "reentry_rank": rank,
         "reentry_expected_edge": edge,
+        "reentry_score_gate_status": "DIAGNOSTIC_ONLY",
+        "reentry_opportunity_qualification_status": "NOT_APPLICABLE",
         "reentry_buy_quality_action": quality_action,
         "reentry_trend_close_over_ma_20d": trend,
         "reentry_price_momentum_return_20d": momentum,
         "reentry_corporate_action_status": ca_status,
+        "reentry_corporate_action_source_status": ca_evidence["source_status"],
+        "reentry_corporate_action_source": ca_evidence["source"],
+        "previous_exit_reason": previous_exit_reason,
+        "previous_exit_reason_class": previous_exit_reason_class,
+        "reentry_trend_recovery_status": "NOT_APPLICABLE",
+        "reentry_momentum_recovery_status": "NOT_APPLICABLE",
+        "reentry_capacity_status": liquidity_status,
     }
     if semantic.get("semantic_buy_type") != "REENTRY":
         return base
@@ -1196,34 +1272,41 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     if rank is None:
         unknowns.append("reentry_rank_missing")
     elif rank > 10:
-        failures.append("reentry_rank_above_threshold")
-    if edge is None:
-        unknowns.append("reentry_expected_edge_missing")
-    elif edge < 0.10:
-        failures.append("reentry_expected_edge_below_threshold")
+        failures.append("reentry_opportunity_not_requalified")
     if not quality_action:
         unknowns.append("reentry_buy_quality_action_missing")
     elif quality_action not in {"REDUCED_ALLOCATION_ONLY", "FULL_ALLOCATION_ELIGIBLE"}:
-        failures.append("reentry_buy_quality_action_not_allowed")
+        failures.append("reentry_buy_quality_not_requalified")
     if ca_status == "UNKNOWN":
-        unknowns.append("reentry_corporate_action_status_missing")
+        unknowns.append("reentry_corporate_action_source_missing")
     elif ca_status not in {"PASS", "RESOLVED", "NO_BLOCKING_EVENT", "NO_EVENT"}:
-        failures.append("reentry_corporate_action_unresolved")
+        failures.append("reentry_corporate_action_blocking")
     if capacity_ratio is None:
-        unknowns.append("reentry_liquidity_capacity_missing")
+        unknowns.append("reentry_capacity_unavailable")
     elif liquidity_status == "SEVERE" or capacity_ratio > 0.03:
-        failures.append("reentry_liquidity_capacity_severe")
+        failures.append("reentry_capacity_unavailable")
     trend_pass = trend is not None and trend >= 1.0
     momentum_pass = momentum is not None and momentum >= 0.0
-    if trend is None and momentum is None:
-        unknowns.append("reentry_momentum_trend_missing")
-    elif not (trend_pass or momentum_pass):
-        failures.append("reentry_momentum_trend_not_recovered")
+    technical_required = previous_exit_reason_class in {"TREND_MOMENTUM", "HARD_STOP", "CORPORATE_ACTION", "GENERIC"}
+    if technical_required:
+        if trend is None and momentum is None:
+            unknowns.append("reentry_technical_recovery_missing")
+        elif not (trend_pass or momentum_pass):
+            failures.append("reentry_trend_recovery_not_satisfied")
+    trend_status = "PASS" if trend_pass else ("UNKNOWN" if trend is None else "FAIL")
+    momentum_status = "PASS" if momentum_pass else ("UNKNOWN" if momentum is None else "FAIL")
+    qualified = not failures and not unknowns
+    resolved_base = {
+        **base,
+        "reentry_opportunity_qualification_status": "PASS" if rank is not None and rank <= 10 else ("UNKNOWN" if rank is None else "FAIL"),
+        "reentry_trend_recovery_status": trend_status,
+        "reentry_momentum_recovery_status": momentum_status,
+    }
     if failures:
-        return {**base, "reentry_recovery_status": "FAIL_CLOSED", "reentry_recovery_reason": failures[0]}
+        return {**resolved_base, "reentry_recovery_status": "FAIL_CLOSED", "reentry_recovery_reason": failures[0]}
     if unknowns:
-        return {**base, "reentry_recovery_status": "REVIEW_REQUIRED", "reentry_recovery_reason": unknowns[0]}
-    return {**base, "reentry_recovery_status": "PASS", "reentry_recovery_reason": "reentry_recovery_hurdle_passed"}
+        return {**resolved_base, "reentry_recovery_status": "REVIEW_REQUIRED", "reentry_recovery_reason": unknowns[0]}
+    return {**resolved_base, "reentry_recovery_status": "PASS", "reentry_recovery_reason": "reentry_recovery_qualified" if qualified else "reentry_recovery_hurdle_passed"}
 
 
 def _price_tick_risk_tier(single_tick_pct: float | None) -> str:
@@ -1286,6 +1369,21 @@ def _positive_number_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -
     return None
 
 
+def _positive_number_source_field(row: Mapping[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        raw = row.get(field)
+        value = _finite_number(raw)
+        if value is None and raw not in (None, ""):
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                parsed = math.nan
+            value = parsed if math.isfinite(parsed) else None
+        if value is not None and value > 0:
+            return field
+    return ""
+
+
 def _prior_exit_business_date(row: Mapping[str, Any]) -> str:
     for field in ("prior_exit_business_date", "last_exit_business_date", "previous_exit_business_date"):
         value = str(row.get(field) or "").strip()
@@ -1324,6 +1422,49 @@ def _corporate_action_status(row: Mapping[str, Any]) -> str:
         if value:
             return value
     return "UNKNOWN"
+
+
+def _corporate_action_evidence(row: Mapping[str, Any]) -> dict[str, str]:
+    for field in ("corporate_action_status", "corporate_event_status", "corporate_action_blocking_status", "corporate_event_blocking_status"):
+        value = str(row.get(field) or "").strip().upper()
+        if value:
+            return {
+                "status": value,
+                "source_status": str(row.get("corporate_action_source_status") or row.get("corporate_event_source_status") or "ROW_FIELD").upper(),
+                "source": str(row.get("corporate_action_source") or field),
+            }
+    source_status = str(row.get("corporate_action_source_status") or row.get("corporate_event_source_status") or "").strip().upper()
+    return {
+        "status": "UNKNOWN",
+        "source_status": source_status or "SOURCE_MISSING",
+        "source": str(row.get("corporate_action_source") or row.get("corporate_event_source") or ""),
+    }
+
+
+def _previous_exit_reason(row: Mapping[str, Any]) -> str:
+    for field in ("prior_exit_reason", "previous_exit_reason", "last_exit_reason", "source_decision_type", "decision_type"):
+        value = str(row.get(field) or "").strip()
+        if value:
+            return value
+    return "UNKNOWN"
+
+
+def _previous_exit_reason_class(reason: str, reason_codes: Any = None) -> str:
+    raw_codes = reason_codes if isinstance(reason_codes, list) else []
+    text = " ".join([reason, *[str(item) for item in raw_codes]]).upper()
+    if any(token in text for token in ("CORPORATE", "SPLIT", "MERGER", "TOB", "DELIST", "QUARANTINE")):
+        return "CORPORATE_ACTION"
+    if any(token in text for token in ("HARD_STOP", "STOP", "LOSS_CONTROL", "DRAWDOWN")):
+        return "HARD_STOP"
+    if any(token in text for token in ("TREND", "MOMENTUM", "EDGE_BREAK", "OPPORTUNITY_BROKEN", "WEAKEN")):
+        return "TREND_MOMENTUM"
+    if any(token in text for token in ("PORTFOLIO", "COMPETITION", "REALLOCATION", "REBALANCE", "CAPACITY", "ALLOCATION")):
+        return "PORTFOLIO_COMPETITION"
+    if any(token in text for token in ("ADMIN", "MANUAL", "OPERATIONAL", "QUARANTINED_TERMINAL")):
+        return "ADMINISTRATIVE"
+    if text.strip() in {"", "UNKNOWN"}:
+        return "GENERIC"
+    return "GENERIC"
 
 
 def _broker_eligibility_payload(member: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1452,6 +1593,10 @@ def _resolve_target_weight_contract(
             zero_reason = "buy_quality_rejected"
             reason = "buy_quality_rejected"
             weight = 0.0
+        elif quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} and _buy_wait_applies_to_member(row):
+            zero_reason = "buy_quality_wait"
+            reason = "buy_quality_wait"
+            weight = 0.0
         elif quality_action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"} and not row.get("current_position"):
             zero_reason = "buy_quality_review_required"
             review_reason = "buy_quality_review_required"
@@ -1530,7 +1675,13 @@ def _resolve_target_weight_contract(
         elif target_gross_exposure == 0:
             zero_reason = "policy_zero_exposure"
             reason = "policy_zero_exposure"
-        elif isinstance(raw_score, (int, float)) and not isinstance(raw_score, bool) and float(raw_score) < 0 and not row.get("current_position"):
+        elif (
+            isinstance(raw_score, (int, float))
+            and not isinstance(raw_score, bool)
+            and float(raw_score) < 0
+            and not row.get("current_position")
+            and not _uncalibrated_relative_score_contract(row)
+        ):
             zero_reason = "opportunity_not_selected"
             reason = "negative_opportunity_not_selected"
             weight = 0.0
@@ -2062,11 +2213,39 @@ def apply_lot_aware_final_reallocation(
             skipped_by_index[item["index"]] = "lot_feasibility_unknown_fail_closed"
             skipped.append({**base_skip_evidence, "reason": "lot_feasibility_unknown_fail_closed", "request": item["request"], "blocked_reason": "lot_feasibility_unknown_fail_closed"})
             continue
-        if not lot_feasible:
+        if (
+            str(lot_resolution.get("boundary_classification") or "") == "MINIMUM_EXECUTABLE_LOT_EXCEEDS_SAFETY_HARD_MAX"
+            or lot_resolution.get("safety_hard_cap_preserved") is False
+        ):
+            accepted_by_index[item["index"]] = 0.0
+            skipped_by_index[item["index"]] = "minimum_lot_exceeds_safety_hard_cap"
+            skipped.append(
+                {
+                    **base_skip_evidence,
+                    "reason": "minimum_lot_exceeds_safety_hard_cap",
+                    "blocked_reason": str(lot_resolution.get("boundary_classification") or "minimum_lot_exceeds_safety_hard_cap"),
+                    "required_weight": min_weight,
+                    "feasibility_classification": "SAFETY_HARD_BLOCKED",
+                }
+            )
+            continue
+        one_lot_fallback_requested = bool(lot_resolution.get("one_lot_fallback_applied")) or (
+            min_weight is not None
+            and item["request"] > 0
+            and item["request"] < min_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+        )
+        if not lot_feasible or one_lot_fallback_requested:
             if min_weight is not None:
                 required = max(required, min_weight)
             else:
                 required = 0.0
+        soft_strategy_overshoot_allowed = _lot_aware_strategy_cap_overshoot_allowed(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            required_weight=required,
+            single_name_cap=single_name_cap,
+        )
         if not broker_eligible or required <= 0:
             accepted_by_index[item["index"]] = 0.0
             skipped_by_index[item["index"]] = "lot_or_broker_infeasible"
@@ -2074,7 +2253,7 @@ def apply_lot_aware_final_reallocation(
             continue
         if single_name_cap is not None:
             max_increment = round(max(float(single_name_cap) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
-            if required > max_increment:
+            if required > max_increment and not soft_strategy_overshoot_allowed:
                 accepted_by_index[item["index"]] = 0.0
                 skipped_by_index[item["index"]] = "minimum_lot_exceeds_concentration_cap"
                 skipped.append(
@@ -2106,10 +2285,20 @@ def apply_lot_aware_final_reallocation(
                 "residual_destination": item["symbol"],
                 "lot_resolution": lot_resolution,
                 "reason": "cap_constrained_lot_floor_allocation",
+                "strategy_cap_overshoot_applied": soft_strategy_overshoot_allowed,
+                "strategy_cap_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP" if soft_strategy_overshoot_allowed else "",
             }
         )
         if required > item["request"]:
-            promoted.append({"symbol": item["symbol"], "from_weight": item["request"], "to_weight": required, "reason": "minimum_executable_lot_authorized_by_pc"})
+            promoted.append(
+                {
+                    "symbol": item["symbol"],
+                    "from_weight": item["request"],
+                    "to_weight": required,
+                    "reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP" if soft_strategy_overshoot_allowed else "one_lot_fallback_authorized_by_pc",
+                    "strategy_cap_overshoot_applied": soft_strategy_overshoot_allowed,
+                }
+            )
         if item["draft_target"] <= item["baseline"] and item["request"] > 0:
             rebatch_allocations.append(
                 {
@@ -2169,6 +2358,18 @@ def apply_lot_aware_final_reallocation(
                         "requested_lot_first_increment_weight": item.get("requested_increment", 0.0),
                         "lot_first_feasibility_classification": feasibility_classification,
                         "skip_reason": skipped_by_index.get(item["index"], ""),
+                        "strategy_cap_overshoot_applied": accepted > 0 and bool(lot_resolution.get("strategy_cap_overshoot_applied")),
+                        "strategy_cap_overshoot_reason": str(lot_resolution.get("lot_overshoot_reason") or ""),
+                        "continuous_target_weight": lot_resolution.get("continuous_target_weight", item["draft_target"]),
+                        "continuous_target_notional": lot_resolution.get("continuous_target_notional"),
+                        "normal_lot_quantity": lot_resolution.get("normal_lot_quantity", lot_resolution.get("requested_lots")),
+                        "one_lot_quantity": lot_resolution.get("one_lot_quantity"),
+                        "one_lot_notional": lot_resolution.get("one_lot_notional"),
+                        "one_lot_feasibility_status": lot_resolution.get("one_lot_feasibility_status"),
+                        "one_lot_fallback_applied": accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")),
+                        "blocker_reason": skipped_by_index.get(item["index"], ""),
+                        "final_allocated_quantity": lot_resolution.get("one_lot_quantity") if accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")) else lot_resolution.get("executable_quantity_delta"),
+                        "residual_capital_after_allocation_weight": remaining,
                         "phase29_l19_lot_resolution": lot_resolution,
                     },
                 },
@@ -2189,7 +2390,25 @@ def apply_lot_aware_final_reallocation(
                     "residual_notional": None,
                     "residual_recycled": accepted > 0,
                     "residual_destination": str(member.get("security_code") or member.get("symbol") or "") if accepted > 0 else "Cash",
-                    "final_quantity_delta": lot_resolution.get("executable_quantity_delta"),
+                    "preflight_executable_quantity_delta": lot_resolution.get("executable_quantity_delta"),
+                    "final_quantity_delta": None,
+                    "strategy_target_cap": lot_resolution.get("strategy_target_cap", lot_resolution.get("strategy_cap_weight")),
+                    "strategy_cap_overshoot_applied": accepted > 0 and bool(lot_resolution.get("strategy_cap_overshoot_applied")),
+                    "strategy_cap_overshoot_weight": lot_resolution.get("strategy_cap_overshoot_weight"),
+                    "post_trade_weight": lot_resolution.get("post_trade_weight"),
+                    "safety_hard_cap": lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")),
+                    "safety_margin_after_trade": lot_resolution.get("safety_margin_after_trade"),
+                    "lot_overshoot_reason": lot_resolution.get("lot_overshoot_reason", ""),
+                    "continuous_target_weight": lot_resolution.get("continuous_target_weight", item["draft_target"]),
+                    "continuous_target_notional": lot_resolution.get("continuous_target_notional"),
+                    "normal_lot_quantity": lot_resolution.get("normal_lot_quantity", lot_resolution.get("requested_lots")),
+                    "one_lot_quantity": lot_resolution.get("one_lot_quantity"),
+                    "one_lot_notional": lot_resolution.get("one_lot_notional"),
+                    "one_lot_feasibility_status": lot_resolution.get("one_lot_feasibility_status"),
+                    "one_lot_fallback_applied": accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")),
+                    "blocker_reason": skipped_by_index.get(item["index"], ""),
+                    "final_allocated_quantity": lot_resolution.get("one_lot_quantity") if accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")) else lot_resolution.get("executable_quantity_delta"),
+                    "residual_capital_after_allocation_weight": remaining,
                 },
             }
         )
@@ -2207,7 +2426,7 @@ def apply_lot_aware_final_reallocation(
         residual_cash_reason = "TARGET_GROSS_EXPOSURE_FULLY_ALLOCATED"
     elif not candidates:
         residual_cash_reason = "NO_ELIGIBLE_OPPORTUNITY"
-    elif all(str(item.get("reason") or "") in {"minimum_lot_exceeds_concentration_cap"} for item in skipped) and skipped:
+    elif all(str(item.get("reason") or "") in {"minimum_lot_exceeds_concentration_cap", "minimum_lot_exceeds_safety_hard_cap"} for item in skipped) and skipped:
         residual_cash_reason = "CONCENTRATION_LIMIT"
     elif any(str(item.get("reason") or "") == "minimum_lot_exceeds_remaining_budget" for item in skipped):
         residual_cash_reason = "CAPITAL_BELOW_NEXT_LOT"
@@ -2253,6 +2472,46 @@ def apply_lot_aware_final_reallocation(
             "pc_remains_target_weight_authority": True,
         },
     }
+
+
+def _lot_aware_strategy_cap_overshoot_allowed(
+    *,
+    item: Mapping[str, Any],
+    member: Mapping[str, Any],
+    lot_resolution: Mapping[str, Any],
+    required_weight: float,
+    single_name_cap: float | None,
+) -> bool:
+    participant_type = str(item.get("participant_type") or "")
+    if participant_type not in {"BUY_NEW", "BUY_ADD"} or single_name_cap is None:
+        return False
+    if str(lot_resolution.get("boundary_classification") or "") != "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX":
+        return False
+    if participant_type == "BUY_ADD":
+        if str(member.get("pm_action") or "").upper() != "ADD" or not bool(member.get("current_position")):
+            return False
+        if str(member.get("add_allocation_eligibility_status") or "") != "PASS":
+            return False
+        if str(member.get("incremental_investment_value_state") or "") != "POSITIVE":
+            return False
+        if str(member.get("opportunity_cost_status") or "") != "PASS":
+            return False
+    elif bool(member.get("current_position")) or str(member.get("membership_intent") or "").upper() != "ADD_CANDIDATE":
+        return False
+    if required_weight <= 0:
+        return False
+    baseline = float(item.get("baseline") or 0.0)
+    post_trade_weight = _optional_ratio(lot_resolution.get("post_trade_weight"))
+    safety_hard_cap = _optional_ratio(lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")))
+    if post_trade_weight is None:
+        post_trade_weight = round(baseline + required_weight, TARGET_WEIGHT_DECIMALS)
+    if safety_hard_cap is None:
+        return False
+    if post_trade_weight > safety_hard_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    if post_trade_weight <= float(single_name_cap) + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    return bool(lot_resolution.get("safety_hard_cap_preserved") is not False)
 
 
 def _positive_increment_over_target(
@@ -2699,12 +2958,23 @@ def _select_target_members(members: list[dict[str, Any]]) -> list[dict[str, Any]
     candidates: list[dict[str, Any]] = []
     for row in members:
         score = row.get("runtime_opportunity_score")
-        negative_new = isinstance(score, (int, float)) and not isinstance(score, bool) and float(score) < 0 and not row.get("current_position")
+        negative_new = (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and float(score) < 0
+            and not row.get("current_position")
+            and not _uncalibrated_relative_score_contract(row)
+        )
         quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "")
-        quality_blocks_buy = quality_action in {"REJECT", "BUY_REJECTED", "REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"}
+        quality_blocks_buy = quality_action in {"REJECT", "BUY_REJECTED", "REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"} or (
+            quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} and _buy_wait_applies_to_member(row)
+        )
         selectable = row.get("membership_intent") == "RETAIN" or (row.get("membership_intent") == "ADD_CANDIDATE" and not negative_new and not quality_blocks_buy)
         reason_codes = {str(reason) for reason in row.get("reason_codes") or []}
-        occupies_buy_slot = row.get("membership_intent") in {"RETAIN", "ADD_CANDIDATE"} or any(reason.startswith("opportunity_no_buy_reason_present:") for reason in reason_codes)
+        occupies_buy_slot = row.get("membership_intent") in {"RETAIN", "ADD_CANDIDATE"} or any(
+            reason.startswith("opportunity_no_buy_reason_hard_block:") or reason.startswith("opportunity_no_buy_reason_present:")
+            for reason in reason_codes
+        )
         if occupies_buy_slot:
             candidates.append({**row, "_selection_selectable": selectable})
     ordered = sorted(candidates, key=lambda row: (_positive_int(row.get("construction_priority"), 999999), str(row.get("security_code") or "")))
@@ -2738,6 +3008,10 @@ def _attach_buy_quality(
             membership_intent = "EXCLUDE"
             weight_intent = "AVOID"
             reasons.append("buy_quality_rejected")
+        elif not member.get("current_position") and action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} and _buy_wait_applies_to_member(member):
+            membership_intent = "EXCLUDE"
+            weight_intent = "AVOID"
+            reasons.append("buy_quality_wait")
         elif not member.get("current_position") and action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"}:
             membership_intent = "UNRESOLVED"
             weight_intent = "UNRESOLVED"
@@ -2760,6 +3034,13 @@ def _attach_buy_quality(
     return updated
 
 
+def _buy_wait_applies_to_member(row: Mapping[str, Any]) -> bool:
+    semantic = str(row.get("semantic_buy_type") or row.get("buy_semantic") or "").upper()
+    if semantic and semantic != "BUY_NEW":
+        return False
+    return not bool(row.get("current_position"))
+
+
 def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstructionSourceSummary) -> dict[str, Any]:
     return {
         "quality_decision_id": str(decision.get("quality_decision_id") or ""),
@@ -2773,6 +3054,14 @@ def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstruct
         "component_weights": dict(decision.get("component_weights") or {}),
         "quality_policy_version": str(decision.get("policy_version") or ""),
         "quality_allocation_adjustment": decision.get("quality_allocation_adjustment"),
+        "momentum_trajectory_schema_version": str(decision.get("momentum_trajectory_schema_version") or ""),
+        "momentum_trajectory_classification": str(decision.get("momentum_trajectory_classification") or ""),
+        "momentum_trajectory_status": str(decision.get("momentum_trajectory_status") or ""),
+        "momentum_trajectory_action": str(decision.get("momentum_trajectory_action") or ""),
+        "momentum_trajectory_component_score": decision.get("momentum_trajectory_component_score"),
+        "momentum_trajectory_reason_codes": list(decision.get("momentum_trajectory_reason_codes") or []),
+        "momentum_trajectory_feature_snapshot": dict(decision.get("momentum_trajectory_feature_snapshot") or {}),
+        "momentum_trajectory_authority": dict(decision.get("momentum_trajectory_authority") or {}),
         "source_candidate_id": str(decision.get("source_candidate_id") or ""),
         "source_opportunity_id": str(decision.get("source_opportunity_id") or ""),
         "buy_quality_artifact_path": summary.source_ref,
@@ -2784,6 +3073,8 @@ def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstruct
             "quality_decision_id": str(decision.get("quality_decision_id") or ""),
             "quality_action": str(decision.get("quality_action") or ""),
             "quality_score": decision.get("quality_score"),
+            "momentum_trajectory_classification": str(decision.get("momentum_trajectory_classification") or ""),
+            "momentum_trajectory_action": str(decision.get("momentum_trajectory_action") or ""),
             "source_artifact_path": summary.source_ref,
             "source_artifact_hash": _strip_sha256(summary.source_hash),
             "PIT_status": str(decision.get("PIT_status") or ""),
@@ -3058,6 +3349,134 @@ def _finite_number(value: Any) -> float | None:
     return numeric
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _opportunity_score_semantic_contract(*, row: Mapping[str, Any], summary: Mapping[str, Any] | None) -> dict[str, Any]:
+    summary = summary or {}
+    canonical_score_field = str(row.get("canonical_score_field") or summary.get("canonical_score_field") or "")
+    score_semantic_role = str(
+        row.get("score_semantic_role")
+        or row.get("semantic_role")
+        or summary.get("score_semantic_role")
+        or summary.get("semantic_role")
+        or ""
+    )
+    calibration_applied = _optional_bool(row.get("calibration_applied"))
+    if calibration_applied is None:
+        calibration_applied = _optional_bool(summary.get("calibration_applied"))
+    economic_units_available = _optional_bool(row.get("economic_units_available"))
+    if economic_units_available is None:
+        economic_units_available = _optional_bool(summary.get("economic_units_available"))
+    missing = []
+    if not canonical_score_field:
+        missing.append("canonical_score_field")
+    if not score_semantic_role:
+        missing.append("score_semantic_role")
+    if calibration_applied is None:
+        missing.append("calibration_applied")
+    if economic_units_available is None:
+        missing.append("economic_units_available")
+    is_uncalibrated_relative = (
+        canonical_score_field == "runtime_opportunity_score"
+        and score_semantic_role == "uncalibrated_relative_model_score"
+        and calibration_applied is False
+        and economic_units_available is False
+    )
+    return {
+        "canonical_score_field": canonical_score_field,
+        "score_semantic_role": score_semantic_role,
+        "calibration_applied": calibration_applied,
+        "economic_units_available": economic_units_available,
+        "is_uncalibrated_relative_score": is_uncalibrated_relative,
+        "semantic_metadata_complete": not missing,
+        "missing_fields": missing,
+    }
+
+
+def _no_buy_reason_parts(no_buy_reason: Any) -> set[str]:
+    return {part.strip().lower() for part in str(no_buy_reason or "").split("|") if part.strip()}
+
+
+def _classify_opportunity_no_buy_reason(no_buy_reason: Any, *, score_contract: Mapping[str, Any]) -> dict[str, Any]:
+    reasons = {reason for reason in _no_buy_reason_parts(no_buy_reason) if reason not in {"", "none", "nan", "null"}}
+    hard_reasons = sorted(reasons & OPPORTUNITY_HARD_NO_BUY_REASONS)
+    soft_relative_reasons = sorted(reasons & OPPORTUNITY_RELATIVE_METADATA_NO_BUY_REASONS)
+    unknown_reasons = sorted(reasons - OPPORTUNITY_HARD_NO_BUY_REASONS - OPPORTUNITY_RELATIVE_METADATA_NO_BUY_REASONS)
+    semantic_metadata_complete = bool(score_contract.get("semantic_metadata_complete"))
+    uncalibrated_relative = bool(score_contract.get("is_uncalibrated_relative_score"))
+    if not reasons:
+        return {
+            "status": "PASS",
+            "blocks_buy": False,
+            "no_buy_reason": "",
+            "hard_blocking_reasons": [],
+            "soft_relative_reasons": [],
+            "unknown_reasons": [],
+            "score_contract": dict(score_contract),
+            "review_reason": "",
+        }
+    if hard_reasons or unknown_reasons:
+        return {
+            "status": "BLOCKED",
+            "blocks_buy": True,
+            "no_buy_reason": str(no_buy_reason or ""),
+            "hard_blocking_reasons": [*hard_reasons, *unknown_reasons],
+            "soft_relative_reasons": soft_relative_reasons,
+            "unknown_reasons": unknown_reasons,
+            "score_contract": dict(score_contract),
+            "review_reason": "",
+        }
+    if not semantic_metadata_complete:
+        return {
+            "status": "REVIEW_REQUIRED",
+            "blocks_buy": True,
+            "no_buy_reason": str(no_buy_reason or ""),
+            "hard_blocking_reasons": sorted(reasons),
+            "soft_relative_reasons": [],
+            "unknown_reasons": [],
+            "score_contract": dict(score_contract),
+            "review_reason": "semantic_metadata_missing",
+        }
+    economic_units_available = bool(score_contract.get("economic_units_available"))
+    if economic_units_available and "non_positive_expected_edge_score" in reasons:
+        return {
+            "status": "BLOCKED",
+            "blocks_buy": True,
+            "no_buy_reason": str(no_buy_reason or ""),
+            "hard_blocking_reasons": ["non_positive_expected_edge_score"],
+            "soft_relative_reasons": sorted(reasons - {"non_positive_expected_edge_score"}),
+            "unknown_reasons": [],
+            "score_contract": dict(score_contract),
+            "review_reason": "",
+        }
+    return {
+        "status": "PASS" if uncalibrated_relative else "REVIEW_REQUIRED",
+        "blocks_buy": not uncalibrated_relative,
+        "no_buy_reason": str(no_buy_reason or ""),
+        "hard_blocking_reasons": [] if uncalibrated_relative else sorted(reasons),
+        "soft_relative_reasons": soft_relative_reasons if uncalibrated_relative else [],
+        "unknown_reasons": [],
+        "score_contract": dict(score_contract),
+        "review_reason": "" if uncalibrated_relative else "unsupported_score_semantic_contract",
+    }
+
+
+def _uncalibrated_relative_score_contract(row: Mapping[str, Any]) -> bool:
+    authority = row.get("runtime_opportunity_score_authority")
+    if not isinstance(authority, Mapping):
+        return False
+    return (
+        str(authority.get("canonical_field") or "") == "runtime_opportunity_score"
+        and str(authority.get("score_semantic_role") or "") == "uncalibrated_relative_model_score"
+        and authority.get("calibration_applied") is False
+        and authority.get("economic_units_available") is False
+    )
+
+
 def _score_source_field(row: Mapping[str, Any], fields: tuple[str, ...]) -> str:
     for key in fields:
         value = row.get(key)
@@ -3071,13 +3490,15 @@ def _score_authority_payload(
     business_date: str,
     candidate: Mapping[str, Any] | None,
     opportunity: Mapping[str, Any] | None,
+    opportunity_score_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if opportunity:
-        source_field = _score_source_field(opportunity, ("expected_edge_score", "opportunity_score", "score"))
+        source_field = _score_source_field(opportunity, ("runtime_opportunity_score", "expected_edge_score", "opportunity_score", "score"))
         if source_field:
             score = _finite_number(opportunity.get(source_field))
             if score is not None:
+                score_contract = _opportunity_score_semantic_contract(row=opportunity, summary=opportunity_score_summary or {})
                 payload["runtime_opportunity_score"] = round(score, 8)
                 payload["runtime_opportunity_score_authority"] = {
                     "authority": "OPPORTUNITY_RANKING_AUTHORITY",
@@ -3090,8 +3511,11 @@ def _score_authority_payload(
                     "candidate_reference": str((candidate or {}).get("candidate_id") or (candidate or {}).get("source_ref") or ""),
                     "opportunity_reference": str(opportunity.get("opportunity_id") or opportunity.get("source_ref") or ""),
                     "prediction_semantics": str(opportunity.get("prediction_semantics") or "runtime_opportunity_score"),
+                    "score_semantic_role": score_contract["score_semantic_role"],
                     "transformation_stage": str(opportunity.get("transformation_stage") or "accepted_generation_bound_imputer_scaler_model"),
-                    "calibration_applied": bool(opportunity.get("calibration_applied")) if "calibration_applied" in opportunity else False,
+                    "calibration_applied": score_contract["calibration_applied"],
+                    "economic_units_available": score_contract["economic_units_available"],
+                    "semantic_metadata_complete": score_contract["semantic_metadata_complete"],
                     "population_scope": str(opportunity.get("population_scope") or "CandidateTopN_single_business_day"),
                     "business_date": business_date,
                 }

@@ -189,8 +189,14 @@ def build_current_valuation_candidate(
         if not quote:
             missing_symbols.append(symbol)
             continue
-        price = _price(quote)
+        price, price_authority, price_reason, price_basis = _resolve_basis_compatible_valuation_price(
+            position=position,
+            quote=quote,
+        )
         if price is None or price <= 0:
+            invalid_symbols.append(symbol)
+            continue
+        if price_authority != "PASS":
             invalid_symbols.append(symbol)
             continue
         price_type = str(quote.get("price_type") or "")
@@ -219,6 +225,17 @@ def build_current_valuation_candidate(
         updated["valuation_source"] = str(quote.get("source") or market_path)
         updated["valuation_price_type"] = price_type
         updated["valuation_adjusted"] = bool(quote.get("adjusted"))
+        updated["valuation_price_authority"] = price_authority
+        updated["valuation_price_authority_reason"] = price_reason
+        updated["valuation_price_basis"] = price_basis
+        updated["quantity_basis"] = price_basis
+        updated["valuation_price_role"] = _valuation_price_role_for_basis(quote=quote, price_basis=price_basis)
+        updated["valuation_price_provenance"] = str(
+            _valuation_price_provenance_for_basis(quote=quote, price_basis=price_basis)
+            or quote.get("price_provenance")
+            or quote.get("source")
+            or market_path
+        )
         valued_positions.append(updated)
     if missing_symbols or invalid_symbols or quote_status_not_allowed:
         reasons = ["current_valuation_quote_missing"] if missing_symbols else []
@@ -557,14 +574,32 @@ def _market_evidence_from_historical_asof_view(
         ),
         {},
     )
+    raw_authority = next(
+        (
+            dict(entry)
+            for entry in payload.get("authorities") or []
+            if str(entry.get("authority") or "") == "raw_ohlcv" and str(entry.get("status") or "") == "PASS"
+        ),
+        {},
+    )
     source_path = _historical_logical_normalized_ohlcv_path_from_asof_view(
         asof_view_path=path,
         business_date=business_date,
         fallback_physical_path=Path(str(authority.get("physical_source_path") or "")),
     )
+    raw_source_path = _historical_logical_raw_ohlcv_path_from_asof_view(
+        asof_view_path=path,
+        business_date=business_date,
+        fallback_physical_path=Path(str(raw_authority.get("physical_source_path") or "")),
+    )
     if not authority or not source_path.is_file():
         return _market_review_payload(path=path, business_date=business_date, reason="historical_normalized_ohlcv_missing")
-    quotes, missing = _quotes_from_parquet(source_path=source_path, market_date=business_date, required_symbols=required_symbols)
+    quotes, missing = _quotes_from_parquet(
+        source_path=source_path,
+        market_date=business_date,
+        required_symbols=required_symbols,
+        economic_source_path=raw_source_path,
+    )
     quote_payload = {quote["symbol"]: quote for quote in quotes}
     quote_status = "READY" if not missing and quote_payload else "REVIEW_REQUIRED"
     if not required_symbols and not quote_payload:
@@ -582,6 +617,7 @@ def _market_evidence_from_historical_asof_view(
         "historical_asof_view_path": str(path),
         "historical_market_authority": "normalized_ohlcv",
         "historical_market_source_path": str(source_path),
+        "historical_economic_source_path": str(raw_source_path) if raw_source_path.is_file() else "",
         "historical_market_source_scope": (
             "run_scoped_logical_input"
             if "inputs/historical_asof" in str(source_path)
@@ -621,6 +657,36 @@ def _historical_logical_normalized_ohlcv_path_from_asof_view(
     return Path(normalized) if normalized else manifest_path.parent / "__missing_historical_logical_valuation_source__.parquet"
 
 
+def _historical_logical_raw_ohlcv_path_from_asof_view(
+    *,
+    asof_view_path: Path,
+    business_date: str,
+    fallback_physical_path: Path,
+) -> Path:
+    manifest_path = (
+        asof_view_path.parent
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "logical_input_manifest.json"
+    )
+    if not manifest_path.exists():
+        return fallback_physical_path
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return manifest_path.parent / "__invalid_historical_logical_economic_source__.parquet"
+    if str(manifest.get("business_date") or "") != business_date:
+        return manifest_path.parent / "__mismatched_historical_logical_economic_source__.parquet"
+    if str(manifest.get("status") or "") != "PASS":
+        return manifest_path.parent / "__blocked_historical_logical_economic_source__.parquet"
+    logical_paths = manifest.get("logical_paths")
+    if not isinstance(logical_paths, dict):
+        return manifest_path.parent / "__missing_historical_logical_economic_source__.parquet"
+    raw = str(logical_paths.get("raw_ohlcv") or "")
+    return Path(raw) if raw else manifest_path.parent / "__missing_historical_logical_economic_source__.parquet"
+
+
 def _market_review_payload(*, path: Path, business_date: str, reason: str) -> dict[str, Any]:
     return {
         "schema_version": "runtime_v2_market_evidence_v1",
@@ -636,7 +702,13 @@ def _market_review_payload(*, path: Path, business_date: str, reason: str) -> di
     }
 
 
-def _quotes_from_parquet(*, source_path: Path, market_date: str, required_symbols: set[str]) -> tuple[list[dict[str, Any]], set[str]]:
+def _quotes_from_parquet(
+    *,
+    source_path: Path,
+    market_date: str,
+    required_symbols: set[str],
+    economic_source_path: Path | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
     try:
         import pandas as pd
 
@@ -648,11 +720,17 @@ def _quotes_from_parquet(*, source_path: Path, market_date: str, required_symbol
     date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
     code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
     close_column = _first_column(frame, ("close", "Close", "AdjustmentClose", "adjustment_close", "price"))
+    price_source_column = _first_column(frame, ("PriceSource", "price_source"))
     if not date_column or not code_column or not close_column:
         return [], set(required_symbols)
     rows = frame[frame[date_column].astype(str) == market_date].copy()
     if rows.empty:
         return [], set(required_symbols)
+    economic_rows = _economic_rows_from_parquet(
+        source_path=economic_source_path,
+        market_date=market_date,
+        required_symbols=required_symbols,
+    )
     quotes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows.to_dict(orient="records"):
@@ -662,6 +740,16 @@ def _quotes_from_parquet(*, source_path: Path, market_date: str, required_symbol
         price = row.get(close_column)
         if price is None:
             continue
+        price_source = str(row.get(price_source_column) or "").lower() if price_source_column else ""
+        adjusted = str(close_column).lower().startswith("adjust") or price_source == "adjusted"
+        price_metadata = _normalized_quote_price_metadata(
+            adjusted=adjusted,
+            price_source=price_source,
+            source_column=close_column,
+            row=row,
+            economic_row=economic_rows.get(symbol),
+            economic_source_path=economic_source_path,
+        )
         quotes.append(
             {
                 "symbol": symbol,
@@ -671,11 +759,44 @@ def _quotes_from_parquet(*, source_path: Path, market_date: str, required_symbol
                 "observed_at": market_date,
                 "source": str(source_path),
                 "freshness_status": "READY",
-                "adjusted": str(close_column).lower().startswith("adjust"),
+                "adjusted": adjusted,
+                **price_metadata,
             }
         )
         seen.add(symbol)
     return quotes, set(required_symbols) - seen
+
+
+def _economic_rows_from_parquet(
+    *,
+    source_path: Path | None,
+    market_date: str,
+    required_symbols: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not source_path or not source_path.is_file():
+        return {}
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return {}
+    if frame.empty:
+        return {}
+    date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
+    code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
+    if not date_column or not code_column:
+        return {}
+    rows = frame[frame[date_column].astype(str) == market_date].copy()
+    if rows.empty:
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows.to_dict(orient="records"):
+        symbol = _normalize_symbol(str(row.get(code_column) or ""))
+        if not symbol or required_symbols and symbol not in required_symbols:
+            continue
+        result[symbol] = row
+    return result
 
 
 def _first_column(frame: Any, candidates: tuple[str, ...]) -> str:
@@ -760,6 +881,242 @@ def _price(quote: dict[str, Any]) -> float | None:
         return float(quote.get("price"))
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_economic_valuation_price(quote: dict[str, Any]) -> tuple[float | None, str, str]:
+    price = _price(quote)
+    if not bool(quote.get("adjusted")):
+        return price, "PASS", "quote_price_is_economic_unadjusted"
+    reconciliation_status = str(quote.get("economic_price_reconciliation_status") or "")
+    provenance = str(quote.get("economic_price_provenance") or "")
+    economic_price = _positive_float(quote.get("economic_valuation_price"))
+    if reconciliation_status == "PASS" and provenance and economic_price is not None:
+        return economic_price, "PASS", "adjusted_price_reconciled_to_economic_valuation_price"
+    return None, "REVIEW_REQUIRED", "adjusted_price_missing_economic_valuation_reconciliation"
+
+
+def _resolve_basis_compatible_valuation_price(
+    *,
+    position: dict[str, Any],
+    quote: dict[str, Any],
+) -> tuple[float | None, str, str, str]:
+    if not bool(quote.get("adjusted")):
+        price, authority, reason = _resolve_economic_valuation_price(quote)
+        return price, authority, reason, "RAW"
+    if str(quote.get("price_basis") or "").upper() == "RECONCILED":
+        price, authority, reason = _resolve_economic_valuation_price(quote)
+        return price, authority, reason, "RECONCILED"
+    basis, basis_reason = _resolve_position_quantity_basis(position=position, quote=quote)
+    if basis == "ADJUSTED":
+        adjusted_price = _positive_float(
+            quote.get("adjusted_basis_valuation_price", quote.get("adjusted_analytical_price"))
+        )
+        provenance = str(quote.get("adjusted_basis_price_provenance") or "")
+        status = str(quote.get("adjusted_basis_reconciliation_status") or "")
+        if adjusted_price is not None and provenance and status == "PASS":
+            return (
+                adjusted_price,
+                "PASS",
+                "valuation_price_basis_matches_adjusted_quantity_basis",
+                "ADJUSTED",
+            )
+        return None, "REVIEW_REQUIRED", "adjusted_quantity_basis_price_reconciliation_missing", "ADJUSTED"
+    if basis == "RAW":
+        price, authority, reason = _resolve_economic_valuation_price(quote)
+        return price, authority, reason, "RAW"
+    return None, "REVIEW_REQUIRED", basis_reason or "position_quantity_basis_unresolved", "UNKNOWN"
+
+
+def _resolve_position_quantity_basis(*, position: dict[str, Any], quote: dict[str, Any]) -> tuple[str, str]:
+    explicit = str(position.get("quantity_basis") or position.get("position_quantity_basis") or "").upper()
+    if explicit in {"RAW", "ADJUSTED", "RECONCILED"}:
+        return ("RAW" if explicit == "RECONCILED" else explicit), "explicit_position_quantity_basis"
+    ratio = _positive_float(quote.get("raw_adjusted_close_ratio"))
+    if ratio is not None and abs(ratio - 1.0) <= 0.000001:
+        return "ADJUSTED", "raw_adjusted_basis_equivalent"
+    quantity = _positive_float(position.get("quantity"))
+    observed_prices = [
+        _positive_float(position.get("average_price") or position.get("avg_price")),
+        _positive_float(position.get("current_price")),
+    ]
+    if quantity is not None and quantity > 0:
+        observed_prices.append(_positive_float((_positive_float(position.get("market_value")) or 0.0) / quantity))
+    adjusted_candidates = _quote_basis_candidates(
+        quote,
+        (
+            "adjusted_basis_valuation_price",
+            "adjusted_analytical_price",
+            "adjusted_analytical_open",
+            "adjusted_analytical_high",
+            "adjusted_analytical_low",
+        ),
+    )
+    raw_candidates = _quote_basis_candidates(
+        quote,
+        (
+            "economic_valuation_price",
+            "raw_economic_open",
+            "raw_economic_high",
+            "raw_economic_low",
+        ),
+    )
+    adjusted_match = _any_price_match(observed_prices, adjusted_candidates)
+    raw_match = _any_price_match(observed_prices, raw_candidates)
+    if adjusted_match and not raw_match:
+        return "ADJUSTED", "position_unit_price_matches_adjusted_quote_basis"
+    if raw_match and not adjusted_match:
+        return "RAW", "position_unit_price_matches_raw_quote_basis"
+    if adjusted_match and raw_match:
+        return "UNKNOWN", "position_quantity_basis_ambiguous"
+    return "UNKNOWN", "position_quantity_basis_unresolved"
+
+
+def _quote_basis_candidates(quote: dict[str, Any], keys: tuple[str, ...]) -> list[float]:
+    values: list[float] = []
+    for key in keys:
+        value = _positive_float(quote.get(key))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _any_price_match(observed: list[float | None], candidates: list[float]) -> bool:
+    return any(
+        value is not None and _price_close(value, candidate)
+        for value in observed
+        for candidate in candidates
+    )
+
+
+def _price_close(left: float, right: float) -> bool:
+    tolerance = max(0.01, abs(right) * 0.0001)
+    return abs(left - right) <= tolerance
+
+
+def _valuation_price_role_for_basis(*, quote: dict[str, Any], price_basis: str) -> str:
+    if price_basis == "ADJUSTED":
+        return str(quote.get("adjusted_basis_price_role") or "reconciled_adjusted_basis_valuation_price")
+    return str(quote.get("price_role") or "economic_valuation_price")
+
+
+def _valuation_price_provenance_for_basis(*, quote: dict[str, Any], price_basis: str) -> str:
+    if price_basis == "ADJUSTED":
+        return str(quote.get("adjusted_basis_price_provenance") or "")
+    return str(quote.get("economic_price_provenance") or "")
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _normalized_quote_price_metadata(
+    *,
+    adjusted: bool,
+    price_source: str,
+    source_column: str,
+    row: dict[str, Any],
+    economic_row: dict[str, Any] | None = None,
+    economic_source_path: Path | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "normalized_price_source": price_source or ("adjusted" if adjusted else "unadjusted"),
+        "price_source_column": source_column,
+    }
+    normalized_price = row.get(source_column)
+    if not adjusted:
+        metadata.update(
+            {
+                "price_role": "economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": "normalized_ohlcv_unadjusted_close",
+                "economic_valuation_price": normalized_price,
+                "price_basis": "RAW",
+                "adjusted_basis_reconciliation_status": "NOT_REQUIRED",
+            }
+        )
+        return metadata
+    explicit_status = str(
+        row.get("economic_price_reconciliation_status") or row.get("EconomicPriceReconciliationStatus") or ""
+    )
+    explicit_price = row.get("economic_valuation_price", row.get("EconomicValuationPrice"))
+    explicit_provenance = str(row.get("economic_price_provenance") or row.get("EconomicPriceProvenance") or "")
+    if explicit_status == "PASS" and explicit_provenance and _positive_float(explicit_price) is not None:
+        metadata.update(
+            {
+                "price_role": "reconciled_adjusted_economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": explicit_provenance,
+                "economic_valuation_price": float(explicit_price),
+                "price_basis": "RECONCILED",
+            }
+        )
+        return metadata
+    raw_close_column = _first_mapping_key(economic_row or {}, ("C", "Close", "close", "price"))
+    raw_close = _positive_float((economic_row or {}).get(raw_close_column)) if raw_close_column else None
+    raw_open = _positive_float((economic_row or {}).get("O"))
+    raw_high = _positive_float((economic_row or {}).get("H"))
+    raw_low = _positive_float((economic_row or {}).get("L"))
+    raw_adjusted_close = _positive_float((economic_row or {}).get("AdjC"))
+    raw_adjusted_open = _positive_float((economic_row or {}).get("AdjO"))
+    raw_adjusted_high = _positive_float((economic_row or {}).get("AdjH"))
+    raw_adjusted_low = _positive_float((economic_row or {}).get("AdjL"))
+    if raw_close is not None and economic_source_path and economic_source_path.is_file():
+        adjusted_basis_price = _positive_float(normalized_price) or raw_adjusted_close
+        adjusted_provenance = (
+            f"normalized_adjusted_ohlcv_close:{source_column}|raw_ohlcv_adjusted_close:{economic_source_path}:AdjC"
+            if adjusted_basis_price is not None
+            else ""
+        )
+        metadata.update(
+            {
+                "price_role": "reconciled_raw_economic_valuation_price",
+                "economic_price_reconciliation_status": "PASS",
+                "economic_price_provenance": f"raw_ohlcv_close:{economic_source_path}:{raw_close_column}",
+                "economic_valuation_price": raw_close,
+                "price_basis": "RAW",
+                "raw_economic_open": raw_open,
+                "raw_economic_high": raw_high,
+                "raw_economic_low": raw_low,
+                "raw_adjusted_open": raw_adjusted_open,
+                "raw_adjusted_high": raw_adjusted_high,
+                "raw_adjusted_low": raw_adjusted_low,
+                "raw_adjusted_close": raw_adjusted_close,
+                "raw_adjusted_close_ratio": raw_close / adjusted_basis_price if adjusted_basis_price else None,
+                "adjusted_analytical_open": row.get("Open", raw_adjusted_open),
+                "adjusted_analytical_high": row.get("High", raw_adjusted_high),
+                "adjusted_analytical_low": row.get("Low", raw_adjusted_low),
+                "adjusted_analytical_price": normalized_price,
+                "adjusted_basis_valuation_price": adjusted_basis_price,
+                "adjusted_basis_reconciliation_status": "PASS" if adjusted_basis_price is not None and adjusted_provenance else "REVIEW_REQUIRED",
+                "adjusted_basis_price_role": "reconciled_adjusted_basis_valuation_price",
+                "adjusted_basis_price_provenance": adjusted_provenance,
+            }
+        )
+        return metadata
+    metadata.update(
+        {
+            "price_role": "adjusted_analytical_price",
+            "economic_price_reconciliation_status": "REVIEW_REQUIRED",
+            "economic_price_provenance": "",
+        }
+    )
+    return metadata
+
+
+def _first_mapping_key(row: dict[str, Any], candidates: tuple[str, ...]) -> str:
+    exact = {str(key): str(key) for key in row}
+    lower = {str(key).lower(): str(key) for key in row}
+    for candidate in candidates:
+        if candidate in exact:
+            return exact[candidate]
+        match = lower.get(candidate.lower())
+        if match:
+            return match
+    return ""
 
 
 def _sum_market_value(positions: list[dict[str, Any]]) -> float:

@@ -53,6 +53,9 @@ def test_phase19_bt_reduce_small_position_non_executable_no_order_contract():
 
     assert contract["status"] == "NOT_EXECUTABLE"
     assert contract["reason"] == "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
+    assert contract["execution_semantic"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert contract["intentional_no_order"] is True
+    assert contract["intentional_no_order_reason"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
     assert contract["execution_feasibility_status"] == "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY"
     assert contract["effective_action"] == "NO_SELL_ORDER"
     assert contract["final_sell_quantity"] == 0
@@ -87,8 +90,13 @@ def test_phase20_m_zero_rounded_reduce_generates_no_order_and_runtime_can_contin
     assert pending["items"] == []
     assert pending["active_pending"] is False
     assert pending["non_executable_sell_decisions"][0]["original_decision"] == "REDUCE"
+    assert pending["non_executable_sell_decisions"][0]["execution_semantic"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert pending["non_executable_sell_decisions"][0]["intentional_no_order"] is True
+    assert pending["non_executable_sell_decisions"][0]["intentional_no_order_reason"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
     assert contract["position_quantity_before"] == 300
     assert contract["raw_reduce_quantity"] == 75
+    assert contract["execution_semantic"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert contract["intentional_no_order"] is True
     assert contract["rounded_executable_quantity"] == 0
     assert contract["pending_order_generated"] is False
     assert contract["effective_action"] == "NO_SELL_ORDER"

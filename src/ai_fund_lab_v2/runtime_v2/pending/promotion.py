@@ -279,6 +279,8 @@ def _authority_context_from_item(item: PendingOrderItem) -> dict:
         payload["position_count_authority"] = context["position_count_authority"]
     if isinstance(context.get("cash_exposure_authority"), dict):
         payload["cash_exposure_authority"] = context["cash_exposure_authority"]
+    if isinstance(context.get("position_sizing_authority"), dict):
+        payload["position_sizing_authority"] = context["position_sizing_authority"]
     for field in (
         "strategy_requested_position_count",
         "selected_dynamic_position_count",
@@ -292,6 +294,20 @@ def _authority_context_from_item(item: PendingOrderItem) -> dict:
         "legacy_cash_config_used",
         "legacy_exposure_config_used",
         "cash_exposure_fallback_used",
+        "strategy_requested_position_weight",
+        "selected_position_weight",
+        "strategy_requested_position_amount",
+        "selected_position_amount",
+        "remaining_add_capacity",
+        "position_sizing_authority_winner",
+        "position_sizing_binding_constraint",
+        "position_sizing_fallback_used",
+        "legacy_position_sizing_used",
+        "one_lot_authority_consumed",
+        "one_lot_authority_reason",
+        "discrete_authorized_quantity",
+        "discrete_authorized_notional",
+        "phase29_l19_lot_resolution",
     ):
         if field in context:
             payload[field] = context[field]

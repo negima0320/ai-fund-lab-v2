@@ -27,6 +27,7 @@ from ai_fund_lab_v2.runtime_v2.market_refresh.feature_date_contract import (
     resolve_feature_date_contract,
 )
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
+from ai_fund_lab_v2.runtime_v2.order_reservation import resolve_order_cash_reservation
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
@@ -785,7 +786,10 @@ def run_morning_ai_planning_pending_pipeline(
 
     listed_info_by_symbol = {_symbol(row): _listed_info(row) for row in selected_rows}
     pending_items = tuple(
-        replace(_pending_item(item), listed_info=listed_info_by_symbol.get(item.symbol))
+        replace(
+            _pending_item(item, runtime_root=runtime_root_path, business_date=business_date),
+            listed_info=listed_info_by_symbol.get(item.symbol),
+        )
         for item in planning_result.order_plan.items
         if not item.blocked and not item.review_required and item.quantity > 0
     )
@@ -1533,7 +1537,17 @@ def _policy_hash(policy_context: dict[str, Any]) -> str:
     return capital_deployment_policy_hash_from_context(policy_context)
 
 
-def _pending_item(item) -> PendingOrderItem:
+def _pending_item(item, *, runtime_root: Path, business_date: str) -> PendingOrderItem:
+    reservation = resolve_order_cash_reservation(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=item.symbol,
+        side=item.side,
+        order_type="MARKET",
+        quantity=item.quantity,
+        reference_price=item.estimated_price,
+        reference_price_authority={},
+    )
     return PendingOrderItem(
         pending_item_id=item.order_plan_item_id,
         symbol=item.symbol,
@@ -1548,6 +1562,13 @@ def _pending_item(item) -> PendingOrderItem:
         price_as_of=item.price_as_of,
         price_confidence=item.price_confidence,
         price_required=item.price_required,
+        reference_price=item.estimated_price,
+        reference_price_authority={},
+        reservation_price=reservation["reservation_price"],
+        reservation_price_type=reservation["reservation_price_type"],
+        reservation_price_authority=reservation["reservation_price_authority"],
+        reservation_reason=reservation["reservation_reason"],
+        reserved_notional=reservation["reserved_notional"],
         capital_allocation_amount=item.capital_allocation_amount,
         policy_version=item.policy_version,
         policy_source=item.policy_source,
@@ -1693,10 +1714,19 @@ def _listed_info(row: dict[str, Any]) -> dict[str, Any]:
             {
                 "opportunity_buy_eligibility_status": opportunity_eligibility.get("status"),
                 "opportunity_buy_eligibility": opportunity_eligibility.get("buy_eligibility"),
+                "runtime_opportunity_score": opportunity_eligibility.get("runtime_opportunity_score"),
                 "opportunity_expected_edge_score": opportunity_eligibility.get("expected_edge_score"),
                 "opportunity_expected_return": opportunity_eligibility.get("expected_return"),
                 "opportunity_no_buy_reason": opportunity_eligibility.get("no_buy_reason"),
                 "opportunity_buy_rank": opportunity_eligibility.get("buy_rank"),
+                "opportunity_canonical_score_field": opportunity_eligibility.get("canonical_score_field"),
+                "opportunity_score_semantic_role": opportunity_eligibility.get("score_semantic_role"),
+                "opportunity_calibration_applied": opportunity_eligibility.get("calibration_applied"),
+                "opportunity_economic_units_available": opportunity_eligibility.get("economic_units_available"),
+                "opportunity_absolute_economic_gate_applicable": opportunity_eligibility.get("absolute_economic_gate_applicable"),
+                "opportunity_relative_competition_eligible": opportunity_eligibility.get("relative_competition_eligible"),
+                "expected_edge_score_semantic_role": opportunity_eligibility.get("expected_edge_score_semantic_role"),
+                "expected_return_semantic_role": opportunity_eligibility.get("expected_return_semantic_role"),
                 "opportunity_artifact_path": opportunity_eligibility.get("opportunity_artifact_path"),
                 "opportunity_artifact_hash": opportunity_eligibility.get("opportunity_artifact_hash"),
                 "opportunity_business_date": opportunity_eligibility.get("business_date"),

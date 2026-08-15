@@ -27,6 +27,13 @@ STRATEGY_SHADOW_SUMMARY_SCHEMA_VERSION = "runtime_test_strategy_shadow_summary.v
 STRATEGY_SHADOW_RUN_MANIFEST_SCHEMA_VERSION = "runtime_test_strategy_shadow_run_manifest.v1"
 STRATEGY_SHADOW_RUN_SUMMARY_SCHEMA_VERSION = "runtime_test_strategy_shadow_run_summary.v1"
 
+OPPORTUNITY_SCORE_SEMANTIC_METADATA_FIELDS = (
+    "canonical_score_field",
+    "score_semantic_role",
+    "calibration_applied",
+    "economic_units_available",
+)
+
 ARTIFACT_FILENAMES = {
     "market_context": "market_context.json",
     "corporate_event": "corporate_event.json",
@@ -140,6 +147,15 @@ def generate_strategy_shadow_for_day(
     opportunity = _ai_output_summary(runtime_root / "runtime_state" / "buy_ai" / business_date / "opportunity_rankings.json", business_date=business_date)
     opportunity_artifact_path = _optional_opportunity_artifact_path(opportunity, business_date=business_date)
     current = _current_summary(runtime_root=runtime_root, business_date=business_date)
+    prior_exit_supply = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        candidate=candidate,
+        opportunity=opportunity,
+        current=current,
+    )
+    candidate = prior_exit_supply["candidate"]
+    opportunity = prior_exit_supply["opportunity"]
     cash = _cash_summary(runtime_root=runtime_root, business_date=business_date)
     exposure = _exposure_summary(runtime_root=runtime_root, business_date=business_date)
     pending = _pending_summary(runtime_root=runtime_root, business_date=business_date)
@@ -167,6 +183,7 @@ def generate_strategy_shadow_for_day(
         "price_volatility": _input_source_ref(price_volatility),
         "technical_features": _input_source_ref(technical_features),
         "strategy_source_authority": strategy_sources,
+        "prior_exit_state": prior_exit_supply["evidence"],
     }
 
     produce(
@@ -201,6 +218,14 @@ def generate_strategy_shadow_for_day(
             require_full_source_coverage=not bool(strategy_sources.get("run_scoped_historical_authority_used")),
         ),
     )
+    reentry_source_supply = _supply_reentry_source_evidence(
+        business_date=business_date,
+        opportunity=opportunity,
+        technical_features=_materialized_summary(technical_features),
+        corporate_event_path=artifact_paths["corporate_event"],
+    )
+    opportunity = reentry_source_supply["opportunity"]
+    input_source_manifest["reentry_source_evidence"] = reentry_source_supply["evidence"]
     pp_config = _portfolio_policy_config()
     policy_config_summary = _portfolio_policy_config_summary(pp_config, business_date)
     input_source_manifest["portfolio_policy_config"] = _policy_config_source_ref(pp_config, business_date=business_date, as_of=as_of)
@@ -879,6 +904,7 @@ def _ai_output_summary(path: Path, *, business_date: str) -> dict[str, Any]:
             ),
             "rejection_reason_distribution": rejection_distribution,
             "silent_empty_fallback_used": False,
+            **(_opportunity_score_semantic_metadata(payload) if kind == "opportunity" else {}),
         },
         "rows": tuple(adapted_rows),
     }
@@ -1122,6 +1148,235 @@ def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any
         campaign_id = str(row.get("position_campaign_id") or row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or "")
         rows.append({**dict(row), "position_campaign_id": campaign_id, "current_weight": round(value / total_equity, 6) if total_equity > 0 else 0.0})
     return {"status": "PASS" if path.is_file() else "MISSING", "business_date": business_date, "feature_date": business_date, "source_ref": str(path), "source_hash": _file_hash(path), "summary": {"position_count": len(positions), "current_position_count": len(positions), "positions": rows, "cash": cash, "buying_power": _float(payload.get("buying_power", cash)), "current_cash": cash, "current_market_value": market_value, "gross_exposure": market_value, "portfolio_value": total_equity, "portfolio_total_equity": total_equity}, "rows": tuple(rows)}
+
+
+def _supply_prior_exit_state(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    candidate: Mapping[str, Any],
+    opportunity: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    ledger_path = runtime_root / "persistent_ledger" / "executions.jsonl"
+    executions = _read_jsonl(ledger_path)
+    current_symbols = {
+        str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        for row in current.get("rows") or ()
+        if isinstance(row, Mapping) and _float(row.get("quantity"), default=0.0) > 0
+    }
+    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(executions=executions, business_date=business_date)
+    candidate_result = _attach_prior_exit_to_summary(candidate, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
+    opportunity_result = _attach_prior_exit_to_summary(opportunity, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
+    supplied_symbols = sorted(set(candidate_result["supplied_symbols"]) | set(opportunity_result["supplied_symbols"]))
+    return {
+        "candidate": candidate_result["summary"],
+        "opportunity": opportunity_result["summary"],
+        "evidence": {
+            "schema_version": "phase29_l21k_prior_exit_state_materialization_evidence.v1",
+            "business_date": business_date,
+            "authority": "persistent_ledger_execution_history",
+            "source_path": str(ledger_path),
+            "source_hash": _file_hash(ledger_path),
+            "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
+            "materialized_field": "prior_exit_business_date",
+            "prior_closed_campaign_count": len(prior_by_symbol),
+            "candidate_supplied_count": candidate_result["supplied_count"],
+            "opportunity_supplied_count": opportunity_result["supplied_count"],
+            "supplied_symbols": supplied_symbols,
+            "current_position_symbols_skipped": sorted(symbol for symbol in current_symbols if symbol in prior_by_symbol),
+            "future_or_same_day_exit_used": False,
+            "post_hoc_pnl_input_used": False,
+            "missing_prior_exit_behavior": "normal_buy_new_unchanged",
+        },
+    }
+
+
+def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapping[str, Any]], business_date: str) -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    latest_closed: dict[str, dict[str, Any]] = {}
+    ordered = sorted(
+        enumerate(executions),
+        key=lambda item: (
+            str(item[1].get("business_date") or ""),
+            str(item[1].get("executed_at") or item[1].get("created_at") or ""),
+            item[0],
+        ),
+    )
+    for index, row in ordered:
+        execution_date = str(row.get("business_date") or "")[:10]
+        if not execution_date or execution_date >= business_date:
+            continue
+        symbol = str(row.get("symbol") or row.get("broker_issue_code") or row.get("security_code") or row.get("code") or "").strip()
+        if not symbol:
+            continue
+        side = str(row.get("side") or "").upper()
+        quantity = _float(row.get("filled_quantity") or row.get("quantity"), default=0.0)
+        if quantity <= 0:
+            continue
+        state = states.setdefault(symbol, {"quantity": 0.0, "campaign_index": 0, "campaign_id": ""})
+        if side == "BUY":
+            if _float(state.get("quantity"), default=0.0) <= 1e-6:
+                state["campaign_index"] = int(state.get("campaign_index") or 0) + 1
+                state["campaign_id"] = f"ledger-derived-{symbol}-{int(state['campaign_index']):04d}"
+            state["quantity"] = _float(state.get("quantity"), default=0.0) + quantity
+            continue
+        if side != "SELL":
+            continue
+        before_quantity = _float(state.get("quantity"), default=0.0)
+        if before_quantity <= 1e-6:
+            continue
+        sell_quantity = min(quantity, before_quantity)
+        after_quantity = max(before_quantity - sell_quantity, 0.0)
+        state["quantity"] = 0.0 if after_quantity <= 1e-6 else after_quantity
+        if state["quantity"] <= 1e-6:
+            latest_closed[symbol] = {
+                "prior_exit_business_date": execution_date,
+                "prior_exit_campaign_id": str(state.get("campaign_id") or f"ledger-derived-{symbol}-{index}"),
+                "prior_exit_reason": str(row.get("source_decision_type") or row.get("decision_type") or row.get("source_decision") or "EXIT"),
+                "prior_exit_state_status": "RESOLVED_FROM_PIT_LEDGER_EXECUTION_HISTORY",
+            }
+    return latest_closed
+
+
+def _attach_prior_exit_to_summary(
+    summary: Mapping[str, Any],
+    *,
+    prior_by_symbol: Mapping[str, Mapping[str, Any]],
+    current_symbols: set[str],
+) -> dict[str, Any]:
+    payload = _payload_from_summary_item(summary)
+    source_rows = summary.get("rows") or payload.get("rankings") or payload.get("decisions") or payload.get("positions") or ()
+    enriched_rows: list[dict[str, Any]] = []
+    supplied_symbols: list[str] = []
+    for row in source_rows:
+        item = dict(row) if isinstance(row, Mapping) else {}
+        symbol = str(item.get("code") or item.get("security_code") or item.get("symbol") or "").strip()
+        prior = prior_by_symbol.get(symbol)
+        if symbol and symbol not in current_symbols and prior and not _has_prior_exit_field(item):
+            item.update(prior)
+            supplied_symbols.append(symbol)
+        enriched_rows.append(item)
+    enriched_payload = {**payload}
+    if "rankings" in enriched_payload:
+        enriched_payload["rankings"] = enriched_rows
+    elif "decisions" in enriched_payload:
+        enriched_payload["decisions"] = enriched_rows
+    elif "positions" in enriched_payload:
+        enriched_payload["positions"] = enriched_rows
+    return {
+        "summary": {**dict(summary), "payload": enriched_payload, "rows": tuple(enriched_rows)},
+        "supplied_count": len(supplied_symbols),
+        "supplied_symbols": supplied_symbols,
+    }
+
+
+def _has_prior_exit_field(row: Mapping[str, Any]) -> bool:
+    for field in ("prior_exit_business_date", "last_exit_business_date", "previous_exit_business_date"):
+        if str(row.get(field) or "").strip():
+            return True
+    return False
+
+
+def _supply_reentry_source_evidence(
+    *,
+    business_date: str,
+    opportunity: Mapping[str, Any],
+    technical_features: Mapping[str, Any],
+    corporate_event_path: Path,
+) -> dict[str, Any]:
+    payload = _payload_from_summary_item(opportunity)
+    source_rows = opportunity.get("rows") or payload.get("rankings") or ()
+    technical_by_symbol = {
+        str(row.get("code") or row.get("security_code") or row.get("symbol") or "").strip(): row
+        for row in technical_features.get("rows") or ()
+        if isinstance(row, Mapping)
+        and str(row.get("code") or row.get("security_code") or row.get("symbol") or "").strip()
+        and str(row.get("business_date") or row.get("target_date") or row.get("feature_date") or "") <= business_date
+    }
+    corporate_payload = _read_json(corporate_event_path) if corporate_event_path.is_file() else {}
+    corporate_business_date = str(corporate_payload.get("business_date") or "")
+    corporate_source_valid = bool(corporate_payload) and corporate_business_date == business_date
+    known_no_event = set(str(item) for item in corporate_payload.get("known_no_event_symbols") or ()) if corporate_source_valid else set()
+    known_event = set(str(item) for item in corporate_payload.get("known_event_symbols") or ()) if corporate_source_valid else set()
+    event_status_by_symbol = _corporate_event_status_by_symbol(corporate_payload) if corporate_source_valid else {}
+
+    enriched_rows: list[dict[str, Any]] = []
+    technical_supplied = 0
+    ca_no_event_supplied = 0
+    ca_event_supplied = 0
+    for row in source_rows:
+        item = dict(row) if isinstance(row, Mapping) else {}
+        symbol = str(item.get("code") or item.get("security_code") or item.get("symbol") or "").strip()
+        technical = technical_by_symbol.get(symbol)
+        if technical:
+            for field in (
+                "trend_close_over_ma_20d",
+                "price_momentum_return_20d",
+                "reference_price",
+                "minimum_tick",
+                "rolling_median_traded_value_20",
+                "rolling_median_traded_value_20_authority",
+                "rolling_median_traded_value_20_resolution",
+            ):
+                if item.get(field) in (None, "") and technical.get(field) not in (None, ""):
+                    item[field] = technical.get(field)
+            item.setdefault("technical_recovery_source", str(technical_features.get("source_ref") or "technical_features"))
+            item.setdefault("technical_recovery_source_status", str(technical.get("coverage_status") or technical_features.get("status") or "UNKNOWN"))
+            technical_supplied += 1
+        if symbol and not any(str(item.get(field) or "").strip() for field in ("corporate_action_status", "corporate_event_status", "corporate_action_blocking_status", "corporate_event_blocking_status")):
+            if symbol in known_no_event:
+                item["corporate_action_status"] = "NO_EVENT"
+                item["corporate_action_source_status"] = "PASS"
+                item["corporate_action_source"] = "corporate_event.known_no_event_symbols"
+                ca_no_event_supplied += 1
+            elif symbol in known_event:
+                item["corporate_action_status"] = event_status_by_symbol.get(symbol, "EVENT_PRESENT")
+                item["corporate_action_source_status"] = "PASS"
+                item["corporate_action_source"] = "corporate_event.known_event_symbols"
+                ca_event_supplied += 1
+            elif corporate_source_valid:
+                item["corporate_action_source_status"] = "SOURCE_PRESENT_SYMBOL_STATUS_UNKNOWN"
+                item["corporate_action_source"] = "corporate_event"
+            else:
+                item["corporate_action_source_status"] = "SOURCE_MISSING"
+                item["corporate_action_source"] = str(corporate_event_path)
+        enriched_rows.append(item)
+
+    enriched_payload = {**payload}
+    if "rankings" in enriched_payload:
+        enriched_payload["rankings"] = enriched_rows
+    evidence = {
+        "schema_version": "phase29_l21r_reentry_source_evidence_wiring.v1",
+        "business_date": business_date,
+        "technical_source_path": str(technical_features.get("source_ref") or ""),
+        "technical_source_hash": str(technical_features.get("source_hash") or ""),
+        "technical_supplied_count": technical_supplied,
+        "corporate_event_source_path": str(corporate_event_path),
+        "corporate_event_source_hash": _file_hash(corporate_event_path),
+        "corporate_event_business_date": corporate_business_date,
+        "corporate_event_source_valid": corporate_source_valid,
+        "corporate_no_event_supplied_count": ca_no_event_supplied,
+        "corporate_event_supplied_count": ca_event_supplied,
+        "future_source_used": False,
+    }
+    return {"opportunity": {**dict(opportunity), "payload": enriched_payload, "rows": tuple(enriched_rows)}, "evidence": evidence}
+
+
+def _corporate_event_status_by_symbol(payload: Mapping[str, Any]) -> dict[str, str]:
+    status_by_symbol: dict[str, str] = {}
+    for event in payload.get("events") or ():
+        if not isinstance(event, Mapping):
+            continue
+        symbol = str(event.get("security_code") or event.get("code") or event.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        raw_status = str(event.get("event_status") or event.get("blocking_status") or event.get("status") or "EVENT_PRESENT").upper()
+        if raw_status in {"PASS", "RESOLVED", "NO_BLOCKING_EVENT", "NO_EVENT"}:
+            status_by_symbol[symbol] = raw_status
+        else:
+            status_by_symbol[symbol] = "EVENT_PRESENT"
+    return status_by_symbol
 
 
 def _supply_add_expected_edge_baseline(
@@ -1521,6 +1776,8 @@ def _summary_kwargs(item: Mapping[str, Any], business_date: str) -> dict[str, An
     summary = dict(item.get("summary") or {})
     if not summary and payload:
         summary = dict(payload)
+    if payload:
+        summary = _preserve_opportunity_score_semantic_metadata(summary, payload)
     return {
         "status": str(item.get("status") or "MISSING"),
         "business_date": str(item.get("business_date") or payload.get("business_date") or business_date),
@@ -1531,11 +1788,27 @@ def _summary_kwargs(item: Mapping[str, Any], business_date: str) -> dict[str, An
     }
 
 
+def _opportunity_score_semantic_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        field: payload[field]
+        for field in OPPORTUNITY_SCORE_SEMANTIC_METADATA_FIELDS
+        if field in payload
+    }
+
+
+def _preserve_opportunity_score_semantic_metadata(summary: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(summary)
+    for field, value in _opportunity_score_semantic_metadata(payload).items():
+        if field not in merged:
+            merged[field] = value
+    return merged
+
+
 def _payload_from_summary_item(item: Mapping[str, Any]) -> dict[str, Any]:
     payload = item.get("payload")
     if isinstance(payload, Mapping):
         return dict(payload)
-    path = Path(str(item.get("artifact_path") or ""))
+    path = Path(str(item.get("artifact_path") or item.get("source_ref") or ""))
     if not path.is_file():
         return {}
     try:
@@ -1793,6 +2066,26 @@ def _read_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
 
 
 def _float(value: Any, default: float = 0.0) -> float:

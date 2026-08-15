@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -11,7 +12,10 @@ from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import _write_execution_manifest_evidence
-from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
+from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import (
+    _evaluate_pre_commit_cash_feasibility,
+    run_execution_readonly_pipeline,
+)
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
     HistoricalExecutionSnapshotProvider,
     HistoricalSubmitAdapter,
@@ -345,7 +349,300 @@ def test_phase17_g_execution_processor_accepts_historical_provider_fixture(tmp_p
     assert result.asset_current_written is True
     assert result.runtime_owned_projection_status == "PASS"
     assert result.current_apply_status == "APPLIED"
+    assert result.pre_commit_cash_feasibility_status == "PASS"
     assert result.reconcile_status == "PASS"
+
+
+def test_phase29_l21t_q1_execution_pre_commit_blocks_negative_candidate_cash(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY")
+    _write_current(runtime_root, side="BUY", cash=250_000.0)
+    submit = adapter.submit(_command_from_pending(_pending("historical", policy_path=policy_path)))
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+
+    assert submit.accepted is True
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.pre_commit_cash_feasibility_status == "REVIEW_REQUIRED"
+    assert result.candidate_projected_cash == -50_000.0
+    assert result.aggregate_candidate_buy_notional == 300_000.0
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.asset_current_written is False
+    assert result.current_apply_status == "NOT_EXECUTED"
+    assert not (runtime_root / "persistent_ledger" / "executions.jsonl").exists()
+
+
+def test_phase29_l21t_q2_projection_failure_blocks_persistent_mutation(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY")
+    _write_current(runtime_root, side="BUY")
+    current_path = runtime_root / "persistent_ledger" / "state.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["positions"] = [
+        {
+            "symbol": SYMBOL,
+            "quantity": 100.0,
+            "average_price": 2500.0,
+            "cost_basis": 1.0,
+            "market_value": 300000.0,
+        }
+    ]
+    current["market_value"] = 300000.0
+    current["total_equity"] = current["cash"] + current["market_value"]
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+
+    assert submit.status == "PASS"
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.transaction_validation_status == "REVIEW_REQUIRED"
+    assert result.runtime_owned_projection_status == "REVIEW_REQUIRED"
+    assert "runtime_owned_cost_basis_average_price_mismatch" in result.transaction_validation_reason
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.ledger_positions_appended == 0
+    assert result.ledger_cash_appended == 0
+    assert result.asset_current_written is False
+    assert result.current_apply_status == "NOT_EXECUTED"
+    assert result.pending_terminalization_status == "NOT_EXECUTED"
+    assert not (runtime_root / "persistent_ledger" / "executions.jsonl").exists()
+
+
+def test_phase29_l21t_q2_execution_retry_dedups_committed_transaction(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+
+    first = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    second = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    execution_rows = [
+        json.loads(line)
+        for line in (runtime_root / "persistent_ledger" / "executions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    dedup_keys = [str(row.get("dedup_key") or "") for row in execution_rows]
+
+    assert submit.status == "PASS"
+    assert first.status == "PASS"
+    assert first.transaction_validation_status == "PASS"
+    assert first.persistent_commit_started is True
+    assert first.persistent_commit_completed is True
+    assert first.transaction_consistency_status == "PASS"
+    assert second.status == "PASS"
+    assert second.transaction_validation_status == "PASS"
+    assert second.ledger_orders_appended == 0
+    assert second.ledger_executions_appended == 0
+    assert second.ledger_positions_appended == 0
+    assert second.ledger_cash_appended == 0
+    assert second.current_apply_status == "NOOP_ALREADY_APPLIED"
+    assert len(dedup_keys) == len(set(dedup_keys))
+
+
+def test_phase29_l21t_z_pre_commit_excludes_already_applied_candidate_executions(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash": 129_890.0,
+                "runtime_owned_projection": {
+                    "applied_execution_ids": ["execution-equivalent:sha256:sell-applied", "execution-equivalent:sha256:buy-applied"],
+                    "applied_execution_dedup_keys": [
+                        "runtime_v2_execution_equivalent:sha256:sell-applied",
+                        "runtime_v2_execution_equivalent:sha256:buy-applied",
+                    ],
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    result = _evaluate_pre_commit_cash_feasibility(
+        runtime_root=runtime_root,
+        business_date="2023-06-23",
+        candidate_executions=[
+            SimpleNamespace(
+                side="SELL",
+                filled_quantity=100.0,
+                quantity=100.0,
+                price=49.0,
+                average_price=49.0,
+                cash_effect=4_900.0,
+                execution_id="execution-equivalent:sha256:sell-applied",
+                dedup_key="runtime_v2_execution_equivalent:sha256:sell-applied",
+                symbol="37820",
+            ),
+            SimpleNamespace(
+                side="BUY",
+                filled_quantity=800.0,
+                quantity=800.0,
+                price=152.8,
+                average_price=152.8,
+                cash_effect=122_240.0,
+                execution_id="execution-equivalent:sha256:buy-applied",
+                dedup_key="runtime_v2_execution_equivalent:sha256:buy-applied",
+                symbol="94340",
+            ),
+        ],
+    )
+
+    assert result["status"] == "PASS"
+    assert result["candidate_projected_cash"] == 129_890.0
+    assert result["aggregate_candidate_buy_notional"] == 0.0
+    assert result["aggregate_candidate_sell_notional"] == 0.0
+    assert result["already_applied_candidate_execution_count"] == 2
+    assert result["selected_candidate_execution_count"] == 0
+    assert [item["selected_into_candidate_projection"] for item in result["items"]] == [False, False]
+
+
+def test_phase29_l21t_z_pre_commit_applies_only_unapplied_mixed_candidate_executions(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash": 100_000.0,
+                "runtime_owned_projection": {
+                    "applied_execution_dedup_keys": ["runtime_v2_execution_equivalent:sha256:already-bought"],
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    result = _evaluate_pre_commit_cash_feasibility(
+        runtime_root=runtime_root,
+        business_date="2023-06-23",
+        candidate_executions=[
+            SimpleNamespace(
+                side="BUY",
+                filled_quantity=100.0,
+                quantity=100.0,
+                price=900.0,
+                average_price=900.0,
+                cash_effect=90_000.0,
+                execution_id="execution-equivalent:sha256:already-bought",
+                dedup_key="runtime_v2_execution_equivalent:sha256:already-bought",
+                symbol="83060",
+            ),
+            SimpleNamespace(
+                side="BUY",
+                filled_quantity=100.0,
+                quantity=100.0,
+                price=300.0,
+                average_price=300.0,
+                cash_effect=30_000.0,
+                execution_id="execution-equivalent:sha256:new-buy",
+                dedup_key="runtime_v2_execution_equivalent:sha256:new-buy",
+                symbol="94320",
+            ),
+        ],
+    )
+
+    assert result["status"] == "PASS"
+    assert result["candidate_projected_cash"] == 70_000.0
+    assert result["aggregate_candidate_buy_notional"] == 30_000.0
+    assert result["already_applied_candidate_execution_count"] == 1
+    assert result["selected_candidate_execution_count"] == 1
+    assert [item["selected_into_candidate_projection"] for item in result["items"]] == [False, True]
+
+
+def test_phase29_l21t_z_execution_retry_with_low_cash_does_not_reapply_buy_cash_effect(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(tmp_path, side="BUY")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+
+    first = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    committed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    committed_state["cash"] = 50_000.0
+    committed_state["buying_power"] = 50_000.0
+    committed_state["total_equity"] = 50_000.0 + committed_state["market_value"]
+    state_path.write_text(json.dumps(committed_state), encoding="utf-8")
+    second = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    state = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+
+    assert submit.status == "PASS"
+    assert first.status == "PASS", first.reason
+    assert first.candidate_projected_cash == 700_000.0
+    assert state["cash"] == 50_000.0
+    assert second.status == "PASS"
+    assert second.pre_commit_cash_feasibility_status == "PASS"
+    assert second.candidate_projected_cash == 50_000.0
+    assert second.aggregate_candidate_buy_notional == 0.0
+    assert second.ledger_orders_appended == 0
+    assert second.ledger_executions_appended == 0
+    assert second.ledger_positions_appended == 0
+    assert second.ledger_cash_appended == 0
+    assert second.current_apply_status in {"APPLIED", "NOOP_ALREADY_APPLIED"}
+    assert state["cash"] == 50_000.0
+    execution_rows = [
+        json.loads(line)
+        for line in (runtime_root / "persistent_ledger" / "executions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(execution_rows) == 1
 
 
 def test_phase17_g_execution_run_scoped_evidence_writer_records_authorities(tmp_path: Path) -> None:
@@ -707,7 +1004,7 @@ def _write_safety(runtime_root: Path, *, decision: str) -> None:
     )
 
 
-def _write_current(runtime_root: Path, *, side: str, symbol: str = SYMBOL) -> None:
+def _write_current(runtime_root: Path, *, side: str, symbol: str = SYMBOL, cash: float = 1_000_000.0) -> None:
     path = runtime_root / "persistent_ledger" / "state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     positions = (
@@ -718,11 +1015,11 @@ def _write_current(runtime_root: Path, *, side: str, symbol: str = SYMBOL) -> No
     path.write_text(
         json.dumps(
             {
-                "cash": 1_000_000.0,
-                "buying_power": 1_000_000.0,
+                "buying_power": cash,
                 "positions": positions,
                 "market_value": 300000.0 if positions else 0.0,
-                "total_equity": 1_000_000.0,
+                "cash": cash,
+                "total_equity": cash + (300000.0 if positions else 0.0),
             }
         ),
         encoding="utf-8",

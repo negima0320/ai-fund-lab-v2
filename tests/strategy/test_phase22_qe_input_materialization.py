@@ -75,8 +75,61 @@ def test_phase22_qe_pm_technical_features_materialize_required_contract(tmp_path
     assert row["feature_as_of_date"] == BUSINESS_DATE
     assert row["defaulted_features"] == []
     assert row["missing_features"] == []
+    assert row["rolling_median_traded_value_20"] > 0
+    assert row["rolling_median_traded_value_20_authority"]["authority_type"] == "LIQUIDITY_CAPACITY_AUTHORITY"
+    assert row["rolling_median_traded_value_20_authority"]["source_formula"] == "median(close * volume over last 20 PIT rows)"
+    assert row["rolling_median_traded_value_20_authority"]["latest_fallback_used"] is False
+    assert row["rolling_median_traded_value_20_resolution"]["status"] == "PASS"
     for column in input_materialization.PM_TECHNICAL_REQUIRED_COLUMNS:
         assert isinstance(row[column], float)
+
+
+def test_phase29_l21t_av_multi_horizon_features_materialize_without_changing_5d_20d(tmp_path: Path) -> None:
+    quotes = _write_quotes(tmp_path / "quotes.parquet", days=35)
+    frame = pd.read_parquet(quotes)
+    symbol = frame[(frame["code"] == "1001") & (frame["target_date"] <= BUSINESS_DATE)].sort_values("target_date")
+    close = symbol["Close"].astype(float).reset_index(drop=True)
+    result = input_materialization.produce_pm_technical_feature_artifact(
+        business_date=BUSINESS_DATE,
+        feature_date=BUSINESS_DATE,
+        source_path=quotes,
+        output_path=tmp_path / "technical_features.json",
+        symbols=("1001",),
+        as_of=f"{BUSINESS_DATE}T00:00:00+00:00",
+    )
+
+    row = result.payload["rows"][0]
+    assert row["price_momentum_return_1d"] == pytest.approx(close.iloc[-1] / close.iloc[-2] - 1.0)
+    assert row["price_momentum_return_3d"] == pytest.approx(close.iloc[-1] / close.iloc[-4] - 1.0)
+    assert row["price_momentum_return_10d"] == pytest.approx(close.iloc[-1] / close.iloc[-11] - 1.0)
+    assert row["price_momentum_return_5d"] == pytest.approx(close.iloc[-1] / close.iloc[-6] - 1.0)
+    assert row["price_momentum_return_20d"] == pytest.approx(close.iloc[-1] / close.iloc[-21] - 1.0)
+    assert isinstance(row["recent_move_volatility_z_1d"], float)
+    assert isinstance(row["recent_move_volatility_z_3d"], float)
+    assert isinstance(row["momentum_5d_vs_20d_delta"], float)
+    assert isinstance(row["momentum_1d_vs_5d_delta"], float)
+
+
+def test_phase29_l21r3_pm_technical_features_keep_capacity_unknown_when_volume_missing(tmp_path: Path) -> None:
+    quotes = _write_quotes(tmp_path / "quotes.parquet", days=35)
+    frame = pd.read_parquet(quotes).drop(columns=["Volume"])
+    frame.to_parquet(quotes)
+
+    result = input_materialization.produce_pm_technical_feature_artifact(
+        business_date=BUSINESS_DATE,
+        feature_date=BUSINESS_DATE,
+        source_path=quotes,
+        output_path=tmp_path / "technical_features.json",
+        symbols=("1001",),
+        as_of=f"{BUSINESS_DATE}T00:00:00+00:00",
+    )
+
+    row = result.payload["rows"][0]
+    assert result.status == "REVIEW_REQUIRED"
+    assert row["rolling_median_traded_value_20"] is None
+    assert row["rolling_median_traded_value_20_resolution"]["status"] == "REVIEW_REQUIRED"
+    assert row["rolling_median_traded_value_20_resolution"]["reason"] == "rolling_median_traded_value_missing_or_invalid"
+    assert row["trend_close_over_ma_20d"] is not None
 
 
 def test_phase22_qe_empty_portfolio_can_have_no_requested_feature_symbols(tmp_path: Path) -> None:

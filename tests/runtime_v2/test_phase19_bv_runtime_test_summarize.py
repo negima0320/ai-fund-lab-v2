@@ -342,13 +342,27 @@ def _phase20_p_reduce_plan(*, symbol: str, business_date: str = "2026-07-01", de
     }
 
 
-def _phase20_p_non_executable_reduce(*, symbol: str, business_date: str = "2026-07-01", decision_id: str = "", reason: str = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY", after: float = 300.0) -> dict:
+def _phase20_p_non_executable_reduce(
+    *,
+    symbol: str,
+    business_date: str = "2026-07-01",
+    decision_id: str = "",
+    reason: str = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+    after: float = 300.0,
+    execution_semantic: str = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT",
+    intentional_no_order_reason: str | None = None,
+) -> dict:
+    if intentional_no_order_reason is None:
+        intentional_no_order_reason = execution_semantic
     return {
         "business_date": business_date,
         "symbol": symbol,
         "source_decision": "REDUCE",
         "source_decision_id": decision_id,
         "execution_feasibility_status": "NOT_EXECUTABLE_BELOW_MINIMUM_TRADABLE_QUANTITY",
+        "execution_semantic": execution_semantic,
+        "intentional_no_order": True,
+        "intentional_no_order_reason": intentional_no_order_reason,
         "reason": reason,
         "status": "NOT_EXECUTABLE",
         "effective_action": "NO_SELL_ORDER",
@@ -393,6 +407,7 @@ def test_phase20_p_reduce_lifecycle_mixed_executable_and_terminal_passes() -> No
     assert lifecycle["non_executable_reduce_terminal_count"] == 4
     assert lifecycle["unresolved_reduce_count"] == 0
     assert lifecycle["conflicting_reduce_count"] == 0
+    assert lifecycle["non_executable_reduce_reason_distribution"] == {"REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY": 4}
 
 
 def test_phase20_p_reduce_lifecycle_missing_outcome_is_review_required() -> None:
@@ -421,6 +436,25 @@ def test_phase20_p_reduce_lifecycle_invalid_terminal_reason_is_review_required()
         pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}],
         reduce_plans=[],
         non_executable=[_phase20_p_non_executable_reduce(symbol="11110", decision_id="pm-r1", reason="UNKNOWN_REASON")],
+    )
+    assert lifecycle["status"] == "REVIEW_REQUIRED"
+    assert lifecycle["unresolved_reduce_count"] == 1
+
+
+def test_phase29_l21t_ad_reduce_lifecycle_missing_no_order_semantic_is_review_required() -> None:
+    runner = load_runner()
+    lifecycle = _phase20_p_lifecycle_payload(
+        runner,
+        pm_reduce_records=[{"symbol": "11110", "decision_id": "pm-r1"}],
+        reduce_plans=[],
+        non_executable=[
+            _phase20_p_non_executable_reduce(
+                symbol="11110",
+                decision_id="pm-r1",
+                execution_semantic="",
+                intentional_no_order_reason="",
+            )
+        ],
     )
     assert lifecycle["status"] == "REVIEW_REQUIRED"
     assert lifecycle["unresolved_reduce_count"] == 1

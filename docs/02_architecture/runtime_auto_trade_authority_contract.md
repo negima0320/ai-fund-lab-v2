@@ -42,6 +42,27 @@ Human Review is not part of the normal automatic path unless Safety or Policy
 returns review-required. Human Approval is not the same as Human Review; it is a
 bounded authorization artifact for promotion or broker-write authority.
 
+## Authorized No-Order Continuity
+
+Submit may formally authorize a no-order day. When Submit exits `0` with
+`submit_action=NO_SUBMISSION_REQUIRED`, `no_order_authority_evidence.status=PASS`,
+`authority_type=AUTHORIZED_NO_ORDER`, `order_plan_status=NO_ORDER_AUTHORIZED`,
+`pending_state=EMPTY`, `pending_item_count=0`, and `submitted_count=0`, Execution
+must continue as a safe no-op:
+
+```text
+execution_action=NO_ACTION
+fills=[]
+ledger append count=0
+current apply=NOT_REQUIRED
+pending mutation=false
+```
+
+This is not fail-open. Missing, malformed, stale, ambiguous, or contradictory
+submit authority remains `REVIEW_REQUIRED` or `BLOCKED`. Contradictions include
+pending items with `NO_SUBMISSION_REQUIRED` and submitted orders with no-action
+authority.
+
 ## Demo Acceptance Boundary
 
 Demo-specific user authorization used for Phase15 broker-write acceptance does

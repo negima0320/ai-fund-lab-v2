@@ -41,9 +41,16 @@ SCHEMA_VERSION = "candidate_feature_schema_v1"
 MIN_LOOKBACK_ROWS = 60
 
 REQUIRED_AK_FEATURE_COLUMNS = (
+    "price_momentum_return_1d",
+    "price_momentum_return_3d",
     "price_momentum_return_5d",
+    "price_momentum_return_10d",
     "price_momentum_return_20d",
     "price_momentum_return_60d",
+    "recent_move_volatility_z_1d",
+    "recent_move_volatility_z_3d",
+    "momentum_5d_vs_20d_delta",
+    "momentum_1d_vs_5d_delta",
     "volume_momentum_ratio_5d",
     "volume_momentum_ratio_1d_20d",
     "volatility_return_std_20d",
@@ -320,14 +327,27 @@ def _build_feature_row(
     ma_5 = mean(closes[-5:])
     ma_20 = mean(closes[-20:])
     ma_60 = mean(closes[-60:])
+    return_1d = _safe_ratio(closes[-1], closes[-2])
+    return_3d = _safe_ratio(closes[-1], closes[-4])
+    return_5d = _safe_ratio(closes[-1], closes[-6])
+    return_10d = _safe_ratio(closes[-1], closes[-11])
+    return_20d = _safe_ratio(closes[-1], closes[-21])
+    vol20 = pstdev(daily_returns[-20:])
     base.update(
         {
-            "price_momentum_return_5d": _round(_safe_ratio(closes[-1], closes[-6])),
-            "price_momentum_return_20d": _round(_safe_ratio(closes[-1], closes[-21])),
+            "price_momentum_return_1d": _round(return_1d),
+            "price_momentum_return_3d": _round(return_3d),
+            "price_momentum_return_5d": _round(return_5d),
+            "price_momentum_return_10d": _round(return_10d),
+            "price_momentum_return_20d": _round(return_20d),
             "price_momentum_return_60d": _round(_safe_ratio(closes[-1], closes[0])),
+            "recent_move_volatility_z_1d": _round(_safe_divide(return_1d, vol20)),
+            "recent_move_volatility_z_3d": _round(_safe_divide(return_3d, vol20 * (3.0**0.5))),
+            "momentum_5d_vs_20d_delta": _round(return_5d - return_20d),
+            "momentum_1d_vs_5d_delta": _round(return_1d - return_5d),
             "volume_momentum_ratio_5d": _round(_safe_divide(mean(volumes[-5:]), mean(volumes[-20:]))),
             "volume_momentum_ratio_1d_20d": _round(_safe_divide(volumes[-1], mean(volumes[-20:]))),
-            "volatility_return_std_20d": _round(pstdev(daily_returns[-20:])),
+            "volatility_return_std_20d": _round(vol20),
             "trend_close_over_ma_20d": _round(_safe_ratio(closes[-1], ma_20)),
             "trend_ma_5_20_ratio": _round(_safe_ratio(ma_5, ma_20)),
             "trend_ma_20_60_ratio": _round(_safe_ratio(ma_20, ma_60)),

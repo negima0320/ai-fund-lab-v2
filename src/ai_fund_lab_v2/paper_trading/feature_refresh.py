@@ -49,9 +49,16 @@ OPPORTUNITY_MODEL_INPUT_COLUMNS = (
     "missing_flags_insufficient_history",
     "missing_flags_price",
     "missing_flags_volume",
+    "price_momentum_return_1d",
+    "price_momentum_return_3d",
+    "price_momentum_return_10d",
     "price_momentum_return_20d",
     "price_momentum_return_5d",
     "price_momentum_return_60d",
+    "recent_move_volatility_z_1d",
+    "recent_move_volatility_z_3d",
+    "momentum_5d_vs_20d_delta",
+    "momentum_1d_vs_5d_delta",
     "sector_breadth_20d",
     "sector_momentum_flag",
     "sector_rank_20d",
@@ -78,9 +85,16 @@ REQUIRED_COLUMNS = {
         "missing_flags_insufficient_history",
         "missing_flags_price",
         "missing_flags_volume",
+        "price_momentum_return_1d",
+        "price_momentum_return_3d",
+        "price_momentum_return_10d",
         "price_momentum_return_5d",
         "price_momentum_return_20d",
         "price_momentum_return_60d",
+        "recent_move_volatility_z_1d",
+        "recent_move_volatility_z_3d",
+        "momentum_5d_vs_20d_delta",
+        "momentum_1d_vs_5d_delta",
         "volume_momentum_ratio_5d",
         "volume_momentum_ratio_1d_20d",
         "volatility_return_std_20d",
@@ -728,9 +742,16 @@ def _build_formal_candidate_rows(*, quotes: pd.DataFrame, target_data_until: str
 def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, traded_values: pd.Series, eligible: bool) -> dict[str, Any]:
     if not eligible:
         return {
+            "price_momentum_return_1d": None,
+            "price_momentum_return_3d": None,
+            "price_momentum_return_10d": None,
             "price_momentum_return_5d": None,
             "price_momentum_return_20d": None,
             "price_momentum_return_60d": None,
+            "recent_move_volatility_z_1d": None,
+            "recent_move_volatility_z_3d": None,
+            "momentum_5d_vs_20d_delta": None,
+            "momentum_1d_vs_5d_delta": None,
             "volume_momentum_ratio_5d": None,
             "volume_momentum_ratio_1d_20d": None,
             "volatility_return_std_20d": None,
@@ -749,13 +770,26 @@ def _formal_feature_values(*, closes: pd.Series, volumes: pd.Series, traded_valu
     ma60 = sum(close_values[-60:]) / 60
     avg_volume_5 = sum(volume_values[-5:]) / 5
     avg_volume_20 = sum(volume_values[-20:]) / 20
+    return_1d = _safe_ratio_value(close_values[-1], close_values[-2])
+    return_3d = _safe_ratio_value(close_values[-1], close_values[-4])
+    return_5d = _safe_ratio_value(close_values[-1], close_values[-6])
+    return_10d = _safe_ratio_value(close_values[-1], close_values[-11])
+    return_20d = _safe_ratio_value(close_values[-1], close_values[-21])
+    volatility_20d = float(pd.Series(returns_20d).std(ddof=0))
     return {
-        "price_momentum_return_5d": _round(_safe_ratio_value(close_values[-1], close_values[-6])),
-        "price_momentum_return_20d": _round(_safe_ratio_value(close_values[-1], close_values[-21])),
+        "price_momentum_return_1d": _round(return_1d),
+        "price_momentum_return_3d": _round(return_3d),
+        "price_momentum_return_5d": _round(return_5d),
+        "price_momentum_return_10d": _round(return_10d),
+        "price_momentum_return_20d": _round(return_20d),
         "price_momentum_return_60d": _round(_safe_ratio_value(close_values[-1], close_values[-61])),
+        "recent_move_volatility_z_1d": _round(_safe_divide(return_1d, volatility_20d)),
+        "recent_move_volatility_z_3d": _round(_safe_divide(return_3d, volatility_20d * (3.0**0.5))),
+        "momentum_5d_vs_20d_delta": _round(None if return_5d is None or return_20d is None else return_5d - return_20d),
+        "momentum_1d_vs_5d_delta": _round(None if return_1d is None or return_5d is None else return_1d - return_5d),
         "volume_momentum_ratio_5d": _round(_safe_divide(avg_volume_5, avg_volume_20)),
         "volume_momentum_ratio_1d_20d": _round(_safe_divide(volume_values[-1], avg_volume_20)),
-        "volatility_return_std_20d": _round(float(pd.Series(returns_20d).std(ddof=0))),
+        "volatility_return_std_20d": _round(volatility_20d),
         "trend_close_over_ma_20d": _round(_safe_divide(close_values[-1], ma20)),
         "trend_ma_5_20_ratio": _round(_safe_divide(ma5, ma20)),
         "trend_ma_20_60_ratio": _round(_safe_divide(ma20, ma60)),

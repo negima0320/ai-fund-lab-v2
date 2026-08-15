@@ -641,3 +641,55 @@ ACTIVE
 ```
 
 `SHADOW` has no decision effect. `ADVISORY` may be visible to the canonical intent producer but cannot independently change action. `ACTIVE` is allowed only after evidence completeness, calibration, short regression, controlled experiment, human approval, PIT validation, and degression review. Until ACTIVE is approved, BUY Quality must not treat Incremental Eligibility as a hidden quality multiplier.
+
+## 14. Phase29-L21T-AV Momentum Trajectory BUY_WAIT Authority
+
+Phase29-L21T-AV adds `momentum_trajectory_quality` as a Production-common
+Adaptive BUY Quality component. The component owns BUY_NEW trajectory
+classification and consumes only PIT technical feature facts supplied by the
+Feature Refresh / Market Feature authority.
+
+Canonical classifications:
+
+- `HEALTHY_CONTINUATION`
+- `FADING_PRIOR_WINNER`
+- `RECENT_ACCELERATION_OVERHEAT`
+- `MIXED_OR_UNRESOLVED`
+
+Canonical actions:
+
+- `BUY_ELIGIBLE`: existing Adaptive BUY Quality evaluation continues.
+- `BUY_WAIT`: BUY_NEW is temporarily ineligible for the current business day.
+
+`BUY_WAIT` is not Human Review authority. It must not create a BUY Pending item,
+Human Review Pending, Runtime halt, manual approval requirement, or SELL
+Planning block. The same symbol may be reevaluated on the next business day from
+that day's PIT features, and may return to BUY_NEW eligibility if the trajectory
+classification becomes eligible.
+
+Scope:
+
+- Applies to BUY_NEW only.
+- Does not change BUY_ADD / REENTRY / HOLD / REDUCE / EXIT authority.
+- Portfolio Construction, Position Sizing, Runtime Planning, Pending, Submit,
+  and Execution consume/copy the classification and action; they must not
+  recompute trajectory quality.
+- Missing required trajectory evidence is fail-closed for BUY_NEW eligibility
+  via `BUY_WAIT` where the existing contract allows, while preserving SELL
+  independence.
+
+Required observability fields include:
+
+```text
+momentum_trajectory_schema_version
+momentum_trajectory_classification
+momentum_trajectory_status
+momentum_trajectory_action
+momentum_trajectory_reason_codes
+momentum_trajectory_required_features
+momentum_trajectory_missing_features
+momentum_trajectory_feature_snapshot
+momentum_trajectory_authority
+momentum_trajectory_pit_status
+momentum_trajectory_temporal_validation_status
+```

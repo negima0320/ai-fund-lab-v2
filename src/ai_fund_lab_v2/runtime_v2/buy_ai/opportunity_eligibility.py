@@ -40,6 +40,15 @@ class OpportunityBuyEligibilityResult:
     opportunity_row_id: str = ""
     opportunity_authority: str = ""
     excluded_at_stage: str = ""
+    runtime_opportunity_score: float | None = None
+    canonical_score_field: str = ""
+    score_semantic_role: str = ""
+    calibration_applied: bool = False
+    economic_units_available: bool = False
+    absolute_economic_gate_applicable: bool = False
+    expected_edge_score_semantic_role: str = ""
+    expected_return_semantic_role: str = ""
+    relative_competition_eligible: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {"schema_version": OPPORTUNITY_BUY_ELIGIBILITY_SCHEMA_VERSION, **asdict(self)}
@@ -271,14 +280,33 @@ def evaluate_opportunity_buy_eligibility(
             artifact_status=artifact_status,
             excluded_at_stage=excluded_at_stage,
         )
-    expected_edge = _finite_float(row.get("expected_edge_score"))
-    if expected_edge is None:
+    score_contract = _score_contract(row=row, payload=payload)
+    if score_contract["status"] != "PASS":
+        return _result_from_row(
+            row,
+            status="BLOCKED",
+            eligibility="BUY_INELIGIBLE",
+            reason_code=str(score_contract["reason_code"]),
+            reason=str(score_contract["reason"]),
+            symbol=normalized_symbol,
+            business_date=business_date,
+            feature_date=feature_date,
+            payload=payload,
+            artifact_path=artifact_path,
+            artifact_hash=artifact_hash,
+            schema_status=schema_status,
+            artifact_status=artifact_status,
+            excluded_at_stage=excluded_at_stage,
+            score_contract=score_contract,
+        )
+    resolved_score = _finite_float(score_contract["score"])
+    if resolved_score is None:
         return _result_from_row(
             row,
             status="BLOCKED",
             eligibility="BUY_INELIGIBLE",
             reason_code="opportunity_expected_edge_invalid",
-            reason="Opportunity expected_edge_score is missing or non-finite",
+            reason="Opportunity runtime_opportunity_score is missing or non-finite",
             symbol=normalized_symbol,
             business_date=business_date,
             feature_date=feature_date,
@@ -288,15 +316,16 @@ def evaluate_opportunity_buy_eligibility(
             schema_status=schema_status,
             artifact_status=artifact_status,
             excluded_at_stage=excluded_at_stage,
+            score_contract=score_contract,
         )
     no_buy_reason = str(row.get("no_buy_reason") or "").strip()
-    if expected_edge <= 0:
+    if score_contract["economic_units_available"] and resolved_score <= 0:
         return _result_from_row(
             row,
             status="BLOCKED",
             eligibility="BUY_INELIGIBLE",
             reason_code="non_positive_expected_edge_score",
-            reason="Opportunity expected_edge_score must be positive for BUY",
+            reason="Calibrated economic expected return must be positive for BUY",
             symbol=normalized_symbol,
             business_date=business_date,
             feature_date=feature_date,
@@ -306,8 +335,12 @@ def evaluate_opportunity_buy_eligibility(
             schema_status=schema_status,
             artifact_status=artifact_status,
             excluded_at_stage=excluded_at_stage,
+            score_contract=score_contract,
         )
-    if opportunity_no_buy_reason_blocks_buy(no_buy_reason):
+    if opportunity_no_buy_reason_blocks_buy(
+        no_buy_reason,
+        economic_units_available=bool(score_contract["economic_units_available"]),
+    ):
         return _result_from_row(
             row,
             status="BLOCKED",
@@ -323,13 +356,24 @@ def evaluate_opportunity_buy_eligibility(
             schema_status=schema_status,
             artifact_status=artifact_status,
             excluded_at_stage=excluded_at_stage,
+            score_contract=score_contract,
         )
+    reason_code = (
+        "uncalibrated_relative_score_competition_eligible"
+        if not score_contract["economic_units_available"]
+        else "opportunity_positive_expected_edge"
+    )
+    reason = (
+        "Uncalibrated runtime opportunity score is eligible for relative competition"
+        if not score_contract["economic_units_available"]
+        else "Opportunity economic expected edge is positive and no blocking no_buy_reason is present"
+    )
     return _result_from_row(
         row,
         status="PASS",
         eligibility="BUY_ELIGIBLE",
-        reason_code="opportunity_positive_expected_edge",
-        reason="Opportunity expected edge is positive and no no_buy_reason is present",
+        reason_code=reason_code,
+        reason=reason,
         symbol=normalized_symbol,
         business_date=business_date,
         feature_date=feature_date,
@@ -339,11 +383,123 @@ def evaluate_opportunity_buy_eligibility(
         schema_status=schema_status,
         artifact_status=artifact_status,
         excluded_at_stage=excluded_at_stage,
+        score_contract=score_contract,
     )
 
 
-def opportunity_no_buy_reason_blocks_buy(no_buy_reason: Any) -> bool:
-    return str(no_buy_reason or "").strip().lower() not in NO_BUY_REASON_EMPTY_VALUES
+def opportunity_no_buy_reason_blocks_buy(no_buy_reason: Any, *, economic_units_available: bool = True) -> bool:
+    reasons = {part.strip().lower() for part in str(no_buy_reason or "").split("|") if part.strip()}
+    reasons = {reason for reason in reasons if reason not in NO_BUY_REASON_EMPTY_VALUES}
+    if not reasons:
+        return False
+    relative_metadata_reasons = {"non_positive_expected_edge_score", "below_opportunity_top20"}
+    hard_reasons = {
+        "high_downside_risk_score",
+        "corporate_event_block",
+        "corporate_action_block",
+        "liquidity_block",
+        "not_currently_listed",
+        "unsupported_broker_product_category",
+        "broker_product_category_unsupported",
+    }
+    if reasons & hard_reasons:
+        return True
+    if economic_units_available and "non_positive_expected_edge_score" in reasons:
+        return True
+    return bool(reasons - relative_metadata_reasons)
+
+
+def _score_contract(*, row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {
+        field: _finite_float(row.get(field))
+        for field in ("runtime_opportunity_score", "expected_edge_score", "opportunity_score")
+        if field in row
+    }
+    fields = {field: value for field, value in fields.items() if value is not None}
+    canonical_field = str(payload.get("canonical_score_field") or row.get("canonical_score_field") or "runtime_opportunity_score")
+    score = fields.get(canonical_field)
+    source_field = canonical_field if score is not None else ""
+    if score is None:
+        for field in ("runtime_opportunity_score", "expected_edge_score", "opportunity_score"):
+            if field in fields:
+                score = fields[field]
+                source_field = field
+                break
+    if score is None:
+        return {
+            "status": "BLOCKED",
+            "reason_code": "opportunity_score_invalid",
+            "reason": "Opportunity score is missing or non-finite",
+            "score": None,
+        }
+    if len({round(value, 12) for value in fields.values()}) > 1:
+        return {
+            "status": "BLOCKED",
+            "reason_code": "opportunity_score_field_conflict",
+            "reason": "Opportunity score aliases disagree",
+            "score": score,
+        }
+    calibration_applied = _truthy_bool(row.get("calibration_applied", payload.get("calibration_applied", False)))
+    economic_units_available = _truthy_bool(
+        row.get("economic_units_available", payload.get("economic_units_available", False))
+    )
+    semantic_role = str(
+        row.get("score_semantic_role")
+        or payload.get("score_semantic_role")
+        or ("calibrated_economic_expected_return" if calibration_applied and economic_units_available else "uncalibrated_relative_model_score")
+    )
+    prediction_semantics = str(row.get("prediction_semantics") or payload.get("prediction_semantics") or "runtime_opportunity_score")
+    economic_roles = {
+        "calibrated_economic_expected_return",
+        "calibrated_expected_return",
+        "calibrated_expected_edge",
+        "economic_expected_return",
+        "economic_expected_edge",
+    }
+    uncalibrated_roles = {
+        "uncalibrated_relative_model_score",
+        "relative_opportunity_score",
+        "runtime_opportunity_score",
+        "raw_model_score",
+        "model_score",
+    }
+    if economic_units_available and (not calibration_applied or semantic_role not in economic_roles):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "opportunity_score_semantic_metadata_malformed",
+            "reason": "Economic opportunity score metadata is malformed",
+            "score": score,
+        }
+    if not economic_units_available and semantic_role not in uncalibrated_roles:
+        return {
+            "status": "BLOCKED",
+            "reason_code": "opportunity_score_semantic_metadata_malformed",
+            "reason": "Uncalibrated opportunity score metadata is malformed",
+            "score": score,
+        }
+    return {
+        "status": "PASS",
+        "reason_code": "",
+        "reason": "",
+        "score": score,
+        "source_field": source_field,
+        "canonical_score_field": canonical_field,
+        "prediction_semantics": prediction_semantics,
+        "score_semantic_role": semantic_role,
+        "calibration_applied": calibration_applied,
+        "economic_units_available": economic_units_available,
+        "absolute_economic_gate_applicable": bool(calibration_applied and economic_units_available),
+        "expected_edge_score_semantic_role": str(
+            row.get("expected_edge_score_semantic_role")
+            or payload.get("expected_edge_score_semantic_role")
+            or "deprecated_alias_uncalibrated_runtime_opportunity_score"
+        ),
+        "expected_return_semantic_role": str(
+            row.get("expected_return_semantic_role")
+            or payload.get("expected_return_semantic_role")
+            or "deprecated_alias_uncalibrated_runtime_opportunity_score_not_economic_return"
+        ),
+    }
 
 
 def _find_payload_row_by_identity(
@@ -429,7 +585,9 @@ def _result_from_row(
     schema_status: str,
     artifact_status: str,
     excluded_at_stage: str,
+    score_contract: Mapping[str, Any] | None = None,
 ) -> OpportunityBuyEligibilityResult:
+    contract = dict(score_contract or {})
     return _result(
         status=status,
         eligibility=eligibility,
@@ -440,6 +598,7 @@ def _result_from_row(
         feature_date=feature_date,
         expected_edge_score=_finite_float(row.get("expected_edge_score")),
         expected_return=_finite_float(row.get("expected_return")),
+        runtime_opportunity_score=_finite_float(row.get("runtime_opportunity_score", contract.get("score"))),
         no_buy_reason=str(row.get("no_buy_reason") or ""),
         buy_rank=_int_or_none(row.get("buy_rank") if row.get("buy_rank") not in (None, "") else row.get("rank")),
         is_top5=_bool_or_none(row.get("is_top5")),
@@ -453,6 +612,17 @@ def _result_from_row(
         row_id=str(row.get("opportunity_row_id") or row.get("row_id") or row.get("opportunity_id") or ""),
         opportunity_authority=str(row.get("opportunity_authority") or ""),
         excluded_at_stage=excluded_at_stage,
+        canonical_score_field=str(contract.get("canonical_score_field") or ""),
+        score_semantic_role=str(contract.get("score_semantic_role") or ""),
+        calibration_applied=bool(contract.get("calibration_applied", False)),
+        economic_units_available=bool(contract.get("economic_units_available", False)),
+        absolute_economic_gate_applicable=bool(contract.get("absolute_economic_gate_applicable", False)),
+        expected_edge_score_semantic_role=str(contract.get("expected_edge_score_semantic_role") or ""),
+        expected_return_semantic_role=str(contract.get("expected_return_semantic_role") or ""),
+        relative_competition_eligible=(
+            contract.get("status") == "PASS"
+            and not bool(contract.get("economic_units_available", False))
+        ),
     )
 
 
@@ -469,6 +639,7 @@ def _result(
     artifact_hash: str = "",
     expected_edge_score: float | None = None,
     expected_return: float | None = None,
+    runtime_opportunity_score: float | None = None,
     no_buy_reason: str = "",
     buy_rank: int | None = None,
     is_top5: bool | None = None,
@@ -480,6 +651,14 @@ def _result(
     row_id: str = "",
     opportunity_authority: str = "",
     excluded_at_stage: str = "",
+    canonical_score_field: str = "",
+    score_semantic_role: str = "",
+    calibration_applied: bool = False,
+    economic_units_available: bool = False,
+    absolute_economic_gate_applicable: bool = False,
+    expected_edge_score_semantic_role: str = "",
+    expected_return_semantic_role: str = "",
+    relative_competition_eligible: bool = False,
 ) -> OpportunityBuyEligibilityResult:
     return OpportunityBuyEligibilityResult(
         status=status,
@@ -492,6 +671,7 @@ def _result(
         feature_date=feature_date,
         expected_edge_score=expected_edge_score,
         expected_return=expected_return,
+        runtime_opportunity_score=runtime_opportunity_score,
         no_buy_reason=no_buy_reason,
         buy_rank=buy_rank,
         is_top5=is_top5,
@@ -505,6 +685,14 @@ def _result(
         opportunity_row_id=row_id,
         opportunity_authority=opportunity_authority,
         excluded_at_stage=excluded_at_stage,
+        canonical_score_field=canonical_score_field,
+        score_semantic_role=score_semantic_role,
+        calibration_applied=calibration_applied,
+        economic_units_available=economic_units_available,
+        absolute_economic_gate_applicable=absolute_economic_gate_applicable,
+        expected_edge_score_semantic_role=expected_edge_score_semantic_role,
+        expected_return_semantic_role=expected_return_semantic_role,
+        relative_competition_eligible=relative_competition_eligible,
     )
 
 
@@ -518,6 +706,14 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
+
+
+def _truthy_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 def _int_or_none(value: Any) -> int | None:
