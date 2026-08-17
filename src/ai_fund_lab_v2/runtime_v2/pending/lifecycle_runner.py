@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle import PENDING_STATE_CONTRACT
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    build_pending_review_scope_authority,
+    pending_scope_no_submission_terminal_authority,
+)
 
 
 PENDING_LIFECYCLE_SCHEMA_VERSION = "runtime_v2_pending_lifecycle_v1"
@@ -85,6 +89,37 @@ def run_pending_lifecycle_review(
             },
         )
     submit_evidence = _submit_attempt_evidence(root=root, pending_plan_id=pending_plan_id)
+    stale_residual_buy_review = _stale_partial_submitted_buy_review_expiration_authority(
+        payload=payload,
+        business_date=business_date,
+    )
+    if stale_residual_buy_review["status"] == "PASS":
+        return _transition_terminal(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            new_state="EXPIRED",
+            reason="STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED",
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "unknown_submit_risk": False,
+                "stale_residual_buy_review_expiration": stale_residual_buy_review,
+            },
+            empty_slot=True,
+        )
+    if stale_residual_buy_review["status"] == "REVIEW_REQUIRED":
+        return _transition_to_review_required(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            reason=stale_residual_buy_review["reason"],
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "stale_residual_buy_review_expiration": stale_residual_buy_review,
+            },
+        )
     mixed_terminal = _historical_mixed_item_terminalization_authority(
         root=root,
         business_date=business_date,
@@ -363,6 +398,10 @@ def _write_history(
             "buy_item_scoped_review_no_submission_terminalization",
             {"status": "NOT_APPLICABLE"},
         ),
+        "stale_residual_buy_review_expiration": submit_evidence.get(
+            "stale_residual_buy_review_expiration",
+            {"status": "NOT_APPLICABLE"},
+        ),
         "pending_payload": payload,
     }
     _write_json(history_path, history)
@@ -411,6 +450,10 @@ def _manifest_transition_fields(
             "buy_item_scoped_review_no_submission_terminalization",
             {"status": "NOT_APPLICABLE"},
         ),
+        "stale_residual_buy_review_expiration": submit_evidence.get(
+            "stale_residual_buy_review_expiration",
+            {"status": "NOT_APPLICABLE"},
+        ),
         "pending_lifecycle_terminal_status": new_state if new_state in TERMINAL_STATES else "",
         "pending_lifecycle_terminal_reason": reason if new_state in TERMINAL_STATES else "",
         "broker_write_performed": bool(submit_evidence.get("broker_write_performed", False)),
@@ -448,6 +491,167 @@ def _submit_attempt_evidence(*, root: Path, pending_plan_id: str) -> dict[str, A
         "unknown_submit_risk": attempt or unknown,
         "submit_manifest_paths": submit_paths,
     }
+
+
+def _stale_partial_submitted_buy_review_expiration_authority(
+    *,
+    payload: dict[str, Any],
+    business_date: str,
+) -> dict[str, Any]:
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    item_payloads = [item for item in items if isinstance(item, dict)]
+    by_id = {str(item.get("pending_item_id") or ""): item for item in item_payloads}
+    approved_buy_ids = _str_list(payload.get("approved_buy_item_ids"))
+    approved_sell_ids = _str_list(payload.get("approved_sell_item_ids"))
+    review_buy_ids = _str_list(payload.get("review_required_buy_item_ids"))
+    review_sell_ids = _str_list(payload.get("review_required_sell_item_ids"))
+    target_session_date = str(payload.get("target_session_date") or "")
+    approval = payload.get("approval") if isinstance(payload.get("approval"), dict) else {}
+    approval_ids = set(_str_list(payload.get("approved_item_ids")) or _str_list(approval.get("approved_item_ids")))
+    approved_ids = approved_buy_ids + approved_sell_ids
+    review_ids = review_buy_ids + review_sell_ids
+    approved_set = set(approved_ids)
+    review_set = set(review_ids)
+    approved_items = [by_id.get(item_id, {}) for item_id in approved_buy_ids]
+    approved_sell_items = [by_id.get(item_id, {}) for item_id in approved_sell_ids]
+    approved_executable_items = [by_id.get(item_id, {}) for item_id in approved_ids]
+    review_items = [by_id.get(item_id, {}) for item_id in review_buy_ids]
+    review_sell_items = [by_id.get(item_id, {}) for item_id in review_sell_ids]
+    known_review_ids = {
+        str(item.get("pending_item_id") or "")
+        for item in item_payloads
+        if str(item.get("state") or "").upper() == "REVIEW_REQUIRED"
+    }
+    known_consumed_ids = {
+        str(item.get("pending_item_id") or "")
+        for item in item_payloads
+        if str(item.get("state") or "").upper() == "CONSUMED"
+    }
+    checks = {
+        "pending_state_review_required": _state(payload) == "REVIEW_REQUIRED",
+        "review_scope_buy_item_scoped": str(payload.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW",
+        "target_session_date_elapsed": bool(target_session_date) and target_session_date < business_date,
+        "approved_buy_subset_exists": bool(approved_buy_ids),
+        "residual_review_buy_subset_exists": bool(review_buy_ids),
+        "approved_review_disjoint": not approved_set.intersection(review_set),
+        "approved_ids_consistent": not approval_ids or approved_set.issubset(approval_ids),
+        "review_required_sell_item_ids_empty": not review_sell_ids,
+        "items_present": bool(item_payloads),
+        "all_items_objects": len(item_payloads) == len(items) and bool(item_payloads),
+        "all_approved_buy_items_known": bool(approved_buy_ids) and all(bool(item) for item in approved_items),
+        "all_approved_sell_items_known": all(bool(item) for item in approved_sell_items),
+        "all_review_buy_items_known": bool(review_buy_ids) and all(bool(item) for item in review_items),
+        "all_review_sell_items_known": all(bool(item) for item in review_sell_items),
+        "all_approved_buy_consumed": bool(approved_items)
+        and all(
+            str(item.get("side") or "").upper() == "BUY"
+            and str(item.get("state") or "").upper() == "CONSUMED"
+            and item.get("approved") is True
+            for item in approved_items
+        ),
+        "all_approved_sell_consumed": all(
+            str(item.get("side") or "").upper() == "SELL"
+            and str(item.get("state") or "").upper() == "CONSUMED"
+            and item.get("approved") is True
+            for item in approved_sell_items
+        ),
+        "all_approved_executable_items_terminal": bool(approved_executable_items)
+        and all(
+            str(item.get("side") or "").upper() in {"BUY", "SELL"}
+            and str(item.get("state") or "").upper() == "CONSUMED"
+            and item.get("approved") is True
+            for item in approved_executable_items
+        ),
+        "all_review_buy_remain_review_required": bool(review_items)
+        and all(
+            str(item.get("side") or "").upper() == "BUY"
+            and str(item.get("state") or "").upper() == "REVIEW_REQUIRED"
+            and item.get("approved") is not True
+            for item in review_items
+        ),
+        "unresolved_items_match_review_sets": known_review_ids == review_set,
+        "terminal_items_match_approved_sets": approved_set.issubset(known_consumed_ids),
+        "reviewed_buy_not_submitted_or_filled": bool(review_items)
+        and all(not _pending_item_has_submit_or_fill_evidence(item) for item in review_items),
+        "consume_not_whole_plan_consumed": not _consumed(payload),
+    }
+    applicable = (
+        _state(payload) == "REVIEW_REQUIRED"
+        and str(payload.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW"
+        and bool(target_session_date)
+        and target_session_date < business_date
+        and bool(approved_buy_ids)
+        and bool(review_buy_ids)
+    )
+    if not applicable:
+        return {
+            "status": "NOT_APPLICABLE",
+            "reason": "not_stale_partial_submitted_buy_item_scoped_review",
+            "checks": checks,
+        }
+    status = "PASS" if all(checks.values()) else "REVIEW_REQUIRED"
+    return {
+        "status": status,
+        "reason": "STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED"
+        if status == "PASS"
+        else "stale_residual_buy_review_expiration_checks_failed",
+        "checks": checks,
+        "pending_plan_id": str(payload.get("pending_plan_id") or ""),
+        "original_target_session_date": target_session_date,
+        "expiration_business_date": business_date,
+        "previous_state": _state(payload),
+        "terminal_state": "EXPIRED" if status == "PASS" else "",
+        "consumed_buy_item_ids": approved_buy_ids,
+        "consumed_sell_item_ids": approved_sell_ids,
+        "expired_residual_review_buy_item_ids": review_buy_ids,
+        "unresolved_review_buy_item_ids": review_buy_ids,
+        "unresolved_review_sell_item_ids": review_sell_ids,
+        "unresolved_review_buy_count": len(review_buy_ids),
+        "unresolved_review_sell_count": len(review_sell_ids),
+        "resolved_consumed_buy_count": len(approved_buy_ids),
+        "resolved_consumed_sell_count": len(approved_sell_ids),
+        "expired_residual_review_buy_symbols": [
+            str(item.get("symbol") or "") for item in review_items if isinstance(item, dict)
+        ],
+        "consumed_buy_sell_items_treated_as_terminal": status == "PASS",
+        "residual_review_lifecycle_invariant": (
+            "If all executable BUY/SELL items are terminal, no unresolved reviewed SELL remains, "
+            "and the only unresolved authority is stale non-submitted/non-filled "
+            "BUY_ITEM_SCOPED_REVIEW BUY items, the stale residual BUY review authority may expire "
+            "on the next business day."
+        ),
+        "original_review_reason": str(payload.get("review_reason") or payload.get("review_scope_reason") or ""),
+        "reviewed_buy_submitted": False,
+        "reviewed_buy_filled": False,
+        "reviewed_buy_auto_approved": False,
+        "reviewed_buy_carried_as_new_day_authority": False,
+        "new_day_buy_requires_fresh_authority": True,
+        "mandatory_sell_independence_preserved": True,
+        "pending_lifecycle_terminal_status": "EXPIRED" if status == "PASS" else "",
+        "pending_lifecycle_terminal_reason": "STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED"
+        if status == "PASS"
+        else "",
+    }
+
+
+def _pending_item_has_submit_or_fill_evidence(item: dict[str, Any]) -> bool:
+    scalar_fields = (
+        "submitted_order_id",
+        "ledger_order_record_id",
+        "execution_reference",
+        "fill_id",
+        "order_id",
+    )
+    collection_fields = (
+        "submitted_order_ids",
+        "ledger_order_record_ids",
+        "execution_references",
+        "fill_ids",
+        "order_ids",
+    )
+    return any(bool(item.get(field)) for field in scalar_fields) or any(
+        bool(item.get(field) or []) for field in collection_fields
+    )
 
 
 def _buy_item_scoped_review_no_submission_terminalization_authority(
@@ -534,15 +738,16 @@ def _buy_item_scoped_review_no_submission_terminalization_authority(
 def _buy_item_scoped_review_pending_evidence(*, payload: dict[str, Any], business_date: str) -> dict[str, Any]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     item_ids = [str(item.get("pending_item_id") or "") for item in items if isinstance(item, dict)]
-    approved_item_ids = _str_list(payload.get("approved_item_ids"))
-    review_buy_ids = _str_list(payload.get("review_required_buy_item_ids"))
-    review_sell_ids = _str_list(payload.get("review_required_sell_item_ids"))
+    authority = build_pending_review_scope_authority(payload)
+    approved_item_ids = list(authority.executable_item_ids)
+    review_buy_ids = list(authority.reviewed_buy_item_ids)
+    review_sell_ids = list(authority.reviewed_sell_item_ids)
     checks = {
-        "pending_state_review_required": _state(payload) == "REVIEW_REQUIRED",
+        "pending_state_review_required": authority.lifecycle_state == "REVIEW_REQUIRED",
         "pending_unconsumed": not _consumed(payload),
-        "pending_target_session_same_day": str(payload.get("target_session_date") or "") == business_date,
-        "review_scope_buy_item_scoped": str(payload.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW",
-        "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
+        "pending_target_session_same_day": authority.target_session_date == business_date,
+        "review_scope_buy_item_scoped": authority.review_scope == "BUY_ITEM_SCOPED_REVIEW",
+        "sell_continuation_allowed": authority.sell_continuation_allowed,
         "approved_item_ids_empty": not approved_item_ids,
         "review_required_buy_item_ids_present": bool(review_buy_ids),
         "review_required_sell_item_ids_empty": not review_sell_ids,
@@ -551,11 +756,9 @@ def _buy_item_scoped_review_pending_evidence(*, payload: dict[str, Any], busines
         "all_items_buy": bool(items) and all(str(item.get("side") or "").upper() == "BUY" for item in items if isinstance(item, dict)),
         "no_item_approved": bool(items) and not any(bool(item.get("approved")) for item in items if isinstance(item, dict)),
         "review_buy_ids_known": bool(review_buy_ids) and set(review_buy_ids).issubset(set(item_ids)),
+        "pending_review_scope_authority_no_submission": pending_scope_no_submission_terminal_authority(authority),
     }
-    applicable = (
-        _state(payload) == "REVIEW_REQUIRED"
-        and str(payload.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW"
-    )
+    applicable = authority.lifecycle_state == "REVIEW_REQUIRED" and authority.review_scope == "BUY_ITEM_SCOPED_REVIEW"
     if not applicable:
         return {
             "status": "NOT_APPLICABLE",
@@ -568,27 +771,29 @@ def _buy_item_scoped_review_pending_evidence(*, payload: dict[str, Any], busines
             "reason": "buy_item_scoped_review_pending_shape_invalid",
             "checks": checks,
             "pending_plan_id": str(payload.get("pending_plan_id") or ""),
-            "pending_state": _state(payload),
-            "review_scope": str(payload.get("review_scope") or ""),
+            "pending_state": authority.lifecycle_state,
+            "review_scope": authority.review_scope,
             "approved_item_ids": approved_item_ids,
             "review_required_buy_item_ids": review_buy_ids,
             "review_required_sell_item_ids": review_sell_ids,
-            "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
+            "sell_continuation_allowed": authority.sell_continuation_allowed,
+            "pending_review_scope_authority": authority.to_dict(),
         }
     return {
         "status": "PASS",
         "reason": "buy_item_scoped_review_pending_shape_valid",
         "checks": checks,
         "pending_plan_id": str(payload.get("pending_plan_id") or ""),
-        "pending_state": _state(payload),
-        "review_scope": str(payload.get("review_scope") or ""),
+        "pending_state": authority.lifecycle_state,
+        "review_scope": authority.review_scope,
         "approved_item_ids": approved_item_ids,
-        "approved_buy_item_ids": _str_list(payload.get("approved_buy_item_ids")),
-        "approved_sell_item_ids": _str_list(payload.get("approved_sell_item_ids")),
+        "approved_buy_item_ids": list(authority.executable_buy_item_ids),
+        "approved_sell_item_ids": list(authority.executable_sell_item_ids),
         "review_required_buy_item_ids": review_buy_ids,
         "review_required_sell_item_ids": review_sell_ids,
-        "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
+        "sell_continuation_allowed": authority.sell_continuation_allowed,
         "item_ids": item_ids,
+        "pending_review_scope_authority": authority.to_dict(),
     }
 
 

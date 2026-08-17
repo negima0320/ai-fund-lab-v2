@@ -9,14 +9,23 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import load_capital_deployment_policy
+from ai_fund_lab_v2.runtime_v2.safety_decision import RuntimeSafetyDecision
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand
-from ai_fund_lab_v2.runtime_v2.submit.pipeline import _submit_generation_binding_evidence, run_submit_pipeline
+from ai_fund_lab_v2.runtime_v2.submit.pipeline import (
+    BrokerAvailableQuantityEvidence,
+    _submit_generation_binding_evidence,
+    _submit_guard_item_evidence,
+    run_submit_pipeline,
+)
 
 from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _demo_settings
+from tests.runtime_v2.test_phase30_ak3r2b_cash_feasible_buy_batch import _cash_feasible_buy_batch, _current, _policy
 from tests.runtime_v2.test_phase24_ht_planning_submit_feasibility import (
+    _ak2_minimum_one_lot_position_sizing_authority,
     _approval,
     _item,
     _pending,
+    _quantity_contract,
     _position,
     _runtime_root,
     _write_current,
@@ -76,6 +85,113 @@ def test_phase26_step6_buy_pass_uses_approval_conditions_and_canonical_evidence(
     assert guard["planning_budget"] == 410_000.0
     assert guard["available_position_slots"] == 0
     assert guard["remaining_exposure_capacity"] == 410_000.0
+
+
+def test_phase30_ak3r2c1_submit_guard_authorized_one_lot_quantity_handoff_passes(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=500_000, positions=[])
+    item = _ak2_one_lot_item(quantity=100)
+    pending = _approved_pending(root, (item,), policy)
+
+    guard = _submit_guard_item_evidence(
+        item=pending.items[0],
+        pending_plan=pending,
+        runtime_root=root,
+        business_date="2026-07-09",
+        mode="demo",
+        policy=policy,
+        current_state=_current_state(root),
+        broker_position_quantity=None,
+        broker_available_quantity=None,
+        broker_available_quantity_evidence=BrokerAvailableQuantityEvidence(checked=False, source=""),
+        safety_decision=_demo_submit_safety_decision(),
+        feasibility_evidence=(pending.planning_submit_feasibility or {})["items"][0],
+    )
+
+    assert guard["guard_decision"] == "PASS"
+    assert guard["submit_item_status"] == "PASS"
+    assert guard["position_sizing_authority"]["one_lot_authority_consumed"] is True
+    assert guard["quantity"] == 100
+    assert guard["position_sizing_authority"]["discrete_authorized_quantity"] == 100
+
+
+def test_phase30_ak3r2c1_true_one_lot_quantity_mismatch_stays_review(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=500_000, positions=[])
+    item = _ak2_one_lot_item(quantity=100)
+    pending = _approved_pending(root, (item,), policy)
+    tampered_item = replace(pending.items[0], quantity=200)
+
+    guard = _submit_guard_item_evidence(
+        item=tampered_item,
+        pending_plan=pending,
+        runtime_root=root,
+        business_date="2026-07-09",
+        mode="demo",
+        policy=policy,
+        current_state=_current_state(root),
+        broker_position_quantity=None,
+        broker_available_quantity=None,
+        broker_available_quantity_evidence=BrokerAvailableQuantityEvidence(checked=False, source=""),
+        safety_decision=_demo_submit_safety_decision(),
+        feasibility_evidence=(pending.planning_submit_feasibility or {})["items"][0],
+    )
+
+    assert guard["guard_decision"] == "BLOCKED"
+    assert guard["submit_item_status"] == "REVIEW_REQUIRED"
+    assert guard["blocked_at_submit_reason"] == "one_lot_authority_quantity_mismatch"
+    assert guard["violated_policy"] == "position_sizing"
+
+
+def test_phase30_ak3r2c1_normal_buy_submit_guard_preserved(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=500_000, positions=[])
+    item = _item("buy-normal", amount=100_000, symbol="7203", quantity=100)
+    pending = _approved_pending(root, (item,), policy)
+
+    guard = _submit_guard_item_evidence(
+        item=pending.items[0],
+        pending_plan=pending,
+        runtime_root=root,
+        business_date="2026-07-09",
+        mode="demo",
+        policy=policy,
+        current_state=_current_state(root),
+        broker_position_quantity=None,
+        broker_available_quantity=None,
+        broker_available_quantity_evidence=BrokerAvailableQuantityEvidence(checked=False, source=""),
+        safety_decision=_demo_submit_safety_decision(),
+        feasibility_evidence=(pending.planning_submit_feasibility or {})["items"][0],
+    )
+
+    assert guard["guard_decision"] == "PASS"
+    assert guard["submit_item_status"] == "PASS"
+    assert guard.get("one_lot_authority_consumed") in (None, False)
+
+
+def test_phase30_ak3r2c1_cash_pruned_item_not_revalidated_by_submit_guard() -> None:
+    active, evidence = _cash_feasible_buy_batch(
+        items=(
+            _item("buy-a", amount=100_000, symbol="11110", quantity=100),
+            _item("buy-pruned", amount=400_000, symbol="22220", quantity=100),
+            _item("buy-c", amount=50_000, symbol="33330", quantity=100),
+        ),
+        current=_current(cash=175_000),
+        policy=_policy(),
+        business_date="2026-07-09",
+        mode="historical",
+    )
+
+    assert [item.symbol for item in active] == ["11110", "33330"]
+    assert evidence["cash_pruned_count"] == 1
+    assert evidence["items"][1]["symbol"] == "22220"
+    assert evidence["items"][1]["decision"] == "PRUNE"
 
 
 def test_phase26_step6_buy_review_does_not_block_valid_sell_submit(tmp_path: Path) -> None:
@@ -236,6 +352,56 @@ def _approved_pending(root: Path, items: tuple[PendingOrderItem, ...], policy):
         approval_artifact=_approval(pending),
         planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
         planning_submit_feasibility_policy=policy,
+    )
+
+
+def _ak2_one_lot_item(*, quantity: float) -> PendingOrderItem:
+    amount = 100_000.0
+    selected_position_amount = 70_000.0
+    symbol = "78780"
+    return _item(
+        "buy-ak2-one-lot",
+        amount=amount * quantity / 100.0,
+        symbol=symbol,
+        quantity=quantity,
+        quantity_contract=_quantity_contract(symbol=symbol, amount=selected_position_amount)
+        | {
+            "selected_notional": amount,
+            "selected_quantity": quantity,
+            "planned_quantity": quantity,
+            "planning_intent": "BUY_NEW",
+            "position_sizing_authority": _ak2_minimum_one_lot_position_sizing_authority(
+                symbol=symbol,
+                selected_position_amount=selected_position_amount,
+                one_lot_notional=amount,
+                intent="BUY_NEW",
+            ),
+        },
+    )
+
+
+def _current_state(root: Path) -> dict:
+    return load_runtime_current_exposure(root / "persistent_ledger" / "state.json").to_payload()
+
+
+def _demo_submit_safety_decision() -> RuntimeSafetyDecision:
+    return RuntimeSafetyDecision(
+        safety_decision_id="phase30-ak3r2c1-safety",
+        safety_policy_version="runtime_safety_v1",
+        safety_source="phase30_ak3r2c1_fixture",
+        business_date="2026-07-09",
+        runtime_mode="demo",
+        decision="ALLOW",
+        reason="phase30 ak3r2c1 safety allow",
+        review_required=False,
+        block_buy=False,
+        block_sell=False,
+        block_submit=False,
+        halt_runtime=False,
+        emergency_stop=False,
+        generated_at="2026-07-09T08:00:00+09:00",
+        expires_at="2026-07-09T15:00:00+09:00",
+        safety_status="PASS",
     )
 
 

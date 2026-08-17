@@ -20,6 +20,7 @@ from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     validate_market_context_compatibility,
 )
 from ai_fund_lab_v2.strategy import portfolio_policy
+from ai_fund_lab_v2.strategy import strategy_intelligence
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
 
 
@@ -214,6 +215,7 @@ def produce_position_management_artifact(
     output_path: Path | str,
     as_of: str | None = None,
     runtime_current_positions: Iterable[Mapping[str, Any]] | None = None,
+    strategy_intelligence_artifact_path: Path | str | None = None,
 ) -> PositionManagementProducerResult:
     payload, evidence = build_position_management_payload(
         business_date=business_date,
@@ -227,6 +229,7 @@ def produce_position_management_artifact(
         opportunity_summary=opportunity_summary,
         accepted_generation_reference=accepted_generation_reference,
         as_of=as_of,
+        strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
     )
     validate_position_management_artifact(payload)
     artifact_hash = position_management_hash(payload)
@@ -256,6 +259,7 @@ def build_position_management_payload(
     accepted_generation_reference: PMAcceptedGenerationReference,
     as_of: str | None = None,
     runtime_current_positions: Iterable[Mapping[str, Any]] | None = None,
+    strategy_intelligence_artifact_path: Path | str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_iso_date(business_date, field="business_date")
     as_of = as_of or f"{business_date}T00:00:00+00:00"
@@ -275,6 +279,11 @@ def build_position_management_payload(
         requested_business_date=business_date,
         production_use_requested=True,
     )
+    si_result = strategy_intelligence.validate_strategy_intelligence_compatibility(
+        strategy_intelligence_artifact_path,
+        requested_business_date=business_date,
+        production_use_requested=True,
+    )
     existing_decision_rows = [dict(row) for row in existing_pm_decisions if isinstance(row, Mapping)]
     runtime_current_connected = runtime_current_positions is not None
     runtime_current_rows = [dict(row) for row in (runtime_current_positions or ()) if isinstance(row, Mapping)]
@@ -291,6 +300,8 @@ def build_position_management_payload(
     source_status = "VALID"
     reason_codes: list[str] = list(position_reasons)
     upstream_statuses = [market_result["status"], corporate_result["status"], portfolio_result["status"]]
+    if not authoritative_empty_portfolio and strategy_intelligence_artifact_path is not None:
+        upstream_statuses.append(si_result["status"])
     if any(status in BLOCKING_UPSTREAM_STATUSES for status in upstream_statuses):
         producer_status = "BLOCK"
         reason_codes.extend([f"upstream_block:{status}" for status in upstream_statuses if status in BLOCKING_UPSTREAM_STATUSES])
@@ -334,6 +345,13 @@ def build_position_management_payload(
     elif not positions and position_reasons:
         if producer_status != "BLOCK":
             producer_status = "REVIEW_REQUIRED"
+    positions, si_reasons = _attach_strategy_intelligence_positions(
+        positions,
+        strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
+    )
+    reason_codes.extend(si_reasons)
+    if any(item.get("action") == "UNRESOLVED" for item in positions) and producer_status != "BLOCK":
+        producer_status = "REVIEW_REQUIRED"
 
     feature_date = min(
         [
@@ -342,6 +360,7 @@ def build_position_management_payload(
                 market_result.get("feature_date"),
                 corporate_result.get("feature_date"),
                 portfolio_result.get("feature_date"),
+                si_result.get("feature_date"),
                 position_lifecycle_summary.feature_date,
                 technical_feature_summary.feature_date,
                 opportunity_summary.feature_date,
@@ -367,6 +386,7 @@ def build_position_management_payload(
         {"role": "market_context", "path": str(market_context_artifact_path or ""), "required": True, "status": market_result["status"]},
         {"role": "corporate_event", "path": str(corporate_event_artifact_path or ""), "required": True, "status": corporate_result["status"]},
         {"role": "portfolio_policy", "path": str(portfolio_policy_artifact_path or ""), "required": True, "status": portfolio_result["status"]},
+        {"role": "strategy_intelligence", "path": str(strategy_intelligence_artifact_path or ""), "required": pm_source_required and strategy_intelligence_artifact_path is not None, "status": si_result["status"]},
         {"role": "position_lifecycle", "path": position_lifecycle_summary.source_ref, "required": pm_source_required, "status": position_lifecycle_summary.status},
         {"role": "technical_features", "path": technical_feature_summary.source_ref, "required": pm_source_required, "status": technical_feature_summary.status},
         {"role": "opportunity_summary", "path": opportunity_summary.source_ref, "required": pm_source_required, "status": opportunity_summary.status},
@@ -412,6 +432,11 @@ def build_position_management_payload(
         {"role": "accepted_generation", "path": accepted_generation_reference.generation_id, "sha256": _strip_sha256(accepted_generation_reference.accepted_generation_hash)},
         {"role": "model", "path": accepted_generation_reference.model_reference, "sha256": _strip_sha256(accepted_generation_reference.model_hash)},
         {"role": "scaler", "path": accepted_generation_reference.scaler_reference, "sha256": _strip_sha256(accepted_generation_reference.scaler_hash)},
+        *(
+            [{"role": "strategy_intelligence", "path": str(strategy_intelligence_artifact_path), "sha256": sha256_file(Path(strategy_intelligence_artifact_path))}]
+            if strategy_intelligence_artifact_path and Path(strategy_intelligence_artifact_path).is_file()
+            else []
+        ),
     ]
     if pm_decision_source_path:
         source_hashes.append(
@@ -468,6 +493,7 @@ def build_position_management_payload(
             "market_context": market_result,
             "corporate_event": corporate_result,
             "portfolio_policy": portfolio_result,
+            "strategy_intelligence": si_result,
             **summaries,
         },
         "accepted_generation_reference": accepted_generation_reference.to_dict(),
@@ -491,6 +517,7 @@ def build_position_management_payload(
             "previous_day_pm_artifact_copied": False,
         },
         "production_consumer_connected": False,
+        "strategy_intelligence_production_consumer_connected": True,
         "existing_pm_authority_active": True,
         "runtime_switch_performed": False,
         "legacy_authority_active": True,
@@ -1287,6 +1314,173 @@ def _pm_action_field_conflicts(decision: Mapping[str, Any]) -> list[str]:
         "pm_action_field_conflict:"
         + ",".join(f"{field}={value}" for field, value in supported.items())
     ]
+
+
+def _attach_strategy_intelligence_positions(
+    positions: list[dict[str, Any]],
+    *,
+    strategy_intelligence_artifact_path: Path | str | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not positions:
+        return positions, []
+    if strategy_intelligence_artifact_path is None:
+        return positions, ["strategy_intelligence_not_connected"]
+    if not Path(strategy_intelligence_artifact_path).is_file():
+        return [
+            {
+                **position,
+                "action": "UNRESOLVED",
+                "intensity": "UNRESOLVED",
+                "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
+                "strategy_intelligence_consumer_status": "MISSING_ARTIFACT",
+                "reason_codes": sorted(set([*list(position.get("reason_codes") or []), "strategy_intelligence_missing_fail_closed"])),
+            }
+            for position in positions
+        ], ["strategy_intelligence_missing_fail_closed"]
+    payload = strategy_intelligence.load_strategy_intelligence_artifact(strategy_intelligence_artifact_path)
+    by_symbol = strategy_intelligence.symbol_intelligence_by_symbol(payload)
+    updated: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for position in positions:
+        code = str(position.get("security_code") or position.get("symbol") or "").strip()
+        evidence = by_symbol.get(code)
+        if not evidence:
+            patched = {
+                **position,
+                "action": "UNRESOLVED",
+                "intensity": "UNRESOLVED",
+                "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
+                "strategy_intelligence_consumer_status": "MISSING_SYMBOL_EVIDENCE",
+                "reason_codes": sorted(set([*list(position.get("reason_codes") or []), "strategy_intelligence_symbol_missing_fail_closed"])),
+            }
+            updated.append(patched)
+            reasons.append(f"strategy_intelligence_symbol_missing:{code}")
+            continue
+        action = str(position.get("action") or "").upper()
+        cq = evidence.get("continuation_quality") if isinstance(evidence.get("continuation_quality"), Mapping) else {}
+        risk = evidence.get("downside_risk") if isinstance(evidence.get("downside_risk"), Mapping) else {}
+        profit = evidence.get("profit_protection_evidence") if isinstance(evidence.get("profit_protection_evidence"), Mapping) else {}
+        lifecycle = evidence.get("lifecycle_context") if isinstance(evidence.get("lifecycle_context"), Mapping) else {}
+        hold_evidence = _structured_hold_worthiness_evidence(lifecycle=lifecycle, cq=cq, risk=risk, profit=profit)
+        add_evidence = _structured_add_worthiness_evidence(lifecycle=lifecycle, cq=cq, risk=risk, profit=profit)
+        position_reasons = list(position.get("reason_codes") or [])
+        if action == "ADD" and add_evidence["status"] != "PASS":
+            action = "HOLD"
+            position_reasons.append("structured_add_worthiness_no_add")
+        elif action == "HOLD" and hold_evidence["status"] != "PASS":
+            action = "UNRESOLVED"
+            position_reasons.append("structured_hold_worthiness_review_required")
+        elif action in {"REDUCE", "EXIT"}:
+            position_reasons.append("strategy_intelligence_sell_side_evidence_connected")
+        elif action == "HOLD":
+            position_reasons.append("structured_hold_worthiness_pass")
+        patched = {
+            **position,
+            "action": action,
+            "intensity": "NONE" if action == "HOLD" else position.get("intensity"),
+            "position_campaign_id": str(lifecycle.get("position_campaign_id") or position.get("position_campaign_id") or ""),
+            "strategy_intelligence_consumer_status": "CONNECTED",
+            "strategy_intelligence_artifact_path": str(strategy_intelligence_artifact_path),
+            "strategy_intelligence_artifact_hash": str(payload.get("artifact_hash") or ""),
+            "strategy_intelligence_continuation_quality_status": str(cq.get("status") or ""),
+            "strategy_intelligence_downside_risk_status": str(risk.get("status") or ""),
+            "strategy_intelligence_profit_protection_status": str(profit.get("status") or ""),
+            "strategy_intelligence_campaign_id": str(lifecycle.get("position_campaign_id") or ""),
+            "strategy_intelligence_campaign_age_business_days": lifecycle.get("campaign_age_business_days"),
+            "strategy_intelligence_current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
+            "strategy_intelligence_observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
+            "strategy_intelligence_observed_giveback": lifecycle.get("observed_giveback"),
+            "strategy_intelligence_hold_worthiness_evidence": hold_evidence,
+            "strategy_intelligence_add_worthiness_evidence": add_evidence,
+            "strategy_intelligence_profit_protection_evidence": dict(profit),
+            "strategy_intelligence_not_action_authority": True,
+            "strategy_intelligence_production_evidence": True,
+            "reason_codes": sorted(set(position_reasons)),
+        }
+        updated.append(patched)
+    return updated, sorted(set(reasons))
+
+
+def _structured_hold_worthiness_evidence(
+    *,
+    lifecycle: Mapping[str, Any],
+    cq: Mapping[str, Any],
+    risk: Mapping[str, Any],
+    profit: Mapping[str, Any],
+) -> dict[str, Any]:
+    campaign_status = str(lifecycle.get("campaign_identity_authority_status") or "").upper()
+    cq_status = str(cq.get("status") or "").upper()
+    risk_status = str(risk.get("status") or "").upper()
+    reasons: list[str] = []
+    if campaign_status != "COMPLETE":
+        reasons.append("canonical_campaign_identity_missing")
+    if cq_status != "PASS":
+        reasons.append("continuation_quality_not_pass")
+    if risk_status in {"BLOCK", "FAIL_CLOSED"}:
+        reasons.append("downside_risk_blocks_hold")
+    status = "PASS" if not reasons else "REVIEW_REQUIRED"
+    return {
+        "schema_version": "phase30_ac_hold_worthiness_evidence.v1",
+        "status": status,
+        "campaign_identity_authority_status": campaign_status,
+        "campaign_age_business_days": lifecycle.get("campaign_age_business_days"),
+        "current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
+        "observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
+        "observed_giveback": lifecycle.get("observed_giveback"),
+        "add_history_summary": lifecycle.get("add_history_summary") or {},
+        "reduce_history_summary": lifecycle.get("reduce_history_summary") or {},
+        "continuation_quality_status": cq_status,
+        "downside_risk_status": risk_status,
+        "profit_protection_status": str(profit.get("status") or ""),
+        "profit_protection_evidence_used": True,
+        "not_action_authority": True,
+        "reason_codes": sorted(set(reasons)),
+        "future_information_used": False,
+    }
+
+
+def _structured_add_worthiness_evidence(
+    *,
+    lifecycle: Mapping[str, Any],
+    cq: Mapping[str, Any],
+    risk: Mapping[str, Any],
+    profit: Mapping[str, Any],
+) -> dict[str, Any]:
+    campaign_status = str(lifecycle.get("campaign_identity_authority_status") or "").upper()
+    cq_status = str(cq.get("status") or "").upper()
+    risk_status = str(risk.get("status") or "").upper()
+    add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
+    reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
+    reasons: list[str] = []
+    if campaign_status != "COMPLETE":
+        reasons.append("canonical_campaign_identity_missing")
+    if cq_status != "PASS":
+        reasons.append("incremental_continuation_quality_not_pass")
+    if risk_status not in {"PASS", "REVIEW_REQUIRED", ""}:
+        reasons.append("downside_risk_blocks_add")
+    if int(add_history.get("event_count") or 0) >= 5:
+        reasons.append("prior_add_history_limits_incremental_add")
+    if int(reduce_history.get("event_count") or 0) > 0:
+        reasons.append("prior_reduce_history_requires_add_review")
+    status = "PASS" if not reasons else "NO_ADD"
+    return {
+        "schema_version": "phase30_ac_add_worthiness_evidence.v1",
+        "status": status,
+        "campaign_identity_authority_status": campaign_status,
+        "campaign_age_business_days": lifecycle.get("campaign_age_business_days"),
+        "current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
+        "observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
+        "observed_giveback": lifecycle.get("observed_giveback"),
+        "add_history_summary": add_history,
+        "reduce_history_summary": reduce_history,
+        "continuation_quality_status": cq_status,
+        "downside_risk_status": risk_status,
+        "profit_protection_status": str(profit.get("status") or ""),
+        "hold_worthy_equals_add_worthy": False,
+        "not_action_authority": True,
+        "reason_codes": sorted(set(reasons)),
+        "future_information_used": False,
+    }
 
 
 def _normalized_text(value: Any) -> str:

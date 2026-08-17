@@ -892,3 +892,253 @@ candidate_reason / excluded_reason のenum
 leakage auditの機械チェック
 学習前のデータ品質チェック
 ```
+
+## 15.12 Phase30-AJ2 Candidate PIT Quality Surface
+
+Phase30-AJ2 keeps the Candidate AI contract intact:
+
+```text
+candidate_score = accepted-generation Candidate model score for momentum_candidate_label
+candidate_rank = score-only Candidate model rank
+Candidate AI = broad-market upward-momentum discovery authority
+```
+
+The Production-common Candidate path is:
+
+```text
+all eligible stocks
+-> accepted Candidate model
+-> candidate_score / candidate_rank
+-> Candidate-stage PIT Quality Surface
+-> quality-aware Top50
+-> Opportunity AI
+```
+
+The Candidate-stage PIT Quality Surface is not a new AI and is not BUY
+authority. It is an explainable decision-time PIT evidence layer between
+Candidate model scoring and the Top50 cut.
+
+Allowed evidence:
+
+```text
+5D / 20D / 60D return
+close / MA20
+MA5 / MA20
+MA20 / MA60
+momentum acceleration / deceleration
+volume momentum
+participation / traded-value confirmation when available
+volatility
+liquidity
+stock-vs-market relative strength only when safely available
+```
+
+Forbidden evidence remains:
+
+```text
+future return
+future max return / drawdown
+Historical winner / loser outcome
+Portfolio PnL
+selected / bought result
+Paper Ledger outcome
+full downstream CQ / Downside Risk / Entry Admission copy
+Phase30-AI Selection Quality Comparator copy
+```
+
+Canonical surface states:
+
+```text
+STRONG_CONTINUATION_SURFACE
+VALID_MOMENTUM_SURFACE
+CAUTION_MOMENTUM_SURFACE
+INSUFFICIENT_SURFACE_EVIDENCE
+```
+
+The Top50 count remains fixed at 50. Candidate score and candidate rank remain
+observable model evidence. The quality-aware order is materialized separately as
+`quality_aware_candidate_rank`, and coverage evidence records the score-only
+Top50 order, final Top50 order, added symbols, removed symbols, surface
+distribution, market healthy proxy count, Candidate healthy proxy count, and
+capture ratio.
+
+## 15.13 Phase30-AJ2R2 Hybrid Ordering Contract
+
+Phase30-AJ2R2 clarifies that Candidate PIT Quality Surface is not a hard
+lexicographic tier that always dominates any Candidate score gap.
+
+Final roles:
+
+```text
+CANDIDATE_SURFACE_ROLE = SEMANTIC_HYBRID_AUTHORITY
+CANDIDATE_SCORE_ROLE = CO_EQUAL_HYBRID_EVIDENCE
+```
+
+Rejected ordering contracts:
+
+```text
+surface always beats any candidate_score difference
+candidate_score always beats any surface difference
+opaque weighted hybrid_score
+```
+
+Selected ordering contract:
+
+```text
+SEMANTIC_HYBRID_ELIGIBILITY_BANDS_WITH_CANDIDATE_SCORE_WITHIN_CLASS_AUTHORITY
+```
+
+Score evidence classes:
+
+```text
+STRONG_DISCOVERY_SCORE
+MODERATE_DISCOVERY_SCORE
+WEAK_DISCOVERY_SCORE
+```
+
+Surface states remain:
+
+```text
+STRONG_CONTINUATION_SURFACE
+VALID_MOMENTUM_SURFACE
+CAUTION_MOMENTUM_SURFACE
+INSUFFICIENT_SURFACE_EVIDENCE
+```
+
+Semantic class order:
+
+```text
+1. CONFIRMED_DISCOVERY_AND_SURFACE
+   strong score + strong/valid surface
+
+2. CONFLICT_RESOLUTION_HIGH_DISCOVERY_OR_STRONG_SURFACE
+   strong score + caution surface
+   moderate score + strong surface
+
+3. VALID_BUT_INCOMPLETE_CONFIRMATION
+   moderate score + valid surface
+   strong score + insufficient surface
+
+4. LOW_CONVICTION_OR_SURFACE_ONLY_CHALLENGER
+   moderate score + caution surface
+   weak score + strong/valid surface
+
+5. INSUFFICIENT_OR_WEAK
+   moderate score + insufficient surface
+   weak score + caution/insufficient surface
+```
+
+Within each semantic class:
+
+```text
+candidate_score descending
+then surface-state preference
+then code ascending
+```
+
+## 15.14 Phase30-AJ2R3 Hybrid Ordering Implementation
+
+Phase30-AJ2R3 implements the Phase30-AJ2R2 contract in the single
+Production-common Candidate path.
+
+Implemented ordering contract:
+
+```text
+SEMANTIC_HYBRID_ELIGIBILITY_BANDS_WITH_CANDIDATE_SCORE_WITHIN_CLASS_AUTHORITY
+```
+
+The final Candidate Top50 ordering is:
+
+```text
+semantic_hybrid_class priority
+then candidate_score descending
+then surface-state preference
+then code ascending
+```
+
+Materialized per candidate:
+
+```text
+candidate_score
+candidate_rank
+score_only_candidate_rank
+score_evidence_class
+candidate_pit_surface_state
+semantic_hybrid_class
+semantic_hybrid_class_reason
+quality_aware_candidate_rank
+PIT / leakage metadata
+```
+
+Run-level evidence records score-class distribution, semantic hybrid class
+distribution, surface distribution, final Top50 order, score-only Top50 order,
+added symbols, removed symbols, and healthy proxy capture.
+
+Retired:
+
+```text
+surface priority -> candidate_score desc -> code asc
+score-only Top50 as final production authority
+opaque weighted hybrid_score
+parallel Candidate path
+```
+
+Preserved:
+
+```text
+candidate_score = momentum_candidate_label model score
+candidate_rank = score-only model rank
+Candidate PIT surface = current momentum surfacing quality, not BUY authority
+Top50 count = 50
+Candidate model / label / accepted generation unchanged
+```
+
+This preserves Candidate AI momentum discovery authority while making current
+PIT surface action-effective. `STRONG_CONTINUATION_SURFACE` remains not
+BUY-worthy by itself, and `CAUTION_MOMENTUM_SURFACE` remains not reject by
+itself. Full CQ, RS, Downside Risk, Entry Admission, allocation, quantity, and
+Safety remain downstream responsibilities.
+
+## 15.15 Phase30-AJ3B Liquidity Evidence Propagation
+
+Phase30-AJ3B preserves the Phase30-AJ2R3 semantic hybrid ordering contract and
+repairs only the Candidate PIT surface liquidity evidence propagation.
+
+Canonical authority:
+
+```text
+Candidate feature artifact field: liquidity_avg_volume_20d
+Feature source: Candidate feature builder daily quote PIT window
+Surface consumer: candidate_pit_quality_surface.v1
+```
+
+Runtime Candidate producer must propagate `liquidity_avg_volume_20d` from the
+existing Candidate feature artifact into Candidate and Opportunity BUY quality
+metadata. Candidate PIT surface uses this value as raw PIT evidence. When the
+field is missing or non-numeric, the surface remains fail-safe:
+
+```text
+INSUFFICIENT_SURFACE_EVIDENCE
+```
+
+No Candidate-side liquidity recalculation, fallback liquidity heuristic,
+candidate score change, model retraining, accepted-generation change, Top50
+count change, weighted hybrid score, or parallel Candidate path is allowed.
+
+Runtime evidence records:
+
+```text
+liquidity_source_field
+liquidity_present_row_count
+liquidity_missing_row_count
+liquidity_evidence_lineage
+```
+
+The final Candidate Top50 ordering remains:
+
+```text
+semantic_hybrid_class priority
+then candidate_score descending
+then surface-state preference
+then code ascending
+```

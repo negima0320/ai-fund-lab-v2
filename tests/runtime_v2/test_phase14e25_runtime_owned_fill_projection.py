@@ -347,6 +347,92 @@ def test_phase29_l21t_bl_new_buy_materializes_adjusted_quantity_basis(tmp_path):
     assert position["quantity_basis_provenance"] == "runtime_execution_price_authority:adjusted_reference_price_basis"
 
 
+def test_phase30_ak5r_execution_projection_preserves_valuation_metadata_for_open_positions(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-before",
+            "environment": "historical",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": "2022-10-20",
+            "valuation_as_of": "2022-10-20",
+            "source_market_date": "2022-10-20",
+            "positions": [
+                {
+                    **_current_position("44150", quantity=100, average_price=619.0, market_value=61300.0, as_of="2022-10-20"),
+                    "current_price": 613.0,
+                    "quantity_basis": "ADJUSTED",
+                    "valuation_price_basis": "ADJUSTED",
+                    "valuation_price_role": "reconciled_adjusted_basis_valuation_price",
+                    "valuation_price_provenance": "prior_authoritative_adjusted_close",
+                    "valuation_as_of": "2022-10-20",
+                    "source_market_date": "2022-10-20",
+                    "valuation_source": "prior_market_evidence",
+                    "valuation_price_type": "jquants_daily_quote",
+                    "valuation_quote_status": "FRESH_CURRENT_QUOTE",
+                    "quote_business_date": "2022-10-20",
+                    "valuation_business_date": "2022-10-20",
+                },
+                {
+                    **_current_position("66190", quantity=100, average_price=1579.0, market_value=161100.0, as_of="2022-10-20"),
+                    "current_price": 1611.0,
+                    "quantity_basis": "ADJUSTED",
+                    "valuation_price_basis": "ADJUSTED",
+                    "valuation_price_provenance": "prior_authoritative_adjusted_close",
+                    "valuation_as_of": "2022-10-20",
+                    "source_market_date": "2022-10-20",
+                },
+            ],
+            "cash": 247570.0,
+            "buying_power": 247570.0,
+            "market_value": 222400.0,
+            "total_equity": 469970.0,
+        },
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "orders.jsonl",
+        [_accepted_order("44150", "44150"), _accepted_order("66190", "66190")],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [_execution("66190", "SELL", quantity=100, price=1630.0, cash_effect=163000.0, business_date="2022-10-21")],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [
+            {
+                **_position("44150", quantity=100, average_price=619.0, market_value=61300.0, as_of="2022-10-20"),
+                "current_price": 613.0,
+                "quantity_basis": "ADJUSTED",
+                "valuation_price_basis": "ADJUSTED",
+                "valuation_price_provenance": "ledger_prior_authoritative_adjusted_close",
+            },
+            _position("66190", quantity=100, average_price=1579.0, market_value=161100.0, as_of="2022-10-20"),
+        ],
+    )
+
+    result = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root,
+        business_date="2022-10-21",
+        mode="historical",
+    )
+    state = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    by_symbol = {position["symbol"]: position for position in state["positions"]}
+
+    assert result.status == "PASS"
+    assert list(by_symbol) == ["44150"]
+    assert by_symbol["44150"]["valuation_as_of"] == "2022-10-20"
+    assert by_symbol["44150"]["source_market_date"] == "2022-10-20"
+    assert by_symbol["44150"]["valuation_source"] == "prior_market_evidence"
+    assert by_symbol["44150"]["valuation_quote_status"] == "FRESH_CURRENT_QUOTE"
+    assert by_symbol["44150"]["quote_business_date"] == "2022-10-20"
+    assert by_symbol["44150"]["valuation_business_date"] == "2022-10-20"
+    assert by_symbol["44150"]["quantity_basis"] == "ADJUSTED"
+    assert by_symbol["44150"]["valuation_price_basis"] == "ADJUSTED"
+
+
 def test_phase29_l21t_bl_explicit_basis_conflict_fails_closed(tmp_path):
     runtime_root = tmp_path / ".runtime"
     _write_json(

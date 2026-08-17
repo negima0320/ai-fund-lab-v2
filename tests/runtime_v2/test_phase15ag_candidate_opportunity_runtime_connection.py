@@ -92,9 +92,30 @@ def test_phase15ag_candidate_and_opportunity_artifacts_feed_morning(tmp_path):
         "trend_ma_20_60_ratio",
         "volume_momentum_ratio_5d",
         "volume_momentum_ratio_1d_20d",
+        "liquidity_avg_volume_20d",
     ):
         assert candidate["rows"][0][column] == rows_by_code(feature_root, "7203")[column]
         assert opportunity["rankings"][0][column] == rows_by_code(feature_root, "7203")[column]
+    assert candidate["rows"][0]["candidate_pit_surface_state"] != "INSUFFICIENT_SURFACE_EVIDENCE"
+    assert (
+        candidate["rows"][0]["candidate_pit_quality_surface"]["raw_pit_evidence"]["liquidity_avg_volume_20d"]
+        == rows_by_code(feature_root, "7203")["liquidity_avg_volume_20d"]
+    )
+    assert candidate["candidate_coverage_evidence"]["liquidity_present_row_count"] == 3
+    assert candidate["candidate_coverage_evidence"]["liquidity_missing_row_count"] == 0
+    assert candidate["candidate_coverage_evidence"]["liquidity_evidence_lineage"]["source_field"] == "liquidity_avg_volume_20d"
+    assert (
+        candidate["candidate_coverage_evidence"]["liquidity_evidence_lineage"][
+            "canonical_liquidity_authority_reused"
+        ]
+        is True
+    )
+    assert (
+        candidate["candidate_coverage_evidence"]["liquidity_evidence_lineage"][
+            "duplicate_liquidity_authority_created"
+        ]
+        is False
+    )
     assert signals[0].source_ai == "opportunity_ai"
     assert signals[0].symbol == "7203"
 
@@ -456,6 +477,7 @@ def _opportunity_feature_row(candidate_row: dict) -> dict:
         "trend_ma_20_60_ratio",
         "volume_momentum_ratio_5d",
         "volume_momentum_ratio_1d_20d",
+        "liquidity_avg_volume_20d",
     ):
         row[column] = candidate_row[column]
     return row

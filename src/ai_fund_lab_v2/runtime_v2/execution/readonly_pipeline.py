@@ -32,7 +32,10 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerEventRecord, LedgerExe
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingPlanState
-from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_review_sell_continuation_pending
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    build_pending_review_scope_authority,
+    pending_scope_no_submission_terminal_authority,
+)
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     is_mode_rooted_runtime_root,
     reject_mode_rooted_runtime_root,
@@ -926,19 +929,10 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
 
 
 def _is_buy_item_scoped_review_no_submission_pending(pending, *, business_date: str) -> bool:
-    if not is_buy_item_scoped_review_sell_continuation_pending(
-        pending,
-        business_date=business_date,
-        target_session_date=business_date,
-    ):
+    authority = build_pending_review_scope_authority(pending)
+    if not pending_scope_no_submission_terminal_authority(authority):
         return False
-    if pending.approved_item_ids or pending.approved_buy_item_ids or pending.approved_sell_item_ids:
-        return False
-    if any(item.approved for item in pending.items):
-        return False
-    if any(item.side.upper() != "BUY" for item in pending.items):
-        return False
-    return True
+    return pending.target_session_date == business_date
 
 
 def _load_historical_quarantine_no_submitted_authority(

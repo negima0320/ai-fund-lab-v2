@@ -548,3 +548,54 @@ Authority rules:
 Phase27-D3 freezes PM as the Strategy Action Authority for existing-position `ADD`, `HOLD`, `REDUCE`, and `EXIT`. Portfolio Construction resolves target membership and target weight from PM intent plus evidence. Position Sizing resolves target quantity and quantity delta. Runtime Planning maps quantity delta to runtime action. None of these downstream stages may independently create PM action philosophy or convert profit, rank, quality, cash, or sizing evidence into a new BUY/HOLD/SELL decision.
 
 Opportunity, BUY Quality, Market Context, Momentum Evidence, and Incremental Eligibility are evidence producers for PM and Portfolio Construction. They are not action producers. Profit-taking is not an adopted independent PM philosophy; profit presence may be evidence context, but it is not by itself a REDUCE or EXIT authority.
+
+## 16. Phase30 Final PC / PS Quantity Authority Amendment
+
+Phase30 closed the PC / PS discrete executable quantity contract as a
+Production-common authority boundary.
+
+Canonical executable quantity lineage:
+
+```text
+Portfolio Construction discrete executable quantity
+-> Position Sizing consumption
+-> Runtime Planning quantity delta
+-> Pending quantity contract / item quantity
+-> Submit equality validation
+-> submitted order / fill
+```
+
+Portfolio Construction owns final Strategy allocation and discrete executable
+quantity after lot feasibility, remaining-budget comparison, Strategy soft-cap
+handling, Safety hard-cap preservation, and residual capital priority have been
+resolved. Position Sizing consumes that canonical quantity. Runtime Planning
+maps the quantity delta. Pending carries the quantity. Submit validates
+consistency and execution safety. Execution and Ledger record fills and cash
+effects.
+
+Downstream components must not resize or re-decide Strategy allocation when PC
+has emitted a valid canonical discrete executable quantity authority and PS has
+consumed it.
+
+`selected_position_amount` is not final discrete executable quantity authority.
+It may remain a diagnostic fail-closed fallback only when canonical discrete
+quantity authority is absent, invalid, stale, malformed, or inconsistent. It
+must not overrule a valid PC-authorized and PS-consumed discrete quantity.
+
+Strategy soft-cap and Safety hard-cap have different meanings:
+
+- Strategy soft cap is a Portfolio Construction allocation constraint.
+- Safety hard cap is a fail-closed execution and portfolio safety boundary.
+- A discrete-lot Strategy soft-cap overshoot may be valid only when PC
+  explicitly authorizes it and Safety hard cap preservation is proven.
+- Missing, malformed, or unsafe overshoot authority remains fail-closed.
+
+Final-PC remaining-budget comparison must use the already resolved canonical
+discrete executable lot requirement when that authority is present and coherent.
+It must not compare against the earlier draft continuous target in a way that
+rejects an otherwise budget-feasible canonical executable lot.
+
+This amendment does not create forced investment, a fixed exposure target, a
+new BUY filter, a new ADD filter, or a Historical-only Strategy path. Cash may
+remain undeployed when no eligible, lot-feasible, Safety-valid, authority-clean
+opportunity exists.

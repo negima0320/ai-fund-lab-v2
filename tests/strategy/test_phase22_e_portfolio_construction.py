@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from ai_fund_lab_v2.strategy import corporate_event, market_context, portfolio_policy, position_management
+from ai_fund_lab_v2.strategy import corporate_event, market_context, portfolio_policy, position_management, strategy_intelligence
 from ai_fund_lab_v2.strategy.portfolio_construction import (
     PortfolioConstructionConsumerError,
     PortfolioConstructionSchemaError,
     PortfolioConstructionSourceSummary,
     _positive_increment_over_target,
+    _select_target_members,
     apply_lot_aware_final_reallocation,
     build_portfolio_construction_payload,
     default_runtime_artifact_path,
@@ -270,6 +271,40 @@ def test_phase29_l21t_ak_top20_uncalibrated_reason_is_soft_metadata(tmp_path: Pa
     assert member["requested_buy_new_weight"] > 0
     assert member["no_buy_reason_classification"]["hard_blocking_reasons"] == []
     assert member["no_buy_reason_classification"]["soft_relative_reasons"] == ["below_opportunity_top20"]
+    assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
+
+
+def test_phase30_ai_high_quality_lower_rank_candidate_reaches_pc_competition(tmp_path: Path) -> None:
+    si_path = _write_phase30_ai_strategy_intelligence(
+        tmp_path,
+        {
+            "6098": "HIGH_QUALITY_CONTINUATION",
+            "9432": "CAUTION_CONTINUATION",
+        },
+    )
+    payload = _build_l21t_ak_payload(
+        tmp_path,
+        opportunity_rows=[
+            _l21t_ak_opportunity("9432", 1, 0.40),
+            _l21t_ak_opportunity("6098", 25, -0.25, no_buy_reason="below_opportunity_top20|non_positive_expected_edge_score"),
+        ],
+        buy_quality_rows=[
+            _l21t_ak_quality("9432", "FULL_ALLOCATION_ELIGIBLE"),
+            _l21t_ak_quality("6098", "FULL_ALLOCATION_ELIGIBLE"),
+        ],
+        target_position_count=1,
+        strategy_intelligence_artifact_path=si_path,
+    )
+    by_code = {row["security_code"]: row for row in payload["portfolio_members"]}
+
+    assert by_code["6098"]["selection_quality_tier"] == "HIGH_QUALITY_CONTINUATION"
+    assert by_code["6098"]["membership_intent"] == "ADD_CANDIDATE"
+    assert by_code["6098"]["target_membership"] is True
+    assert by_code["6098"]["requested_buy_new_weight"] > 0
+    assert by_code["6098"]["no_buy_reason_classification"]["hard_blocking_reasons"] == []
+    assert by_code["6098"]["selection_quality_score_only_hard_rejection_retired"] is True
+    selected = _select_target_members(list(payload["portfolio_members"]))
+    assert [row["security_code"] for row in selected[:2]] == ["6098", "9432"]
     assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
 
 
@@ -1223,6 +1258,86 @@ def test_phase28_d55_a_add_evidence_resolver_valid_case_drives_positive_incremen
     assert member["add_allocation_eligibility_status"] == "PASS"
 
 
+def test_phase30_ae1_canonical_si_campaign_repairs_runtime_current_add_mismatch(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05}],
+        pm_rows=[
+            {
+                **_pm_row("11110", "ADD"),
+                "lifecycle_reference": "runtime-current-11110",
+                "strategy_intelligence_campaign_id": "pc-canonical-11110-0001",
+                "strategy_intelligence_add_worthiness_state": "ADD_ALLOWED",
+                "entry_admission_state": "HEALTHY_CONTINUATION_ENTRY",
+                "entry_admission_action": "ADD_ALLOWED",
+                "reason_codes": ["strong_trend_continuation", "opportunity_rank_still_high", "no_loss_averaging"],
+            }
+        ],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                position_campaign_id="pc-canonical-11110-0001",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                expected_edge_baseline_campaign_id="pc-canonical-11110-0001",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert member["current_position_campaign_id"] == "pc-canonical-11110-0001"
+    assert member["pm_position_campaign_id"] == "pc-canonical-11110-0001"
+    assert member["add_investment_evidence"]["campaign_continuation"]["status"] == "PASS"
+    assert member["add_investment_evidence"]["campaign_continuation"]["current_campaign_id"] == "pc-canonical-11110-0001"
+    assert member["target_weight_change"] > 0
+    assert member["add_allocation_eligibility_status"] == "PASS"
+
+
+def test_phase30_ae1_canonical_campaign_preserves_reversal_risk_no_add(tmp_path: Path) -> None:
+    payload = _build_d28_payload(
+        tmp_path,
+        current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.05}],
+        pm_rows=[
+            {
+                **_pm_row("11110", "ADD"),
+                "position_campaign_id": "pc-canonical-11110-0001",
+                "strategy_intelligence_campaign_id": "pc-canonical-11110-0001",
+                "strategy_intelligence_add_worthiness_state": "NO_ADD",
+                "entry_admission_state": "REVERSAL_RISK_ENTRY",
+                "entry_admission_action": "NO_ADD",
+                "reason_codes": ["strong_trend_continuation", "opportunity_rank_still_high", "no_loss_averaging"],
+            }
+        ],
+        opportunity_rows=[
+            _opportunity_row(
+                "11110",
+                1,
+                0.82,
+                position_campaign_id="pc-canonical-11110-0001",
+                expected_edge_baseline_score=0.70,
+                expected_edge_baseline_business_date="2026-07-14",
+                expected_edge_baseline_campaign_id="pc-canonical-11110-0001",
+                incremental_investment_value_state="POSITIVE",
+                opportunity_cost_status="PASS",
+            )
+        ],
+        exposure=0.4,
+        cap=0.4,
+    )
+    member = next(row for row in payload["portfolio_members"] if row["security_code"] == "11110")
+
+    assert member["add_investment_evidence"]["campaign_continuation"]["status"] == "PASS"
+    assert member["target_weight_change"] == 0.0
+    assert member["add_allocation_eligibility_status"] == "FAIL_CLOSED"
+    assert "ADD_WORTHINESS_NO_ADD" in member["target_weight_reason_codes"]
+
+
 def test_phase28_d61_add_current_above_base_target_still_requests_increment_when_eligible(tmp_path: Path) -> None:
     payload = _build_d28_payload(
         tmp_path,
@@ -1378,7 +1493,7 @@ def test_phase28_d55_b_lot_aware_reallocation_authorizes_minimum_lot_only_within
 
     assert member["target_weight"] == 0.08
     assert member["lot_aware_accepted_buy_new_weight"] == 0.08
-    assert result["evidence"]["promoted"][0]["reason"] == "one_lot_fallback_authorized_by_pc"
+    assert result["evidence"]["promoted"][0]["reason"] == "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
     assert result["evidence"]["ps_preflight_decides_economic_allocation"] is False
 
 
@@ -1496,10 +1611,10 @@ def test_phase28_d55_b_lot_aware_reallocation_handles_buy_add_and_infeasible_add
     )
     by_code = {row["security_code"]: row for row in result["members"]}
 
-    assert by_code["11110"]["target_weight"] == 0.09
-    assert by_code["11110"]["lot_aware_accepted_incremental_weight"] == 0.04
+    assert by_code["11110"]["target_weight"] == 0.05
+    assert by_code["11110"]["lot_aware_accepted_incremental_weight"] == 0.0
     assert by_code["22220"]["target_weight"] == 0.05
-    assert result["evidence"]["skipped"][0]["symbol"] == "22220"
+    assert {row["symbol"] for row in result["evidence"]["skipped"]} == {"11110", "22220"}
 
 
 def test_phase29_e_lot_first_rebatch_recycles_competition_loss_to_next_good_buy_new(tmp_path: Path) -> None:
@@ -2321,9 +2436,9 @@ def test_phase29_l16_semantic_reentry_cooldown_and_recovery_hurdle(tmp_path: Pat
     payload = _build_l16_payload(
         tmp_path,
         opportunity_rows=[
-            _l16_opportunity("11110", 1, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-14"),
-            _l16_opportunity("22220", 2, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09"),
-            _l16_opportunity("33330", 11, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09"),
+            _l16_opportunity("11110", 1, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-14", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
+            _l16_opportunity("22220", 2, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
+            _l16_opportunity("33330", 11, price=5.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
         ],
         buy_quality_rows=[
             _l16_quality("11110", "FULL_ALLOCATION_ELIGIBLE"),
@@ -2352,9 +2467,9 @@ def test_phase29_l21r3_reentry_capacity_authority_resolves_normal_excessive_and_
     payload = _build_l16_payload(
         tmp_path,
         opportunity_rows=[
-            _l16_opportunity("11110", 1, price=1000.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09"),
-            _l16_opportunity("22220", 2, price=1000.0, rolling_value=1_000_000, prior_exit_business_date="2026-07-09"),
-            _l16_opportunity("33330", 3, price=1000.0, rolling_value=None, prior_exit_business_date="2026-07-09"),
+            _l16_opportunity("11110", 1, price=1000.0, rolling_value=1_000_000_000, prior_exit_business_date="2026-07-09", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
+            _l16_opportunity("22220", 2, price=1000.0, rolling_value=1_000_000, prior_exit_business_date="2026-07-09", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
+            _l16_opportunity("33330", 3, price=1000.0, rolling_value=None, prior_exit_business_date="2026-07-09", prior_exit_reason="EXIT_BY_TREND_AND_EDGE_BREAK"),
         ],
         buy_quality_rows=[
             _l16_quality("11110", "FULL_ALLOCATION_ELIGIBLE"),
@@ -2483,6 +2598,121 @@ def test_phase29_l21s_one_lot_fallback_blocks_safety_hard_violation() -> None:
     assert member["lot_first_rebatch_skip_reason"] == "minimum_lot_exceeds_safety_hard_cap"
 
 
+def test_phase30_ak9r19_final_pc_budget_uses_canonical_discrete_requirement_for_60310_equivalent() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[_lot_rebatch_member("60310", priority=1, request=0.041667, accepted=0.041667)],
+        lot_feasibility_rows=[
+            _ak9r19_discrete_requirement_row(
+                "60310",
+                one_lot_weight=0.034743,
+                executable_quantity=100,
+                continuous_target_weight=0.041667,
+            )
+        ],
+        target_gross_exposure=0.03511875,
+        single_name_cap=0.18,
+    )
+    member = result["members"][0]
+    iteration = result["evidence"]["phase29_l19_allocation_iterations"][0]
+
+    assert member["target_weight"] == 0.034743
+    assert member["lot_aware_accepted_buy_new_weight"] == 0.034743
+    assert member["lot_first_rebatch_skip_reason"] == ""
+    assert iteration["budget_requirement_source"] == "CANONICAL_DISCRETE_EXECUTABLE_REQUIREMENT"
+    assert iteration["canonical_discrete_executable_required_weight"] == 0.034743
+    assert result["evidence"]["capital_conservation"]["status"] == "PASS"
+    assert result["evidence"]["capital_conservation"]["allocated_increment_weight"] == 0.034743
+    assert result["evidence"]["capital_conservation"]["residual_cash_weight"] == 0.000376
+
+
+def test_phase30_ak9r19_true_remaining_budget_shortfall_still_fails_closed() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[_lot_rebatch_member("60310", priority=1, request=0.041667, accepted=0.041667)],
+        lot_feasibility_rows=[
+            _ak9r19_discrete_requirement_row(
+                "60310",
+                one_lot_weight=0.034743,
+                executable_quantity=100,
+                continuous_target_weight=0.041667,
+            )
+        ],
+        target_gross_exposure=0.034,
+        single_name_cap=0.18,
+    )
+    member = result["members"][0]
+    skipped = result["evidence"]["skipped"][0]
+
+    assert member["target_weight"] == 0.0
+    assert member["lot_first_rebatch_skip_reason"] == "minimum_lot_exceeds_remaining_budget"
+    assert skipped["required_weight"] == 0.034743
+    assert skipped["budget_requirement_source"] == "CANONICAL_DISCRETE_EXECUTABLE_REQUIREMENT"
+
+
+def test_phase30_ak9r19_canonical_discrete_requirement_requires_complete_authority() -> None:
+    incomplete = _ak9r19_discrete_requirement_row(
+        "60310",
+        one_lot_weight=0.034743,
+        executable_quantity=100,
+        continuous_target_weight=0.041667,
+    )
+    incomplete["phase29_l19_lot_resolution"].pop("executable_quantity_delta")
+    incomplete["phase29_l19_lot_resolution"].pop("normal_lot_quantity")
+    result = apply_lot_aware_final_reallocation(
+        members=[_lot_rebatch_member("60310", priority=1, request=0.041667, accepted=0.041667)],
+        lot_feasibility_rows=[incomplete],
+        target_gross_exposure=0.03511875,
+        single_name_cap=0.18,
+    )
+    skipped = result["evidence"]["skipped"][0]
+
+    assert result["members"][0]["target_weight"] == 0.0
+    assert skipped["required_weight"] == 0.041667
+    assert skipped["budget_requirement_source"] == "DRAFT_CONTINUOUS_ALLOCATION"
+
+
+def test_phase30_ak9r19_tampered_post_trade_weight_fails_closed_to_draft_requirement() -> None:
+    tampered = _ak9r19_discrete_requirement_row(
+        "60310",
+        one_lot_weight=0.034743,
+        executable_quantity=100,
+        continuous_target_weight=0.041667,
+    )
+    tampered["phase29_l19_lot_resolution"]["post_trade_weight"] = 0.05
+    result = apply_lot_aware_final_reallocation(
+        members=[_lot_rebatch_member("60310", priority=1, request=0.041667, accepted=0.041667)],
+        lot_feasibility_rows=[tampered],
+        target_gross_exposure=0.03511875,
+        single_name_cap=0.18,
+    )
+    skipped = result["evidence"]["skipped"][0]
+
+    assert result["members"][0]["target_weight"] == 0.0
+    assert skipped["required_weight"] == 0.041667
+    assert skipped["budget_requirement_source"] == "DRAFT_CONTINUOUS_ALLOCATION"
+
+
+def test_phase30_ak9r19_higher_priority_discrete_requirement_consumes_budget_first() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[
+            _lot_rebatch_member("11110", priority=1, request=0.04, accepted=0.04),
+            _lot_rebatch_member("22220", priority=2, request=0.04, accepted=0.04),
+        ],
+        lot_feasibility_rows=[
+            _ak9r19_discrete_requirement_row("11110", one_lot_weight=0.03, executable_quantity=100, continuous_target_weight=0.04),
+            _ak9r19_discrete_requirement_row("22220", one_lot_weight=0.03, executable_quantity=100, continuous_target_weight=0.04),
+        ],
+        target_gross_exposure=0.055,
+        single_name_cap=0.18,
+    )
+    by_code = {row["security_code"]: row for row in result["members"]}
+
+    assert by_code["11110"]["target_weight"] == 0.03
+    assert by_code["22220"]["target_weight"] == 0.0
+    assert result["evidence"]["phase29_l19_allocation_iterations"][0]["symbol"] == "11110"
+    assert result["evidence"]["skipped"][0]["symbol"] == "22220"
+    assert result["evidence"]["skipped"][0]["required_weight"] == 0.03
+
+
 def test_phase29_l21s_capacity_severe_and_buy_quality_reject_remain_zero(tmp_path: Path) -> None:
     payload = _build_l16_payload(
         tmp_path,
@@ -2572,8 +2802,9 @@ def test_phase29_l21s_buy_add_one_lot_fallback_preserves_add_semantics() -> None
 
     assert member["pm_action"] == "ADD"
     assert member["semantic_buy_type"] == "BUY_ADD"
-    assert member["target_weight"] == 0.18
-    assert member["lot_aware_accepted_incremental_weight"] == 0.08
+    assert member["target_weight"] == 0.10
+    assert member["lot_aware_accepted_incremental_weight"] == 0.0
+    assert member["phase29_l19_lot_resolution"]["second_lot_plus_promotion"]["promotion_candidate"] is False
 
 
 def test_phase29_l16_canonical_add_is_not_reentry_and_remains_positive_when_low_price_capped(tmp_path: Path) -> None:
@@ -2723,6 +2954,38 @@ def _lot_rebatch_add_member(code: str, *, priority: int, current_weight: float, 
         "target_weight_authority": {},
         "target_weight_resolution": {"status": "PASS", "resolved_weight": target, "adjustments": []},
         "runtime_opportunity_score": max(0.0, 1.0 - priority / 100.0),
+    }
+
+
+def _ak9r19_discrete_requirement_row(
+    code: str,
+    *,
+    one_lot_weight: float,
+    executable_quantity: int,
+    continuous_target_weight: float,
+) -> dict[str, object]:
+    return {
+        "symbol": code,
+        "intent_type": "BUY_NEW",
+        "lot_feasible": True,
+        "broker_eligible": True,
+        "minimum_executable_weight": one_lot_weight,
+        "phase29_l19_lot_resolution": {
+            "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+            "one_lot_quantity": 100,
+            "one_lot_weight": one_lot_weight,
+            "one_lot_notional": round(one_lot_weight * 1_000_000, 2),
+            "one_lot_feasibility_status": "PASS",
+            "one_lot_fallback_applied": False,
+            "normal_lot_quantity": executable_quantity,
+            "executable_quantity_delta": executable_quantity,
+            "continuous_target_weight": continuous_target_weight,
+            "continuous_target_notional": round(continuous_target_weight * 1_000_000, 2),
+            "post_trade_weight": round(one_lot_weight * (executable_quantity / 100), 6),
+            "strategy_cap_weight": 0.18,
+            "safety_hard_cap_weight": 0.25,
+            "safety_hard_cap_preserved": True,
+        },
     }
 
 
@@ -3000,6 +3263,7 @@ def _build_l21t_ak_payload(
     target_position_count: int | None = None,
     current_rows: list[dict[str, object]] | None = None,
     pm_rows: list[dict[str, object]] | None = None,
+    strategy_intelligence_artifact_path: Path | None = None,
 ) -> dict[str, object]:
     metadata = {
         "canonical_score_field": "runtime_opportunity_score",
@@ -3046,8 +3310,66 @@ def _build_l21t_ak_payload(
             cap=0.2,
         ),
         buy_quality_summary=_source_summary(tmp_path, "buy_quality", rows=buy_quality_rows),
+        strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
     )
     return payload
+
+
+def _write_phase30_ai_strategy_intelligence(tmp_path: Path, tiers_by_symbol: dict[str, str]) -> Path:
+    rows = {}
+    for symbol, tier in tiers_by_symbol.items():
+        entry_action = "BUY_NEW_REDUCED_ONLY" if tier == "CAUTION_CONTINUATION" else "BUY_NEW_ALLOWED"
+        rows[symbol] = {
+            "symbol": symbol,
+            "eligibility": {"status": "PASS", "disqualifying_facts": []},
+            "continuation_quality": {"status": "PASS"},
+            "downside_risk": {"status": "PASS"},
+            "expected_edge": {"calibration_status": "UNCALIBRATED", "economic_units_available": False},
+            "entry_admission": {
+                "entry_state": "CONTINUATION_WITH_CAUTION" if tier == "CAUTION_CONTINUATION" else "HEALTHY_CONTINUATION_ENTRY",
+                "admission_action": entry_action,
+                "evidence_sufficiency": "SUFFICIENT",
+            },
+            "selection_quality_comparator": {
+                "schema_version": "selection_quality_comparator.v1",
+                "tier": tier,
+                "reason_codes": [f"test_{tier.lower()}"],
+                "evidence_sufficiency": "SUFFICIENT",
+                "rank_score_role": "SUPPORTING_NOT_HARD_REJECTION_AUTHORITY",
+                "expected_edge_role": "UNCALIBRATED_SUPPORTING",
+                "score_only_hard_rejection_retired": True,
+                "below_top20_only_hard_rejection_retired": True,
+                "not_action_authority": True,
+                "future_information_used": False,
+            },
+            "lifecycle_context": {"current_position_state": "NO_POSITION"},
+            "profit_protection_evidence": {},
+            "provenance": {"future_information_used": False},
+        }
+    payload = {
+        "schema_version": strategy_intelligence.SCHEMA_VERSION,
+        "semantic_version": strategy_intelligence.SEMANTIC_VERSION,
+        "business_date": "2026-07-15",
+        "as_of_business_date": "2026-07-15",
+        "generated_at": "2026-07-15T00:00:00+00:00",
+        "pit_boundary": {"market_data_as_of": "2026-07-15", "future_information_used": False},
+        "producer_result_status": "PASS",
+        "runtime_consumer_eligibility": "ELIGIBLE",
+        "production_consumer_connected": True,
+        "shadow_only": False,
+        "production_authority": False,
+        "reason_codes": [],
+        "future_information_used": False,
+        "historical_outcome_used_as_runtime_input": False,
+        "test_result_used_as_strategy_input": False,
+        "historical_outcome_used_for_production_parameter_selection": False,
+        "symbol_intelligence": rows,
+        "shadow_decision_comparison": {},
+    }
+    payload["artifact_hash"] = strategy_intelligence.strategy_intelligence_hash(payload)
+    path = tmp_path / "phase30_ai_strategy_intelligence.json"
+    _write_json(path, payload)
+    return path
 
 
 def _current_summary(tmp_path: Path, *, business_date: str = "2026-07-15", feature_date: str = "2026-07-15") -> PortfolioConstructionSourceSummary:

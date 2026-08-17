@@ -11,6 +11,10 @@ from ai_fund_lab_v2.runtime_v2.pending.models import (
     PendingOrderPlan,
     PendingPlanState,
 )
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    build_pending_review_scope_authority,
+    pending_scope_allows_partial_submit,
+)
 
 
 def consume_pending_plan(
@@ -46,7 +50,8 @@ def can_submit_pending_plan(
     plan: PendingOrderPlan,
     existing_order_dedup_keys: set[str],
 ) -> bool:
-    if plan.state != PendingPlanState.APPROVED:
+    scope_authority = build_pending_review_scope_authority(plan)
+    if plan.state != PendingPlanState.APPROVED and not pending_scope_allows_partial_submit(scope_authority):
         return False
     if plan.approval is None:
         return False

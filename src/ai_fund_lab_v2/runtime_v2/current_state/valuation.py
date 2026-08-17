@@ -28,6 +28,12 @@ from ai_fund_lab_v2.runtime_v2.temporal import (
 CURRENT_VALUATION_REFRESH_SCHEMA_VERSION = "runtime_v2_current_valuation_refresh_v1"
 ALLOWED_MARKET_STATUSES = {"READY", "VALID_CARRYOVER"}
 ALLOWED_PRICE_TYPES = {"daily_close", "intraday_quote", "broker_valuation_price", "jquants_daily_quote"}
+FRESH_CURRENT_QUOTE = "FRESH_CURRENT_QUOTE"
+AUTHORIZED_STALE_VALUATION = "AUTHORIZED_STALE_VALUATION"
+MISSING_QUOTE_AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION = "AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION"
+MISSING_QUOTE_DATA_OR_SOURCE_FAILURE = "DATA_OR_SOURCE_FAILURE"
+MISSING_QUOTE_LISTING_OR_CORPORATE_ACTION_AMBIGUITY = "LISTING_OR_CORPORATE_ACTION_AMBIGUITY"
+MISSING_QUOTE_UNKNOWN = "UNKNOWN_MISSING_QUOTE"
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,7 @@ def build_current_valuation_candidate(
         return _attach_temporal_status(candidate, business_date=business_date, now=now), market, (), warnings
     quote_status = str(market.get("quote_status") or "")
     quote_status_not_allowed = quote_status not in ALLOWED_MARKET_STATUSES
+    missing_quote_classifications = _missing_quote_classifications_from_market_authorities(market)
     missing_symbols: list[str] = []
     invalid_symbols: list[str] = []
     valued_positions: list[dict[str, Any]] = []
@@ -187,7 +194,18 @@ def build_current_valuation_candidate(
         symbol = _symbol(position)
         quote = _quote_for_symbol(quotes, symbol)
         if not quote:
-            missing_symbols.append(symbol)
+            stale_position, stale_reason = _authorized_stale_valuation_position(
+                position=position,
+                symbol=symbol,
+                classification=dict(missing_quote_classifications.get(symbol) or {}),
+                valuation_business_date=market_date,
+            )
+            if stale_position is not None:
+                valued_positions.append(stale_position)
+            else:
+                missing_symbols.append(symbol)
+                if stale_reason:
+                    invalid_symbols.append(f"{symbol}:{stale_reason}")
             continue
         price, price_authority, price_reason, price_basis = _resolve_basis_compatible_valuation_price(
             position=position,
@@ -236,7 +254,28 @@ def build_current_valuation_candidate(
             or quote.get("source")
             or market_path
         )
+        updated["valuation_quote_status"] = FRESH_CURRENT_QUOTE
+        updated["quote_business_date"] = market_date
+        updated["valuation_business_date"] = market_date
+        updated["staleness_business_days"] = 0
+        updated["stale_reason"] = ""
+        updated["stale_authority"] = ""
+        updated["listing_status_evidence"] = {}
+        updated["corporate_action_ambiguity_status"] = "CLEAR"
         valued_positions.append(updated)
+    if (
+        quote_status_not_allowed
+        and not missing_symbols
+        and not invalid_symbols
+        and valued_positions
+        and len(valued_positions) == len(runtime_positions)
+        and all(
+            position.get("valuation_quote_status") in {FRESH_CURRENT_QUOTE, AUTHORIZED_STALE_VALUATION}
+            for position in valued_positions
+        )
+        and any(position.get("valuation_quote_status") == AUTHORIZED_STALE_VALUATION for position in valued_positions)
+    ):
+        quote_status_not_allowed = False
     if missing_symbols or invalid_symbols or quote_status_not_allowed:
         reasons = ["current_valuation_quote_missing"] if missing_symbols else []
         if quote_status_not_allowed:
@@ -252,9 +291,15 @@ def build_current_valuation_candidate(
     candidate["market_value"] = _sum_market_value(valued_positions)
     candidate["total_equity"] = float(candidate.get("cash") or 0) + candidate["market_value"]
     candidate["valuation_as_of"] = market_date
-    candidate["source_market_date"] = market_date
+    candidate["source_market_date"] = _candidate_source_market_date(valued_positions=valued_positions, default=market_date)
     candidate["valuation_source"] = str(market_path)
     candidate["valuation_generated_at"] = _iso(now)
+    candidate["valuation_quote_status"] = _candidate_valuation_quote_status(valued_positions)
+    candidate["authorized_stale_valuation_symbols"] = sorted(
+        _symbol(position)
+        for position in valued_positions
+        if position.get("valuation_quote_status") == AUTHORIZED_STALE_VALUATION
+    )
     candidate["no_fill"] = True
     candidate["previous_total_market_value"] = previous_total
     candidate["new_total_market_value"] = candidate["market_value"]
@@ -408,8 +453,215 @@ def _attach_temporal_status(candidate: dict[str, Any], *, business_date: str, no
     candidate["current_valuation_status"] = valuation.status.value
     candidate["current_position_temporal_evidence"] = position.to_payload()
     candidate["current_valuation_temporal_evidence"] = valuation.to_payload()
+    if candidate.get("valuation_quote_status") == AUTHORIZED_STALE_VALUATION:
+        candidate["current_valuation_status"] = "VALID_CARRYOVER"
+        candidate["current_valuation_temporal_evidence"] = {
+            **candidate["current_valuation_temporal_evidence"],
+            "status": "VALID_CARRYOVER",
+            "reason": "authorized_stale_valuation_continuity",
+            "valuation_quote_status": AUTHORIZED_STALE_VALUATION,
+            "stale_accounting_valuation_not_fresh_market_signal": True,
+        }
     candidate["temporal_status"] = "READY" if valuation.status in {FreshnessStatus.READY, FreshnessStatus.VALID_CARRYOVER} else "REVIEW_REQUIRED"
+    if candidate.get("valuation_quote_status") == AUTHORIZED_STALE_VALUATION:
+        candidate["temporal_status"] = "READY"
     return candidate
+
+
+def _authorized_stale_valuation_position(
+    *,
+    position: dict[str, Any],
+    symbol: str,
+    classification: dict[str, Any],
+    valuation_business_date: str,
+) -> tuple[dict[str, Any] | None, str]:
+    missing_class = str(classification.get("missing_quote_class") or classification.get("classification") or "")
+    if missing_class != MISSING_QUOTE_AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION:
+        return None, f"missing_quote_class:{missing_class or MISSING_QUOTE_UNKNOWN}"
+    corporate_action_status = str(classification.get("corporate_action_ambiguity_status") or "")
+    if corporate_action_status != "CLEAR":
+        return None, f"corporate_action_ambiguity_status:{corporate_action_status or 'MISSING'}"
+    stale_reason = str(classification.get("stale_reason") or "")
+    stale_authority = str(classification.get("stale_authority") or "")
+    if not stale_reason or not stale_authority:
+        return None, "stale_authority_missing"
+    quote_business_date = str(classification.get("quote_business_date") or position.get("source_market_date") or position.get("valuation_as_of") or "")
+    if not quote_business_date or quote_business_date == valuation_business_date:
+        return None, "quote_business_date_not_stale"
+    current_price = _positive_float(position.get("current_price"))
+    quantity = _positive_float(position.get("quantity"))
+    average_price = _positive_float(position.get("average_price") or position.get("avg_price"))
+    if current_price is None or quantity is None or average_price is None:
+        return None, "previous_authoritative_valuation_missing"
+    quantity_basis = str(position.get("quantity_basis") or "").upper()
+    valuation_price_basis = str(position.get("valuation_price_basis") or "").upper()
+    if quantity_basis not in {"RAW", "ADJUSTED", "RECONCILED"} or valuation_price_basis not in {"RAW", "ADJUSTED", "RECONCILED"}:
+        return None, "stale_valuation_basis_missing"
+    if quantity_basis != valuation_price_basis:
+        return None, "stale_valuation_basis_mismatch"
+    provenance = str(position.get("valuation_price_provenance") or position.get("valuation_source") or "")
+    if not provenance:
+        return None, "stale_valuation_provenance_missing"
+    stale_days = _staleness_business_days(classification=classification, quote_business_date=quote_business_date, valuation_business_date=valuation_business_date)
+    if stale_days is None or stale_days < 1:
+        return None, "staleness_business_days_invalid"
+    updated = dict(position)
+    updated["current_price"] = current_price
+    updated["market_value"] = quantity * current_price
+    updated["unrealized_pnl"] = (current_price - average_price) * quantity
+    updated["valuation_as_of"] = valuation_business_date
+    updated["source_market_date"] = quote_business_date
+    updated["valuation_source"] = str(classification.get("source_provenance") or provenance)
+    updated["valuation_price_type"] = "authorized_stale_valuation"
+    updated["valuation_adjusted"] = quantity_basis == "ADJUSTED"
+    updated["valuation_price_authority"] = "PASS"
+    updated["valuation_price_authority_reason"] = "authorized_stale_valuation_from_prior_authoritative_current"
+    updated["valuation_price_basis"] = valuation_price_basis
+    updated["quantity_basis"] = quantity_basis
+    updated["valuation_price_role"] = str(position.get("valuation_price_role") or "prior_authoritative_valuation_price")
+    updated["valuation_price_provenance"] = provenance
+    updated["valuation_quote_status"] = AUTHORIZED_STALE_VALUATION
+    updated["quote_business_date"] = quote_business_date
+    updated["valuation_business_date"] = valuation_business_date
+    updated["staleness_business_days"] = stale_days
+    updated["stale_reason"] = stale_reason
+    updated["stale_authority"] = stale_authority
+    updated["listing_status_evidence"] = dict(classification.get("listing_status_evidence") or {})
+    updated["corporate_action_ambiguity_status"] = corporate_action_status
+    updated["stale_accounting_valuation_not_fresh_market_signal"] = True
+    return updated, ""
+
+
+def _missing_quote_classifications_from_market_authorities(market: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    explicit = {
+        str(symbol): dict(classification)
+        for symbol, classification in dict(market.get("missing_quote_classifications") or {}).items()
+    }
+    listing = dict(market.get("listing_state_authority") or {})
+    corporate_action = dict(market.get("corporate_action_ambiguity_authority") or {})
+    tradability = dict(market.get("tradability_authority") or {})
+    symbols = set(explicit)
+    symbols.update(str(symbol) for symbol in dict(listing.get("by_symbol") or {}).keys())
+    symbols.update(str(symbol) for symbol in dict(corporate_action.get("by_symbol") or {}).keys())
+    symbols.update(str(symbol) for symbol in dict(tradability.get("by_symbol") or {}).keys())
+    resolved = dict(explicit)
+    for symbol in sorted(symbols):
+        if symbol in resolved and str(resolved[symbol].get("missing_quote_class") or "") == MISSING_QUOTE_AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION:
+            continue
+        derived = _derive_missing_quote_classification(
+            symbol=symbol,
+            listing_authority=listing,
+            corporate_action_authority=corporate_action,
+            tradability_authority=tradability,
+            fallback=dict(resolved.get(symbol) or {}),
+        )
+        if derived:
+            resolved[symbol] = {**dict(resolved.get(symbol) or {}), **derived}
+    return resolved
+
+
+def _derive_missing_quote_classification(
+    *,
+    symbol: str,
+    listing_authority: dict[str, Any],
+    corporate_action_authority: dict[str, Any],
+    tradability_authority: dict[str, Any],
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    listing_by_symbol = dict(listing_authority.get("by_symbol") or {})
+    ca_by_symbol = dict(corporate_action_authority.get("by_symbol") or {})
+    tradability_by_symbol = dict(tradability_authority.get("by_symbol") or {})
+    listing = dict(listing_by_symbol.get(symbol) or fallback.get("listing_status_evidence") or {})
+    ca = dict(ca_by_symbol.get(symbol) or {})
+    tradability = dict(tradability_by_symbol.get(symbol) or {})
+
+    ca_status = str(ca.get("corporate_action_ambiguity_status") or fallback.get("corporate_action_ambiguity_status") or "UNKNOWN")
+    if ca_status != "CLEAR":
+        return {
+            "missing_quote_class": MISSING_QUOTE_LISTING_OR_CORPORATE_ACTION_AMBIGUITY,
+            "classification_reason": f"corporate_action_ambiguity_status:{ca_status}",
+            "corporate_action_ambiguity_status": ca_status,
+            "listing_status_evidence": listing,
+        }
+
+    listing_state = str(listing.get("listing_state") or listing.get("state") or "")
+    transition_status = str(listing.get("listing_transition_status") or "")
+    transition_reason = str(listing.get("listing_transition_reason") or "")
+    tradability_status = str(tradability.get("tradability_status") or tradability.get("status") or "")
+    stale_allowed = bool(listing.get("stale_valuation_allowed")) or bool(tradability.get("stale_valuation_allowed"))
+
+    if listing_state == "CURRENTLY_LISTED":
+        return {
+            "missing_quote_class": MISSING_QUOTE_DATA_OR_SOURCE_FAILURE,
+            "classification_reason": "currently_listed_symbol_missing_quote",
+            "corporate_action_ambiguity_status": ca_status,
+            "listing_status_evidence": listing,
+        }
+    if (
+        listing_state in {"LISTING_TRANSITION_CONFIRMED", "PREVIOUSLY_LISTED_CURRENT_ABSENT"}
+        and transition_status == "CONFIRMED"
+        and transition_reason
+        and stale_allowed
+        and tradability_status in {"AUTHORIZED_NO_CURRENT_QUOTE", "SUSPENDED", "NO_VALID_CLOSE", "UNTRADABLE_AUTHORIZED"}
+    ):
+        quote_business_date = str(listing.get("last_listed_business_date") or fallback.get("quote_business_date") or "")
+        return {
+            "missing_quote_class": MISSING_QUOTE_AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION,
+            "classification_reason": "listing_tradability_authority_authorizes_stale_valuation",
+            "corporate_action_ambiguity_status": ca_status,
+            "listing_status_evidence": listing,
+            "stale_reason": transition_reason,
+            "stale_authority": str(listing.get("authority") or tradability.get("authority") or "listing_tradability_authority"),
+            "quote_business_date": quote_business_date,
+            "staleness_business_days": listing.get("staleness_business_days") or fallback.get("staleness_business_days"),
+            "source_provenance": str(listing.get("source_provenance") or fallback.get("source_provenance") or ""),
+        }
+    if listing_state in {"PREVIOUSLY_LISTED_CURRENT_ABSENT", "LISTING_TRANSITION_CONFIRMED"}:
+        return {
+            "missing_quote_class": MISSING_QUOTE_LISTING_OR_CORPORATE_ACTION_AMBIGUITY,
+            "classification_reason": "listing_transition_not_sufficiently_authorized_for_stale_valuation",
+            "corporate_action_ambiguity_status": ca_status,
+            "listing_status_evidence": listing,
+        }
+    return {
+        "missing_quote_class": MISSING_QUOTE_UNKNOWN,
+        "classification_reason": "listing_state_authority_unavailable",
+        "corporate_action_ambiguity_status": ca_status,
+        "listing_status_evidence": listing,
+    }
+
+
+def _staleness_business_days(*, classification: dict[str, Any], quote_business_date: str, valuation_business_date: str) -> int | None:
+    explicit = classification.get("staleness_business_days")
+    try:
+        if explicit is not None:
+            return int(explicit)
+    except (TypeError, ValueError):
+        return None
+    try:
+        quote_date = datetime.fromisoformat(quote_business_date).date()
+        valuation_date = datetime.fromisoformat(valuation_business_date).date()
+    except ValueError:
+        return None
+    return (valuation_date - quote_date).days
+
+
+def _candidate_source_market_date(*, valued_positions: list[dict[str, Any]], default: str) -> str:
+    source_dates = sorted(set(str(position.get("source_market_date") or "") for position in valued_positions if position.get("source_market_date")))
+    if not source_dates:
+        return default
+    if len(source_dates) == 1:
+        return source_dates[0]
+    return default
+
+
+def _candidate_valuation_quote_status(valued_positions: list[dict[str, Any]]) -> str:
+    statuses = {str(position.get("valuation_quote_status") or FRESH_CURRENT_QUOTE) for position in valued_positions}
+    if statuses == {FRESH_CURRENT_QUOTE}:
+        return FRESH_CURRENT_QUOTE
+    if AUTHORIZED_STALE_VALUATION in statuses:
+        return AUTHORIZED_STALE_VALUATION
+    return "MIXED_OR_UNKNOWN_VALUATION_QUOTE_STATUS"
 
 
 def _artifact_payload(
@@ -582,6 +834,14 @@ def _market_evidence_from_historical_asof_view(
         ),
         {},
     )
+    listed_authority = next(
+        (
+            dict(entry)
+            for entry in payload.get("authorities") or []
+            if str(entry.get("authority") or "") == "listed_issues" and str(entry.get("status") or "") == "PASS"
+        ),
+        {},
+    )
     source_path = _historical_logical_normalized_ohlcv_path_from_asof_view(
         asof_view_path=path,
         business_date=business_date,
@@ -591,6 +851,11 @@ def _market_evidence_from_historical_asof_view(
         asof_view_path=path,
         business_date=business_date,
         fallback_physical_path=Path(str(raw_authority.get("physical_source_path") or "")),
+    )
+    listed_source_path = _historical_logical_listed_issues_path_from_asof_view(
+        asof_view_path=path,
+        business_date=business_date,
+        fallback_physical_path=Path(str(listed_authority.get("physical_source_path") or "")),
     )
     if not authority or not source_path.is_file():
         return _market_review_payload(path=path, business_date=business_date, reason="historical_normalized_ohlcv_missing")
@@ -604,6 +869,14 @@ def _market_evidence_from_historical_asof_view(
     quote_status = "READY" if not missing and quote_payload else "REVIEW_REQUIRED"
     if not required_symbols and not quote_payload:
         quote_status = "NOT_REQUIRED"
+    classifications = _missing_quote_classifications_from_historical_sources(
+        missing_symbols=missing,
+        business_date=business_date,
+        asof_view_path=path,
+        listed_source_path=listed_source_path,
+        raw_source_path=raw_source_path,
+        normalized_source_path=source_path,
+    )
     return {
         "schema_version": "runtime_v2_market_evidence_v1",
         "runtime_business_date": business_date,
@@ -618,12 +891,14 @@ def _market_evidence_from_historical_asof_view(
         "historical_market_authority": "normalized_ohlcv",
         "historical_market_source_path": str(source_path),
         "historical_economic_source_path": str(raw_source_path) if raw_source_path.is_file() else "",
+        "historical_listed_issues_source_path": str(listed_source_path) if listed_source_path.is_file() else "",
         "historical_market_source_scope": (
             "run_scoped_logical_input"
             if "inputs/historical_asof" in str(source_path)
             else "historical_asof_physical_authority"
         ),
         "missing_symbols": sorted(missing),
+        "missing_quote_classifications": classifications,
     }
 
 
@@ -685,6 +960,36 @@ def _historical_logical_raw_ohlcv_path_from_asof_view(
         return manifest_path.parent / "__missing_historical_logical_economic_source__.parquet"
     raw = str(logical_paths.get("raw_ohlcv") or "")
     return Path(raw) if raw else manifest_path.parent / "__missing_historical_logical_economic_source__.parquet"
+
+
+def _historical_logical_listed_issues_path_from_asof_view(
+    *,
+    asof_view_path: Path,
+    business_date: str,
+    fallback_physical_path: Path,
+) -> Path:
+    manifest_path = (
+        asof_view_path.parent
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "logical_input_manifest.json"
+    )
+    if not manifest_path.exists():
+        return fallback_physical_path
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return manifest_path.parent / "__invalid_historical_logical_listed_issues_source__.parquet"
+    if str(manifest.get("business_date") or "") != business_date:
+        return manifest_path.parent / "__mismatched_historical_logical_listed_issues_source__.parquet"
+    if str(manifest.get("status") or "") != "PASS":
+        return manifest_path.parent / "__blocked_historical_logical_listed_issues_source__.parquet"
+    logical_paths = manifest.get("logical_paths")
+    if not isinstance(logical_paths, dict):
+        return manifest_path.parent / "__missing_historical_logical_listed_issues_source__.parquet"
+    listed = str(logical_paths.get("listed_issues") or "")
+    return Path(listed) if listed else fallback_physical_path
 
 
 def _market_review_payload(*, path: Path, business_date: str, reason: str) -> dict[str, Any]:
@@ -765,6 +1070,170 @@ def _quotes_from_parquet(
         )
         seen.add(symbol)
     return quotes, set(required_symbols) - seen
+
+
+def _missing_quote_classifications_from_historical_sources(
+    *,
+    missing_symbols: set[str],
+    business_date: str,
+    asof_view_path: Path,
+    listed_source_path: Path,
+    raw_source_path: Path,
+    normalized_source_path: Path,
+) -> dict[str, dict[str, Any]]:
+    if not missing_symbols:
+        return {}
+    listed_symbols = _symbols_for_date_from_parquet(source_path=listed_source_path, market_date=business_date)
+    raw_symbols = _symbols_for_date_from_parquet(source_path=raw_source_path, market_date=business_date)
+    normalized_symbols = _symbols_for_date_from_parquet(source_path=normalized_source_path, market_date=business_date)
+    raw_no_valid_close_symbols = _symbols_with_no_valid_close_from_parquet(source_path=raw_source_path, market_date=business_date)
+    ca_clear_symbols = _corporate_action_clear_symbols_from_runtime_evidence(
+        asof_view_path=asof_view_path,
+        business_date=business_date,
+        symbols=missing_symbols,
+    )
+    classifications: dict[str, dict[str, Any]] = {}
+    for symbol in sorted(missing_symbols):
+        listing_evidence = {
+            "listed_issues_source_path": str(listed_source_path) if listed_source_path.is_file() else "",
+            "listed_on_valuation_business_date": symbol in listed_symbols,
+            "raw_ohlcv_on_valuation_business_date": symbol in raw_symbols,
+            "normalized_ohlcv_on_valuation_business_date": symbol in normalized_symbols,
+            "raw_no_valid_close_on_valuation_business_date": symbol in raw_no_valid_close_symbols,
+        }
+        if symbol in listed_symbols and symbol in raw_no_valid_close_symbols and symbol in ca_clear_symbols:
+            missing_class = MISSING_QUOTE_AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION
+            reason = "listed_symbol_raw_no_valid_close_ca_clear"
+            classifications[symbol] = {
+                "missing_quote_class": missing_class,
+                "classification_reason": reason,
+                "valuation_business_date": business_date,
+                "corporate_action_ambiguity_status": "CLEAR",
+                "listing_status_evidence": listing_evidence,
+                "stale_reason": "listed_held_position_no_valid_close_ca_clear",
+                "stale_authority": "pit_listed_raw_no_valid_close_corporate_event_authority",
+                "source_provenance": str(raw_source_path) if raw_source_path.is_file() else "",
+            }
+            continue
+        if symbol in listed_symbols:
+            missing_class = MISSING_QUOTE_DATA_OR_SOURCE_FAILURE
+            reason = "listed_symbol_missing_current_quote"
+        elif symbol not in listed_symbols and symbol not in raw_symbols and symbol not in normalized_symbols:
+            missing_class = MISSING_QUOTE_LISTING_OR_CORPORATE_ACTION_AMBIGUITY
+            reason = "symbol_absent_from_listed_issues_and_quote_sources"
+        else:
+            missing_class = MISSING_QUOTE_DATA_OR_SOURCE_FAILURE
+            reason = "raw_normalized_listing_inconsistency"
+        classifications[symbol] = {
+            "missing_quote_class": missing_class,
+            "classification_reason": reason,
+            "valuation_business_date": business_date,
+            "corporate_action_ambiguity_status": "UNRESOLVED",
+            "listing_status_evidence": listing_evidence,
+        }
+    return classifications
+
+
+def _symbols_with_no_valid_close_from_parquet(*, source_path: Path, market_date: str) -> set[str]:
+    if not source_path or not source_path.is_file():
+        return set()
+    try:
+        import pandas as pd
+    except Exception:
+        return set()
+    try:
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return set()
+    if frame.empty:
+        return set()
+    date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
+    code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
+    if not date_column or not code_column:
+        return set()
+    rows = frame[frame[date_column].astype(str) == market_date].copy()
+    if rows.empty:
+        return set()
+    price_columns = tuple(
+        column
+        for column in ("AdjC", "AdjustmentClose", "adjustment_close", "Close", "close", "C", "price")
+        if column in rows.columns
+    )
+    if not price_columns:
+        return set()
+    result: set[str] = set()
+    for row in rows.to_dict(orient="records"):
+        symbol = _normalize_symbol(str(row.get(code_column) or ""))
+        if not symbol:
+            continue
+        has_valid_price = False
+        for column in price_columns:
+            value = row.get(column)
+            if _positive_float(value) is not None:
+                has_valid_price = True
+                break
+        if not has_valid_price:
+            result.add(symbol)
+    return result
+
+
+def _corporate_action_clear_symbols_from_runtime_evidence(
+    *,
+    asof_view_path: Path,
+    business_date: str,
+    symbols: set[str],
+) -> set[str]:
+    if not symbols:
+        return set()
+    corporate_event_path = _corporate_event_evidence_path_from_asof_view(asof_view_path=asof_view_path, business_date=business_date)
+    if not corporate_event_path.is_file():
+        return set()
+    try:
+        payload = _read_json(corporate_event_path)
+    except ValueError:
+        return set()
+    clear: set[str] = set()
+    for fact in payload.get("symbol_event_facts") or ():
+        symbol = _normalize_symbol(str(fact.get("security_code") or fact.get("symbol") or fact.get("code") or ""))
+        if symbol not in symbols:
+            continue
+        if str(fact.get("business_date") or "") != business_date:
+            continue
+        if str(fact.get("event_status") or "") == "KNOWN_NO_EVENT" and str(fact.get("coverage_status") or "") == "AVAILABLE":
+            clear.add(symbol)
+    return clear
+
+
+def _corporate_event_evidence_path_from_asof_view(*, asof_view_path: Path, business_date: str) -> Path:
+    parent = asof_view_path.parent
+    if parent.name == "market_refresh" and parent.parent.name == business_date:
+        return parent.parent / "strategy" / "corporate_event.json"
+    return Path()
+
+
+def _symbols_for_date_from_parquet(*, source_path: Path, market_date: str) -> set[str]:
+    if not source_path or not source_path.is_file():
+        return set()
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(source_path)
+    except Exception:
+        return set()
+    if frame.empty:
+        return set()
+    date_column = _first_column(frame, ("target_date", "Date", "date", "market_date"))
+    code_column = _first_column(frame, ("code", "Code", "LocalCode", "symbol", "issue_code"))
+    if not date_column or not code_column:
+        return set()
+    rows = frame[frame[date_column].astype(str) == market_date].copy()
+    if rows.empty:
+        return set()
+    return {
+        symbol
+        for symbol in (_normalize_symbol(str(value)) for value in rows[code_column].tolist())
+        if symbol
+    }
 
 
 def _economic_rows_from_parquet(
@@ -1231,15 +1700,26 @@ def _post_apply_validation(*, source_path: Path, business_date: str) -> tuple[st
         reasons.append("post_apply_business_date_mismatch")
     if str(current.get("valuation_as_of") or "") != business_date:
         reasons.append("post_apply_valuation_as_of_mismatch")
-    if str(current.get("source_market_date") or "") != business_date:
+    current_stale = str(current.get("valuation_quote_status") or "") == AUTHORIZED_STALE_VALUATION
+    if str(current.get("source_market_date") or "") != business_date and not current_stale:
         reasons.append("post_apply_source_market_date_mismatch")
+    if current_stale and not str(current.get("authorized_stale_valuation_symbols") or ""):
+        reasons.append("post_apply_authorized_stale_symbols_missing")
     positions = list(current.get("positions") or [])
     for position in positions:
         symbol = str(position.get("symbol") or position.get("code") or "")
+        position_stale = str(position.get("valuation_quote_status") or "") == AUTHORIZED_STALE_VALUATION
         if str(position.get("valuation_as_of") or "") != business_date:
             reasons.append(f"post_apply_position_valuation_as_of_mismatch:{symbol}")
-        if str(position.get("source_market_date") or "") != business_date:
+        if str(position.get("source_market_date") or "") != business_date and not position_stale:
             reasons.append(f"post_apply_position_source_market_date_mismatch:{symbol}")
+        if position_stale:
+            if str(position.get("quote_business_date") or "") == business_date:
+                reasons.append(f"post_apply_stale_quote_date_fabricated:{symbol}")
+            if str(position.get("corporate_action_ambiguity_status") or "") != "CLEAR":
+                reasons.append(f"post_apply_stale_ca_ambiguity_not_clear:{symbol}")
+            if not str(position.get("stale_authority") or ""):
+                reasons.append(f"post_apply_stale_authority_missing:{symbol}")
         if position.get("current_price") in (None, "") or float(position.get("current_price") or 0) <= 0:
             reasons.append(f"post_apply_position_price_missing:{symbol}")
         quantity = float(position.get("quantity") or 0)

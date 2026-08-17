@@ -7,6 +7,7 @@ from ai_fund_lab_v2.strategy.shadow_runtime import (
     ARTIFACT_FILENAMES,
     _ai_output_summary,
     _existing_pm_decisions,
+    _materialize_pre_action_position_campaigns,
     _optional_opportunity_artifact_path,
     _supply_add_expected_edge_baseline,
     _resolve_strategy_source_authority,
@@ -57,11 +58,13 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
         materialization_role="IMMUTABLE_MORNING_PLANNING_SNAPSHOT",
     )
 
-    assert summary["artifact_count"] == 11
+    assert summary["artifact_count"] == 12
     assert summary["runtime_mutation_performed"] is False
     assert summary["broker_connection_performed"] is False
     assert summary["broker_write_performed"] is False
-    assert summary["active_runtime_consumer_eligibility"] == "NO"
+    assert summary["active_runtime_consumer_eligibility"] == "YES"
+    assert summary["strategy_intelligence_production_consumer_connected"] is True
+    assert summary["legacy_authority_active"] is False
     assert summary["authority_role"] == "FORMAL_PLANNING_AUTHORITY_INPUT"
     assert summary["materialization_role"] == "IMMUTABLE_MORNING_PLANNING_SNAPSHOT"
     assert summary["decision_timing"] == "MORNING_FORMAL_PLANNING_AUTHORITY"
@@ -75,6 +78,7 @@ def test_phase22_p_strategy_shadow_generation_preserves_runtime_authority(tmp_pa
     assert (strategy_dir / "position_sizing_preflight.json").is_file()
     assert (strategy_dir / "portfolio_construction.json").is_file()
     assert (strategy_dir / "position_sizing.json").is_file()
+    assert (strategy_dir / "strategy_intelligence.json").is_file()
     assert (strategy_dir / "add_baseline_supply_evidence.json").is_file()
     assert not (strategy_dir / "dynamic_position_count.json").exists()
     assert not (strategy_dir / "dynamic_cash_exposure.json").exists()
@@ -90,6 +94,201 @@ def test_phase28_d55_c_strategy_artifact_sequence_materializes_draft_preflight_a
     assert ARTIFACT_FILENAMES["position_sizing_preflight"] == "position_sizing_preflight.json"
     assert ARTIFACT_FILENAMES["portfolio_construction"] == "portfolio_construction.json"
     assert ARTIFACT_FILENAMES["position_sizing"] == "position_sizing.json"
+    assert ARTIFACT_FILENAMES["strategy_intelligence"] == "strategy_intelligence.json"
+
+
+def test_phase30_ac_pre_action_campaign_materialization_uses_prior_canonical_snapshot(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_position_campaigns(run_dir, "2026-07-14", "11110", "campaign-11110")
+    _write_json(
+        run_dir / "daily" / "2026-07-16" / "positions" / "position_campaigns.json",
+        {
+            "schema_version": "position_campaign_observability.v1",
+            "business_date": "2026-07-16",
+            "position_campaigns": [
+                {
+                    "position_campaign_id": "future-campaign",
+                    "symbol": "11110",
+                    "campaign_status": "OPEN",
+                    "current_quantity": 999,
+                }
+            ],
+        },
+    )
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-15",
+        "source_ref": "state.json",
+        "source_hash": "current-hash",
+        "rows": (
+            {
+                "security_code": "11110",
+                "quantity": 100,
+                "average_price": 1000,
+                "market_value": 112000,
+                "quantity_basis": "ADJUSTED",
+                "valuation_price_basis": "ADJUSTED",
+            },
+        ),
+    }
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        business_date="2026-07-15",
+        current=current,
+        as_of="2026-07-15T00:00:00+00:00",
+    )
+
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    campaign = payload["position_campaigns"][0]
+    assert campaign["position_campaign_id"] == "campaign-11110"
+    assert campaign["current_quantity"] == 100
+    assert round(campaign["current_campaign_relative_return"], 6) == 0.12
+    assert payload["temporal_safety"]["same_day_eod_campaign_reconstruction_used"] is False
+    assert payload["temporal_safety"]["future_information_used"] is False
+    assert result["evidence"]["duplicate_campaign_authority_created"] is False
+
+
+def test_phase30_ad1_first_buy_multi_symbol_bootstrap_uses_strict_prior_ledger(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        run_dir / "daily" / "2026-07-10" / "positions" / "position_campaigns.json",
+        {
+            "schema_version": "position_campaign_observability.v1",
+            "contract_version": "phase30_ac_pre_action_campaign_lifecycle.v1",
+            "business_date": "2026-07-10",
+            "authority": "CANONICAL_PRE_ACTION_POSITION_CAMPAIGN_LIFECYCLE",
+            "position_campaigns": [],
+        },
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+            _execution("exec-22220-buy", "2026-07-10", "22220", "BUY", 200, 500),
+            _execution("exec-33330-same-day-future", "2026-07-11", "33330", "BUY", 300, 100),
+        ],
+    )
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-11",
+        "source_ref": str(runtime_root / "persistent_ledger" / "state.json"),
+        "source_hash": "current-hash",
+        "rows": (
+            {"security_code": "11110", "quantity": 100, "average_price": 1000, "market_value": 110000},
+            {"security_code": "22220", "quantity": 200, "average_price": 500, "market_value": 100000},
+            {"security_code": "33330", "quantity": 300, "average_price": 100, "market_value": 30000},
+        ),
+    }
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2026-07-11",
+        current=current,
+        as_of="2026-07-11T08:45:00+09:00",
+    )
+
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    by_symbol = {row["symbol"]: row for row in payload["position_campaigns"]}
+    assert sorted(by_symbol) == ["11110", "22220"]
+    assert by_symbol["11110"]["campaign_status"] == "OPEN"
+    assert by_symbol["11110"]["current_quantity"] == 100
+    assert by_symbol["11110"]["source_execution_id"] == "exec-11110-buy"
+    assert round(by_symbol["11110"]["current_campaign_relative_return"], 6) == 0.1
+    assert payload["pre_action_connection"]["bootstrap_open_campaign_symbols"] == ["11110", "22220"]
+    assert payload["pre_action_connection"]["missing_current_campaign_symbols"] == ["33330"]
+    assert payload["temporal_safety"]["same_day_future_execution_used"] is False
+    assert payload["temporal_safety"]["future_information_used"] is False
+
+    second = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2026-07-11",
+        current=current,
+        as_of="2026-07-11T08:45:00+09:00",
+    )
+    second_payload = json.loads(Path(second["artifact_path"]).read_text(encoding="utf-8"))
+    assert [row["position_campaign_id"] for row in second_payload["position_campaigns"]] == [
+        row["position_campaign_id"] for row in payload["position_campaigns"]
+    ]
+
+
+def test_phase30_ad1_add_reduce_exit_and_reentry_lifecycle_from_ledger(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution("exec-11110-buy-1", "2026-07-10", "11110", "BUY", 100, 1000),
+            _execution("exec-11110-add", "2026-07-11", "11110", "BUY", 50, 1100),
+            _execution("exec-11110-reduce", "2026-07-12", "11110", "SELL", 30, 1200),
+            _execution("exec-22220-buy-1", "2026-07-10", "22220", "BUY", 100, 500),
+            _execution("exec-22220-exit", "2026-07-11", "22220", "SELL", 100, 490),
+            _execution("exec-22220-reentry", "2026-07-12", "22220", "BUY", 100, 510),
+            _execution("exec-33330-buy-1", "2026-07-10", "33330", "BUY", 100, 800),
+            _execution("exec-33330-exit", "2026-07-11", "33330", "SELL", 100, 790),
+        ],
+    )
+    current = {
+        "status": "PASS",
+        "business_date": "2026-07-13",
+        "source_ref": str(runtime_root / "persistent_ledger" / "state.json"),
+        "source_hash": "current-hash",
+        "rows": (
+            {"security_code": "11110", "quantity": 120, "average_price": 1033.3333333333, "market_value": 132000},
+            {"security_code": "22220", "quantity": 100, "average_price": 510, "market_value": 52000},
+        ),
+    }
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2026-07-13",
+        current=current,
+        as_of="2026-07-13T08:45:00+09:00",
+    )
+
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    by_symbol = {row["symbol"]: row for row in payload["position_campaigns"]}
+    assert by_symbol["11110"]["campaign_status"] == "OPEN"
+    assert by_symbol["11110"]["current_quantity"] == 120
+    assert by_symbol["11110"]["add_history_summary"]["count"] == 1
+    assert by_symbol["11110"]["reduce_history_summary"]["count"] == 1
+    assert by_symbol["22220"]["campaign_status"] == "OPEN"
+    assert by_symbol["22220"]["source_execution_id"] == "exec-22220-reentry"
+    assert by_symbol["22220"]["position_campaign_id"] != by_symbol["11110"]["position_campaign_id"]
+    assert "33330" not in by_symbol
+    assert result["evidence"]["bootstrap_open_campaign_symbols"] == ["11110", "22220"]
+    assert result["evidence"]["duplicate_campaign_authority_created"] is False
+
+
+def test_phase30_ad1_prior_open_campaign_closes_when_strict_prior_ledger_exits(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_position_campaigns(run_dir, "2026-07-10", "11110", "campaign-11110")
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+            _execution("exec-11110-exit", "2026-07-11", "11110", "SELL", 100, 900),
+        ],
+    )
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2026-07-12",
+        current={"status": "PASS", "business_date": "2026-07-12", "rows": ()},
+        as_of="2026-07-12T08:45:00+09:00",
+    )
+
+    payload = json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))
+    assert payload["position_campaigns"][0]["position_campaign_id"] == "campaign-11110"
+    assert payload["position_campaigns"][0]["campaign_status"] == "CLOSED"
+    assert payload["position_campaigns"][0]["current_quantity"] == 0.0
+    assert result["evidence"]["closed_campaign_symbols"] == ["11110"]
 
 
 def test_phase28_d55_c_same_campaign_baseline_supply_uses_latest_prior_strategy_evidence(tmp_path: Path) -> None:
@@ -135,6 +334,7 @@ def test_phase28_d55_c_same_campaign_baseline_supply_uses_latest_prior_strategy_
         "business_date": "2026-07-15",
         "rows": ({"security_code": "11110", "position_campaign_id": "campaign-11110"},),
     }
+    _write_position_campaigns(run_dir, "2026-07-15", "11110", "campaign-11110")
 
     result = _supply_add_expected_edge_baseline(
         run_dir=run_dir,
@@ -197,6 +397,7 @@ def test_phase28_d55_c_same_campaign_baseline_supply_fails_closed_without_valid_
         "business_date": "2026-07-15",
         "rows": ({"security_code": "11110", "position_campaign_id": "campaign-11110"},),
     }
+    _write_position_campaigns(run_dir, "2026-07-15", "11110", "campaign-11110")
 
     result = _supply_add_expected_edge_baseline(
         run_dir=run_dir,
@@ -213,7 +414,7 @@ def test_phase28_d55_c_same_campaign_baseline_supply_fails_closed_without_valid_
     assert result["evidence"]["missing_baseline_behavior"] == "UNKNOWN_FAIL_CLOSED"
 
 
-def test_phase28_d58_baseline_supply_uses_pm_current_position_campaign_authority(tmp_path: Path) -> None:
+def test_phase30_ac_baseline_supply_uses_canonical_position_campaign_authority(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     prior_pc = run_dir / "daily" / "2026-07-14" / "strategy" / "portfolio_construction.json"
     _write_json(
@@ -225,7 +426,7 @@ def test_phase28_d58_baseline_supply_uses_pm_current_position_campaign_authority
                 {
                     "security_code": "11110",
                     "current_position": True,
-                    "position_management_reference": "runtime-current-11110",
+                    "position_campaign_id": "campaign-11110",
                     "runtime_opportunity_score": 0.70,
                 }
             ],
@@ -239,8 +440,9 @@ def test_phase28_d58_baseline_supply_uses_pm_current_position_campaign_authority
     current = {
         "status": "PASS",
         "business_date": "2026-07-15",
-        "rows": ({"security_code": "11110"},),
+        "rows": ({"security_code": "11110", "position_campaign_id": "campaign-11110"},),
     }
+    _write_position_campaigns(run_dir, "2026-07-15", "11110", "campaign-11110")
     position_management = {
         "status": "PASS",
         "business_date": "2026-07-15",
@@ -265,12 +467,12 @@ def test_phase28_d58_baseline_supply_uses_pm_current_position_campaign_authority
 
     row = result["opportunity"]["rows"][0]
     evidence = result["evidence"]
-    assert row["position_campaign_id"] == "runtime-current-11110"
+    assert row["position_campaign_id"] == "campaign-11110"
     assert row["expected_edge_baseline_score"] == 0.70
     assert row["expected_edge_baseline_business_date"] == "2026-07-14"
-    assert row["expected_edge_baseline_campaign_id"] == "runtime-current-11110"
+    assert row["expected_edge_baseline_campaign_id"] == "campaign-11110"
     assert row["add_baseline_source_artifact_path"] == str(prior_pc)
-    assert evidence["campaign_identity_authority"] == "strategy_position_management_current_position_lifecycle_reference"
+    assert evidence["campaign_identity_authority"] == "positions/position_campaigns.json"
     assert evidence["current_campaign_count"] == 1
     assert evidence["supplied_count"] == 1
     assert evidence["missing_count"] == 0
@@ -598,6 +800,63 @@ def test_phase23_bm_production_demo_without_asof_preserves_operations_sources(tm
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _execution(execution_id: str, business_date: str, symbol: str, side: str, quantity: float, price: float) -> dict:
+    return {
+        "record_id": f"ledger-{execution_id}",
+        "execution_id": execution_id,
+        "execution_key": execution_id,
+        "dedup_key": execution_id,
+        "business_date": business_date,
+        "executed_at": f"{business_date}T09:00:00+09:00",
+        "side": side,
+        "symbol": symbol,
+        "quantity": quantity,
+        "filled_quantity": quantity,
+        "price": price,
+        "average_price": price,
+        "market_value": quantity * price,
+        "quantity_basis": "ADJUSTED",
+        "valuation_price_basis": "ADJUSTED",
+    }
+
+
+def _write_position_campaigns(run_dir: Path, business_date: str, symbol: str, campaign_id: str) -> Path:
+    path = run_dir / "daily" / business_date / "positions" / "position_campaigns.json"
+    _write_json(
+        path,
+        {
+            "schema_version": "position_campaign_observability.v1",
+            "contract_version": "phase30_ac_pre_action_campaign_lifecycle.v1",
+            "business_date": business_date,
+            "authority": "CANONICAL_PRE_ACTION_POSITION_CAMPAIGN_LIFECYCLE",
+            "position_campaigns": [
+                {
+                    "position_campaign_id": campaign_id,
+                    "symbol": symbol,
+                    "campaign_status": "OPEN",
+                    "opened_business_date": "2026-07-10",
+                    "current_quantity": 100,
+                    "events": [{"business_date": "2026-07-10", "side": "BUY", "stage": "BUY"}],
+                }
+            ],
+            "temporal_safety": {
+                "temporal_stage": "PRE_ACTION_DECISION_SNAPSHOT",
+                "same_day_eod_campaign_reconstruction_used": False,
+                "future_information_used": False,
+            },
+        },
+    )
+    return path
 
 
 def _sha256_file(path: Path) -> str:

@@ -310,6 +310,10 @@ def _write_market(
     market_date: str,
     price: float | None = None,
     quotes: dict | None = None,
+    missing_quote_classifications: dict | None = None,
+    listing_state_authority: dict | None = None,
+    corporate_action_ambiguity_authority: dict | None = None,
+    tradability_authority: dict | None = None,
     market_status: str = "READY",
     freshness: str = "READY",
     quote_freshness: str | None = None,
@@ -343,6 +347,10 @@ def _write_market(
             "market_freshness_status": freshness,
             "quote_status": "READY" if quote_payload else "REVIEW_REQUIRED",
             "quotes": quote_payload,
+            "missing_quote_classifications": missing_quote_classifications or {},
+            "listing_state_authority": listing_state_authority or {},
+            "corporate_action_ambiguity_authority": corporate_action_ambiguity_authority or {},
+            "tradability_authority": tradability_authority or {},
         },
     )
     _write_json(root / "runtime_state" / "market" / "latest.json", {"artifact_path": str(artifact), "market_date": market_date})
@@ -357,6 +365,10 @@ def _position(symbol: str, *, current_price: float = 1000) -> dict:
         "market_value": 100 * current_price,
         "unrealized_pnl": (current_price - 900) * 100,
         "ownership": "runtime_owned",
+        "quantity_basis": "RAW",
+        "valuation_price_basis": "RAW",
+        "valuation_price_role": "economic_valuation_price",
+        "valuation_price_provenance": "test_prior_authoritative_current",
     }
 
 

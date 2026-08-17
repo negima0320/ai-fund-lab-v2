@@ -236,6 +236,293 @@ def test_phase29_l21t_w_existing_review_history_does_not_block_repaired_terminal
     assert slot["history_path"] == str(repaired_history)
 
 
+def test_phase30_ak9r8_next_day_partial_submitted_residual_buy_review_expires(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_partial_submitted_buy_review_pending(runtime_root, target_date=TARGET_DATE)
+    _write_partial_submit_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    history = _load_json(Path(result.manifest_fields["history_path"]))
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+
+    assert result.status == "EXPIRED"
+    assert result.reason == "STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED"
+    assert result.manifest_fields["unknown_submit_risk"] is False
+    assert slot["state"] == "EMPTY"
+    assert slot["active_pending"] is False
+    assert slot["last_terminal_state"] == "EXPIRED"
+    assert history["new_state"] == "EXPIRED"
+    assert history["transition_reason"] == "STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED"
+    assert history["pending_payload"]["state"] == "REVIEW_REQUIRED"
+    assert authority["status"] == "PASS"
+    assert authority["original_target_session_date"] == TARGET_DATE
+    assert authority["expiration_business_date"] == BUSINESS_DATE
+    assert authority["consumed_buy_item_ids"] == ["approved-buy-1", "approved-buy-2"]
+    assert authority["expired_residual_review_buy_item_ids"] == ["review-buy-1", "review-buy-2"]
+    assert authority["reviewed_buy_submitted"] is False
+    assert authority["reviewed_buy_filled"] is False
+    assert authority["reviewed_buy_auto_approved"] is False
+    assert authority["new_day_buy_requires_fresh_authority"] is True
+    assert history["stale_residual_buy_review_expiration"]["status"] == "PASS"
+
+
+def test_phase30_ak9r14_mixed_consumed_buy_sell_residual_buy_review_expires(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+    )
+    original_pending = _load_json(pending_path)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    history = _load_json(Path(result.manifest_fields["history_path"]))
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+
+    assert result.status == "EXPIRED"
+    assert result.reason == "STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED"
+    assert slot["state"] == "EMPTY"
+    assert slot["active_pending"] is False
+    assert authority["status"] == "PASS"
+    assert authority["checks"]["all_approved_buy_consumed"] is True
+    assert authority["checks"]["all_approved_sell_consumed"] is True
+    assert authority["checks"]["review_required_sell_item_ids_empty"] is True
+    assert authority["checks"]["unresolved_items_match_review_sets"] is True
+    assert authority["consumed_buy_item_ids"] == [f"approved-buy-{idx}" for idx in range(1, 6)]
+    assert authority["consumed_sell_item_ids"] == [f"approved-sell-{idx}" for idx in range(1, 6)]
+    assert authority["unresolved_review_buy_count"] == 6
+    assert authority["unresolved_review_sell_count"] == 0
+    assert authority["reviewed_buy_submitted"] is False
+    assert authority["reviewed_buy_filled"] is False
+    assert authority["reviewed_buy_auto_approved"] is False
+    assert authority["new_day_buy_requires_fresh_authority"] is True
+    assert "all_items_buy" not in authority["checks"]
+    assert history["pending_payload"]["items"] == original_pending["items"]
+    assert history["stale_residual_buy_review_expiration"]["status"] == "PASS"
+
+
+def test_phase30_ak9r8_data_readiness_ready_after_residual_review_expiration(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_partial_submitted_buy_review_pending(runtime_root, target_date=TARGET_DATE)
+    _write_partial_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+    _write_broker_snapshot(runtime_root)
+
+    result = evaluate_runtime_data_readiness(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        readiness_scope="sell_planning",
+        now=_now(),
+    )
+
+    assert result.status == "READY"
+    assert result.payload["pending_status"] == "READY"
+    assert "pending_review_required" not in result.payload["review_reasons"]
+
+
+def test_phase30_ak9r8_same_day_residual_review_visibility_preserved(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_partial_submitted_buy_review_pending(runtime_root, target_date=TARGET_DATE)
+    _write_partial_submit_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=TARGET_DATE,
+        mode="demo",
+        action="review",
+        now=datetime.fromisoformat(TARGET_DATE + "T15:30:00+09:00"),
+    )
+
+    slot = _load_json(pending_path)
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "buy_item_scoped_review_pending_shape_invalid"
+    assert slot["state"] == "REVIEW_REQUIRED"
+    assert slot["active_pending"] is True
+
+
+def test_phase30_ak9r8_reviewed_sell_exists_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_partial_submitted_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        include_review_sell=True,
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "stale_residual_buy_review_expiration_checks_failed"
+    assert slot["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r14_mixed_unresolved_reviewed_sell_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        include_review_sell=True,
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "stale_residual_buy_review_expiration_checks_failed"
+    assert authority["status"] == "REVIEW_REQUIRED"
+    assert authority["checks"]["review_required_sell_item_ids_empty"] is False
+    assert authority["unresolved_review_sell_count"] == 1
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r14_mixed_unconsumed_sell_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        approved_sell_state="APPROVED",
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["all_approved_sell_consumed"] is False
+    assert authority["checks"]["all_approved_executable_items_terminal"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r8_approved_buy_not_consumed_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_partial_submitted_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        approved_state="APPROVED",
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "stale_residual_buy_review_expiration_checks_failed"
+    assert slot["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r14_reviewed_buy_fill_evidence_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        reviewed_fill=True,
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["reviewed_buy_not_submitted_or_filled"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r14_malformed_mixed_pending_id_overlap_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+    )
+    payload = _load_json(pending_path)
+    payload["review_required_buy_item_ids"] = ["approved-buy-1", "review-buy-1"]
+    _write_json(pending_path, payload)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["stale_residual_buy_review_expiration"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["approved_review_disjoint"] is False
+    assert authority["checks"]["unresolved_items_match_review_sets"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase30_ak9r8_reviewed_buy_submitted_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_partial_submitted_buy_review_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        reviewed_submitted=True,
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "stale_residual_buy_review_expiration_checks_failed"
+    assert slot["state"] == "REVIEW_REQUIRED"
+
+
 def test_phase29_l21t_w_buy_item_scoped_review_without_sell_continuation_fails_closed(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     pending_path = _write_buy_item_scoped_review_pending(
@@ -998,6 +1285,270 @@ def _write_buy_item_scoped_review_pending(
     ]
     _write_json(path, payload)
     return path
+
+
+def _write_partial_submitted_buy_review_pending(
+    root: Path,
+    *,
+    target_date: str,
+    approved_state: str = "CONSUMED",
+    reviewed_submitted: bool = False,
+    include_review_sell: bool = False,
+) -> Path:
+    path = _write_pending(
+        root,
+        pending_plan_id="pending-partial-buy-review",
+        target_date=target_date,
+        symbol="23700",
+        side="BUY",
+        quantity=100,
+    )
+    payload = _load_json(path)
+    approved_ids = ["approved-buy-1", "approved-buy-2"]
+    review_ids = ["review-buy-1", "review-buy-2"]
+    items = [
+        {
+            "pending_item_id": "approved-buy-1",
+            "symbol": "23700",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 100,
+            "estimated_amount": 10000,
+            "approved": True,
+            "state": approved_state,
+            "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+        },
+        {
+            "pending_item_id": "approved-buy-2",
+            "symbol": "94320",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 200,
+            "estimated_amount": 20000,
+            "approved": True,
+            "state": approved_state,
+            "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+        },
+        {
+            "pending_item_id": "review-buy-1",
+            "symbol": "38410",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 300,
+            "estimated_amount": 30000,
+            "approved": False,
+            "state": "REVIEW_REQUIRED",
+            "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+            "item_review_reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+        },
+        {
+            "pending_item_id": "review-buy-2",
+            "symbol": "39950",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 400,
+            "estimated_amount": 40000,
+            "approved": False,
+            "state": "REVIEW_REQUIRED",
+            "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+            "item_review_reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+        },
+    ]
+    if reviewed_submitted:
+        items[2]["submitted_order_id"] = "submitted-review-buy-1"
+    review_sell_ids: list[str] = []
+    if include_review_sell:
+        review_sell_ids = ["review-sell-1"]
+        items.append(
+            {
+                "pending_item_id": "review-sell-1",
+                "symbol": "72030",
+                "side": "SELL",
+                "quantity": 100,
+                "approved": False,
+                "state": "REVIEW_REQUIRED",
+                "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+            }
+        )
+    payload.update(
+        {
+            "state": "REVIEW_REQUIRED",
+            "status": "REVIEW_REQUIRED",
+            "plan_overall_status": "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW",
+            "buy_items_status": "REVIEW_REQUIRED",
+            "sell_items_status": "NOT_PRESENT",
+            "approved_item_ids": approved_ids,
+            "approved_buy_item_ids": approved_ids,
+            "approved_sell_item_ids": [],
+            "review_required_buy_item_ids": review_ids,
+            "review_required_sell_item_ids": review_sell_ids,
+            "review_scope": "BUY_ITEM_SCOPED_REVIEW",
+            "review_scope_reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+            "review_reason": "pending_review_required",
+            "sell_continuation_allowed": True,
+            "consume": {"consumed": False, "submitted_order_ids": [], "ledger_order_record_ids": []},
+            "items": items,
+        }
+    )
+    payload["approval"]["approval_status"] = "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW"
+    payload["approval"]["approved_item_ids"] = approved_ids
+    _write_json(path, payload)
+    return path
+
+
+def _write_ak9r14_mixed_consumed_buy_sell_residual_buy_review_pending(
+    root: Path,
+    *,
+    target_date: str,
+    approved_buy_state: str = "CONSUMED",
+    approved_sell_state: str = "CONSUMED",
+    include_review_sell: bool = False,
+    reviewed_fill: bool = False,
+) -> Path:
+    path = _write_pending(
+        root,
+        pending_plan_id="pending-ak9r14-mixed-buy-sell-review",
+        target_date=target_date,
+        symbol="23880",
+        side="BUY",
+        quantity=100,
+    )
+    payload = _load_json(path)
+    approved_buy_ids = [f"approved-buy-{idx}" for idx in range(1, 6)]
+    approved_sell_ids = [f"approved-sell-{idx}" for idx in range(1, 6)]
+    review_buy_ids = [f"review-buy-{idx}" for idx in range(1, 7)]
+    review_sell_ids = ["review-sell-1"] if include_review_sell else []
+    items: list[dict] = []
+    for idx, item_id in enumerate(approved_buy_ids, start=1):
+        items.append(
+            {
+                "pending_item_id": item_id,
+                "symbol": f"{23000 + idx}0",
+                "side": "BUY",
+                "quantity": 100,
+                "order_type": "MARKET",
+                "estimated_price": 100 + idx,
+                "estimated_amount": (100 + idx) * 100,
+                "approved": True,
+                "state": approved_buy_state,
+                "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+                "submitted_order_id": f"submitted-{item_id}",
+                "ledger_order_record_id": f"ledger-{item_id}",
+            }
+        )
+    for idx, item_id in enumerate(approved_sell_ids, start=1):
+        items.append(
+            {
+                "pending_item_id": item_id,
+                "symbol": f"{76000 + idx}0",
+                "side": "SELL",
+                "quantity": 100,
+                "order_type": "MARKET",
+                "estimated_price": 200 + idx,
+                "estimated_amount": (200 + idx) * 100,
+                "approved": True,
+                "state": approved_sell_state,
+                "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+                "submitted_order_id": f"submitted-{item_id}",
+                "ledger_order_record_id": f"ledger-{item_id}",
+            }
+        )
+    for idx, item_id in enumerate(review_buy_ids, start=1):
+        item = {
+            "pending_item_id": item_id,
+            "symbol": ["24370", "38100", "54010", "83060", "91070", "99840"][idx - 1],
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET",
+            "estimated_price": 300 + idx,
+            "estimated_amount": (300 + idx) * 100,
+            "approved": False,
+            "state": "REVIEW_REQUIRED",
+            "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+            "item_review_reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+        }
+        if reviewed_fill and idx == 1:
+            item["fill_id"] = "unexpected-reviewed-buy-fill"
+        items.append(item)
+    if include_review_sell:
+        items.append(
+            {
+                "pending_item_id": "review-sell-1",
+                "symbol": "72030",
+                "side": "SELL",
+                "quantity": 100,
+                "order_type": "MARKET",
+                "estimated_price": 700,
+                "estimated_amount": 70000,
+                "approved": False,
+                "state": "REVIEW_REQUIRED",
+                "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+                "item_review_reason": "sell_review_required",
+            }
+        )
+    payload.update(
+        {
+            "state": "REVIEW_REQUIRED",
+            "status": "REVIEW_REQUIRED",
+            "plan_overall_status": "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW",
+            "buy_items_status": "REVIEW_REQUIRED",
+            "sell_items_status": "APPROVED" if not include_review_sell else "REVIEW_REQUIRED",
+            "approved_item_ids": approved_buy_ids + approved_sell_ids,
+            "approved_buy_item_ids": approved_buy_ids,
+            "approved_sell_item_ids": approved_sell_ids,
+            "review_required_buy_item_ids": review_buy_ids,
+            "review_required_sell_item_ids": review_sell_ids,
+            "review_scope": "BUY_ITEM_SCOPED_REVIEW",
+            "review_scope_reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+            "review_reason": "pending_review_required",
+            "sell_continuation_allowed": True,
+            "consume": {
+                "consumed": False,
+                "submitted_order_ids": [f"submitted-{item_id}" for item_id in approved_buy_ids + approved_sell_ids],
+                "ledger_order_record_ids": [f"ledger-{item_id}" for item_id in approved_buy_ids + approved_sell_ids],
+            },
+            "items": items,
+        }
+    )
+    payload["approval"]["approval_status"] = "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW"
+    payload["approval"]["approved_item_ids"] = approved_buy_ids + approved_sell_ids
+    _write_json(path, payload)
+    return path
+
+
+def _write_partial_submit_manifest(root: Path, *, business_date: str) -> None:
+    _write_json(
+        root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-submit-ak9r8.json",
+        {
+            "schema_version": "1",
+            "job": "submit",
+            "business_date": business_date,
+            "exit_code": 0,
+            "final_state": "CURRENT_STATE_LOADED",
+            "pending_plan_id": "pending-partial-buy-review",
+            "pending_item_count": 4,
+            "submitted_count": 2,
+            "blocked_count": 0,
+            "submit_action": "SUBMIT",
+            "runtime_mode": "demo",
+            "stages": [
+                {
+                    "name": "runtime_v2_submit_pipeline",
+                    "status": "PASS",
+                    "details": {
+                        "reason": "submitted_with_reviewed_buy_items_not_submitted",
+                        "pending_plan_id": "pending-partial-buy-review",
+                        "submitted_count": 2,
+                        "review_required_buy_item_ids": ["review-buy-1", "review-buy-2"],
+                    },
+                }
+            ],
+        },
+    )
 
 
 def _write_buy_item_scoped_review_submit_no_submission_manifest(root: Path, *, business_date: str) -> None:

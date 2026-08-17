@@ -18,6 +18,7 @@ from ai_fund_lab_v2.strategy import position_management
 from ai_fund_lab_v2.strategy import position_sizing
 from ai_fund_lab_v2.strategy import runtime_planning
 from ai_fund_lab_v2.strategy import source_manifest
+from ai_fund_lab_v2.strategy import strategy_intelligence
 from ai_fund_lab_v2.strategy.observability import produce_strategy_decision_trace
 from ai_fund_lab_v2.strategy.target_weight_precision import target_weight_sum_tolerance
 
@@ -45,6 +46,7 @@ ARTIFACT_FILENAMES = {
     "position_sizing": "position_sizing.json",
     "position_management": "position_management.json",
     "runtime_planning": "runtime_planning.json",
+    "strategy_intelligence": "strategy_intelligence.json",
 }
 
 INPUT_SOURCE_FILENAMES = {
@@ -249,6 +251,39 @@ def generate_strategy_shadow_for_day(
             as_of=as_of,
         ),
     )
+    campaign_connection = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        current=current,
+        as_of=as_of,
+    )
+    input_source_manifest["pre_action_campaign_lifecycle"] = campaign_connection["evidence"]
+    manifest = {**manifest, "strategy_input_sources": input_source_manifest}
+    _write_json(strategy_dir / "input_manifest.json", manifest)
+    produce(
+        "strategy_intelligence",
+        lambda: strategy_intelligence.produce_strategy_intelligence_artifact(
+            business_date=business_date,
+            candidate_summary=candidate,
+            opportunity_summary=opportunity,
+            current_summary=current,
+            technical_feature_summary=_materialized_summary(technical_features),
+            price_volatility_summary=_materialized_summary(price_volatility),
+            market_context_artifact_path=artifact_paths["market_context"],
+            corporate_event_artifact_path=artifact_paths["corporate_event"],
+            buy_quality_artifact_path=None,
+            portfolio_construction_artifact_path=None,
+            position_sizing_artifact_path=None,
+            position_management_artifact_path=None,
+            runtime_planning_artifact_path=None,
+            output_path=artifact_paths["strategy_intelligence"],
+            position_campaigns_artifact_path=campaign_connection["artifact_path"],
+            as_of=as_of,
+            production_consumer_connected=True,
+            consumer_stage="PRE_ACTION_PRODUCTION_EVIDENCE",
+        ),
+    )
     pm_reference = _pm_accepted_generation_reference(manifest)
     produce(
         "position_management",
@@ -265,6 +300,7 @@ def generate_strategy_shadow_for_day(
             accepted_generation_reference=pm_reference,
             output_path=artifact_paths["position_management"],
             as_of=as_of,
+            strategy_intelligence_artifact_path=artifact_paths["strategy_intelligence"],
         ),
     )
     add_baseline_evidence = _supply_add_expected_edge_baseline(
@@ -306,6 +342,7 @@ def generate_strategy_shadow_for_day(
             pending_summary=_pc_summary(pending, business_date),
             policy_config_summary=_pc_summary(results.get("portfolio_policy", policy_config_summary), business_date),
             buy_quality_summary=_pc_summary(results.get("buy_quality", {}), business_date),
+            strategy_intelligence_artifact_path=artifact_paths["strategy_intelligence"],
             output_path=artifact_paths["portfolio_construction_draft"],
             as_of=as_of,
         ),
@@ -354,6 +391,7 @@ def generate_strategy_shadow_for_day(
             config=ps_config,
             output_path=artifact_paths["position_sizing"],
             as_of=as_of,
+            production_consumer_connected=True,
         ),
     )
     produce(
@@ -401,6 +439,7 @@ def generate_strategy_shadow_for_day(
         strategy_status = "BLOCK"
     elif feature_authority_status != "PASS" and strategy_status == "PASS":
         strategy_status = "REVIEW_REQUIRED"
+    formal_planning_snapshot = bool(manifest.get("formal_planning_snapshot"))
     summary = {
         "schema_version": STRATEGY_SHADOW_SUMMARY_SCHEMA_VERSION,
         "run_id": run_id,
@@ -410,7 +449,7 @@ def generate_strategy_shadow_for_day(
         "authority_role": authority_role,
         "materialization_role": materialization_role,
         "decision_timing": decision_timing,
-        "formal_planning_snapshot": bool(manifest.get("formal_planning_snapshot")),
+        "formal_planning_snapshot": formal_planning_snapshot,
         "post_runtime_shadow": artifact_subdir != "strategy",
         "strategy_shadow_judgment": strategy_status,
         "runtime_judgment": "UNCHANGED_BY_STRATEGY_SHADOW",
@@ -430,10 +469,13 @@ def generate_strategy_shadow_for_day(
         "broker_write_performed": False,
         "external_delivery_performed": False,
         "shadow_consumer_eligibility": "REVIEW_REQUIRED" if strategy_status != "PASS" else "YES",
-        "active_runtime_consumer_eligibility": "NO",
+        "active_runtime_consumer_eligibility": "YES" if formal_planning_snapshot else "NO",
         "runtime_switch_performed": False,
-        "legacy_authority_active": True,
-        "legacy_authority_active_semantics": "phase22_shadow_preservation_marker_not_formal_planning_authority",
+        "strategy_intelligence_production_consumer_connected": formal_planning_snapshot,
+        "legacy_authority_active": not formal_planning_snapshot,
+        "legacy_authority_active_semantics": "retired_for_formal_planning_strategy_intelligence_production_evidence"
+        if formal_planning_snapshot
+        else "report_only_shadow_observability_not_formal_planning_authority",
         "legacy_formal_planning_authority_active": False,
         "strategy_planning_authority_consumer_called": False,
     }
@@ -528,8 +570,10 @@ def update_run_strategy_shadow_indexes(*, run_dir: Path) -> dict[str, Any]:
         "shadow_consumer_eligibility": "REVIEW_REQUIRED" if review or blocked else "YES" if summaries else "NO",
         "active_runtime_consumer_eligibility": "YES" if active_consumer else "NO",
         "runtime_switch_performed": False,
-        "legacy_authority_active": True,
-        "legacy_authority_active_semantics": "phase22_shadow_preservation_marker_not_formal_planning_authority",
+        "legacy_authority_active": False if active_consumer else True,
+        "legacy_authority_active_semantics": "retired_for_formal_planning_strategy_intelligence_production_evidence"
+        if active_consumer
+        else "report_only_shadow_observability_not_formal_planning_authority",
         "legacy_formal_planning_authority_active": not strategy_authority_active,
         "strategy_planning_authority_active": strategy_authority_active,
         "strategy_planning_authority_consumer_called": consumer_called,
@@ -1145,7 +1189,7 @@ def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any
             continue
         value = _float(row.get("market_value", row.get("value", 0.0)))
         symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip()
-        campaign_id = str(row.get("position_campaign_id") or row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or "")
+        campaign_id = str(row.get("position_campaign_id") or "")
         rows.append({**dict(row), "position_campaign_id": campaign_id, "current_weight": round(value / total_equity, 6) if total_equity > 0 else 0.0})
     return {"status": "PASS" if path.is_file() else "MISSING", "business_date": business_date, "feature_date": business_date, "source_ref": str(path), "source_hash": _file_hash(path), "summary": {"position_count": len(positions), "current_position_count": len(positions), "positions": rows, "cash": cash, "buying_power": _float(payload.get("buying_power", cash)), "current_cash": cash, "current_market_value": market_value, "gross_exposure": market_value, "portfolio_value": total_equity, "portfolio_total_equity": total_equity}, "rows": tuple(rows)}
 
@@ -1192,6 +1236,337 @@ def _supply_prior_exit_state(
     }
 
 
+def _materialize_pre_action_position_campaigns(
+    *,
+    run_dir: Path,
+    runtime_root: Path | None = None,
+    business_date: str,
+    current: Mapping[str, Any],
+    as_of: str,
+) -> dict[str, Any]:
+    output_path = run_dir / "daily" / business_date / "positions" / "position_campaigns.json"
+    prior_path = _latest_prior_position_campaigns_path(run_dir=run_dir, business_date=business_date)
+    prior_payload = _read_json(prior_path) if prior_path is not None else {}
+    prior_campaigns = prior_payload.get("position_campaigns") if isinstance(prior_payload.get("position_campaigns"), list) else []
+    ledger_path = (runtime_root / "persistent_ledger" / "executions.jsonl") if runtime_root is not None else None
+    ledger_campaigns = _strict_prior_ledger_campaigns_by_symbol(
+        _read_jsonl(ledger_path) if ledger_path is not None else [],
+        business_date=business_date,
+    )
+    current_by_symbol = {
+        str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip(): row
+        for row in current.get("rows") or ()
+        if isinstance(row, Mapping)
+        and str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip()
+        and _float(row.get("quantity"), default=0.0) > 0
+    }
+    materialized: list[dict[str, Any]] = []
+    updated_symbols: set[str] = set()
+    closed_symbols: set[str] = set()
+    for item in prior_campaigns:
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        current_row = current_by_symbol.get(symbol)
+        if current_row and _campaign_is_open(row):
+            row = _refresh_campaign_with_current(row, current_row=current_row, business_date=business_date)
+            updated_symbols.add(symbol)
+        elif symbol and _campaign_is_open(row) and symbol not in current_by_symbol:
+            ledger_row = ledger_campaigns.get(symbol)
+            if ledger_row and str(ledger_row.get("campaign_status") or "").upper() == "CLOSED":
+                row = _close_campaign_from_ledger(row, ledger_row=ledger_row, business_date=business_date)
+                closed_symbols.add(symbol)
+        materialized.append(row)
+    bootstrap_symbols: list[str] = []
+    prior_symbols = {
+        str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        for row in materialized
+        if isinstance(row, Mapping)
+    }
+    for symbol in sorted(set(current_by_symbol) - updated_symbols - prior_symbols):
+        ledger_row = ledger_campaigns.get(symbol)
+        if not ledger_row or str(ledger_row.get("campaign_status") or "").upper() != "OPEN":
+            continue
+        materialized.append(_refresh_campaign_with_current(ledger_row, current_row=current_by_symbol[symbol], business_date=business_date))
+        updated_symbols.add(symbol)
+        bootstrap_symbols.append(symbol)
+    missing_current_campaign_symbols = sorted(set(current_by_symbol) - updated_symbols)
+    payload = {
+        "schema_version": "position_campaign_observability.v1",
+        "contract_version": "phase30_ad1_pre_action_campaign_lifecycle.v1",
+        "business_date": business_date,
+        "generated_at": as_of,
+        "authority": "CANONICAL_PRE_ACTION_POSITION_CAMPAIGN_LIFECYCLE",
+        "identity_policy": str(prior_payload.get("identity_policy") or "RUN_SCOPED_DETERMINISTIC_EXECUTION_REPLAY_SYMBOL_SEQUENCE"),
+        "position_campaigns": materialized,
+        "source_artifacts": {
+            "prior_position_campaigns": {
+                "path": str(prior_path or ""),
+                "hash": _file_hash(prior_path) if prior_path is not None else "",
+                "business_date": str(prior_payload.get("business_date") or ""),
+            },
+            "current": {
+                "path": str(current.get("source_ref") or ""),
+                "hash": str(current.get("source_hash") or ""),
+                "business_date": str(current.get("business_date") or business_date),
+            },
+            "ledger_executions": {
+                "path": str(ledger_path or ""),
+                "hash": _file_hash(ledger_path) if ledger_path is not None else "",
+                "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
+            },
+        },
+        "temporal_safety": {
+            "temporal_stage": "PRE_ACTION_DECISION_SNAPSHOT",
+            "source_selection_rule": "latest prior position_campaigns plus strict-prior ledger executions plus current state available at decision time",
+            "same_day_eod_campaign_reconstruction_used": False,
+            "same_day_future_execution_used": False,
+            "future_mfe_used": False,
+            "future_giveback_used": False,
+            "historical_outcome_used_as_runtime_input": False,
+            "future_information_used": False,
+        },
+        "pre_action_connection": {
+            "current_open_position_count": len(current_by_symbol),
+            "campaigns_materialized_count": len(materialized),
+            "updated_open_campaign_count": len(updated_symbols),
+            "bootstrap_open_campaign_count": len(bootstrap_symbols),
+            "bootstrap_open_campaign_symbols": bootstrap_symbols,
+            "closed_campaign_count": len(closed_symbols),
+            "closed_campaign_symbols": sorted(closed_symbols),
+            "missing_current_campaign_symbols": missing_current_campaign_symbols,
+            "missing_current_campaign_behavior": "EXPLICIT_REVIEW_REQUIRED_IN_STRATEGY_INTELLIGENCE_UNLESS_STRICT_PRIOR_LEDGER_OPEN_CAMPAIGN_PROVES_BOOTSTRAP",
+            "bootstrap_authority": "persistent_ledger_executions_strict_prior",
+            "duplicate_campaign_authority_created": False,
+        },
+    }
+    _write_json(output_path, payload)
+    return {
+        "artifact_path": output_path,
+        "evidence": {
+            "schema_version": "phase30_ac_pre_action_campaign_lifecycle_connection.v1",
+            "business_date": business_date,
+            "artifact_path": str(output_path),
+            "artifact_hash": _file_hash(output_path),
+            "prior_artifact_path": str(prior_path or ""),
+            "prior_artifact_hash": _file_hash(prior_path) if prior_path is not None else "",
+            "ledger_executions_path": str(ledger_path or ""),
+            "ledger_executions_hash": _file_hash(ledger_path) if ledger_path is not None else "",
+            "current_open_position_count": len(current_by_symbol),
+            "updated_open_campaign_count": len(updated_symbols),
+            "bootstrap_open_campaign_count": len(bootstrap_symbols),
+            "bootstrap_open_campaign_symbols": bootstrap_symbols,
+            "closed_campaign_count": len(closed_symbols),
+            "closed_campaign_symbols": sorted(closed_symbols),
+            "missing_current_campaign_symbols": missing_current_campaign_symbols,
+            "canonical_authority": "positions/position_campaigns.json",
+            "duplicate_campaign_authority_created": False,
+            "same_day_eod_campaign_reconstruction_used": False,
+            "same_day_future_execution_used": False,
+            "future_information_used": False,
+        },
+    }
+
+
+def _strict_prior_ledger_campaigns_by_symbol(executions: Iterable[Mapping[str, Any]], *, business_date: str) -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    ordered = sorted(
+        enumerate(executions),
+        key=lambda item: (
+            str(item[1].get("business_date") or "")[:10],
+            str(item[1].get("executed_at") or item[1].get("created_at") or ""),
+            item[0],
+        ),
+    )
+    for index, row in ordered:
+        execution_date = str(row.get("business_date") or "")[:10]
+        if not execution_date or execution_date >= business_date:
+            continue
+        symbol = str(row.get("symbol") or row.get("broker_issue_code") or row.get("security_code") or row.get("code") or "").strip()
+        if not symbol:
+            continue
+        side = str(row.get("side") or "").upper()
+        quantity = _float(row.get("filled_quantity") or row.get("quantity"), default=0.0)
+        if side not in {"BUY", "SELL"} or quantity <= 0:
+            continue
+        state = states.setdefault(symbol, {"quantity": 0.0, "campaign_index": 0, "campaign": {}})
+        before_quantity = _float(state.get("quantity"), default=0.0)
+        if side == "BUY":
+            if before_quantity <= 1e-6:
+                state["campaign_index"] = int(state.get("campaign_index") or 0) + 1
+                state["campaign"] = _new_campaign_from_execution(
+                    row,
+                    symbol=symbol,
+                    business_date=execution_date,
+                    campaign_index=int(state["campaign_index"]),
+                    source_index=index,
+                )
+            state["quantity"] = before_quantity + quantity
+            campaign = dict(state.get("campaign") or {})
+            campaign["campaign_status"] = "OPEN"
+            campaign["current_quantity"] = state["quantity"]
+            campaign["buy_history_summary"] = _history_increment(campaign.get("buy_history_summary"), business_date=execution_date)
+            if before_quantity > 1e-6:
+                campaign["add_history_summary"] = _history_increment(campaign.get("add_history_summary"), business_date=execution_date)
+                campaign["latest_add_business_date"] = execution_date
+            events = list(campaign.get("events") or [])
+            events.append(_campaign_event_from_execution(row, side="BUY", business_date=execution_date))
+            campaign["events"] = events
+            state["campaign"] = campaign
+            continue
+        if before_quantity <= 1e-6:
+            continue
+        after_quantity = max(before_quantity - quantity, 0.0)
+        state["quantity"] = 0.0 if after_quantity <= 1e-6 else after_quantity
+        campaign = dict(state.get("campaign") or {})
+        campaign["current_quantity"] = state["quantity"]
+        campaign["reduce_history_summary"] = _history_increment(campaign.get("reduce_history_summary"), business_date=execution_date)
+        campaign.setdefault("sell_history_summary", {"count": 0, "latest_business_date": ""})
+        campaign["sell_history_summary"] = _history_increment(campaign.get("sell_history_summary"), business_date=execution_date)
+        events = list(campaign.get("events") or [])
+        events.append(_campaign_event_from_execution(row, side="SELL", business_date=execution_date))
+        campaign["events"] = events
+        if state["quantity"] <= 1e-6:
+            campaign["campaign_status"] = "CLOSED"
+            campaign["closed_business_date"] = execution_date
+            campaign["current_quantity"] = 0.0
+        else:
+            campaign["campaign_status"] = "OPEN"
+        state["campaign"] = campaign
+    return {symbol: dict(state.get("campaign") or {}) for symbol, state in states.items() if state.get("campaign")}
+
+
+def _new_campaign_from_execution(
+    row: Mapping[str, Any],
+    *,
+    symbol: str,
+    business_date: str,
+    campaign_index: int,
+    source_index: int,
+) -> dict[str, Any]:
+    execution_ref = str(row.get("execution_id") or row.get("record_id") or row.get("ledger_record_id") or row.get("execution_key") or source_index)
+    campaign_id = f"pc-{hashlib.sha256(f'{symbol}|{campaign_index}|{execution_ref}'.encode()).hexdigest()[:16]}-{symbol}-{campaign_index:04d}"
+    price = _float(row.get("average_price") or row.get("price") or row.get("market_price"), default=0.0)
+    return {
+        "position_campaign_id": campaign_id,
+        "symbol": symbol,
+        "campaign_status": "OPEN",
+        "opened_business_date": business_date,
+        "campaign_age_business_days": 0,
+        "entry_thesis_state": "BUY_NEW_LEDGER_BOOTSTRAPPED",
+        "current_quantity": 0.0,
+        "average_price": price,
+        "current_valuation_price": price,
+        "current_market_value": _float(row.get("market_value"), default=0.0),
+        "current_campaign_relative_return": None,
+        "observed_campaign_mfe": None,
+        "observed_giveback": 0.0,
+        "source_execution_id": str(row.get("execution_id") or ""),
+        "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
+        "source_execution_dedup_key": str(row.get("dedup_key") or row.get("execution_key") or ""),
+        "source_execution_business_date": business_date,
+        "quantity_basis": row.get("quantity_basis") or row.get("execution_price_basis") or row.get("fill_price_basis") or "",
+        "valuation_price_basis": row.get("valuation_price_basis") or row.get("execution_price_basis") or row.get("fill_price_basis") or "",
+        "observed_state_authority": "STRICT_PRIOR_LEDGER_EXECUTION_BOOTSTRAP",
+        "future_information_used": False,
+        "events": [],
+    }
+
+
+def _campaign_event_from_execution(row: Mapping[str, Any], *, side: str, business_date: str) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "side": side,
+        "stage": "BUY" if side == "BUY" else "SELL",
+        "quantity": _float(row.get("filled_quantity") or row.get("quantity"), default=0.0),
+        "price": _float(row.get("average_price") or row.get("price") or row.get("market_price"), default=0.0),
+        "source_execution_id": str(row.get("execution_id") or ""),
+        "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
+        "source_execution_dedup_key": str(row.get("dedup_key") or row.get("execution_key") or ""),
+    }
+
+
+def _history_increment(summary: Any, *, business_date: str) -> dict[str, Any]:
+    payload = dict(summary) if isinstance(summary, Mapping) else {}
+    payload["count"] = int(_float(payload.get("count"), default=0.0)) + 1
+    payload["latest_business_date"] = business_date
+    return payload
+
+
+def _close_campaign_from_ledger(campaign: Mapping[str, Any], *, ledger_row: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+    row = dict(campaign)
+    row["campaign_status"] = "CLOSED"
+    row["current_quantity"] = 0.0
+    row["current_market_value"] = 0.0
+    row["closed_business_date"] = str(ledger_row.get("closed_business_date") or ledger_row.get("source_execution_business_date") or business_date)
+    row["observed_state_as_of_business_date"] = business_date
+    row["observed_state_authority"] = "PRE_ACTION_CURRENT_PLUS_STRICT_PRIOR_LEDGER_EXIT"
+    row["future_information_used"] = False
+    return row
+
+
+def _latest_prior_position_campaigns_path(*, run_dir: Path, business_date: str) -> Path | None:
+    daily_dir = run_dir / "daily"
+    if not daily_dir.is_dir():
+        return None
+    candidates: list[tuple[str, Path]] = []
+    for child in daily_dir.iterdir():
+        if not child.is_dir():
+            continue
+        day = child.name
+        if not day or day >= business_date:
+            continue
+        path = child / "positions" / "position_campaigns.json"
+        if path.is_file():
+            candidates.append((day, path))
+    return sorted(candidates, key=lambda item: item[0])[-1][1] if candidates else None
+
+
+def _campaign_is_open(row: Mapping[str, Any]) -> bool:
+    status = str(row.get("campaign_status") or "").upper()
+    quantity = _float(row.get("current_quantity"), default=0.0)
+    return status == "OPEN" or quantity > 0
+
+
+def _refresh_campaign_with_current(campaign: Mapping[str, Any], *, current_row: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+    row = dict(campaign)
+    quantity = _float(current_row.get("quantity"), default=0.0)
+    market_value = _float(current_row.get("market_value", current_row.get("value")), default=0.0)
+    avg = _float(current_row.get("average_price"), default=0.0)
+    current_price = market_value / quantity if quantity > 0 and market_value > 0 else _float(
+        current_row.get("current_price", current_row.get("reference_price", current_row.get("price"))),
+        default=0.0,
+    )
+    campaign_return = current_price / avg - 1.0 if avg > 0 and current_price > 0 else None
+    prior_mfe = _float(row.get("observed_campaign_mfe"), default=float("-inf"))
+    current_mfe = campaign_return if campaign_return is not None else None
+    if current_mfe is not None:
+        observed_mfe = max(prior_mfe, current_mfe) if prior_mfe != float("-inf") else current_mfe
+    else:
+        observed_mfe = None if prior_mfe == float("-inf") else prior_mfe
+    prior_giveback = _float(row.get("observed_giveback"), default=0.0)
+    observed_giveback = max(prior_giveback, (observed_mfe - campaign_return) if observed_mfe is not None and campaign_return is not None else 0.0)
+    row.update(
+        {
+            "campaign_status": "OPEN",
+            "current_quantity": quantity,
+            "average_price": avg if avg > 0 else row.get("average_price"),
+            "current_market_value": market_value,
+            "current_valuation_price": current_price if current_price > 0 else row.get("current_valuation_price"),
+            "current_campaign_relative_return": campaign_return,
+            "observed_campaign_mfe": observed_mfe,
+            "observed_giveback": observed_giveback,
+            "observed_state_as_of_business_date": business_date,
+            "quantity_basis": current_row.get("quantity_basis", row.get("quantity_basis")),
+            "valuation_price_basis": current_row.get("valuation_price_basis", row.get("valuation_price_basis")),
+            "observed_state_authority": "PRE_ACTION_CURRENT_PLUS_PRIOR_CANONICAL_CAMPAIGN",
+            "future_information_used": False,
+        }
+    )
+    return row
+
+
 def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapping[str, Any]], business_date: str) -> dict[str, dict[str, Any]]:
     states: dict[str, dict[str, Any]] = {}
     latest_closed: dict[str, dict[str, Any]] = {}
@@ -1230,10 +1605,23 @@ def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapp
         after_quantity = max(before_quantity - sell_quantity, 0.0)
         state["quantity"] = 0.0 if after_quantity <= 1e-6 else after_quantity
         if state["quantity"] <= 1e-6:
+            closed_count = int(state.get("closed_campaign_count") or 0) + 1
+            state["closed_campaign_count"] = closed_count
+            reason_codes = row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes") or row.get("reason_codes")
             latest_closed[symbol] = {
                 "prior_exit_business_date": execution_date,
                 "prior_exit_campaign_id": str(state.get("campaign_id") or f"ledger-derived-{symbol}-{index}"),
-                "prior_exit_reason": str(row.get("source_decision_type") or row.get("decision_type") or row.get("source_decision") or "EXIT"),
+                "prior_exit_reason": str(
+                    row.get("prior_exit_reason")
+                    or row.get("previous_exit_reason")
+                    or row.get("source_decision_reason")
+                    or row.get("source_decision_type")
+                    or row.get("decision_type")
+                    or row.get("source_decision")
+                    or "EXIT"
+                ),
+                "prior_exit_reason_codes": reason_codes if isinstance(reason_codes, list) else [],
+                "prior_same_symbol_exit_count": closed_count,
                 "prior_exit_state_status": "RESOLVED_FROM_PIT_LEDGER_EXECUTION_HISTORY",
             }
     return latest_closed
@@ -1387,31 +1775,8 @@ def _supply_add_expected_edge_baseline(
     current: Mapping[str, Any],
     position_management: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    current_campaign_by_symbol: dict[str, str] = {}
-    for row in current.get("rows") or ():
-        if not isinstance(row, Mapping):
-            continue
-        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
-        campaign_id = str(row.get("position_campaign_id") or row.get("position_lifecycle_id") or row.get("source_execution_id") or row.get("position_id") or "").strip()
-        if symbol and campaign_id:
-            current_campaign_by_symbol[symbol] = campaign_id
-    pm_payload = _payload_from_summary_item(position_management or {})
-    for row in (position_management or {}).get("rows") or pm_payload.get("positions") or pm_payload.get("decisions") or ():
-        if not isinstance(row, Mapping):
-            continue
-        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
-        action = str(row.get("action") or row.get("pm_action") or row.get("decision_type") or "").upper()
-        campaign_id = str(
-            row.get("position_campaign_id")
-            or row.get("campaign_id")
-            or row.get("lifecycle_reference")
-            or row.get("position_lifecycle_id")
-            or row.get("current_position_reference")
-            or row.get("position_id")
-            or ""
-        ).strip()
-        if symbol and campaign_id and action in {"HOLD", "ADD", "REDUCE", "EXIT", "UNRESOLVED"}:
-            current_campaign_by_symbol.setdefault(symbol, campaign_id)
+    campaign_artifact_path = run_dir / "daily" / business_date / "positions" / "position_campaigns.json"
+    current_campaign_by_symbol = _open_campaign_ids_by_symbol(_read_json(campaign_artifact_path))
     baseline_by_symbol: dict[str, dict[str, Any]] = {}
     daily_root = run_dir / "daily"
     for path in sorted(daily_root.glob("*/strategy/portfolio_construction.json")):
@@ -1483,7 +1848,9 @@ def _supply_add_expected_edge_baseline(
         "baseline_artifact": "daily/<prior_business_date>/strategy/portfolio_construction.json",
         "baseline_field_path": "portfolio_members[].runtime_opportunity_score",
         "campaign_identity_field": "position_campaign_id",
-        "campaign_identity_authority": "strategy_position_management_current_position_lifecycle_reference",
+        "campaign_identity_authority": "positions/position_campaigns.json",
+        "campaign_identity_authority_path": str(campaign_artifact_path),
+        "campaign_identity_authority_hash": _file_hash(campaign_artifact_path),
         "temporal_selection_rule": "latest prior business_date strictly less than current business_date",
         "supplied_count": supplied,
         "missing_count": missing,
@@ -1496,6 +1863,21 @@ def _supply_add_expected_edge_baseline(
         "opportunity": {**dict(opportunity), "payload": enriched_payload, "rows": tuple(enriched_rows)},
         "evidence": evidence,
     }
+
+
+def _open_campaign_ids_by_symbol(payload: Mapping[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    campaigns = payload.get("position_campaigns") if isinstance(payload.get("position_campaigns"), list) else []
+    for row in campaigns:
+        if not isinstance(row, Mapping):
+            continue
+        symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+        campaign_id = str(row.get("position_campaign_id") or "").strip()
+        status = str(row.get("campaign_status") or "").upper()
+        quantity = _float(row.get("current_quantity"), default=0.0)
+        if symbol and campaign_id and (status == "OPEN" or quantity > 0):
+            result[symbol] = campaign_id
+    return result
 
 
 def _produce_lot_aware_final_portfolio_construction(
@@ -1523,6 +1905,7 @@ def _produce_lot_aware_final_portfolio_construction(
         "lot_aware_final_reallocation": reallocation["evidence"],
         "reason_codes": sorted(set([*list(draft.get("reason_codes") or []), *reallocation["reason_codes"]])),
     }
+    final_payload = portfolio_construction.promote_final_portfolio_construction_for_production(final_payload)
     portfolio_construction.validate_portfolio_construction_artifact(final_payload)
     artifact_hash = portfolio_construction.portfolio_construction_hash(final_payload)
     final_payload = {**final_payload, "artifact_hash": artifact_hash}

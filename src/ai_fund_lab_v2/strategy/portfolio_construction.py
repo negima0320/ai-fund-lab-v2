@@ -23,6 +23,7 @@ from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     validate_market_context_compatibility,
 )
 from ai_fund_lab_v2.strategy import position_management
+from ai_fund_lab_v2.strategy import strategy_intelligence
 from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
 from ai_fund_lab_v2.strategy.target_weight_precision import (
@@ -36,6 +37,8 @@ SCHEMA_VERSION = "portfolio_construction.v1"
 PRODUCER_VERSION = "phase22_e_portfolio_construction_producer.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
+PRODUCTION_ARTIFACT_LIFECYCLE_STATUS = "ACCEPTED"
+PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
 MEMBERSHIP_INTENTS = {"RETAIN", "ADD_CANDIDATE", "REDUCE_CANDIDATE", "REMOVE_CANDIDATE", "EXCLUDE", "UNRESOLVED"}
 WEIGHT_INTENTS = {"INCREASE", "MAINTAIN", "DECREASE", "REMOVE", "AVOID", "UNRESOLVED"}
 SOURCE_AUTHORITY_STATUSES = {"VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTHORITY_CONFLICT"}
@@ -154,6 +157,7 @@ def produce_portfolio_construction_artifact(
     policy_config_summary: PortfolioConstructionSourceSummary,
     output_path: Path | str,
     buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
+    strategy_intelligence_artifact_path: Path | str | None = None,
     as_of: str | None = None,
 ) -> PortfolioConstructionProducerResult:
     payload, evidence = build_portfolio_construction_payload(
@@ -168,6 +172,7 @@ def produce_portfolio_construction_artifact(
         pending_summary=pending_summary,
         policy_config_summary=policy_config_summary,
         buy_quality_summary=buy_quality_summary,
+        strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
         as_of=as_of,
     )
     validate_portfolio_construction_artifact(payload)
@@ -198,6 +203,7 @@ def build_portfolio_construction_payload(
     pending_summary: PortfolioConstructionSourceSummary | None,
     policy_config_summary: PortfolioConstructionSourceSummary,
     buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
+    strategy_intelligence_artifact_path: Path | str | None = None,
     as_of: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_iso_date(business_date, field="business_date")
@@ -223,10 +229,17 @@ def build_portfolio_construction_payload(
         requested_business_date=business_date,
         production_use_requested=True,
     )
+    si_result = strategy_intelligence.validate_strategy_intelligence_compatibility(
+        strategy_intelligence_artifact_path,
+        requested_business_date=business_date,
+        production_use_requested=True,
+    )
 
     source_status = "VALID"
     reason_codes: list[str] = []
     upstream_statuses = [market_result["status"], corporate_result["status"], policy_result["status"], pm_result["status"]]
+    if strategy_intelligence_artifact_path is not None:
+        upstream_statuses.append(si_result["status"])
     if any(status in BLOCKING_UPSTREAM_STATUSES for status in upstream_statuses):
         producer_status = "BLOCK"
         reason_codes.extend([f"upstream_block:{status}" for status in upstream_statuses if status in BLOCKING_UPSTREAM_STATUSES])
@@ -272,6 +285,12 @@ def build_portfolio_construction_payload(
         pm_rows=_pm_rows(position_management_artifact_path),
     )
     members = _attach_buy_quality(members, buy_quality_summary)
+    members, si_reasons = _attach_strategy_intelligence(
+        members,
+        strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
+        business_date=business_date,
+    )
+    reason_codes.extend(si_reasons)
     members, broker_eligibility_reasons = _apply_broker_eligibility_to_new_exposure(members)
     reason_codes.extend(reconciliation_reasons)
     reason_codes.extend(broker_eligibility_reasons)
@@ -320,6 +339,7 @@ def build_portfolio_construction_payload(
                 (pending_summary.feature_date if pending_summary else business_date),
                 policy_config_summary.feature_date,
                 (buy_quality_summary.feature_date if buy_quality_summary else business_date),
+                si_result.get("feature_date"),
             )
             if value
         ]
@@ -335,6 +355,7 @@ def build_portfolio_construction_payload(
             (pending_summary.feature_date if pending_summary else ""),
             policy_config_summary.feature_date,
             (buy_quality_summary.feature_date if buy_quality_summary else ""),
+            si_result.get("feature_date", ""),
         )
     )
     if future_leakage_used:
@@ -346,6 +367,7 @@ def build_portfolio_construction_payload(
         {"role": "corporate_event", "path": str(corporate_event_artifact_path or ""), "required": True, "status": corporate_result["status"]},
         {"role": "portfolio_policy", "path": str(portfolio_policy_artifact_path or ""), "required": True, "status": policy_result["status"]},
         {"role": "position_management", "path": str(position_management_artifact_path or ""), "required": True, "status": pm_result["status"]},
+        {"role": "strategy_intelligence", "path": str(strategy_intelligence_artifact_path or ""), "required": strategy_intelligence_artifact_path is not None, "status": si_result["status"]},
         {"role": "candidate", "path": candidate_summary.source_ref, "required": True, "status": candidate_summary.status},
         {"role": "opportunity", "path": opportunity_summary.source_ref, "required": True, "status": opportunity_summary.status},
         {"role": "current_portfolio", "path": current_portfolio_summary.source_ref, "required": True, "status": current_portfolio_summary.status},
@@ -366,6 +388,11 @@ def build_portfolio_construction_payload(
         *(
             [{"role": "buy_quality", "path": buy_quality_summary.source_ref, "sha256": _strip_sha256(buy_quality_summary.source_hash)}]
             if buy_quality_summary and buy_quality_summary.source_hash
+            else []
+        ),
+        *(
+            [{"role": "strategy_intelligence", "path": str(strategy_intelligence_artifact_path), "sha256": sha256_file(Path(strategy_intelligence_artifact_path))}]
+            if strategy_intelligence_artifact_path and Path(strategy_intelligence_artifact_path).is_file()
             else []
         ),
     ]
@@ -426,8 +453,9 @@ def build_portfolio_construction_payload(
             "market_context": market_result,
             "corporate_event": corporate_result,
             "portfolio_policy": policy_result,
-            "position_management": pm_result,
-            **summaries,
+        "position_management": pm_result,
+        "strategy_intelligence": si_result,
+        **summaries,
         },
         "source_artifacts": source_artifacts,
         "source_hashes": source_hashes,
@@ -451,6 +479,7 @@ def build_portfolio_construction_payload(
         "corporate_event_status": corporate_result["status"],
         "portfolio_policy_status": policy_result["status"],
         "position_management_status": pm_result["status"],
+        "strategy_intelligence_status": si_result["status"],
         "reason_codes": payload["reason_codes"],
     }
     return payload, evidence
@@ -567,23 +596,39 @@ def validate_portfolio_construction_artifact(payload: dict[str, Any]) -> dict[st
     _enum_check(errors, payload, "source_authority_status", SOURCE_AUTHORITY_STATUSES)
     _enum_check(errors, payload, "producer_result_status", PRODUCER_RESULT_STATUSES)
     _enum_check(errors, payload, "runtime_consumer_eligibility", RUNTIME_CONSUMER_ELIGIBILITIES)
-    if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
-        errors.append("phase22_e_artifact_lifecycle_must_be_draft")
-    if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
-        errors.append("phase22_e_runtime_consumer_eligibility_must_be_not_eligible")
-    for field in (
-        "position_count_decided",
-        "cash_ratio_decided",
-        "position_sizing_decided",
-        "allocation_decided",
-        "quantity_decided",
-        "production_consumer_connected",
-        "runtime_switch_performed",
-    ):
-        if payload.get(field) is not False:
-            errors.append(f"phase22_e_field_must_be_false:{field}")
-    if payload.get("legacy_authority_active") is not True:
-        errors.append("phase22_e_legacy_authority_must_remain_active")
+    production_ready = (
+        payload.get("producer_result_status") == "PASS"
+        and payload.get("artifact_lifecycle_status") == PRODUCTION_ARTIFACT_LIFECYCLE_STATUS
+        and payload.get("runtime_consumer_eligibility") == PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY
+    )
+    if production_ready:
+        for field in ("position_sizing_decided", "quantity_decided", "runtime_switch_performed"):
+            if payload.get(field) is not False:
+                errors.append(f"phase30_s_field_must_remain_false:{field}")
+        if payload.get("allocation_decided") is not True:
+            errors.append("phase30_s_allocation_decided_required_for_production")
+        if payload.get("production_consumer_connected") is not True:
+            errors.append("phase30_s_production_consumer_connected_required")
+        if payload.get("legacy_authority_active") is not False:
+            errors.append("phase30_s_legacy_authority_must_be_inactive_for_production")
+    else:
+        if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
+            errors.append("phase22_e_artifact_lifecycle_must_be_draft_or_phase30_s_production_ready")
+        if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
+            errors.append("phase22_e_runtime_consumer_eligibility_must_be_not_eligible_or_phase30_s_production_ready")
+        for field in (
+            "position_count_decided",
+            "cash_ratio_decided",
+            "position_sizing_decided",
+            "allocation_decided",
+            "quantity_decided",
+            "production_consumer_connected",
+            "runtime_switch_performed",
+        ):
+            if payload.get(field) is not False:
+                errors.append(f"phase22_e_field_must_be_false:{field}")
+        if payload.get("legacy_authority_active") is not True:
+            errors.append("phase22_e_legacy_authority_must_remain_active")
     if sorted(payload.get("membership_intent_taxonomy") or []) != sorted(MEMBERSHIP_INTENTS):
         errors.append("membership_intent_taxonomy_mismatch")
     if sorted(payload.get("weight_intent_taxonomy") or []) != sorted(WEIGHT_INTENTS):
@@ -660,10 +705,43 @@ def load_portfolio_construction_fixture(path: Path | str, *, for_production: boo
     if payload.get("producer_result_status") == "BLOCK":
         raise PortfolioConstructionConsumerError("BLOCK Portfolio Construction artifact is not fixture-consumable")
     if for_production:
-        raise PortfolioConstructionConsumerError("Phase22-E Portfolio Construction artifact is not production-consumable")
+        if payload.get("runtime_consumer_eligibility") == PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY and payload.get("allocation_decided") is True:
+            return payload
+        raise PortfolioConstructionConsumerError("Portfolio Construction artifact is not production-consumable")
     if payload.get("runtime_consumer_eligibility") != "NOT_ELIGIBLE":
         raise PortfolioConstructionConsumerError("Phase22-E Portfolio Construction must remain NOT_ELIGIBLE")
     return payload
+
+
+def promote_final_portfolio_construction_for_production(payload: Mapping[str, Any]) -> dict[str, Any]:
+    updated = dict(payload)
+    reason_codes = sorted(set(str(item) for item in updated.get("reason_codes") or [] if str(item)))
+    producer_status = str(updated.get("producer_result_status") or "")
+    reallocation = updated.get("lot_aware_final_reallocation") if isinstance(updated.get("lot_aware_final_reallocation"), dict) else {}
+    production_ready = producer_status == "PASS" and str(reallocation.get("status") or "") == "PASS"
+    lifecycle = PRODUCTION_ARTIFACT_LIFECYCLE_STATUS if production_ready else ARTIFACT_LIFECYCLE_STATUS
+    consumer = PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY if production_ready else RUNTIME_CONSUMER_ELIGIBILITY
+    updated.update(
+        {
+            "artifact_lifecycle_status": lifecycle,
+            "runtime_consumer_eligibility": consumer,
+            "allocation_decided": production_ready,
+            "quantity_decided": False,
+            "production_consumer_connected": production_ready,
+            "runtime_switch_performed": False,
+            "legacy_authority_active": not production_ready,
+        }
+    )
+    updated.update(
+        status_contract_fields(
+            producer_result_status=producer_status,
+            artifact_lifecycle_status=lifecycle,
+            runtime_consumer_eligibility=consumer,
+            reason_codes=reason_codes,
+            decision_resolution="RESOLVED" if producer_status == "PASS" else "UNRESOLVED",
+        )
+    )
+    return updated
 
 
 def produced_but_not_consumed_evidence(payload: dict[str, Any]) -> dict[str, Any]:
@@ -863,6 +941,11 @@ def _member(
 ) -> dict[str, Any]:
     broker_listed_info = _broker_listed_info_payload(security_code, opportunity, candidate, current, pm)
     classification = dict(no_buy_reason_classification or _classify_opportunity_no_buy_reason("", score_contract={}))
+    canonical_pm_campaign_id = _canonical_campaign_identity(pm or {})
+    canonical_current_campaign_id = _first_nonempty(
+        _canonical_campaign_identity(current or {}),
+        canonical_pm_campaign_id,
+    )
     target_member_eligibility = {
         "status": "PASS" if membership_intent in {"RETAIN", "ADD_CANDIDATE"} else "BLOCKED",
         "reason": "target_member_competition_eligible" if membership_intent in {"RETAIN", "ADD_CANDIDATE"} else "not_target_member_eligible",
@@ -903,8 +986,8 @@ def _member(
         "source_pm_decision_ref": str((pm or {}).get("source_pm_decision_ref") or (pm or {}).get("position_id") or ""),
         "source_pm_reason_codes": list((pm or {}).get("reason_codes") or (pm or {}).get("decision_reason_codes") or []),
         "current_position_reference": str((current or {}).get("position_id") or (current or {}).get("current_position_reference") or ""),
-        "current_position_campaign_id": str((current or {}).get("position_campaign_id") or (current or {}).get("campaign_id") or ""),
-        "pm_position_campaign_id": str((pm or {}).get("position_campaign_id") or (pm or {}).get("campaign_id") or (pm or {}).get("lifecycle_reference") or ""),
+        "current_position_campaign_id": canonical_current_campaign_id,
+        "pm_position_campaign_id": canonical_pm_campaign_id,
         "opportunity_position_campaign_id": str((opportunity or {}).get("position_campaign_id") or (opportunity or {}).get("campaign_id") or ""),
         "portfolio_policy_reference": "",
         "input_candidate_order": _candidate_order(candidate or {}),
@@ -932,6 +1015,22 @@ def _member(
         **({"broker_listed_info": broker_listed_info} if broker_listed_info is not None else {}),
         **_current_position_weight_payload(current_row=current if current_position else None),
     }
+
+
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _canonical_campaign_identity(row: Mapping[str, Any]) -> str:
+    for field in ("position_campaign_id", "campaign_id", "strategy_intelligence_campaign_id"):
+        value = str(row.get(field) or "").strip()
+        if value and not value.startswith("runtime-current-"):
+            return value
+    return ""
 
 
 def _apply_broker_eligibility_to_new_exposure(members: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -990,6 +1089,10 @@ def _apply_broker_eligibility_to_new_exposure(members: list[dict[str, Any]]) -> 
 def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str, Any]:
     fields = (
         "reference_price",
+        "reference_price_authority",
+        "reference_price_resolution",
+        "reference_price_type",
+        "reference_price_date",
         "minimum_tick",
         "rolling_median_traded_value_20",
         "rolling_median_traded_value_20_authority",
@@ -997,8 +1100,14 @@ def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str,
         "price_momentum_return_20d",
         "trend_close_over_ma_20d",
         "prior_exit_business_date",
+        "prior_exit_reason",
+        "prior_exit_reason_codes",
+        "prior_same_symbol_exit_count",
         "last_exit_business_date",
+        "last_exit_reason",
         "previous_exit_business_date",
+        "previous_exit_reason",
+        "previous_exit_reason_codes",
         "current_quantity",
         "corporate_action_status",
         "corporate_event_status",
@@ -1242,6 +1351,18 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "")
     trend = _finite_number(row.get("trend_close_over_ma_20d"))
     momentum = _finite_number(row.get("price_momentum_return_20d"))
+    entry_evidence = row.get("entry_admission") if isinstance(row.get("entry_admission"), Mapping) else {}
+    entry_state = str(row.get("entry_admission_state") or entry_evidence.get("entry_state") or "").upper()
+    entry_action = str(row.get("entry_admission_action") or entry_evidence.get("admission_action") or "").upper()
+    entry_sufficiency = str(row.get("entry_admission_evidence_sufficiency") or entry_evidence.get("evidence_sufficiency") or "").upper()
+    cq_status = str(
+        row.get("strategy_intelligence_continuation_quality_status")
+        or row.get("continuation_quality_status")
+        or row.get("cq_status")
+        or ""
+    ).upper()
+    downside_status = str(row.get("strategy_intelligence_downside_risk_status") or row.get("downside_risk_status") or "").upper()
+    prior_exit_count = int(_finite_number(row.get("prior_same_symbol_exit_count") or row.get("prior_closed_campaign_count")) or 0)
     ca_evidence = _corporate_action_evidence(row)
     ca_status = ca_evidence["status"]
     previous_exit_reason = _previous_exit_reason(row)
@@ -1263,12 +1384,21 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
         "previous_exit_reason_class": previous_exit_reason_class,
         "reentry_trend_recovery_status": "NOT_APPLICABLE",
         "reentry_momentum_recovery_status": "NOT_APPLICABLE",
+        "reentry_entry_admission_state": entry_state,
+        "reentry_entry_admission_action": entry_action,
+        "reentry_entry_admission_status": "NOT_APPLICABLE",
+        "reentry_continuation_quality_status": cq_status,
+        "reentry_downside_risk_status": downside_status,
+        "prior_same_symbol_exit_count": prior_exit_count,
         "reentry_capacity_status": liquidity_status,
     }
     if semantic.get("semantic_buy_type") != "REENTRY":
         return base
     failures: list[str] = []
     unknowns: list[str] = []
+    insufficient_prior_context = previous_exit_reason_class == "GENERIC" or previous_exit_reason.upper() in {"", "UNKNOWN", "EXIT", "SELL"}
+    if insufficient_prior_context:
+        unknowns.append("insufficient_prior_exit_context")
     if rank is None:
         unknowns.append("reentry_rank_missing")
     elif rank > 10:
@@ -1285,14 +1415,38 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
         unknowns.append("reentry_capacity_unavailable")
     elif liquidity_status == "SEVERE" or capacity_ratio > 0.03:
         failures.append("reentry_capacity_unavailable")
+    if entry_action or entry_state:
+        if entry_action in {"BUY_WAIT", "REJECT", "REVIEW_REQUIRED", "NO_ADD"} or entry_state in {
+            "OVERHEATED_DECELERATING_ENTRY",
+            "REVERSAL_RISK_ENTRY",
+            "INSUFFICIENT_ENTRY_EVIDENCE",
+        }:
+            failures.append("reentry_entry_admission_not_allowed")
+    if entry_sufficiency == "INSUFFICIENT":
+        failures.append("reentry_entry_admission_not_allowed")
+    if cq_status and cq_status not in {"PASS", "OK", "ACCEPTABLE"}:
+        failures.append("reentry_continuation_quality_not_acceptable")
+    if downside_status and downside_status not in {"PASS", "OK", "ACCEPTABLE"}:
+        failures.append("reentry_downside_risk_not_acceptable")
     trend_pass = trend is not None and trend >= 1.0
     momentum_pass = momentum is not None and momentum >= 0.0
-    technical_required = previous_exit_reason_class in {"TREND_MOMENTUM", "HARD_STOP", "CORPORATE_ACTION", "GENERIC"}
+    if prior_exit_count >= 2 and (insufficient_prior_context or entry_action in {"BUY_WAIT", "REJECT", "REVIEW_REQUIRED", "NO_ADD"} or not (trend_pass and momentum_pass)):
+        failures.append("reentry_repeated_unresolved_churn")
+    technical_required = previous_exit_reason_class in {"TREND_MOMENTUM", "HARD_STOP", "CORPORATE_ACTION"}
     if technical_required:
         if trend is None and momentum is None:
             unknowns.append("reentry_technical_recovery_missing")
-        elif not (trend_pass or momentum_pass):
+        elif not trend_pass:
             failures.append("reentry_trend_recovery_not_satisfied")
+        elif not momentum_pass:
+            failures.append("reentry_momentum_recovery_not_satisfied")
+    if previous_exit_reason_class == "HARD_STOP" and quality_action != "FULL_ALLOCATION_ELIGIBLE":
+        failures.append("reentry_hard_stop_new_thesis_not_sufficient")
+    if previous_exit_reason_class == "PORTFOLIO_COMPETITION" and rank is not None and rank > 5:
+        failures.append("reentry_opportunity_recovery_not_sufficient")
+    if "REVERSAL" in previous_exit_reason.upper():
+        if entry_state != "HEALTHY_CONTINUATION_ENTRY" or entry_action in {"BUY_WAIT", "REJECT", "REVIEW_REQUIRED", "NO_ADD"}:
+            failures.append("reentry_reversal_not_normalized")
     trend_status = "PASS" if trend_pass else ("UNKNOWN" if trend is None else "FAIL")
     momentum_status = "PASS" if momentum_pass else ("UNKNOWN" if momentum is None else "FAIL")
     qualified = not failures and not unknowns
@@ -1301,6 +1455,11 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
         "reentry_opportunity_qualification_status": "PASS" if rank is not None and rank <= 10 else ("UNKNOWN" if rank is None else "FAIL"),
         "reentry_trend_recovery_status": trend_status,
         "reentry_momentum_recovery_status": momentum_status,
+        "reentry_entry_admission_status": (
+            "NOT_PROVIDED"
+            if not (entry_action or entry_state)
+            else ("PASS" if "reentry_entry_admission_not_allowed" not in failures and "reentry_reversal_not_normalized" not in failures else "FAIL")
+        ),
     }
     if failures:
         return {**resolved_base, "reentry_recovery_status": "FAIL_CLOSED", "reentry_recovery_reason": failures[0]}
@@ -1456,6 +1615,8 @@ def _previous_exit_reason_class(reason: str, reason_codes: Any = None) -> str:
         return "CORPORATE_ACTION"
     if any(token in text for token in ("HARD_STOP", "STOP", "LOSS_CONTROL", "DRAWDOWN")):
         return "HARD_STOP"
+    if any(token in text for token in ("REVERSAL", "OVERHEAT", "OVERHEATED", "EXHAUSTION")):
+        return "REVERSAL"
     if any(token in text for token in ("TREND", "MOMENTUM", "EDGE_BREAK", "OPPORTUNITY_BROKEN", "WEAKEN")):
         return "TREND_MOMENTUM"
     if any(token in text for token in ("PORTFOLIO", "COMPETITION", "REALLOCATION", "REBALANCE", "CAPACITY", "ALLOCATION")):
@@ -2182,11 +2343,14 @@ def apply_lot_aware_final_reallocation(
                 "symbol": symbol,
                 "request": request,
                 "priority": _positive_int(member.get("construction_priority"), 999999),
+                "quality_order": _quality_adjusted_reallocation_order(member),
                 "score": _finite_number(member.get("runtime_opportunity_score")) or 0.0,
                 "feasibility": feasibility,
             }
         )
-    for item in sorted(candidates, key=lambda value: (value["priority"], value["symbol"])):
+    one_lot_admissions_by_index: dict[int, dict[str, Any]] = {}
+    minimum_one_lot_authority_by_index: dict[int, dict[str, Any]] = {}
+    for item in sorted(candidates, key=lambda value: (value["quality_order"], value["priority"], value["symbol"])):
         feasibility = item["feasibility"]
         member = members[item["index"]]
         min_weight = _optional_ratio((feasibility or {}).get("minimum_executable_weight"))
@@ -2229,16 +2393,45 @@ def apply_lot_aware_final_reallocation(
                 }
             )
             continue
-        one_lot_fallback_requested = bool(lot_resolution.get("one_lot_fallback_applied")) or (
+        second_lot_promotion = _second_lot_plus_add_promotion_evidence(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            one_lot_weight=min_weight,
+        )
+        one_lot_fallback_requested = (
+            bool(lot_resolution.get("one_lot_fallback_applied"))
+            and item["participant_type"] != "BUY_ADD"
+        ) or (
             min_weight is not None
             and item["request"] > 0
             and item["request"] < min_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+            and item["participant_type"] != "BUY_ADD"
         )
         if not lot_feasible or one_lot_fallback_requested:
             if min_weight is not None:
                 required = max(required, min_weight)
             else:
                 required = 0.0
+        if (
+            item["participant_type"] == "BUY_ADD"
+            and min_weight is not None
+            and 0 < item["request"] < min_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+            and not second_lot_promotion["promotion_candidate"]
+        ):
+            required = 0.0
+        if second_lot_promotion["promotion_candidate"]:
+            required = max(required, float(second_lot_promotion["upper_boundary_weight"]))
+        canonical_discrete_requirement = _canonical_discrete_executable_requirement_weight(
+            item=item,
+            lot_resolution=lot_resolution,
+        )
+        budget_requirement_source = "DRAFT_CONTINUOUS_ALLOCATION"
+        if canonical_discrete_requirement is not None:
+            required = canonical_discrete_requirement
+            budget_requirement_source = "CANONICAL_DISCRETE_EXECUTABLE_REQUIREMENT"
+        base_skip_evidence["budget_requirement_source"] = budget_requirement_source
+        base_skip_evidence["canonical_discrete_executable_required_weight"] = canonical_discrete_requirement
         soft_strategy_overshoot_allowed = _lot_aware_strategy_cap_overshoot_allowed(
             item=item,
             member=member,
@@ -2246,10 +2439,34 @@ def apply_lot_aware_final_reallocation(
             required_weight=required,
             single_name_cap=single_name_cap,
         )
+        one_lot_admission = _quality_adjusted_one_lot_admission(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            required_weight=required,
+            single_name_cap=single_name_cap,
+            soft_strategy_overshoot_allowed=soft_strategy_overshoot_allowed,
+        )
+        one_lot_admissions_by_index[item["index"]] = one_lot_admission
+        if one_lot_admission["status"] in {"DEFER", "FAIL_CLOSED", "REVIEW_REQUIRED"}:
+            accepted_by_index[item["index"]] = 0.0
+            skipped_by_index[item["index"]] = str(one_lot_admission["blocked_reason"])
+            skipped.append(
+                {
+                    **base_skip_evidence,
+                    "reason": str(one_lot_admission["blocked_reason"]),
+                    "blocked_reason": str(one_lot_admission["blocked_reason"]),
+                    "required_weight": required,
+                    "feasibility_classification": "QUALITY_ADJUSTED_ONE_LOT_BLOCKED",
+                    "one_lot_admission": one_lot_admission,
+                }
+            )
+            reason_codes.append("quality_adjusted_one_lot_admission_deferred_or_blocked")
+            continue
         if not broker_eligible or required <= 0:
             accepted_by_index[item["index"]] = 0.0
             skipped_by_index[item["index"]] = "lot_or_broker_infeasible"
-            skipped.append({**base_skip_evidence, "reason": "lot_or_broker_infeasible", "blocked_reason": "lot_or_broker_infeasible", "feasibility": feasibility, "feasibility_classification": feasibility_classification})
+            skipped.append({**base_skip_evidence, "reason": "lot_or_broker_infeasible", "blocked_reason": "lot_or_broker_infeasible", "feasibility": feasibility, "feasibility_classification": feasibility_classification, "one_lot_admission": one_lot_admission})
             continue
         if single_name_cap is not None:
             max_increment = round(max(float(single_name_cap) - float(item["baseline"]), 0.0), TARGET_WEIGHT_DECIMALS)
@@ -2264,14 +2481,27 @@ def apply_lot_aware_final_reallocation(
                         "required_weight": required,
                         "max_increment": max_increment,
                         "feasibility_classification": "CONCENTRATION_BLOCKED",
+                        "one_lot_admission": one_lot_admission,
                     }
                 )
                 continue
         if required > remaining:
             accepted_by_index[item["index"]] = 0.0
             skipped_by_index[item["index"]] = "minimum_lot_exceeds_remaining_budget"
-            skipped.append({**base_skip_evidence, "reason": "minimum_lot_exceeds_remaining_budget", "blocked_reason": "minimum_lot_exceeds_remaining_budget", "required_weight": required, "remaining_budget": remaining, "feasibility_classification": "CAPITAL_BLOCKED"})
+            skipped.append({**base_skip_evidence, "reason": "minimum_lot_exceeds_remaining_budget", "blocked_reason": "minimum_lot_exceeds_remaining_budget", "required_weight": required, "remaining_budget": remaining, "feasibility_classification": "CAPITAL_BLOCKED", "one_lot_admission": one_lot_admission, "second_lot_plus_promotion": second_lot_promotion})
             continue
+        minimum_one_lot_authority = _minimum_executable_one_lot_authority(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            original_request_weight=item["request"],
+            final_promoted_weight=required,
+            single_name_cap=single_name_cap,
+            soft_strategy_overshoot_allowed=soft_strategy_overshoot_allowed,
+            one_lot_admission=one_lot_admission,
+        )
+        if minimum_one_lot_authority:
+            minimum_one_lot_authority_by_index[item["index"]] = minimum_one_lot_authority
         accepted_by_index[item["index"]] = required
         remaining = round(max(remaining - required, 0.0), TARGET_WEIGHT_DECIMALS)
         allocation_iterations.append(
@@ -2279,11 +2509,16 @@ def apply_lot_aware_final_reallocation(
                 "symbol": item["symbol"],
                 "participant_type": item["participant_type"],
                 "accepted_lot_increment_weight": required,
+                "budget_requirement_source": budget_requirement_source,
+                "canonical_discrete_executable_required_weight": canonical_discrete_requirement,
                 "reallocation_iteration": iteration,
                 "opportunity_cost_order": item["priority"],
                 "residual_recycled": item["draft_target"] <= item["baseline"] and item["request"] > 0,
                 "residual_destination": item["symbol"],
                 "lot_resolution": lot_resolution,
+                "one_lot_admission": one_lot_admission,
+                "minimum_executable_one_lot_authority": minimum_one_lot_authority,
+                "second_lot_plus_promotion": second_lot_promotion,
                 "reason": "cap_constrained_lot_floor_allocation",
                 "strategy_cap_overshoot_applied": soft_strategy_overshoot_allowed,
                 "strategy_cap_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP" if soft_strategy_overshoot_allowed else "",
@@ -2295,8 +2530,17 @@ def apply_lot_aware_final_reallocation(
                     "symbol": item["symbol"],
                     "from_weight": item["request"],
                     "to_weight": required,
-                    "reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP" if soft_strategy_overshoot_allowed else "one_lot_fallback_authorized_by_pc",
+                    "budget_requirement_source": budget_requirement_source,
+                    "canonical_discrete_executable_required_weight": canonical_discrete_requirement,
+                    "reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+                    if soft_strategy_overshoot_allowed
+                    else "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION"
+                    if second_lot_promotion["promotion_candidate"]
+                    else "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
                     "strategy_cap_overshoot_applied": soft_strategy_overshoot_allowed,
+                    "one_lot_admission": one_lot_admission,
+                    "minimum_executable_one_lot_authority": minimum_one_lot_authority,
+                    "second_lot_plus_promotion": second_lot_promotion,
                 }
             )
         if item["draft_target"] <= item["baseline"] and item["request"] > 0:
@@ -2305,11 +2549,16 @@ def apply_lot_aware_final_reallocation(
                     "symbol": item["symbol"],
                     "participant_type": item["participant_type"],
                     "accepted_lot_increment_weight": required,
+                    "budget_requirement_source": budget_requirement_source,
+                    "canonical_discrete_executable_required_weight": canonical_discrete_requirement,
                     "reallocation_iteration": iteration,
                     "opportunity_cost_order": item["priority"],
                     "residual_recycled": True,
                     "residual_destination": item["symbol"],
                     "lot_resolution": lot_resolution,
+                    "one_lot_admission": one_lot_admission,
+                    "minimum_executable_one_lot_authority": minimum_one_lot_authority,
+                    "second_lot_plus_promotion": second_lot_promotion,
                     "reason": "request_positive_rebatched_after_lot_first_recycling",
                 }
             )
@@ -2333,6 +2582,41 @@ def apply_lot_aware_final_reallocation(
         feasibility = feasibility_by_symbol.get(str(member.get("security_code") or member.get("symbol") or ""))
         feasibility_classification = str((feasibility or {}).get("lot_first_feasibility_classification") or "")
         lot_resolution = dict((feasibility or {}).get("phase29_l19_lot_resolution") or {})
+        one_lot_admission = one_lot_admissions_by_index.get(item["index"]) or _quality_adjusted_one_lot_admission(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            required_weight=accepted,
+            single_name_cap=single_name_cap,
+            soft_strategy_overshoot_allowed=False,
+        )
+        semantic_type = _lot_authority_semantic_type(member=member, participant_type=item["participant_type"])
+        minimum_one_lot_authority = minimum_one_lot_authority_by_index.get(item["index"], {})
+        minimum_one_lot_admitted = bool(minimum_one_lot_authority)
+        second_lot_promotion = _second_lot_plus_add_promotion_evidence(
+            item=item,
+            member=member,
+            lot_resolution=lot_resolution,
+            one_lot_weight=_optional_ratio((feasibility or {}).get("minimum_executable_weight")),
+        )
+        final_allocated_quantity = _final_discrete_allocated_quantity(
+            accepted_weight=accepted,
+            lot_resolution=lot_resolution,
+            second_lot_promotion=second_lot_promotion,
+        )
+        pc_quantity_authority = _pc_positive_executable_quantity_authority(
+            accepted_weight=accepted,
+            final_allocated_quantity=final_allocated_quantity,
+        )
+        lot_overshoot_reason = lot_resolution.get("lot_overshoot_reason", "")
+        if minimum_one_lot_admitted:
+            lot_overshoot_reason = "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
+        elif (
+            second_lot_promotion["promotion_candidate"]
+            and not soft_strategy_overshoot_allowed
+            and accepted >= float(second_lot_promotion["upper_boundary_weight"]) - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+        ):
+            lot_overshoot_reason = "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION"
         final_members.append(
             {
                 **member,
@@ -2343,6 +2627,7 @@ def apply_lot_aware_final_reallocation(
                     "lot_aware_final_reallocation_authority": {
                         "authority_type": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
                         "ps_preflight_decides_economic_allocation": False,
+                        "quality_adjusted_one_lot_admission": one_lot_admission,
                     },
                 },
                 "target_weight_resolution": {
@@ -2356,6 +2641,9 @@ def apply_lot_aware_final_reallocation(
                         "post_lot_target_weight": final_weight,
                         "accepted_lot_increment_weight": accepted,
                         "requested_lot_first_increment_weight": item.get("requested_increment", 0.0),
+                        "one_lot_admission": one_lot_admission,
+                        "minimum_executable_one_lot_authority": minimum_one_lot_authority,
+                        "second_lot_plus_promotion": second_lot_promotion,
                         "lot_first_feasibility_classification": feasibility_classification,
                         "skip_reason": skipped_by_index.get(item["index"], ""),
                         "strategy_cap_overshoot_applied": accepted > 0 and bool(lot_resolution.get("strategy_cap_overshoot_applied")),
@@ -2368,7 +2656,8 @@ def apply_lot_aware_final_reallocation(
                         "one_lot_feasibility_status": lot_resolution.get("one_lot_feasibility_status"),
                         "one_lot_fallback_applied": accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")),
                         "blocker_reason": skipped_by_index.get(item["index"], ""),
-                        "final_allocated_quantity": lot_resolution.get("one_lot_quantity") if accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")) else lot_resolution.get("executable_quantity_delta"),
+                        "final_allocated_quantity": final_allocated_quantity,
+                        "pc_positive_executable_quantity_authority": pc_quantity_authority,
                         "residual_capital_after_allocation_weight": remaining,
                         "phase29_l19_lot_resolution": lot_resolution,
                     },
@@ -2382,7 +2671,7 @@ def apply_lot_aware_final_reallocation(
                 "phase29_l19_lot_resolution": {
                     **lot_resolution,
                     "symbol": str(member.get("security_code") or member.get("symbol") or ""),
-                    "semantic_type": item["participant_type"],
+                    "semantic_type": semantic_type,
                     "requested_target_weight": item["draft_target"],
                     "requested_incremental_weight": item.get("requested_increment", 0.0),
                     "final_target_weight": final_weight,
@@ -2398,7 +2687,11 @@ def apply_lot_aware_final_reallocation(
                     "post_trade_weight": lot_resolution.get("post_trade_weight"),
                     "safety_hard_cap": lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")),
                     "safety_margin_after_trade": lot_resolution.get("safety_margin_after_trade"),
-                    "lot_overshoot_reason": lot_resolution.get("lot_overshoot_reason", ""),
+                    "lot_overshoot_reason": lot_overshoot_reason,
+                    "minimum_executable_one_lot_admitted": minimum_one_lot_admitted,
+                    "minimum_executable_one_lot_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED" if minimum_one_lot_admitted else "",
+                    "minimum_executable_one_lot_authority": minimum_one_lot_authority,
+                    "second_lot_plus_promotion": second_lot_promotion,
                     "continuous_target_weight": lot_resolution.get("continuous_target_weight", item["draft_target"]),
                     "continuous_target_notional": lot_resolution.get("continuous_target_notional"),
                     "normal_lot_quantity": lot_resolution.get("normal_lot_quantity", lot_resolution.get("requested_lots")),
@@ -2407,9 +2700,11 @@ def apply_lot_aware_final_reallocation(
                     "one_lot_feasibility_status": lot_resolution.get("one_lot_feasibility_status"),
                     "one_lot_fallback_applied": accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")),
                     "blocker_reason": skipped_by_index.get(item["index"], ""),
-                    "final_allocated_quantity": lot_resolution.get("one_lot_quantity") if accepted > 0 and bool(lot_resolution.get("one_lot_fallback_applied")) else lot_resolution.get("executable_quantity_delta"),
+                    "final_allocated_quantity": final_allocated_quantity,
+                    "pc_positive_executable_quantity_authority": pc_quantity_authority,
                     "residual_capital_after_allocation_weight": remaining,
                 },
+                "one_lot_admission": one_lot_admission,
             }
         )
     total = round(sum(float(member.get("target_weight") or 0.0) for member in final_members), TARGET_WEIGHT_DECIMALS)
@@ -2417,6 +2712,8 @@ def apply_lot_aware_final_reallocation(
         reason_codes.append("lot_aware_infeasible_allocations_reallocated_or_cash")
     if promoted:
         reason_codes.append("lot_aware_minimum_executable_lot_authorized")
+    if minimum_one_lot_authority_by_index:
+        reason_codes.append("MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED")
     if rebatch_allocations:
         reason_codes.append("lot_first_rebatch_recycled_request_positive_capital")
     deployable_budget = round(max(float(target_gross_exposure) - baseline_total, 0.0), TARGET_WEIGHT_DECIMALS)
@@ -2470,6 +2767,7 @@ def apply_lot_aware_final_reallocation(
             "capital_conservation": capital_conservation,
             "ps_preflight_decides_economic_allocation": False,
             "pc_remains_target_weight_authority": True,
+            "quality_adjusted_one_lot_admission_enabled": True,
         },
     }
 
@@ -2512,6 +2810,385 @@ def _lot_aware_strategy_cap_overshoot_allowed(
     if post_trade_weight <= float(single_name_cap) + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
         return False
     return bool(lot_resolution.get("safety_hard_cap_preserved") is not False)
+
+
+def _second_lot_plus_add_promotion_evidence(
+    *,
+    item: Mapping[str, Any],
+    member: Mapping[str, Any],
+    lot_resolution: Mapping[str, Any],
+    one_lot_weight: float | None,
+) -> dict[str, Any]:
+    request = round(float(item.get("request", item.get("requested_increment", 0.0)) or 0.0), TARGET_WEIGHT_DECIMALS)
+    baseline = round(float(item.get("baseline") or 0.0), TARGET_WEIGHT_DECIMALS)
+    symbol = str(item.get("symbol") or member.get("security_code") or member.get("symbol") or "")
+    base = {
+        "schema_version": "second_lot_plus_residual_promotion.v1",
+        "authority_type": LOT_AWARE_REALLOCATION_AUTHORITY_TYPE,
+        "symbol": symbol,
+        "status": "NOT_APPLICABLE",
+        "promotion_candidate": False,
+        "current_executable_lots": _positive_int(member.get("current_quantity"), 0)
+        // max(_positive_int(lot_resolution.get("one_lot_quantity"), 0), 1),
+        "requested_incremental_weight": request,
+        "one_lot_weight": one_lot_weight,
+        "lower_boundary_lots": 0,
+        "upper_boundary_lots": 0,
+        "lower_boundary_weight": 0.0,
+        "upper_boundary_weight": 0.0,
+        "distance_to_lower_weight": 0.0,
+        "distance_to_upper_weight": 0.0,
+        "tie_rule": "MIDPOINT_PROMOTES_TO_UPPER_ONLY_AFTER_EXISTING_PC_PRIORITY_AND_CAPITAL_GUARDS_PASS",
+        "future_information_used": False,
+    }
+    if str(item.get("participant_type") or "") != "BUY_ADD":
+        return base
+    if not bool(member.get("current_position")) or str(member.get("pm_action") or "").upper() != "ADD":
+        return base
+    if one_lot_weight is None or one_lot_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE or request <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return base
+    requested_lots = request / one_lot_weight
+    lower_lots = int(math.floor(requested_lots))
+    upper_lots = int(math.ceil(requested_lots))
+    lower_weight = round(lower_lots * one_lot_weight, TARGET_WEIGHT_DECIMALS)
+    upper_weight = round(upper_lots * one_lot_weight, TARGET_WEIGHT_DECIMALS)
+    distance_to_lower = round(max(request - lower_weight, 0.0), TARGET_WEIGHT_DECIMALS)
+    distance_to_upper = round(max(upper_weight - request, 0.0), TARGET_WEIGHT_DECIMALS)
+    candidate = upper_lots > lower_lots and distance_to_upper <= distance_to_lower + TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    status = "CANDIDATE" if candidate else "BELOW_NEAREST_LOT_PROMOTION_DISTANCE"
+    if str(member.get("add_allocation_eligibility_status") or "") not in {"", "PASS"}:
+        candidate = False
+        status = "ADD_CONTRACT_BLOCKED"
+    if str(member.get("incremental_investment_value_state") or "") not in {"", "POSITIVE"}:
+        candidate = False
+        status = "INCREMENTAL_VALUE_BLOCKED"
+    if str(member.get("opportunity_cost_status") or "") not in {"", "PASS"}:
+        candidate = False
+        status = "OPPORTUNITY_COST_BLOCKED"
+    if str(member.get("entry_admission_action") or "").upper() == "NO_ADD":
+        candidate = False
+        status = "NO_ADD_BLOCKED"
+    if lot_resolution.get("safety_hard_cap_preserved") is False:
+        candidate = False
+        status = "SAFETY_HARD_CAP_BLOCKED"
+    return {
+        **base,
+        "status": status,
+        "promotion_candidate": candidate,
+        "baseline_weight": baseline,
+        "requested_increment_lots": round(requested_lots, 6),
+        "lower_boundary_lots": lower_lots,
+        "upper_boundary_lots": upper_lots,
+        "lower_boundary_weight": lower_weight,
+        "upper_boundary_weight": upper_weight,
+        "distance_to_lower_weight": distance_to_lower,
+        "distance_to_upper_weight": distance_to_upper,
+        "nearest_lot_distance_evidence": {
+            "requested_increment_lots": round(requested_lots, 6),
+            "closer_boundary": "UPPER" if distance_to_upper <= distance_to_lower + TARGET_WEIGHT_ABSOLUTE_TOLERANCE else "LOWER",
+            "threshold_source": "DETERMINISTIC_LOT_MIDPOINT_NOT_HISTORICAL_OUTCOME",
+        },
+    }
+
+
+def _canonical_discrete_executable_requirement_weight(
+    *,
+    item: Mapping[str, Any],
+    lot_resolution: Mapping[str, Any],
+) -> float | None:
+    if str(item.get("participant_type") or "") not in {"BUY_NEW", "BUY_ADD"}:
+        return None
+    if (
+        str(lot_resolution.get("boundary_classification") or "") == "MINIMUM_EXECUTABLE_LOT_EXCEEDS_SAFETY_HARD_MAX"
+        or lot_resolution.get("safety_hard_cap_preserved") is False
+    ):
+        return None
+    one_lot_weight = _optional_ratio(lot_resolution.get("one_lot_weight"))
+    if one_lot_weight is None or one_lot_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return None
+    one_lot_quantity = _positive_int(lot_resolution.get("one_lot_quantity"), 0)
+    if one_lot_quantity <= 0:
+        return None
+    executable_quantity = _positive_int(lot_resolution.get("final_allocated_quantity"), 0)
+    if executable_quantity <= 0:
+        executable_quantity = _positive_int(lot_resolution.get("executable_quantity_delta"), 0)
+    if executable_quantity <= 0:
+        executable_quantity = _positive_int(lot_resolution.get("normal_lot_quantity"), 0)
+    if executable_quantity <= 0 or executable_quantity % one_lot_quantity != 0:
+        return None
+    quantity_derived_requirement = round(
+        one_lot_weight * (executable_quantity / one_lot_quantity),
+        TARGET_WEIGHT_DECIMALS,
+    )
+    if quantity_derived_requirement <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return None
+    post_trade_weight = _optional_ratio(lot_resolution.get("post_trade_weight"))
+    if post_trade_weight is not None:
+        baseline_weight = _optional_ratio(lot_resolution.get("current_weight"))
+        if baseline_weight is None:
+            baseline_weight = max(float(item.get("baseline") or 0.0), 0.0)
+        post_trade_requirement = round(max(post_trade_weight - baseline_weight, 0.0), TARGET_WEIGHT_DECIMALS)
+        if (
+            post_trade_requirement > TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+            and abs(post_trade_requirement - quantity_derived_requirement) > TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+        ):
+            return None
+    return quantity_derived_requirement
+
+
+def _final_discrete_allocated_quantity(
+    *,
+    accepted_weight: float,
+    lot_resolution: Mapping[str, Any],
+    second_lot_promotion: Mapping[str, Any],
+) -> int:
+    if accepted_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return 0
+    one_lot_quantity = _positive_int(lot_resolution.get("one_lot_quantity"), 0)
+    if one_lot_quantity <= 0:
+        return _positive_int(lot_resolution.get("final_allocated_quantity"), _positive_int(lot_resolution.get("executable_quantity_delta"), 0))
+    if second_lot_promotion.get("promotion_candidate") is True:
+        upper_lots = _positive_int(second_lot_promotion.get("upper_boundary_lots"), 0)
+        upper_weight = float(second_lot_promotion.get("upper_boundary_weight") or 0.0)
+        if upper_lots > 0 and accepted_weight >= upper_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+            return int(upper_lots * one_lot_quantity)
+    if bool(lot_resolution.get("one_lot_fallback_applied")):
+        return one_lot_quantity
+    one_lot_weight = _optional_ratio(lot_resolution.get("one_lot_weight"))
+    if one_lot_weight is not None and one_lot_weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        lots = int(math.floor((accepted_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE) / one_lot_weight))
+        if lots > 0:
+            return int(lots * one_lot_quantity)
+    return _positive_int(lot_resolution.get("final_allocated_quantity"), _positive_int(lot_resolution.get("executable_quantity_delta"), 0))
+
+
+def _pc_positive_executable_quantity_authority(*, accepted_weight: float, final_allocated_quantity: int) -> dict[str, Any]:
+    quantity = _positive_int(final_allocated_quantity, 0)
+    return {
+        "authority_type": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+        "status": "PASS" if accepted_weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE and quantity > 0 else "NOT_APPLICABLE",
+        "final_allocated_quantity": quantity,
+        "accepted_lot_increment_weight": round(float(accepted_weight or 0.0), TARGET_WEIGHT_DECIMALS),
+        "ps_must_consume_canonical_quantity": accepted_weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE and quantity > 0,
+        "future_information_used": False,
+    }
+
+
+def _quality_adjusted_reallocation_order(member: Mapping[str, Any]) -> int:
+    action = str(member.get("entry_admission_action") or "").upper()
+    state = str(member.get("entry_admission_state") or "").upper()
+    add_worthiness = str(member.get("strategy_intelligence_add_worthiness_state") or "").upper()
+    if bool(member.get("current_position")) and add_worthiness in {"ADD_ALLOWED", "ADD_REDUCED_ONLY", "PASS"}:
+        return 0
+    if bool(member.get("current_position")) and add_worthiness == "NO_ADD":
+        return 3
+    if action in {"BUY_NEW_ALLOWED", "ADD_ALLOWED"} or state == "HEALTHY_CONTINUATION_ENTRY":
+        return 0
+    if action in {"BUY_NEW_REDUCED_ONLY", "ADD_REDUCED_ONLY"} or state == "CONTINUATION_WITH_CAUTION":
+        return 1
+    if not action and not state:
+        return 1
+    if action in {"BUY_WAIT", "NO_ADD"} or state in {"OVERHEATED_DECELERATING_ENTRY", "REVERSAL_RISK_ENTRY"}:
+        return 3
+    return 2
+
+
+def _lot_authority_semantic_type(*, member: Mapping[str, Any], participant_type: str) -> str:
+    semantic = str(member.get("semantic_buy_type") or "").upper()
+    participant = str(participant_type or "").upper()
+    if participant == "BUY_NEW" and semantic in {"BUY_NEW", "REENTRY"}:
+        return semantic
+    if participant == "BUY_ADD":
+        return "BUY_ADD"
+    return participant
+
+
+def _minimum_executable_one_lot_authority(
+    *,
+    item: Mapping[str, Any],
+    member: Mapping[str, Any],
+    lot_resolution: Mapping[str, Any],
+    original_request_weight: float,
+    final_promoted_weight: float,
+    single_name_cap: float | None,
+    soft_strategy_overshoot_allowed: bool,
+    one_lot_admission: Mapping[str, Any],
+) -> dict[str, Any]:
+    semantic = _lot_authority_semantic_type(member=member, participant_type=str(item.get("participant_type") or ""))
+    if semantic not in {"BUY_NEW", "REENTRY"}:
+        return {}
+    if bool(member.get("current_position")) or float(item.get("baseline") or 0.0) > TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    if float(original_request_weight or 0.0) <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    one_lot_weight = _optional_ratio(lot_resolution.get("one_lot_weight", lot_resolution.get("minimum_executable_weight")))
+    if one_lot_weight is None or one_lot_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    if float(original_request_weight or 0.0) >= one_lot_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    if final_promoted_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE < one_lot_weight:
+        return {}
+    if final_promoted_weight > one_lot_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    if soft_strategy_overshoot_allowed:
+        return {}
+    if single_name_cap is not None and final_promoted_weight > float(single_name_cap) + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return {}
+    if str(one_lot_admission.get("status") or "") != "PASS":
+        return {}
+    if str(lot_resolution.get("one_lot_feasibility_status") or "") != "PASS":
+        return {}
+    if lot_resolution.get("safety_hard_cap_preserved") is False:
+        return {}
+    safety_cap = _optional_ratio(lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")))
+    post_trade_weight = _optional_ratio(lot_resolution.get("post_trade_weight", final_promoted_weight))
+    if safety_cap is None or (post_trade_weight is not None and post_trade_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE):
+        return {}
+    one_lot_quantity = _positive_int(lot_resolution.get("one_lot_quantity"), 0)
+    if one_lot_quantity <= 0:
+        return {}
+    target_ratio = round(float(original_request_weight) / one_lot_weight, 6)
+    return {
+        "schema_version": "minimum_executable_one_lot_authority.v1",
+        "authority_type": "PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION",
+        "decision": "ADMIT",
+        "reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+        "symbol": str(item.get("symbol") or member.get("security_code") or member.get("symbol") or ""),
+        "intent": semantic,
+        "current_quantity": int(_positive_int(member.get("current_quantity"), 0)),
+        "original_pc_target_weight": round(float(item.get("draft_target") or original_request_weight or 0.0), TARGET_WEIGHT_DECIMALS),
+        "original_pc_increment_weight": round(float(original_request_weight), TARGET_WEIGHT_DECIMALS),
+        "original_pc_target_notional": lot_resolution.get("continuous_target_notional"),
+        "one_lot_weight": round(one_lot_weight, TARGET_WEIGHT_DECIMALS),
+        "one_lot_notional": lot_resolution.get("one_lot_notional"),
+        "target_to_one_lot_ratio": target_ratio,
+        "projected_one_lot_portfolio_weight": post_trade_weight,
+        "strategy_cap": single_name_cap,
+        "safety_cap": safety_cap,
+        "admission_decision": str(one_lot_admission.get("status") or ""),
+        "admission_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+        "final_promoted_target_weight": round(float(final_promoted_weight), TARGET_WEIGHT_DECIMALS),
+        "ps_final_quantity": one_lot_quantity,
+        "future_information_used": False,
+    }
+
+
+def _quality_adjusted_one_lot_admission(
+    *,
+    item: Mapping[str, Any],
+    member: Mapping[str, Any],
+    lot_resolution: Mapping[str, Any],
+    required_weight: float,
+    single_name_cap: float | None,
+    soft_strategy_overshoot_allowed: bool,
+) -> dict[str, Any]:
+    participant_type = str(item.get("participant_type") or "NONE")
+    continuous_target = _optional_ratio(lot_resolution.get("continuous_target_weight", item.get("draft_target")))
+    minimum_weight = _optional_ratio(lot_resolution.get("one_lot_weight", lot_resolution.get("minimum_executable_weight")))
+    if minimum_weight is None:
+        minimum_weight = _optional_ratio(lot_resolution.get("minimum_policy_lot_weight"))
+    baseline = round(float(item.get("baseline") or 0.0), TARGET_WEIGHT_DECIMALS)
+    effective_post_trade = _optional_ratio(lot_resolution.get("post_trade_weight"))
+    if effective_post_trade is None:
+        effective_post_trade = round(baseline + max(required_weight, 0.0), TARGET_WEIGHT_DECIMALS)
+    overshoot_weight = round(max(effective_post_trade - float(single_name_cap or effective_post_trade), 0.0), TARGET_WEIGHT_DECIMALS)
+    target_basis = continuous_target if continuous_target and continuous_target > 0 else float(item.get("draft_target") or 0.0)
+    overshoot_ratio = round(effective_post_trade / target_basis, 6) if target_basis > 0 else None
+    boundary = str(lot_resolution.get("boundary_classification") or "")
+    one_lot_fallback = bool(lot_resolution.get("one_lot_fallback_applied")) or (
+        minimum_weight is not None and float(item.get("request") or 0.0) > 0 and float(item.get("request") or 0.0) < minimum_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
+    strategy_overshoot = boundary == "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX" or soft_strategy_overshoot_allowed
+    safety_preserved = lot_resolution.get("safety_hard_cap_preserved") is not False
+    entry_action = str(member.get("entry_admission_action") or "")
+    entry_state = str(member.get("entry_admission_state") or "")
+    quality_action = str(member.get("quality_action") or "")
+    add_worthiness = _add_worthiness_state(member)
+    relative_opportunity = str(member.get("strategy_intelligence_relative_strength_state") or "")
+    opportunity_cost = str(member.get("opportunity_cost_status") or "")
+    reason_codes: list[str] = []
+    status = "PASS"
+    blocked_reason = ""
+    tolerance = "NOT_REQUIRED"
+
+    if not one_lot_fallback and not strategy_overshoot:
+        reason_codes.append("one_lot_no_strategy_overshoot")
+    elif not safety_preserved:
+        status = "FAIL_CLOSED"
+        blocked_reason = "minimum_lot_exceeds_safety_hard_cap"
+        tolerance = "SAFETY_BLOCKED"
+        reason_codes.append("safety_hard_cap_not_preserved")
+    elif participant_type == "BUY_NEW" and entry_action in {"BUY_WAIT"}:
+        status = "DEFER"
+        blocked_reason = "quality_adjusted_one_lot_entry_buy_wait"
+        tolerance = "DEFER"
+        reason_codes.append("entry_admission_buy_wait_blocks_one_lot_overshoot")
+    elif participant_type == "BUY_NEW" and entry_action in {"REJECT_BUY_NEW"}:
+        status = "FAIL_CLOSED"
+        blocked_reason = "quality_adjusted_one_lot_entry_rejected"
+        tolerance = "FAIL"
+        reason_codes.append("entry_admission_reject_blocks_one_lot_overshoot")
+    elif participant_type == "BUY_NEW" and entry_action in {"REVIEW_REQUIRED"}:
+        status = "REVIEW_REQUIRED"
+        blocked_reason = "quality_adjusted_one_lot_entry_review_required"
+        tolerance = "REVIEW_REQUIRED"
+        reason_codes.append("entry_admission_review_blocks_one_lot_overshoot")
+    elif participant_type == "BUY_NEW" and entry_state in {"OVERHEATED_DECELERATING_ENTRY", "REVERSAL_RISK_ENTRY"}:
+        status = "DEFER"
+        blocked_reason = "quality_adjusted_one_lot_overheated_or_reversal_entry"
+        tolerance = "DEFER"
+        reason_codes.append("overheated_or_reversal_entry_blocks_one_lot_overshoot")
+    elif participant_type == "BUY_ADD" and add_worthiness not in {"ADD_ALLOWED", "ADD_REDUCED_ONLY", "PASS"}:
+        status = "FAIL_CLOSED"
+        blocked_reason = "minimum_lot_exceeds_concentration_cap"
+        tolerance = "FAIL"
+        reason_codes.append("add_worthiness_blocks_one_lot_overshoot")
+    elif participant_type == "BUY_NEW" and entry_action in {"BUY_NEW_ALLOWED", "BUY_NEW_REDUCED_ONLY", ""}:
+        tolerance = "PASS"
+        reason_codes.append("entry_admission_allows_one_lot_overshoot")
+    elif participant_type == "BUY_ADD":
+        tolerance = "PASS"
+        reason_codes.append("add_worthiness_allows_one_lot_overshoot")
+    else:
+        tolerance = "PASS"
+        reason_codes.append("one_lot_admission_backward_compatible_pass")
+
+    return {
+        "schema_version": "one_lot_admission.v1",
+        "status": status,
+        "blocked_reason": blocked_reason,
+        "lifecycle_intent": participant_type,
+        "continuous_target_weight": continuous_target,
+        "minimum_executable_weight": minimum_weight,
+        "effective_post_trade_weight": effective_post_trade,
+        "overshoot_weight": overshoot_weight,
+        "overshoot_ratio_to_target": overshoot_ratio,
+        "strategy_concentration_tolerance": tolerance,
+        "safety_hard_cap_preserved": safety_preserved,
+        "entry_state": entry_state,
+        "entry_admission_action": entry_action,
+        "buy_quality_action": quality_action,
+        "add_worthiness_state": add_worthiness,
+        "relative_opportunity_state": relative_opportunity,
+        "opportunity_cost_state": opportunity_cost,
+        "residual_destination_if_skipped": "Cash" if status in {"DEFER", "FAIL_CLOSED", "REVIEW_REQUIRED"} else str(item.get("symbol") or ""),
+        "reason_codes": sorted(set(reason_codes)),
+        "future_information_used": False,
+    }
+
+
+def _add_worthiness_state(member: Mapping[str, Any]) -> str:
+    structured = str(member.get("strategy_intelligence_add_worthiness_state") or "").upper()
+    if structured:
+        return structured
+    action = str(member.get("entry_admission_action") or "").upper()
+    if action in {"ADD_ALLOWED", "ADD_REDUCED_ONLY", "NO_ADD"}:
+        return action
+    if str(member.get("add_allocation_eligibility_status") or "") == "PASS" and str(member.get("incremental_investment_value_state") or "") == "POSITIVE" and str(member.get("opportunity_cost_status") or "") == "PASS":
+        return "PASS"
+    if bool(member.get("current_position")) and str(member.get("pm_action") or "").upper() == "ADD":
+        return "NO_ADD"
+    return "NOT_APPLICABLE"
 
 
 def _positive_increment_over_target(
@@ -2655,6 +3332,15 @@ def _resolve_canonical_add_allocation_bridge(
     concentration = _explicit_pass_or_default(row, ("concentration_status", "add_concentration_status"), default="PASS")
     capital = _explicit_pass_or_default(row, ("capital_availability_status", "add_capital_availability_status"), default="PASS")
     execution = _execution_feasibility_state(row)
+    add_worthiness_state = str(row.get("strategy_intelligence_add_worthiness_state") or "").upper()
+    entry_admission_action = str(row.get("entry_admission_action") or "").upper()
+    entry_admission_state = str(row.get("entry_admission_state") or "").upper()
+    add_worthiness_allows_increment = add_worthiness_state in {"", "ADD_ALLOWED", "ADD_REDUCED_ONLY", "PASS"}
+    entry_admission_allows_increment = entry_admission_action not in {"NO_ADD", "BUY_WAIT", "REJECT", "REVIEW_REQUIRED"} and entry_admission_state not in {
+        "REVERSAL_RISK_ENTRY",
+        "OVERHEATED_DECELERATING_ENTRY",
+        "INSUFFICIENT_ENTRY_EVIDENCE",
+    }
     if current_weight is None:
         reason_codes.append("ADD_REQUIRED_EVIDENCE_MISSING")
         current_weight = float(candidate_target_weight)
@@ -2723,6 +3409,8 @@ def _resolve_canonical_add_allocation_bridge(
         "concentration": concentration,
         "capital_availability": capital,
         "execution_feasibility": execution,
+        "add_worthiness": "PASS" if add_worthiness_allows_increment else "FAIL_CLOSED",
+        "entry_admission": "PASS" if entry_admission_allows_increment else "FAIL_CLOSED",
     }
     if not selected:
         reason_codes.append("ADD_TARGET_WEIGHT_UNCHANGED")
@@ -2744,6 +3432,10 @@ def _resolve_canonical_add_allocation_bridge(
         reason_codes.append("ADD_CAPITAL_UNAVAILABLE")
     if execution == "BLOCK":
         reason_codes.append("ADD_EXECUTION_FEASIBILITY_BLOCK")
+    if not add_worthiness_allows_increment:
+        reason_codes.append("ADD_WORTHINESS_NO_ADD")
+    if not entry_admission_allows_increment:
+        reason_codes.append("ADD_ENTRY_ADMISSION_NO_ADD")
     eligible = (
         selected
         and current_weight_observed
@@ -2755,6 +3447,8 @@ def _resolve_canonical_add_allocation_bridge(
         and concentration == "PASS"
         and capital == "PASS"
         and execution != "BLOCK"
+        and add_worthiness_allows_increment
+        and entry_admission_allows_increment
         and add_increment_request > 0
     )
     if eligible:
@@ -2977,8 +3671,27 @@ def _select_target_members(members: list[dict[str, Any]]) -> list[dict[str, Any]
         )
         if occupies_buy_slot:
             candidates.append({**row, "_selection_selectable": selectable})
-    ordered = sorted(candidates, key=lambda row: (_positive_int(row.get("construction_priority"), 999999), str(row.get("security_code") or "")))
+    quality_tier_available = any(str(row.get("selection_quality_tier") or "") for row in candidates)
+    ordered = sorted(
+        candidates,
+        key=lambda row: (
+            _selection_quality_priority(row) if quality_tier_available else 0,
+            _positive_int(row.get("construction_priority"), 999999),
+            str(row.get("security_code") or ""),
+        ),
+    )
     return [{key: value for key, value in row.items() if key != "_selection_selectable"} for row in ordered if row.get("_selection_selectable")]
+
+
+def _selection_quality_priority(row: Mapping[str, Any]) -> int:
+    tier = str(row.get("selection_quality_tier") or "").upper()
+    return {
+        "HIGH_QUALITY_CONTINUATION": 0,
+        "VALID_CONTINUATION": 1,
+        "CAUTION_CONTINUATION": 2,
+        "INSUFFICIENT_QUALITY": 3,
+        "REJECT": 4,
+    }.get(tier, 2)
 
 
 def _attach_buy_quality(
@@ -3032,6 +3745,212 @@ def _attach_buy_quality(
             }
         )
     return updated
+
+
+def _attach_strategy_intelligence(
+    members: list[dict[str, Any]],
+    *,
+    strategy_intelligence_artifact_path: Path | str | None,
+    business_date: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if strategy_intelligence_artifact_path is None:
+        return members, ["strategy_intelligence_not_connected"]
+    if not Path(strategy_intelligence_artifact_path).is_file():
+        return members, ["strategy_intelligence_missing_fail_closed"]
+    payload = strategy_intelligence.load_strategy_intelligence_artifact(strategy_intelligence_artifact_path)
+    by_symbol = strategy_intelligence.symbol_intelligence_by_symbol(payload)
+    reasons: list[str] = []
+    updated: list[dict[str, Any]] = []
+    for member in members:
+        code = str(member.get("security_code") or member.get("symbol") or "").strip()
+        evidence = by_symbol.get(code)
+        if not evidence:
+            if not member.get("current_position"):
+                patched = {
+                    **member,
+                    "membership_intent": "UNRESOLVED",
+                    "target_membership": False,
+                    "weight_intent": "UNRESOLVED",
+                    "quality_action": "BUY_REVIEW_REQUIRED",
+                    "strategy_intelligence_consumer_status": "MISSING_SYMBOL_EVIDENCE",
+                    "reason_codes": sorted(set([*list(member.get("reason_codes") or []), "strategy_intelligence_symbol_missing"])),
+                }
+                patched["membership_reason"] = ";".join(patched["reason_codes"])
+                updated.append(patched)
+            else:
+                updated.append({**member, "strategy_intelligence_consumer_status": "MISSING_SYMBOL_EVIDENCE"})
+            reasons.append(f"strategy_intelligence_symbol_missing:{code}")
+            continue
+        si_fields = _strategy_intelligence_member_fields(evidence, payload, strategy_intelligence_artifact_path)
+        member_reasons = list(member.get("reason_codes") or [])
+        membership_intent = str(member.get("membership_intent") or "")
+        weight_intent = str(member.get("weight_intent") or "")
+        quality_action = str(member.get("quality_action") or "")
+        if not member.get("current_position"):
+            eligibility = evidence.get("eligibility") if isinstance(evidence.get("eligibility"), Mapping) else {}
+            cq = evidence.get("continuation_quality") if isinstance(evidence.get("continuation_quality"), Mapping) else {}
+            entry = evidence.get("entry_admission") if isinstance(evidence.get("entry_admission"), Mapping) else {}
+            selection_quality = evidence.get("selection_quality_comparator") if isinstance(evidence.get("selection_quality_comparator"), Mapping) else {}
+            selection_tier = str(selection_quality.get("tier") or "").upper()
+            disqualifying = list(eligibility.get("disqualifying_facts") or [])
+            if str(eligibility.get("status") or "") != "PASS":
+                membership_intent = "EXCLUDE" if disqualifying else "UNRESOLVED"
+                weight_intent = "AVOID" if disqualifying else "UNRESOLVED"
+                quality_action = "BUY_REJECTED" if disqualifying else "BUY_REVIEW_REQUIRED"
+                member_reasons.append("strategy_intelligence_eligibility_not_pass")
+            elif entry and str(entry.get("admission_action") or "") == "BUY_WAIT":
+                membership_intent = "EXCLUDE"
+                weight_intent = "AVOID"
+                quality_action = "BUY_WAIT"
+                member_reasons.append("strategy_intelligence_buy_wait")
+                member_reasons.append("strategy_intelligence_entry_buy_wait")
+            elif entry and str(entry.get("admission_action") or "") == "REJECT_BUY_NEW":
+                membership_intent = "EXCLUDE"
+                weight_intent = "AVOID"
+                quality_action = "BUY_REJECTED"
+                member_reasons.append("strategy_intelligence_entry_rejected")
+            elif entry and str(entry.get("admission_action") or "") == "REVIEW_REQUIRED":
+                membership_intent = "UNRESOLVED"
+                weight_intent = "UNRESOLVED"
+                quality_action = "BUY_REVIEW_REQUIRED"
+                member_reasons.append("strategy_intelligence_entry_review_required")
+            elif entry and str(entry.get("admission_action") or "") == "BUY_NEW_REDUCED_ONLY":
+                quality_action = "REDUCED_ALLOCATION_ONLY"
+                member_reasons.append("strategy_intelligence_entry_reduced_allocation_only")
+            elif entry and str(entry.get("admission_action") or "") == "BUY_NEW_ALLOWED":
+                quality_action = quality_action if quality_action in {"FULL_ALLOCATION_ELIGIBLE", "REDUCED_ALLOCATION_ONLY"} else "SI_EVIDENCE_ELIGIBLE"
+                member_reasons.append("strategy_intelligence_entry_allowed")
+            elif selection_tier == "REJECT":
+                membership_intent = "EXCLUDE"
+                weight_intent = "AVOID"
+                quality_action = "BUY_REJECTED"
+                member_reasons.append("strategy_intelligence_selection_quality_reject")
+            elif selection_tier == "INSUFFICIENT_QUALITY":
+                membership_intent = "UNRESOLVED"
+                weight_intent = "UNRESOLVED"
+                quality_action = "BUY_REVIEW_REQUIRED"
+                member_reasons.append("strategy_intelligence_selection_quality_insufficient")
+            elif str(cq.get("status") or "") != "PASS":
+                membership_intent = "EXCLUDE"
+                weight_intent = "AVOID"
+                quality_action = "BUY_WAIT"
+                member_reasons.append("strategy_intelligence_buy_wait")
+            else:
+                quality_action = "SI_EVIDENCE_ELIGIBLE"
+                member_reasons.append("strategy_intelligence_buy_evidence_pass")
+            if selection_tier in {"HIGH_QUALITY_CONTINUATION", "VALID_CONTINUATION"}:
+                member_reasons.append("selection_quality_rank_score_supporting_only")
+            elif selection_tier == "CAUTION_CONTINUATION":
+                member_reasons.append("selection_quality_caution_continuation")
+        patched = {
+            **member,
+            **si_fields,
+            "legacy_buy_quality_action": str(member.get("quality_action") or ""),
+            "quality_action": quality_action,
+            "membership_intent": membership_intent,
+            "target_membership": membership_intent in {"RETAIN", "ADD_CANDIDATE"},
+            "weight_intent": weight_intent,
+            "membership_reason": ";".join(sorted(set(member_reasons))),
+            "reason_codes": sorted(set(member_reasons)),
+        }
+        updated.append(patched)
+    return updated, sorted(set(reasons))
+
+
+def _strategy_intelligence_member_fields(
+    evidence: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    artifact_path: Path | str,
+) -> dict[str, Any]:
+    eligibility = evidence.get("eligibility") if isinstance(evidence.get("eligibility"), Mapping) else {}
+    cq = evidence.get("continuation_quality") if isinstance(evidence.get("continuation_quality"), Mapping) else {}
+    risk = evidence.get("downside_risk") if isinstance(evidence.get("downside_risk"), Mapping) else {}
+    edge = evidence.get("expected_edge") if isinstance(evidence.get("expected_edge"), Mapping) else {}
+    entry = evidence.get("entry_admission") if isinstance(evidence.get("entry_admission"), Mapping) else {}
+    selection_quality = evidence.get("selection_quality_comparator") if isinstance(evidence.get("selection_quality_comparator"), Mapping) else {}
+    lifecycle = evidence.get("lifecycle_context") if isinstance(evidence.get("lifecycle_context"), Mapping) else {}
+    profit = evidence.get("profit_protection_evidence") if isinstance(evidence.get("profit_protection_evidence"), Mapping) else {}
+    relative = cq.get("relative_strength") if isinstance(cq.get("relative_strength"), Mapping) else {}
+    add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
+    reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
+    add_worthiness = _campaign_aware_add_worthiness_state(
+        lifecycle=lifecycle,
+        cq=cq,
+        risk=risk,
+        profit=profit,
+        entry=entry,
+    )
+    return {
+        "strategy_intelligence_consumer_status": "CONNECTED",
+        "strategy_intelligence_artifact_path": str(artifact_path),
+        "strategy_intelligence_artifact_hash": str(payload.get("artifact_hash") or ""),
+        "strategy_intelligence_business_date": str(payload.get("business_date") or ""),
+        "strategy_intelligence_eligibility_status": str(eligibility.get("status") or ""),
+        "strategy_intelligence_continuation_quality_status": str(cq.get("status") or ""),
+        "strategy_intelligence_downside_risk_status": str(risk.get("status") or ""),
+        "strategy_intelligence_relative_strength_state": str(relative.get("state") or ""),
+        "strategy_intelligence_expected_edge_calibration_status": str(edge.get("calibration_status") or ""),
+        "strategy_intelligence_expected_edge_economic_units_available": bool(edge.get("economic_units_available", False)),
+        "strategy_intelligence_campaign_id": str(lifecycle.get("position_campaign_id") or ""),
+        "strategy_intelligence_campaign_identity_authority_status": str(lifecycle.get("campaign_identity_authority_status") or ""),
+        "strategy_intelligence_campaign_age_business_days": lifecycle.get("campaign_age_business_days"),
+        "strategy_intelligence_current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
+        "strategy_intelligence_observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
+        "strategy_intelligence_observed_giveback": lifecycle.get("observed_giveback"),
+        "strategy_intelligence_add_history_count": int(add_history.get("event_count") or 0),
+        "strategy_intelligence_reduce_history_count": int(reduce_history.get("event_count") or 0),
+        "strategy_intelligence_profit_protection_status": str(profit.get("status") or ""),
+        "strategy_intelligence_add_worthiness_state": add_worthiness,
+        "strategy_intelligence_lifecycle_quality_connected": True,
+        "entry_admission": dict(entry),
+        "entry_admission_state": str(entry.get("entry_state") or ""),
+        "entry_admission_action": str(entry.get("admission_action") or ""),
+        "entry_admission_evidence_sufficiency": str(entry.get("evidence_sufficiency") or ""),
+        "selection_quality_comparator": dict(selection_quality),
+        "selection_quality_tier": str(selection_quality.get("tier") or ""),
+        "selection_quality_reason_codes": list(selection_quality.get("reason_codes") or []),
+        "selection_quality_evidence_sufficiency": str(selection_quality.get("evidence_sufficiency") or ""),
+        "selection_quality_rank_score_role": str(selection_quality.get("rank_score_role") or ""),
+        "selection_quality_expected_edge_role": str(selection_quality.get("expected_edge_role") or ""),
+        "selection_quality_not_action_authority": bool(selection_quality.get("not_action_authority", True)),
+        "selection_quality_score_only_hard_rejection_retired": bool(selection_quality.get("score_only_hard_rejection_retired", False)),
+        "selection_quality_below_top20_only_hard_rejection_retired": bool(selection_quality.get("below_top20_only_hard_rejection_retired", False)),
+        "strategy_intelligence_not_action_authority": True,
+        "strategy_intelligence_production_evidence": True,
+        "strategy_intelligence_future_information_used": bool(
+            (evidence.get("provenance") if isinstance(evidence.get("provenance"), Mapping) else {}).get("future_information_used", False)
+        ),
+    }
+
+
+def _campaign_aware_add_worthiness_state(
+    *,
+    lifecycle: Mapping[str, Any],
+    cq: Mapping[str, Any],
+    risk: Mapping[str, Any],
+    profit: Mapping[str, Any],
+    entry: Mapping[str, Any],
+) -> str:
+    entry_action = str(entry.get("admission_action") or "").upper()
+    if entry_action in {"ADD_ALLOWED", "ADD_REDUCED_ONLY", "NO_ADD"}:
+        return entry_action
+    if str(lifecycle.get("current_position_state") or "").upper() != "HELD":
+        return "NOT_APPLICABLE"
+    if str(lifecycle.get("campaign_identity_authority_status") or "").upper() != "COMPLETE":
+        return "NO_ADD"
+    add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
+    reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
+    if int(add_history.get("event_count") or 0) >= 5:
+        return "NO_ADD"
+    if int(reduce_history.get("event_count") or 0) > 0:
+        return "NO_ADD"
+    if str(cq.get("status") or "").upper() != "PASS":
+        return "NO_ADD"
+    if str(risk.get("status") or "").upper() not in {"PASS", "REVIEW_REQUIRED", ""}:
+        return "NO_ADD"
+    if str(profit.get("status") or "").upper() in {"OBSERVED", "PASS", "PARTIAL", "NOT_APPLICABLE", ""}:
+        return "ADD_ALLOWED"
+    return "NO_ADD"
 
 
 def _buy_wait_applies_to_member(row: Mapping[str, Any]) -> bool:
@@ -3578,8 +4497,12 @@ def _add_allocation_evidence_payload(
         "add_capital_availability_status",
         "execution_feasibility_status",
         "add_execution_feasibility_status",
+        "strategy_intelligence_add_worthiness_state",
+        "entry_admission_state",
+        "entry_admission_action",
         "position_campaign_id",
         "campaign_id",
+        "strategy_intelligence_campaign_id",
     ):
         for source in sources:
             if field in source:

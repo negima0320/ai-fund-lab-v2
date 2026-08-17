@@ -928,6 +928,88 @@ def test_phase29_l21f_ps_consumes_buy_add_strategy_soft_cap_authorization(tmp_pa
     assert validate_position_sizing_artifact(payload)["status"] == "PASS"
 
 
+def test_phase30_ak9r16_ps_consumes_pc_discrete_soft_cap_overshoot_for_94320_buy_add(tmp_path: Path) -> None:
+    row = _phase30_ak9r16_94320_pc_discrete_soft_cap_add_row()
+
+    payload = _produce(
+        tmp_path / "phase30_ak9r16_94320_pc_discrete_soft_cap_add",
+        rows=[row],
+        target_count=1,
+        exposure=1.0,
+        portfolio_value=1_004_474.0,
+    ).payload
+    item = payload["positions"][0]
+
+    assert payload["producer_result_status"] == "PASS"
+    assert item["semantic_buy_type"] == "BUY_ADD"
+    assert item["target_weight"] == 0.181184
+    assert item["maximum_position_weight"] == 0.18
+    assert item["target_weight"] > item["maximum_position_weight"]
+    assert item["target_weight"] <= payload["safety_maximum_position_weight"]
+    assert item["transaction_quantity_candidate"] == 100
+    assert item["quantity_delta_candidate"] == 100
+    assert item["target_quantity_candidate"] == 1200
+    assert item["discrete_authorized_quantity"] == 100
+    assert item["pc_discrete_quantity_authority_consumed"] is True
+    assert "PC_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY_CONSUMED" in item["reason_codes"]
+    assert "LOT_AWARE_STRATEGY_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP" in item["reason_codes"]
+    assert validate_position_sizing_artifact(payload)["status"] == "PASS"
+
+
+def test_phase30_ak9r16_strategy_soft_cap_boundary_unchanged(tmp_path: Path) -> None:
+    row = _phase30_ak9r16_94320_pc_discrete_soft_cap_add_row()
+    row["target_weight"] = 0.18
+    row["lot_aware_accepted_incremental_weight"] = 0.013878
+    row["target_weight_resolution"]["resolved_weight"] = 0.18
+
+    payload = _produce(
+        tmp_path / "phase30_ak9r16_soft_cap_boundary_unchanged",
+        rows=[row],
+        target_count=1,
+        exposure=1.0,
+        portfolio_value=1_004_474.0,
+    ).payload
+
+    assert payload["positions"][0]["target_weight"] == 0.18
+    assert validate_position_sizing_artifact(payload)["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    (
+        (lambda row: row["phase29_l19_lot_resolution"].pop("pc_positive_executable_quantity_authority"), "target_weight_above_position_cap:0"),
+        (lambda row: row.update({"target_weight": 0.260000}) or row["target_weight_resolution"].update({"resolved_weight": 0.260000}), "target_weight_above_position_cap:0"),
+        (
+            lambda row: row["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"].update({"final_allocated_quantity": 200}),
+            "target_weight_above_position_cap:0",
+        ),
+        (
+            lambda row: row["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"].update({"ps_must_consume_canonical_quantity": False}),
+            "target_weight_above_position_cap:0",
+        ),
+        (lambda row: row["phase29_l19_lot_resolution"].update({"lot_overshoot_reason": "ARBITRARY_SOFT_CAP_OVERSHOOT"}), "target_weight_above_position_cap:0"),
+    ),
+)
+def test_phase30_ak9r16_pc_discrete_soft_cap_overshoot_fails_closed(
+    tmp_path: Path,
+    mutation,
+    expected_reason: str,
+) -> None:
+    row = _phase30_ak9r16_94320_pc_discrete_soft_cap_add_row()
+    mutation(row)
+
+    with pytest.raises(PositionSizingSchemaError) as exc:
+        _produce(
+            tmp_path / "phase30_ak9r16_fail_closed",
+            rows=[row],
+            target_count=1,
+            exposure=1.0,
+            portfolio_value=1_004_474.0,
+        )
+
+    assert expected_reason in str(exc.value)
+
+
 def test_phase29_l21f_buy_add_soft_cap_requires_authorization(tmp_path: Path) -> None:
     row = _row("94320", price=150.4, membership="RETAIN", pm_action="ADD", current_weight=0.134514)
     row.update(
@@ -1154,6 +1236,48 @@ def test_phase29_l21t_c_ps_preserves_reentry_semantics_for_one_lot_quantity_auth
     assert item["quantity_status"] == "RESOLVED_CANDIDATE"
     assert item["one_lot_authority_consumed"] is True
     assert validate_position_sizing_artifact(payload)["status"] == "PASS"
+
+
+def test_phase30_ak2_ps_consumes_minimum_executable_buy_new_one_lot_authority_inside_strategy_cap(tmp_path: Path) -> None:
+    row = _phase30_ak2_minimum_executable_one_lot_row("55660", semantic="BUY_NEW")
+
+    payload = _produce(
+        tmp_path / "phase30_ak2_minimum_one_lot_buy_new",
+        rows=[row],
+        target_count=1,
+        exposure=1.0,
+        portfolio_value=999_999.0,
+    ).payload
+    item = payload["positions"][0]
+
+    assert item["target_weight"] == 0.10
+    assert item["target_notional"] == 99_999.9
+    assert item["target_notional"] < item["phase29_l19_lot_resolution"]["one_lot_notional"]
+    assert item["target_quantity_candidate"] == 100
+    assert item["quantity_delta_candidate"] == 100
+    assert item["discrete_authorized_quantity"] == 100
+    assert item["one_lot_authority_consumed"] is True
+    assert item["one_lot_authority_reason"] == "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
+    assert item["target_weight"] <= item["maximum_position_weight"]
+    assert validate_position_sizing_artifact(payload)["status"] == "PASS"
+
+
+def test_phase30_ak2_ps_consumes_minimum_executable_reentry_one_lot_authority_inside_strategy_cap(tmp_path: Path) -> None:
+    row = _phase30_ak2_minimum_executable_one_lot_row("55661", semantic="REENTRY")
+
+    payload = _produce(
+        tmp_path / "phase30_ak2_minimum_one_lot_reentry",
+        rows=[row],
+        target_count=1,
+        exposure=1.0,
+        portfolio_value=999_999.0,
+    ).payload
+    item = payload["positions"][0]
+
+    assert item["semantic_buy_type"] == "REENTRY"
+    assert item["target_quantity_candidate"] == 100
+    assert item["quantity_delta_candidate"] == 100
+    assert item["one_lot_authority_consumed"] is True
 
 
 def test_phase29_l21t_c_one_lot_authority_does_not_materialize_multiple_lots(tmp_path: Path) -> None:
@@ -1797,6 +1921,25 @@ def test_phase29_l21s_minimum_meaningful_notional_is_diagnostic_for_one_lot_buy_
     assert "minimum_meaningful_notional_diagnostic_unmet" in item["reason_codes"]
 
 
+def test_phase30_ai_pc_ps_zero_delta_taxonomy_materializes_lot_infeasibility(tmp_path: Path) -> None:
+    row = _row("6098", price=1500.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    row["target_weight"] = 0.12
+    row["target_weight_resolution"]["resolved_weight"] = 0.12
+    row["selection_quality_tier"] = "HIGH_QUALITY_CONTINUATION"
+
+    payload = _produce(
+        tmp_path / "phase30_ai_zero_delta_taxonomy",
+        rows=[row],
+        target_count=1,
+        exposure=0.12,
+    ).payload
+    item = payload["positions"][0]
+
+    assert item["quantity_status"] == "RESOLVED_ZERO_DELTA"
+    assert item["pc_ps_zero_delta_taxonomy"]["classification"] == "GENUINE_LOT_INFEASIBILITY"
+    assert item["pc_ps_zero_delta_taxonomy"]["selection_quality_tier"] == "HIGH_QUALITY_CONTINUATION"
+
+
 def test_phase22_pw_valid_configuration_has_no_cap_violation_reason(tmp_path: Path) -> None:
     payload = _produce(tmp_path / "valid_contract").payload
 
@@ -2070,6 +2213,186 @@ def _phase29_l21t_b_one_lot_buy_new_row() -> dict[str, object]:
                 "post_lot_target_weight": 0.243189,
                 "strategy_cap_overshoot_applied": True,
                 "strategy_cap_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+                "phase29_l19_lot_resolution": lot_resolution,
+            },
+        }
+    )
+    return row
+
+
+def _phase30_ak9r16_94320_pc_discrete_soft_cap_add_row() -> dict[str, object]:
+    row = _row("94320", price=151.3, membership="RETAIN", pm_action="ADD", current_weight=0.166122)
+    lot_resolution = {
+        "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+        "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+        "continuous_target_weight": 0.18,
+        "current_weight": 0.166122,
+        "executable_quantity_delta": 100,
+        "final_allocated_quantity": 100,
+        "final_target_weight": 0.181184,
+        "lot_overshoot_reason": "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
+        "maximum_safety_feasible_lots": 5,
+        "maximum_strategy_feasible_lots": 0,
+        "one_lot_fallback_applied": True,
+        "one_lot_feasibility_status": "PASS",
+        "one_lot_notional": 15_130.0,
+        "one_lot_quantity": 100,
+        "one_lot_weight": 0.015062,
+        "pc_positive_executable_quantity_authority": {
+            "authority_type": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+            "status": "PASS",
+            "final_allocated_quantity": 100,
+            "accepted_lot_increment_weight": 0.015062,
+            "ps_must_consume_canonical_quantity": True,
+            "future_information_used": False,
+        },
+        "post_trade_weight": 0.181184,
+        "remaining_safety_headroom": 0.083878,
+        "remaining_strategy_headroom": 0.013878,
+        "requested_incremental_weight": 0.013878,
+        "requested_target_weight": 0.18,
+        "residual_capital_after_allocation_weight": 0.010174,
+        "residual_recycled": True,
+        "safety_hard_cap": 0.25,
+        "safety_hard_cap_preserved": True,
+        "safety_hard_cap_weight": 0.25,
+        "safety_margin_after_trade": 0.068816,
+        "second_lot_plus_promotion": {
+            "promotion_candidate": True,
+            "nearest_lot_distance_evidence": {
+                "threshold_source": "DETERMINISTIC_LOT_MIDPOINT_NOT_HISTORICAL_OUTCOME",
+            },
+            "status": "CANDIDATE",
+        },
+        "semantic_type": "BUY_ADD",
+        "strategy_cap_overshoot_applied": True,
+        "strategy_cap_overshoot_weight": 0.001184,
+        "strategy_cap_preserved": True,
+        "strategy_cap_weight": 0.18,
+        "strategy_target_cap": 0.18,
+    }
+    row.update(
+        {
+            "current_position": True,
+            "current_quantity": 1100,
+            "baseline_existing_weight": 0.166122,
+            "target_weight": 0.181184,
+            "target_weight_change": 0.015062,
+            "accepted_incremental_weight": 0.013878,
+            "lot_aware_accepted_incremental_weight": 0.015062,
+            "post_add_target_weight": 0.18,
+            "add_allocation_eligibility_status": "PASS",
+            "incremental_investment_value_state": "POSITIVE",
+            "opportunity_cost_status": "PASS",
+            "semantic_buy_type": "BUY_ADD",
+            "phase29_l19_lot_resolution": lot_resolution,
+        }
+    )
+    row["target_weight_resolution"].update(
+        {
+            "resolved_weight": 0.181184,
+            "base_weight": 0.18,
+            "reason": "lot_aware_final_reallocation",
+            "lot_aware_final_reallocation": {
+                "authority_type": "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION",
+                "accepted_lot_increment_weight": 0.015062,
+                "post_lot_target_weight": 0.181184,
+                "pre_lot_target_weight": 0.18,
+                "strategy_cap_overshoot_applied": True,
+                "strategy_cap_overshoot_reason": "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
+                "pc_positive_executable_quantity_authority": lot_resolution["pc_positive_executable_quantity_authority"],
+                "phase29_l19_lot_resolution": lot_resolution,
+            },
+        }
+    )
+    return row
+
+
+def _phase30_ak2_minimum_executable_one_lot_row(code: str, *, semantic: str) -> dict[str, object]:
+    row = _row(code, price=1000.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    lot_resolution = {
+        "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+        "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+        "continuous_target_notional": 80_000.0,
+        "continuous_target_weight": 0.08,
+        "current_weight": 0.0,
+        "executable_lots": 1,
+        "executable_quantity_delta": 100,
+        "final_allocated_quantity": 100,
+        "lot_overshoot_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+        "maximum_safety_feasible_lots": 2,
+        "maximum_strategy_feasible_lots": 1,
+        "minimum_executable_one_lot_admitted": True,
+        "minimum_executable_one_lot_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+        "minimum_executable_one_lot_authority": {
+            "schema_version": "minimum_executable_one_lot_authority.v1",
+            "authority_type": "PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION",
+            "decision": "ADMIT",
+            "reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+            "symbol": code,
+            "intent": semantic,
+            "current_quantity": 0,
+            "original_pc_target_weight": 0.08,
+            "original_pc_increment_weight": 0.08,
+            "original_pc_target_notional": 80_000.0,
+            "one_lot_weight": 0.10,
+            "one_lot_notional": 100_000.0,
+            "target_to_one_lot_ratio": 0.8,
+            "projected_one_lot_portfolio_weight": 0.10,
+            "strategy_cap": 0.18,
+            "safety_cap": 0.25,
+            "admission_decision": "PASS",
+            "admission_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+            "final_promoted_target_weight": 0.10,
+            "ps_final_quantity": 100,
+            "future_information_used": False,
+        },
+        "minimum_meaningful_notional_policy_status": "DIAGNOSTIC_ONLY",
+        "normal_lot_quantity": 0,
+        "one_lot_fallback_applied": True,
+        "one_lot_feasibility_status": "PASS",
+        "one_lot_notional": 100_000.0,
+        "one_lot_quantity": 100,
+        "one_lot_weight": 0.10,
+        "post_trade_weight": 0.10,
+        "remaining_safety_headroom": 0.25,
+        "remaining_strategy_headroom": 0.18,
+        "requested_incremental_weight": 0.08,
+        "requested_target_weight": 0.08,
+        "safety_hard_cap": 0.25,
+        "safety_hard_cap_preserved": True,
+        "safety_hard_cap_weight": 0.25,
+        "safety_margin_after_trade": 0.15,
+        "semantic_type": semantic,
+        "strategy_cap_overshoot_applied": False,
+        "strategy_cap_overshoot_weight": 0.0,
+        "strategy_cap_weight": 0.18,
+        "strategy_target_cap": 0.18,
+    }
+    row.update(
+        {
+            "semantic_buy_type": semantic,
+            "target_weight": 0.10,
+            "accepted_buy_new_weight": 0.08,
+            "lot_aware_accepted_buy_new_weight": 0.10,
+            "phase29_l19_lot_resolution": lot_resolution,
+        }
+    )
+    row["target_weight_resolution"].update(
+        {
+            "resolved_weight": 0.10,
+            "base_weight": 0.08,
+            "reason": "lot_aware_final_reallocation",
+            "lot_aware_final_reallocation": {
+                "authority_type": "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION",
+                "accepted_lot_increment_weight": 0.10,
+                "one_lot_fallback_applied": True,
+                "one_lot_feasibility_status": "PASS",
+                "one_lot_quantity": 100,
+                "one_lot_notional": 100_000.0,
+                "pre_lot_target_weight": 0.08,
+                "post_lot_target_weight": 0.10,
+                "minimum_executable_one_lot_authority": lot_resolution["minimum_executable_one_lot_authority"],
                 "phase29_l19_lot_resolution": lot_resolution,
             },
         }

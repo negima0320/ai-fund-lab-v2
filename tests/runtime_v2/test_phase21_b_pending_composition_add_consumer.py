@@ -6,7 +6,7 @@ from pathlib import Path
 from ai_fund_lab_v2.broker.settings import BrokerSettings
 from ai_fund_lab_v2.runtime_v2.broker_adapter.fake_demo_submit import FakeRuntimeV2DemoSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
-from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingApprovalLink, PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import attach_approval_link, promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.add_consumer import (
@@ -292,6 +292,100 @@ def test_phase29_l21t_f_sell_order_composes_submit_visible_buy_and_sell_pending(
     assert sorted(current_pending["approval"]["approved_item_ids"]) == sorted(current_pending["approved_item_ids"])
 
 
+def test_phase30_ak8r_multiple_buy_multiple_sell_composes_and_reaches_submit(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path)
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current_state(
+        runtime_root,
+        positions=[
+            _current_position("6522", quantity=100, price=102),
+            _current_position("76010", quantity=500, price=254),
+        ],
+    )
+    _write_submit_visible_buy_pending(
+        runtime_root,
+        policy_path=policy_path,
+        pending_item_id="buy-43550",
+        symbol="43550",
+        quantity=100,
+        estimated_price=284,
+        estimated_amount=28_400,
+    )
+    _append_submit_visible_buy_item(
+        runtime_root,
+        pending_item_id="buy-76920",
+        symbol="76920",
+        quantity=300,
+        estimated_price=81.3,
+        estimated_amount=24_390,
+    )
+    _write_broker_snapshots(
+        runtime_root,
+        records=[
+            {"symbol": "6522", "quantity": 100, "available_quantity": 100},
+            {"symbol": "76010", "quantity": 500, "available_quantity": 500},
+        ],
+    )
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        exit_decisions=(
+            SellExitDecision(symbol="6522", quantity=100, reason="mandatory exit", source_decision="EXIT"),
+            SellExitDecision(symbol="76010", quantity=100, reason="risk reduce", source_decision="REDUCE", reduce_intensity="LIGHT"),
+        ),
+        capital_deployment_policy=policy,
+        submit_policy_context=_submit_policy_context(policy),
+    )
+    current_pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    composition = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "pending_composition_evidence.json")
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert result.status == "PASS"
+    assert result.pending_composition_model == "COMPOSITE_PENDING_PLAN"
+    assert result.pending_composition_status == "PASS"
+    assert result.preserved_existing_buy_pending is True
+    assert result.composite_pending is True
+    assert sorted((item["side"], item["symbol"]) for item in current_pending["items"]) == [
+        ("BUY", "43550"),
+        ("BUY", "76920"),
+        ("SELL", "6522"),
+        ("SELL", "76010"),
+    ]
+    assert sorted(current_pending["approved_buy_item_ids"]) == ["buy-43550", "buy-76920"]
+    assert len(current_pending["approved_sell_item_ids"]) == 2
+    assert sorted(current_pending["approved_item_ids"]) == sorted(item["pending_item_id"] for item in current_pending["items"])
+    assert composition["status"] == "PASS"
+    assert composition["pre_sell_buy_pending_count"] == 2
+    assert composition["preservable_buy_count"] == 2
+    assert composition["sell_count"] == 2
+    assert composition["composed_buy_count"] == 2
+    assert composition["composed_sell_count"] == 2
+    assert composition["dropped_buy_count"] == 0
+    assert composition["final_canonical_pending_count"] == 4
+    assert composition["valid_buy_pending_silent_overwrite_prohibited"] is True
+    assert composition["sell_existence_alone_cannot_drop_valid_buy"] is True
+    assert submit.status == "PASS"
+    assert submit.submitted_count == 4
+    assert sorted((item["side"], item["symbol"]) for item in submit.submit_guard_item_evidence) == [
+        ("BUY", "43550"),
+        ("BUY", "76920"),
+        ("SELL", "6522"),
+        ("SELL", "76010"),
+    ]
+
+
 def test_phase29_l21t_f_no_signal_preserves_invalid_active_buy_fail_closed(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy_path = _policy_path(tmp_path)
@@ -402,16 +496,16 @@ def test_phase29_l21t_m_buy_item_scoped_review_composes_valid_reduce_sell(tmp_pa
     assert result.pending_composition_model == "BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION_COMPOSITE_PENDING_PLAN"
     assert result.pending_composition_status == "PASS"
     assert result.composite_pending is True
-    assert current_pending["state"] == "APPROVED"
+    assert current_pending["state"] == "REVIEW_REQUIRED"
     assert current_pending["review_scope"] == "BUY_ITEM_SCOPED_REVIEW"
     assert current_pending["sell_continuation_allowed"] is True
-    assert current_pending["approved_buy_item_ids"] == []
+    assert current_pending["approved_buy_item_ids"] == ["buy-pass-24350"]
     assert current_pending["review_required_buy_item_ids"] == ["buy-review-30410"]
     assert len(current_pending["approved_sell_item_ids"]) == 1
-    assert current_pending["approved_item_ids"] == current_pending["approved_sell_item_ids"]
+    assert sorted(current_pending["approved_item_ids"]) == sorted(["buy-pass-24350", *current_pending["approved_sell_item_ids"]])
     by_id = {item["pending_item_id"]: item for item in current_pending["items"]}
-    assert by_id["buy-pass-24350"]["batch_submit_status"] == "BLOCKED_BY_BATCH_REVIEW"
-    assert by_id["buy-pass-24350"]["approved"] is False
+    assert by_id["buy-pass-24350"]["batch_submit_status"] == "PASS_ITEM_SUBMITTABLE"
+    assert by_id["buy-pass-24350"]["approved"] is True
     assert by_id["buy-review-30410"]["batch_submit_status"] == "ITEM_REVIEW_REQUIRED"
     assert by_id["buy-review-30410"]["approved"] is False
     sell = next(item for item in current_pending["items"] if item["side"] == "SELL")
@@ -462,12 +556,19 @@ def test_phase29_l21t_m_buy_item_scoped_review_composes_valid_exit_sell_and_subm
 
     assert result.status == "PASS"
     assert len(current_pending["approved_sell_item_ids"]) == 1
-    assert current_pending["approved_buy_item_ids"] == []
+    assert current_pending["approved_buy_item_ids"] == ["buy-pass-24350"]
     assert current_pending["review_required_buy_item_ids"] == ["buy-review-30410"]
     assert submit.status == "PASS"
-    assert submit.submitted_count == 1
-    assert submit.submitted_symbols == ("76010",)
-    assert [item["side"] for item in submit.submit_guard_item_evidence] == ["SELL"]
+    assert submit.submitted_count == 2
+    assert sorted(submit.submitted_symbols) == ["24350", "76010"]
+    assert sorted((item["side"], item["symbol"]) for item in submit.submit_guard_item_evidence) == [
+        ("BUY", "24350"),
+        ("BUY", "30410"),
+        ("SELL", "76010"),
+    ]
+    reviewed = next(item for item in submit.submit_guard_item_evidence if item["symbol"] == "30410")
+    assert reviewed["authority_type"] == "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+    assert reviewed["blocked_other_items"] is False
 
 
 def test_phase29_l21t_m_unscoped_invalid_buy_still_preserved_fail_closed(tmp_path):
@@ -517,26 +618,25 @@ def test_phase29_l21t_m_buy_item_scoped_review_no_signal_preserves_review_pendin
     assert result.status == "NO_SIGNAL"
     assert result.reason == "NO_SIGNAL:exit_ai_no_sell_signal"
     assert result.pending_plan_id == reviewed_buy.pending_plan_id
-    assert result.pending_composition_model == "BUY_ITEM_SCOPED_REVIEW_SELL_NO_SIGNAL_PRESERVATION"
-    assert result.pending_composition_status == "NO_SIGNAL"
+    assert result.pending_composition_model == "PRESERVE_EXISTING_BUY_PENDING"
+    assert result.pending_composition_status == "PASS"
     assert result.preserved_existing_buy_pending is True
     assert current_pending["pending_plan_id"] == reviewed_buy.pending_plan_id
     assert current_pending["state"] == "REVIEW_REQUIRED"
     assert current_pending["review_scope"] == "BUY_ITEM_SCOPED_REVIEW"
     assert current_pending["sell_continuation_allowed"] is True
     assert [item["side"] for item in current_pending["items"]] == ["BUY", "BUY"]
-    continuity = _load_json(
-        runtime_root / "runtime_state" / "sell_pipeline" / "2026-07-08" / "pending_continuity_evidence.json"
-    )
-    assert continuity["status"] == "NO_SIGNAL"
-    assert continuity["pending_reconciliation"]["classification"] == "NO_SIGNAL"
-    assert continuity["pending_reconciliation"]["buy_item_scoped_review_preserved"] is True
-    assert "BUY_ITEM_SCOPED_REVIEW_PRESERVED_ON_SELL_NO_SIGNAL" in continuity["reason_codes"]
+    assert current_pending["approved_buy_item_ids"] == ["buy-pass-24350"]
+    assert current_pending["review_required_buy_item_ids"] == ["buy-review-30410"]
+    by_id = {item["pending_item_id"]: item for item in current_pending["items"]}
+    assert by_id["buy-pass-24350"]["batch_submit_status"] == "PASS_ITEM_SUBMITTABLE"
+    assert by_id["buy-review-30410"]["batch_submit_status"] == "ITEM_REVIEW_REQUIRED"
 
 
-def test_phase29_l21t_v_buy_item_scoped_review_submit_no_submission_preserves_batch_atomicity(tmp_path):
+def test_phase30_ak9r1_buy_item_scoped_review_submits_pass_subset(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy_path = _policy_path(tmp_path)
+    _write_current_state(runtime_root, positions=[])
     reviewed_buy = _write_buy_item_scoped_review_pending(runtime_root, policy_path=policy_path)
 
     result = run_submit_pipeline(
@@ -552,29 +652,138 @@ def test_phase29_l21t_v_buy_item_scoped_review_submit_no_submission_preserves_ba
     current_pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
 
     assert result.status == "PASS"
-    assert result.reason == "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION_REQUIRED"
-    assert result.submit_action == "NO_SUBMISSION_REQUIRED"
-    assert result.submitted_count == 0
+    assert result.reason == "submitted_with_reviewed_buy_items_not_submitted"
+    assert result.submit_action == "SUBMIT"
+    assert result.submitted_count == 1
     assert result.pending_item_count == 2
     assert result.no_order_authority_status == "PASS"
-    assert result.no_order_authority_evidence["authority_type"] == "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION"
-    assert result.no_order_authority_evidence["buy_batch_atomicity_preserved"] is True
-    assert result.no_order_authority_evidence["partial_buy_submit_allowed"] is False
+    assert result.no_order_authority_evidence["authority_type"] == "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION"
+    assert result.no_order_authority_evidence["partial_pass_buy_submission_allowed"] is True
+    assert result.no_order_authority_evidence["item_review_does_not_escalate_to_batch_failure"] is True
     assert result.no_order_authority_evidence["reviewed_buy_submitted"] is False
     assert current_pending["pending_plan_id"] == reviewed_buy.pending_plan_id
     assert current_pending["state"] == "REVIEW_REQUIRED"
-    assert current_pending["approved_item_ids"] == []
+    assert current_pending["approved_item_ids"] == ["buy-pass-24350"]
     assert [item["batch_submit_status"] for item in current_pending["items"]] == [
-        "BLOCKED_BY_BATCH_REVIEW",
+        "PASS_ITEM_SUBMITTABLE",
         "ITEM_REVIEW_REQUIRED",
     ]
-    assert _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl") == []
+    assert _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+    reviewed = next(item for item in result.submit_guard_item_evidence if item["symbol"] == "30410")
+    assert reviewed["not_submitted_reason"] == "item_scoped_review_required"
+    assert reviewed["blocked_other_items"] is False
+
+
+def test_phase30_ak9r25_buy_item_scoped_review_submits_approved_buy_and_sell_with_cash_reviewed_buy(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path, max_positions=20)
+    _write_current_state(runtime_root, positions=[_current_position("43760", quantity=100, price=457)])
+    _write_broker_snapshot(runtime_root, symbol="43760", quantity=100, available_quantity=100)
+    _write_buy_item_scoped_review_pending(
+        runtime_root,
+        policy_path=policy_path,
+        include_approved_sell=True,
+        reviewed_buy_violated_policy="reserved_cash",
+    )
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+    current_pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+
+    assert result.status == "PASS"
+    assert result.reason == "submitted_with_reviewed_buy_items_not_submitted"
+    assert result.submit_action == "SUBMIT"
+    assert result.submitted_count == 2
+    assert set(result.submitted_symbols) == {"24350", "43760"}
+    assert result.no_order_authority_evidence["authority_type"] == "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION"
+    assert result.no_order_authority_evidence["reviewed_buy_submitted"] is False
+    assert result.no_order_authority_evidence["submitted_candidate_count"] == 2
+    assert current_pending["review_required_buy_item_ids"] == ["buy-review-30410"]
+    reviewed = next(item for item in result.submit_guard_item_evidence if item["symbol"] == "30410")
+    assert reviewed["not_submitted_reason"] == "item_scoped_review_required"
+    assert reviewed["blocked_other_items"] is False
+
+
+def test_phase30_ak9r25_aggregate_cash_review_remains_submit_fail_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path)
+    _write_current_state(runtime_root, positions=[])
+    _write_buy_item_scoped_review_pending(
+        runtime_root,
+        policy_path=policy_path,
+        reviewed_buy_violated_policy="aggregate_cash",
+    )
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.reason == "dangerous pending state blocked: REVIEW_REQUIRED"
+    assert result.submitted_count == 0
+
+
+def test_phase30_ak9r1_ak9r0_equivalent_eight_pass_eight_review_buy_subset_submits(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    policy_path = _policy_path(tmp_path, max_positions=20)
+    _write_current_state(runtime_root, positions=[])
+    _write_buy_item_scoped_review_pending(runtime_root, policy_path=policy_path)
+    _expand_buy_item_scoped_review_pending(
+        runtime_root,
+        pass_symbols=("24350", "27620", "36640", "38410", "39950", "47770", "76920", "83060"),
+        review_symbols=("23880", "47840", "61980", "76470", "89180", "94320", "94340", "95010"),
+    )
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date="2026-07-08",
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=FakeRuntimeV2DemoSubmitAdapter(),
+        capital_deployment_policy_path=policy_path,
+    )
+    current_pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+
+    assert result.status == "PASS"
+    assert result.submit_action == "SUBMIT"
+    assert result.submitted_count == 8
+    assert result.no_order_authority_evidence["authority_type"] == "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION"
+    assert result.no_order_authority_evidence["reviewed_item_count"] == 8
+    assert result.no_order_authority_evidence["submitted_candidate_count"] == 8
+    assert len(current_pending["approved_buy_item_ids"]) == 8
+    assert len(current_pending["review_required_buy_item_ids"]) == 8
+    assert {item["symbol"] for item in current_pending["items"] if item["state"] == "CONSUMED"} == set(result.submitted_symbols)
+    reviewed_evidence = [
+        item
+        for item in result.submit_guard_item_evidence
+        if item.get("authority_type") == "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+    ]
+    assert len(reviewed_evidence) == 8
+    assert all(item["blocked_other_items"] is False for item in reviewed_evidence)
+    assert all(item["not_submitted_reason"] == "item_scoped_review_required" for item in reviewed_evidence)
 
 
 def test_phase29_l21t_v_execution_accepts_buy_item_scoped_review_submit_no_submission_authority(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     policy_path = _policy_path(tmp_path)
-    _write_buy_item_scoped_review_pending(runtime_root, policy_path=policy_path)
+    _write_buy_item_scoped_review_pending(runtime_root, policy_path=policy_path, all_review=True)
     submit = run_submit_pipeline(
         runtime_root=runtime_root,
         business_date="2026-07-08",
@@ -1053,14 +1262,96 @@ def _write_submit_visible_buy_pending(
     return pending
 
 
+def _append_submit_visible_buy_item(
+    root: Path,
+    *,
+    pending_item_id: str,
+    symbol: str,
+    quantity: float,
+    estimated_price: float,
+    estimated_amount: float,
+) -> None:
+    path = root / "pending_order_plan" / "pending_order_plan.json"
+    pending = _load_json(path)
+    source_symbol = str(pending["items"][0].get("symbol") or "")
+    template = _replace_symbol_value(dict(pending["items"][0]), old=source_symbol, new=symbol)
+    template.update(
+        {
+            "pending_item_id": pending_item_id,
+            "symbol": symbol,
+            "issue_code": symbol,
+            "security_code": symbol,
+            "quantity": quantity,
+            "estimated_price": estimated_price,
+            "estimated_amount": estimated_amount,
+        }
+    )
+    template["listed_info"] = {
+        **dict(template.get("listed_info") or {}),
+        "code": symbol,
+        "opportunity_symbol": symbol,
+    }
+    pending["items"].append(template)
+    pending["approved_item_ids"].append(pending_item_id)
+    pending["approved_buy_item_ids"].append(pending_item_id)
+    approval = dict(pending.get("approval") or {})
+    approval.setdefault("approved_item_ids", list(pending["approved_item_ids"]))
+    approval["approved_item_ids"] = list(pending["approved_item_ids"])
+    approval_conditions = dict(approval.get("approved_order_conditions") or {})
+    base_condition = dict(next(iter(approval_conditions.values()))) if approval_conditions else {}
+    base_condition.update(
+        {
+            "pending_item_id": pending_item_id,
+            "issue_code": symbol,
+            "quantity": quantity,
+            "estimated_price": estimated_price,
+            "estimated_amount": estimated_amount,
+        }
+    )
+    approval_conditions[pending_item_id] = base_condition
+    approval["approved_order_conditions"] = approval_conditions
+    pending["approval"] = approval
+    pending["planning_submit_feasibility"] = pending.get("planning_submit_feasibility") or {
+        "status": "PASS",
+        "items": [],
+    }
+    pending["planning_submit_feasibility"]["items"].append(
+        {
+            "pending_item_id": pending_item_id,
+            "side": "BUY",
+            "status": "PASS",
+            "reason": "planning_submit_feasibility_pass",
+            "reserved_notional": estimated_amount,
+        }
+    )
+    _write_json(path, pending)
+
+
+def _replace_symbol_value(value, *, old: str, new: str):
+    if isinstance(value, dict):
+        return {
+            key: _replace_symbol_value(new if key in {"symbol", "issue_code", "security_code", "code"} and item == old else item, old=old, new=new)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_symbol_value(item, old=old, new=new) for item in value]
+    if isinstance(value, str) and value == old:
+        return new
+    return value
+
+
 def _write_buy_item_scoped_review_pending(
     root: Path,
     *,
     policy_path: Path,
     sell_continuation_allowed: bool = True,
+    all_review: bool = False,
+    include_approved_sell: bool = False,
+    reviewed_buy_violated_policy: str = "position_sizing",
 ):
     policy = load_capital_deployment_policy(policy_path)
     policy_hash = capital_deployment_policy_hash(policy)
+    all_review = all_review or not sell_continuation_allowed
     order_plan_path = root / "fixtures" / "buy_item_scoped_review_order_plan.json"
     order_plan_path.parent.mkdir(parents=True, exist_ok=True)
     order_plan_path.write_text(json.dumps({"order_plan_id": "order-plan-buy-item-scoped-review"}), encoding="utf-8")
@@ -1077,7 +1368,23 @@ def _write_buy_item_scoped_review_pending(
         feasibility_status="PASS",
         batch_submit_status="BLOCKED_BY_BATCH_REVIEW",
         item_review_reason="batch_submit_blocked_by_item_scoped_review",
-        listed_info={"code": "24350", "current_listed": True, "market": "プライム", "product_category": "011", "security_type": "011"},
+        listed_info={
+            "code": "24350",
+            "current_listed": True,
+            "market": "プライム",
+            "product_category": "011",
+            "security_type": "011",
+            "opportunity_buy_eligibility_status": "PASS",
+            "opportunity_buy_eligibility": "BUY_ELIGIBLE",
+            "opportunity_expected_edge_score": 0.10,
+            "opportunity_expected_return": 0.10,
+            "opportunity_no_buy_reason": "",
+            "opportunity_buy_rank": 1,
+            "opportunity_business_date": "2026-07-08",
+            "opportunity_feature_date": "2026-07-08",
+            "opportunity_eligibility_policy_version": "runtime_v2_opportunity_buy_eligibility_v1",
+            "opportunity_eligibility_reason": "opportunity_positive_expected_edge",
+        },
         policy_version=policy.policy_version,
         policy_source=policy.policy_source,
         submit_policy_version=policy.policy_version,
@@ -1090,6 +1397,54 @@ def _write_buy_item_scoped_review_pending(
         max_sell_liquidation_amount=policy.max_sell_liquidation_amount,
         buy_notional_policy=policy.buy_notional_policy,
         sell_liquidation_policy=policy.sell_liquidation_policy,
+        accepted_generation_id="phase30-ak9r1-fixture-generation",
+        accepted_generation_business_date="2026-07-08",
+        accepted_generation_binding_status="PASS",
+        accepted_generation_binding={
+            "schema_version": "phase26_step8_accepted_generation_binding.v1",
+            "consumer": "phase30_ak9r1_buy_item_scoped_review_fixture",
+            "mode": "demo",
+            "requested_business_date": "2026-07-08",
+            "selected_business_date": "2026-07-08",
+            "accepted_generation_id": "phase30-ak9r1-fixture-generation",
+            "accepted_generation_business_date": "2026-07-08",
+            "generation_binding_status": "PASS",
+            "temporal_binding_status": "PASS",
+            "latest_fallback_used": False,
+            "shared_state_fallback_used": False,
+            "default_generation_used": False,
+            "legacy_component_fallback_used": False,
+            "promotion_candidate_fallback_used": False,
+        },
+        quantity_contract={
+            "status": "PASS",
+            "quantity_authority": "strategy_runtime_planning_authority",
+            "quantity_status": "RESOLVED_EXECUTABLE",
+            "position_count_authority": {
+                "selected_dynamic_position_count": policy.max_positions,
+                "target_position_count": policy.max_positions,
+                "safety_hard_maximum": policy.max_positions,
+            },
+            "cash_exposure_authority": {
+                "selected_dynamic_cash_ratio": 0.05,
+                "target_cash_ratio": 0.05,
+                "selected_dynamic_exposure_ratio": 0.85,
+                "target_gross_exposure_ratio": 0.85,
+                "exposure_safety_maximum": 0.85,
+            },
+            "position_sizing_authority": {
+                "positions": [
+                    {
+                        "symbol": "24350",
+                        "target_weight": 0.20,
+                        "target_notional": 159_500,
+                        "incremental_buy_notional": 159_500,
+                        "maximum_position_weight": 1.0,
+                    }
+                ],
+                "effective_maximum_position_weight": 1.0,
+            },
+        },
     )
     buy_review = replace(
         buy_pass,
@@ -1103,6 +1458,39 @@ def _write_buy_item_scoped_review_pending(
         item_review_reason="estimated amount exceeds selected_position_amount",
         listed_info={"code": "30410", "current_listed": True, "market": "プライム", "product_category": "011", "security_type": "011"},
     )
+    sell_pass = replace(
+        buy_pass,
+        pending_item_id="sell-pass-43760",
+        symbol="43760",
+        side="SELL",
+        quantity=100,
+        estimated_price=457,
+        estimated_amount=45_700,
+        approved=True,
+        state="APPROVED",
+        feasibility_status="PASS",
+        batch_submit_status="PASS_ITEM_SUBMITTABLE",
+        item_review_reason="",
+        listed_info={"code": "43760", "current_listed": True, "market": "プライム", "product_category": "011", "security_type": "011"},
+    )
+    if all_review:
+        buy_pass = replace(
+            buy_pass,
+            approved=False,
+            state="REVIEW_REQUIRED",
+            feasibility_status="REVIEW_REQUIRED",
+            batch_submit_status="ITEM_REVIEW_REQUIRED",
+            item_review_reason="estimated amount exceeds selected_position_amount",
+        )
+    else:
+        buy_pass = replace(
+            buy_pass,
+            approved=True,
+            state="APPROVED",
+            feasibility_status="PASS",
+            batch_submit_status="PASS_ITEM_SUBMITTABLE",
+            item_review_reason="",
+        )
     pending = promote_order_plan_to_pending(
         order_plan_id="order-plan-buy-item-scoped-review",
         source_order_plan_path=str(order_plan_path),
@@ -1111,21 +1499,115 @@ def _write_buy_item_scoped_review_pending(
         plan_created_date="2026-07-08",
         intended_submit_date="2026-07-08",
         target_session_date="2026-07-08",
-        items=(buy_pass, buy_review),
+        items=(buy_pass, buy_review, sell_pass) if include_approved_sell else (buy_pass, buy_review),
         submit_policy_context=_submit_policy_context(policy),
+    )
+    if all_review:
+        approved_item_ids = ()
+    elif include_approved_sell:
+        approved_item_ids = ("buy-pass-24350", "sell-pass-43760")
+    else:
+        approved_item_ids = ("buy-pass-24350",)
+    approved_order_conditions = (
+        {}
+        if all_review
+        else {
+            "buy-pass-24350": {
+                "schema_version": "runtime_v2_approved_order_condition.v1",
+                "condition_authority": "strategy_planning_approval_order_conditions",
+                "condition_consumer": "runtime_v2.submit.guards.run_submit_preflight",
+                "pending_item_id": "buy-pass-24350",
+                "issue_code": "24350",
+                "side": "BUY",
+                "quantity": 500,
+                "estimated_price": 319,
+                "estimated_amount": 159_500,
+                "order_type": "MARKET",
+                "price_condition": "MARKET",
+                "limit_price": None,
+                "target_session": "2026-07-08",
+                "time_in_force": "DAY",
+                "approval_runtime_path": "Production/Demo/Historical common runtime_v2",
+                "legacy_approval_used": False,
+                "approval_fallback_used": False,
+            },
+            **(
+                {
+                    "sell-pass-43760": {
+                        "schema_version": "runtime_v2_approved_order_condition.v1",
+                        "condition_authority": "strategy_planning_approval_order_conditions",
+                        "condition_consumer": "runtime_v2.submit.guards.run_submit_preflight",
+                        "pending_item_id": "sell-pass-43760",
+                        "issue_code": "43760",
+                        "side": "SELL",
+                        "quantity": 100,
+                        "estimated_price": 457,
+                        "estimated_amount": 45_700,
+                        "order_type": "MARKET",
+                        "price_condition": "MARKET",
+                        "limit_price": None,
+                        "target_session": "2026-07-08",
+                        "time_in_force": "DAY",
+                        "approval_runtime_path": "Production/Demo/Historical common runtime_v2",
+                        "legacy_approval_used": False,
+                        "approval_fallback_used": False,
+                    }
+                }
+                if include_approved_sell
+                else {}
+            ),
+        }
     )
     pending = replace(
         pending,
         state=PendingPlanState.REVIEW_REQUIRED,
-        approved_item_ids=(),
+        approval=None
+        if all_review
+        else PendingApprovalLink(
+            approval_path=str(root / "fixtures" / "buy_item_scoped_review_approval.json"),
+            approval_hash="sha256:phase30-ak9r1-buy-review-approval",
+            approval_status="APPROVED",
+            approved_item_ids=approved_item_ids,
+            approval_expires_at="2026-07-08T15:00:00+09:00",
+            policy_version=policy.policy_version,
+            policy_source=policy.policy_source,
+            pending_policy_hash=policy_hash,
+            planning_authority_version="",
+            planning_authority_source="",
+            planning_authority_hash="",
+            submit_policy_version=policy.policy_version,
+            submit_policy_source=policy.policy_source,
+            submit_policy_hash=policy_hash,
+            accepted_generation_id="phase30-ak9r1-fixture-generation",
+            accepted_generation_business_date="2026-07-08",
+            accepted_generation_binding_status="PASS",
+            accepted_generation_binding={
+                "schema_version": "phase26_step8_accepted_generation_binding.v1",
+                "consumer": "phase30_ak9r1_buy_item_scoped_review_fixture",
+                "mode": "demo",
+                "requested_business_date": "2026-07-08",
+                "selected_business_date": "2026-07-08",
+                "accepted_generation_id": "phase30-ak9r1-fixture-generation",
+                "accepted_generation_business_date": "2026-07-08",
+                "generation_binding_status": "PASS",
+                "temporal_binding_status": "PASS",
+                "latest_fallback_used": False,
+                "shared_state_fallback_used": False,
+                "default_generation_used": False,
+                "legacy_component_fallback_used": False,
+                "promotion_candidate_fallback_used": False,
+            },
+            approved_order_conditions=approved_order_conditions,
+        ),
+        approved_item_ids=approved_item_ids,
         buy_items_status="REVIEW_REQUIRED",
-        sell_items_status="NOT_PRESENT",
-        plan_overall_status="REVIEW_REQUIRED",
-        approved_buy_item_ids=(),
-        approved_sell_item_ids=(),
-        review_required_buy_item_ids=("buy-review-30410",),
+        sell_items_status="APPROVED" if include_approved_sell else "NOT_PRESENT",
+        plan_overall_status="REVIEW_REQUIRED" if all_review else "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW",
+        approved_buy_item_ids=() if all_review else ("buy-pass-24350",),
+        approved_sell_item_ids=("sell-pass-43760",) if include_approved_sell and not all_review else (),
+        review_required_buy_item_ids=("buy-pass-24350", "buy-review-30410") if all_review else ("buy-review-30410",),
         review_required_sell_item_ids=(),
-        review_scope="BUY_ITEM_SCOPED_REVIEW",
+        review_scope="BUY_ITEM_SCOPED_REVIEW" if sell_continuation_allowed else "AUTHORITY_UNKNOWN_REVIEW",
         review_scope_source="phase24_ht_planning_submit_feasibility_v1",
         review_scope_reason="estimated amount exceeds selected_position_amount",
         sell_continuation_allowed=sell_continuation_allowed,
@@ -1134,14 +1616,36 @@ def _write_buy_item_scoped_review_pending(
             "contract_id": "phase24_ht_planning_submit_feasibility_v1",
             "reason": "estimated amount exceeds selected_position_amount",
             "items": [
-                {"pending_item_id": "buy-pass-24350", "side": "BUY", "status": "PASS"},
+                {
+                    "pending_item_id": "buy-pass-24350",
+                    "side": "BUY",
+                    "status": "REVIEW_REQUIRED" if all_review else "PASS",
+                    "reason": "estimated amount exceeds selected_position_amount" if all_review else "planning_submit_feasibility_pass",
+                    "violated_policy": "position_sizing" if all_review else "",
+                    "violated_policy_source": "fixture_position_sizing" if all_review else "",
+                },
                 {
                     "pending_item_id": "buy-review-30410",
                     "side": "BUY",
                     "status": "REVIEW_REQUIRED",
                     "reason": "estimated amount exceeds selected_position_amount",
-                    "violated_policy": "position_sizing",
+                    "violated_policy": reviewed_buy_violated_policy,
+                    "violated_policy_source": f"fixture_{reviewed_buy_violated_policy}",
                 },
+                *(
+                    [
+                        {
+                            "pending_item_id": "sell-pass-43760",
+                            "side": "SELL",
+                            "status": "PASS",
+                            "reason": "sell_exposure_reducing_submit_feasibility_not_blocked_by_buy_dynamic_exposure",
+                            "violated_policy": "",
+                            "violated_policy_source": "",
+                        }
+                    ]
+                    if include_approved_sell
+                    else []
+                ),
             ],
         },
     )
@@ -1149,11 +1653,111 @@ def _write_buy_item_scoped_review_pending(
     return pending
 
 
+def _expand_buy_item_scoped_review_pending(
+    root: Path,
+    *,
+    pass_symbols: tuple[str, ...],
+    review_symbols: tuple[str, ...],
+) -> None:
+    path = root / "pending_order_plan" / "pending_order_plan.json"
+    pending = _load_json(path)
+    pass_template = next(item for item in pending["items"] if item["pending_item_id"] == "buy-pass-24350")
+    review_template = next(item for item in pending["items"] if item["pending_item_id"] == "buy-review-30410")
+    approved_order_condition = dict(
+        pending["approval"]["approved_order_conditions"]["buy-pass-24350"]
+    )
+    items = []
+    approved_ids = []
+    review_ids = []
+    feasibility_items = []
+    approved_conditions = {}
+    for index, symbol in enumerate(pass_symbols, start=1):
+        item_id = f"buy-pass-{symbol}"
+        quantity = 100
+        price = 10 + index
+        amount = quantity * price
+        item = _replace_symbol_value(dict(pass_template), old="24350", new=symbol)
+        item.update(
+            {
+                "pending_item_id": item_id,
+                "quantity": quantity,
+                "estimated_price": price,
+                "estimated_amount": amount,
+                "state": "APPROVED",
+                "approved": True,
+                "feasibility_status": "PASS",
+                "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+                "item_review_reason": "",
+            }
+        )
+        items.append(item)
+        approved_ids.append(item_id)
+        condition = _replace_symbol_value(dict(approved_order_condition), old="24350", new=symbol)
+        condition.update(
+            {
+                "pending_item_id": item_id,
+                "quantity": quantity,
+                "estimated_price": price,
+                "estimated_amount": amount,
+            }
+        )
+        approved_conditions[item_id] = condition
+        feasibility_items.append(
+            {
+                "pending_item_id": item_id,
+                "side": "BUY",
+                "status": "PASS",
+                "reason": "planning_submit_feasibility_pass",
+                "violated_policy": "",
+                "violated_policy_source": "",
+            }
+        )
+    for index, symbol in enumerate(review_symbols, start=1):
+        item_id = f"buy-review-{symbol}"
+        quantity = 100 * index
+        price = 200 + index
+        amount = quantity * price
+        item = _replace_symbol_value(dict(review_template), old="30410", new=symbol)
+        item.update(
+            {
+                "pending_item_id": item_id,
+                "quantity": quantity,
+                "estimated_price": price,
+                "estimated_amount": amount,
+                "state": "REVIEW_REQUIRED",
+                "approved": False,
+                "feasibility_status": "REVIEW_REQUIRED",
+                "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+                "item_review_reason": "estimated amount exceeds selected_position_amount",
+            }
+        )
+        items.append(item)
+        review_ids.append(item_id)
+        feasibility_items.append(
+            {
+                "pending_item_id": item_id,
+                "side": "BUY",
+                "status": "REVIEW_REQUIRED",
+                "reason": "estimated amount exceeds selected_position_amount",
+                "violated_policy": "position_sizing",
+                "violated_policy_source": "fixture_position_sizing",
+            }
+        )
+    pending["items"] = items
+    pending["approved_item_ids"] = approved_ids
+    pending["approved_buy_item_ids"] = approved_ids
+    pending["review_required_buy_item_ids"] = review_ids
+    pending["approval"]["approved_item_ids"] = approved_ids
+    pending["approval"]["approved_order_conditions"] = approved_conditions
+    pending["planning_submit_feasibility"]["items"] = feasibility_items
+    _write_json(path, pending)
+
+
 def _policy(tmp_path: Path):
     return load_capital_deployment_policy(_policy_path(tmp_path))
 
 
-def _policy_path(tmp_path: Path, *, max_buy_order_amount=None) -> Path:
+def _policy_path(tmp_path: Path, *, max_buy_order_amount=None, max_positions: int = 5) -> Path:
     path = tmp_path / "capital_deployment_policy.json"
     _write_json(
         path,
@@ -1161,7 +1765,7 @@ def _policy_path(tmp_path: Path, *, max_buy_order_amount=None) -> Path:
             "policy_version": "capital_deployment_v1",
             "policy_source": str(path),
             "evaluation_capital": 1_000_000,
-            "max_positions": 5,
+            "max_positions": max_positions,
             "min_order_amount": 0,
             "max_buy_order_amount": max_buy_order_amount,
             "max_sell_liquidation_amount": None,
@@ -1397,14 +2001,21 @@ def _demo_settings() -> BrokerSettings:
 
 
 def _write_broker_snapshot(root: Path, *, symbol: str, quantity: float, available_quantity: float) -> None:
+    _write_broker_snapshots(
+        root,
+        records=[{"symbol": symbol, "quantity": quantity, "available_quantity": available_quantity}],
+    )
+
+
+def _write_broker_snapshots(root: Path, *, records: list[dict]) -> None:
     path = root / "broker" / "snapshots" / "positions" / "positions_20260708.json"
-    _write_json(
-        path,
-        {
-            "source": "broker_readonly",
-            "as_of": "2026-07-08T08:50:00+09:00",
-            "production_equivalent": True,
-            "records": [
+    rows = []
+    for record in records:
+        symbol = str(record["symbol"])
+        quantity = float(record["quantity"])
+        available_quantity = float(record["available_quantity"])
+        rows.extend(
+            [
                 {
                     "issue_code": symbol,
                     "quantity": quantity,
@@ -1418,8 +2029,16 @@ def _write_broker_snapshot(root: Path, *, symbol: str, quantity: float, availabl
                     "available_quantity": available_quantity,
                     "account_type": "specific",
                     "production_equivalent": True,
-                }
-            ],
+                },
+            ]
+        )
+    _write_json(
+        path,
+        {
+            "source": "broker_readonly",
+            "as_of": "2026-07-08T08:50:00+09:00",
+            "production_equivalent": True,
+            "records": rows,
         },
     )
 

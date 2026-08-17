@@ -31,7 +31,11 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     load_capital_deployment_policy,
 )
 from ai_fund_lab_v2.runtime_v2.cash_exposure_authority import resolve_cash_exposure_authority
-from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import RuntimeCurrentExposure, load_runtime_current_exposure
+from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
+    RuntimeCurrentExposure,
+    evaluate_buy_item_submit_feasibility,
+    load_runtime_current_exposure,
+)
 from ai_fund_lab_v2.runtime_v2.position_count_authority import resolve_position_count_authority
 from ai_fund_lab_v2.runtime_v2.position_sizing_authority import resolve_position_sizing_authority
 from ai_fund_lab_v2.strategy.runtime_planning import (
@@ -260,6 +264,15 @@ def activate_strategy_planning_authority(
         elif item_reason and not item_reason.startswith("no_action"):
             reason_codes.append(item_reason)
 
+    active_pending_items, cash_feasible_batch = _cash_feasible_buy_batch(
+        items=tuple(pending_items),
+        current=submit_feasibility_current,
+        policy=submit_feasibility_policy,
+        business_date=business_date,
+        mode=mode,
+    )
+    pending_items = list(active_pending_items)
+
     result_status = "PASS" if pending_items else ("REVIEW_REQUIRED" if reason_codes else "NO_ORDER_AUTHORIZED")
     order_plan_payload = {
         "schema_version": "phase23_i_strategy_authority_order_plan.v1",
@@ -289,6 +302,7 @@ def activate_strategy_planning_authority(
         "safety_context": safety_context,
         "strategy_item_lineage": item_lineage,
         "strategy_artifact_eligibility": _strategy_artifact_eligibility(runtime_planning_payload),
+        "cash_feasible_buy_batch": cash_feasible_batch,
         "planning_consumer_eligibility": "ELIGIBLE" if pending_items else ("REVIEW_REQUIRED" if reason_codes else "NO_ORDER_AUTHORIZED"),
         "production_decision_allowed": bool(pending_items),
         "broker_write_allowed": _broker_write_allowed(mode, environment_capability_context),
@@ -413,6 +427,7 @@ def activate_strategy_planning_authority(
         lineage={
             **lineage,
             "items": item_lineage,
+            "cash_feasible_buy_batch": cash_feasible_batch,
             "safety_authority": _safety_lineage(safety_context=safety_context),
             "submit_policy_authority": _submit_policy_lineage(submit_policy_context=submit_policy_context),
         },
@@ -421,6 +436,165 @@ def activate_strategy_planning_authority(
         pending_retry_eligibility=pending_retry_eligibility,
         atomic_commit_decision=atomic_commit_decision,
     )
+
+
+def _cash_feasible_buy_batch(
+    *,
+    items: tuple[PendingOrderItem, ...],
+    current: RuntimeCurrentExposure,
+    policy: Any | None,
+    business_date: str,
+    mode: str,
+) -> tuple[tuple[PendingOrderItem, ...], dict[str, Any]]:
+    buy_items = tuple(item for item in items if item.side.upper() == "BUY")
+    starting_cash = current.cash
+    starting_buying_power = current.buying_power
+    evidence: dict[str, Any] = {
+        "contract_id": "phase30_ak3r2b_reserved_notional_aware_cash_feasible_buy_batch_v1",
+        "authority": "PLANNING_PENDING_BUY_BATCH_CONSTRUCTION_USING_CANONICAL_RESERVED_NOTIONAL_AND_CANONICAL_STRATEGY_PRIORITY",
+        "canonical_reserved_notional_producer": "runtime_v2.order_reservation.resolve_order_cash_reservation",
+        "canonical_buy_priority_authority": "STRATEGY_RUNTIME_PLANNING_ORDER_DERIVED_FROM_PORTFOLIO_CONSTRUCTION_AND_POSITION_SIZING",
+        "selection_semantic": "PRIORITY_ORDERED_RESERVED_NOTIONAL_SKIP_AND_CONTINUE_PRUNING",
+        "new_investment_priority_created": False,
+        "new_batch_optimization_created": False,
+        "atomic_batch_requires_all_original_buy_candidates": False,
+        "cash_pruned_valid_batch_can_submit": True,
+        "cash_pruned_item_semantic": "DEFERRED_INSUFFICIENT_RESERVED_CASH",
+        "ak2_one_lot_cash_priority_special_case_required": False,
+        "starting_cash": starting_cash,
+        "starting_buying_power": starting_buying_power,
+        "candidate_buy_count": len(buy_items),
+        "included_buy_count": 0,
+        "cash_pruned_count": 0,
+        "final_reserved_notional_total": 0.0,
+        "remaining_reserved_cash": starting_cash,
+        "priority_order_preservation": "PASS",
+        "status": "PASS",
+        "reason": "cash_feasible_buy_batch_constructed",
+        "items": [],
+    }
+    if not buy_items:
+        return items, evidence
+    if policy is None:
+        evidence.update(
+            {
+                "status": "NOT_APPLIED",
+                "reason": "submit_feasibility_policy_missing",
+                "priority_order_preservation": "NOT_APPLIED",
+            }
+        )
+        return items, evidence
+
+    active_items: list[PendingOrderItem] = []
+    reserved_cash = current.cash
+    reserved_buying_power = current.buying_power
+    reserved_exposure = current.current_exposure
+    reserved_positions = dict(current.positions)
+    buy_priority_index = 0
+    included_buy_count = 0
+    cash_pruned_count = 0
+    final_reserved_notional_total = 0.0
+
+    for item in items:
+        if item.side.upper() != "BUY":
+            active_items.append(item)
+            continue
+        buy_priority_index += 1
+        cash_before = reserved_cash
+        reserved_cash_before = None if starting_cash is None or reserved_cash is None else starting_cash - reserved_cash
+        remaining_cash_before = reserved_cash
+        reserved_current = RuntimeCurrentExposure(
+            cash=reserved_cash,
+            buying_power=reserved_buying_power,
+            current_exposure=reserved_exposure,
+            current_total_equity=current.current_total_equity,
+            active_deployment_capital=current.active_deployment_capital,
+            selected_capital_source=current.selected_capital_source,
+            capital_fallback_used=current.capital_fallback_used,
+            initial_or_bootstrap_capital=current.initial_or_bootstrap_capital,
+            positions=reserved_positions,
+            position_market_values=dict(current.position_market_values),
+            current_position_source=current.current_position_source,
+            selected_current_source=current.selected_current_source,
+            selected_cash_source=current.selected_cash_source,
+            selected_positions_source=current.selected_positions_source,
+            selected_valuation_source=current.selected_valuation_source,
+            selected_projection_source=current.selected_projection_source,
+            current_authority_winner=current.current_authority_winner,
+            current_source_business_date=current.current_source_business_date,
+            current_source_generation=current.current_source_generation,
+            current_authority_status=current.current_authority_status,
+            current_authority_reason=current.current_authority_reason,
+            source_conflict_detected=current.source_conflict_detected,
+            source_selection_reason=current.source_selection_reason,
+            legacy_current_used=current.legacy_current_used,
+            current_fallback_used=current.current_fallback_used,
+            runtime_evaluation_capital_used_as_current=current.runtime_evaluation_capital_used_as_current,
+        )
+        item_result = evaluate_buy_item_submit_feasibility(
+            item=item,
+            policy=policy,
+            current=reserved_current,
+            authority_source="phase30_ak3r2b_cash_feasible_buy_batch_construction",
+            sequence_index=buy_priority_index - 1,
+            business_date=business_date,
+            runtime_mode=mode,
+        )
+        reserved_notional = float(item_result.get("reserved_notional") or item.reserved_notional or item.estimated_amount or 0.0)
+        decision = "INCLUDE"
+        reason = str(item_result.get("reason") or "planning_submit_feasibility_pass")
+        reserved_cash_after = reserved_cash
+        if item_result.get("status") == "PASS":
+            active_items.append(item)
+            included_buy_count += 1
+            final_reserved_notional_total = round(final_reserved_notional_total + reserved_notional, 2)
+            if reserved_cash is not None:
+                reserved_cash = reserved_cash - reserved_notional
+                reserved_cash_after = reserved_cash
+            if reserved_buying_power is not None:
+                reserved_buying_power = reserved_buying_power - reserved_notional
+            reserved_exposure += reserved_notional
+            reserved_positions.setdefault(item.symbol, float(item.quantity or 0.0))
+        elif str(item_result.get("violated_policy") or "") in {"cash", "buying_power"}:
+            decision = "PRUNE"
+            reason = "DEFERRED_INSUFFICIENT_RESERVED_CASH"
+            cash_pruned_count += 1
+        else:
+            decision = "INCLUDE_REVIEW_REQUIRED"
+            active_items.append(item)
+            reserved_cash_after = reserved_cash
+
+        evidence["items"].append(
+            {
+                "symbol": item.symbol,
+                "pending_item_id": item.pending_item_id,
+                "canonical_priority_index": buy_priority_index,
+                "executable_quantity": item.quantity,
+                "reservation_price": item_result.get("reservation_price", item.reservation_price),
+                "reserved_notional": reserved_notional,
+                "cash_before_item": cash_before,
+                "reserved_cash_before_item": reserved_cash_before,
+                "remaining_cash_before_item": remaining_cash_before,
+                "decision": decision,
+                "reason": reason,
+                "reserved_cash_after_item": reserved_cash_after,
+                "source_submit_feasibility_status": str(item_result.get("status") or ""),
+                "source_violated_policy": str(item_result.get("violated_policy") or ""),
+            }
+        )
+
+    evidence.update(
+        {
+            "included_buy_count": included_buy_count,
+            "cash_pruned_count": cash_pruned_count,
+            "final_reserved_notional_total": final_reserved_notional_total,
+            "remaining_reserved_cash": reserved_cash,
+            "priority_order_preservation": "PASS"
+            if [row["symbol"] for row in evidence["items"]] == [item.symbol for item in buy_items]
+            else "REVIEW_REQUIRED",
+        }
+    )
+    return tuple(active_items), evidence
 
 
 def _pending_item_from_strategy_plan(

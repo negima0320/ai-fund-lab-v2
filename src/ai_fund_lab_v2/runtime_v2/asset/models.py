@@ -19,6 +19,13 @@ class CurrentAssetPosition:
     valuation_price_basis: str = ""
     valuation_price_role: str = ""
     valuation_price_provenance: str = ""
+    valuation_as_of: str = ""
+    source_market_date: str = ""
+    valuation_source: str = ""
+    valuation_price_type: str = ""
+    valuation_quote_status: str = ""
+    quote_business_date: str = ""
+    valuation_business_date: str = ""
     execution_price_basis: str = ""
     fill_price_basis: str = ""
 

@@ -34,6 +34,10 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPl
 from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_review_sell_continuation_pending
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import validate_materialized_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    build_pending_review_scope_authority,
+    pending_scope_allows_partial_submit,
+)
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     CapitalDeploymentPolicy,
@@ -363,6 +367,8 @@ def run_submit_pipeline(
     )
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
+    item_scoped_review_evidence = _buy_item_scoped_review_partial_submission_evidence(pending)
+    reviewed_item_results = _reviewed_buy_item_results(pending, item_scoped_review_evidence=item_scoped_review_evidence)
     approved_items = tuple(
         item
         for approved_item_id in pending.approved_item_ids
@@ -582,7 +588,9 @@ def run_submit_pipeline(
             )
         )
 
+    item_results.extend(reviewed_item_results)
     orders_path = runtime_root_path / "persistent_ledger" / "orders.jsonl"
+    unsubmitted_review_present = any(result.review_required and not result.submitted for result in item_results)
     if ledger_records:
         _append_ledger_order_records(orders_path, ledger_records)
         submitted_order_ids = tuple(result.broker_order_id_hash for result in item_results if result.submitted)
@@ -591,6 +599,17 @@ def run_submit_pipeline(
             pending = replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=timestamp)
         elif any(result.rejected or result.blocked for result in item_results):
             pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=timestamp)
+        elif unsubmitted_review_present:
+            consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
+            pending = replace(
+                pending,
+                items=tuple(
+                    replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
+                    for item in pending.items
+                ),
+                state=PendingPlanState.REVIEW_REQUIRED,
+                updated_at=timestamp,
+            )
         else:
             consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
             pending = replace(
@@ -635,6 +654,8 @@ def run_submit_pipeline(
     elif unknown_count or rejected_count or blocked_count:
         status = "REVIEW_REQUIRED"
         reason = "submit completed with rejected/unknown/blocked items"
+    elif unsubmitted_review_present:
+        reason = "submitted_with_reviewed_buy_items_not_submitted"
 
     return SubmitPipelineResult(
         status=status,
@@ -664,6 +685,9 @@ def run_submit_pipeline(
         halt_required=status == "HALT",
         submit_guard_policy=_submit_guard_policy_manifest(policy),
         submit_policy_consistency=policy_consistency,
+        no_order_authority_status=item_scoped_review_evidence.get("status", ""),
+        no_order_authority_reason=item_scoped_review_evidence.get("reason", ""),
+        no_order_authority_evidence=item_scoped_review_evidence,
         submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
     )
 
@@ -1068,6 +1092,105 @@ def _payload_item_count(payload: Mapping[str, Any] | None) -> int:
     return len(items) if isinstance(items, list) else 0
 
 
+def _buy_item_scoped_review_partial_submission_evidence(pending: PendingOrderPlan) -> dict[str, Any]:
+    scope_authority = build_pending_review_scope_authority(pending)
+    if not pending_scope_allows_partial_submit(scope_authority):
+        return {}
+    approved_ids = set(scope_authority.executable_item_ids)
+    reviewed_ids = set(scope_authority.reviewed_buy_item_ids)
+    reviewed_items = tuple(item for item in pending.items if item.pending_item_id in reviewed_ids)
+    submitted_items = tuple(item for item in pending.items if item.pending_item_id in approved_ids)
+    return {
+        "authority_type": "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION",
+        "status": "PASS",
+        "reason": "pass_buy_items_submit_review_buy_items_deferred",
+        "pending_plan_id": pending.pending_plan_id,
+        "review_scope": scope_authority.review_scope,
+        "review_scope_reason": pending.review_scope_reason,
+        "pending_review_scope_authority": scope_authority.to_dict(),
+        "item_review_does_not_escalate_to_batch_failure": True,
+        "true_batch_failure_atomicity_preserved": True,
+        "partial_pass_buy_submission_allowed": True,
+        "reviewed_buy_submitted": False,
+        "reviewed_item_count": len(reviewed_items),
+        "submitted_candidate_count": len(submitted_items),
+        "review_required_buy_item_ids": list(scope_authority.reviewed_buy_item_ids),
+        "approved_item_ids": list(scope_authority.executable_item_ids),
+        "items": [
+            {
+                "pending_item_id": item.pending_item_id,
+                "symbol": item.symbol,
+                "side": item.side,
+                "quantity": item.quantity,
+                "feasibility_status": item.feasibility_status,
+                "batch_submit_status": item.batch_submit_status,
+                "item_review_reason": item.item_review_reason,
+                "submitted": item.pending_item_id in approved_ids,
+                "not_submitted_reason": "item_scoped_review_required"
+                if item.pending_item_id in reviewed_ids
+                else "",
+                "blocked_other_items": False if item.pending_item_id in reviewed_ids else None,
+                "batch_membership": "active_pending_buy_item_scoped_review_batch",
+            }
+            for item in pending.items
+            if item.pending_item_id in reviewed_ids or item.pending_item_id in approved_ids
+        ],
+    }
+
+
+def _reviewed_buy_item_results(
+    pending: PendingOrderPlan,
+    *,
+    item_scoped_review_evidence: Mapping[str, Any],
+) -> list[SubmitItemResult]:
+    if not item_scoped_review_evidence:
+        return []
+    reviewed_ids = set(pending.review_required_buy_item_ids)
+    results: list[SubmitItemResult] = []
+    for item in pending.items:
+        if item.pending_item_id not in reviewed_ids:
+            continue
+        reason = item.item_review_reason or pending.review_scope_reason or "buy_item_scoped_review_required"
+        results.append(
+            SubmitItemResult(
+                pending_item_id=item.pending_item_id,
+                symbol=item.symbol,
+                side=item.side,
+                quantity=item.quantity,
+                preflight_status="REVIEW_REQUIRED",
+                submit_status="NOT_SUBMITTED",
+                submitted=False,
+                accepted=False,
+                rejected=False,
+                unknown=False,
+                blocked=False,
+                review_required=True,
+                broker_order_id_hash="",
+                ledger_order_record_id="",
+                reason=reason,
+                issue_code_normalization={},
+                response_classification={},
+                configuration_diagnostic={},
+                next_action="defer until item authority is repaired or refreshed",
+                guard_evidence={
+                    "authority_type": "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED",
+                    "status": "PASS",
+                    "symbol": item.symbol,
+                    "side": item.side,
+                    "quantity": item.quantity,
+                    "pending_item_id": item.pending_item_id,
+                    "review_authority": pending.review_scope_source,
+                    "review_scope": pending.review_scope,
+                    "review_reason": reason,
+                    "not_submitted_reason": "item_scoped_review_required",
+                    "batch_membership": "active_pending_buy_item_scoped_review_batch",
+                    "blocked_other_items": False,
+                },
+            )
+        )
+    return results
+
+
 def _pending_submit_guard(pending: PendingOrderPlan, *, business_date: str) -> str:
     if pending.state in {
         PendingPlanState.SUBMITTING,
@@ -1075,10 +1198,12 @@ def _pending_submit_guard(pending: PendingOrderPlan, *, business_date: str) -> s
         PendingPlanState.POST_SEND_UNKNOWN,
         PendingPlanState.CONSUMED,
         PendingPlanState.BLOCKED,
-        PendingPlanState.REVIEW_REQUIRED,
     }:
         return f"dangerous pending state blocked: {pending.state.value}"
-    if pending.state != PendingPlanState.APPROVED:
+    scope_authority = build_pending_review_scope_authority(pending)
+    if pending.state == PendingPlanState.REVIEW_REQUIRED and not pending_scope_allows_partial_submit(scope_authority):
+        return f"dangerous pending state blocked: {pending.state.value}"
+    if pending.state not in {PendingPlanState.APPROVED, PendingPlanState.REVIEW_REQUIRED}:
         return "pending state is not APPROVED"
     if pending.target_session_date != business_date:
         return "pending target_session_date mismatch"
@@ -1090,6 +1215,10 @@ def _pending_submit_guard(pending: PendingOrderPlan, *, business_date: str) -> s
         return "consumed pending cannot be submitted"
     if set(pending.approved_item_ids) != {item.pending_item_id for item in pending.items if item.approved}:
         return "approved item ids mismatch"
+    if pending.state == PendingPlanState.REVIEW_REQUIRED:
+        reviewed_ids = set(pending.review_required_buy_item_ids) | set(pending.review_required_sell_item_ids)
+        if any(item_id in reviewed_ids for item_id in pending.approved_item_ids):
+            return "review required item cannot be approved for submit"
     return ""
 
 
@@ -2095,7 +2224,14 @@ def _buy_guard_evidence(
         item=type("SubmitGuardItem", (), {
             "pending_item_id": evidence["pending_item_id"],
             "symbol": evidence["symbol"],
+            "quantity": evidence["quantity"],
             "estimated_amount": estimated_amount,
+            "estimated_price": evidence.get("reference_price") or 0.0,
+            "reference_price": evidence.get("reference_price"),
+            "reservation_price": evidence.get("reservation_price"),
+            "reservation_price_authority": evidence.get("reservation_price_authority"),
+            "reservation_reason": evidence.get("reservation_reason"),
+            "reserved_notional": evidence.get("reserved_notional"),
             "quantity_contract": evidence.get("quantity_contract") if isinstance(evidence.get("quantity_contract"), Mapping) else evidence,
         })(),
         policy=policy,

@@ -156,6 +156,616 @@ def test_phase29_l21t_h_planning_feasibility_blocks_multi_lot_abuse(tmp_path: Pa
     assert linked.planning_submit_feasibility["items"][0]["violated_policy"] == "position_sizing"
 
 
+def test_phase30_ak3r1_submit_feasibility_accepts_authorized_minimum_executable_one_lot(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-ak2",
+                amount=100_000.0,
+                symbol="78780",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0)
+                | {
+                    "selected_notional": 100_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _ak2_minimum_one_lot_position_sizing_authority(
+                        symbol="78780",
+                        selected_position_amount=70_000.0,
+                        one_lot_notional=100_000.0,
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_buy_item_ids == ("buy-ak2",)
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["strategy_executable_notional"] == 100_000.0
+    assert item_evidence["selected_position_amount"] == 100_000.0
+    assert item_evidence["strategy_requested_position_amount"] == 70_000.0
+    assert item_evidence["one_lot_authority_consumed"] is True
+    assert item_evidence["one_lot_authority_reason"] == "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
+    assert item_evidence["one_lot_submit_authority"]["status"] == "PASS"
+
+
+def test_phase30_ak3r1_submit_feasibility_preserves_review_without_one_lot_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-no-authority",
+                amount=100_000.0,
+                symbol="78780",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0),
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "estimated amount exceeds selected_position_amount"
+    assert item_evidence["one_lot_authority_consumed"] is False
+
+
+def test_phase30_ak3r1_submit_feasibility_blocks_tampered_one_lot_authority_symbol(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    authority = _ak2_minimum_one_lot_position_sizing_authority(
+        symbol="99990",
+        selected_position_amount=70_000.0,
+        one_lot_notional=100_000.0,
+    )
+    authority["symbol"] = "78780"
+    pending = _pending(
+        (
+            _item(
+                "buy-mismatch",
+                amount=100_000.0,
+                symbol="78780",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0)
+                | {
+                    "selected_notional": 100_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "one_lot_authority_symbol_mismatch"
+
+
+def test_phase30_ak3r1_submit_feasibility_blocks_second_lot_plus_with_ak2_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=500_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-two-lots",
+                amount=200_000.0,
+                symbol="78780",
+                quantity=200,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0)
+                | {
+                    "selected_notional": 200_000.0,
+                    "selected_quantity": 200,
+                    "planned_quantity": 200,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _ak2_minimum_one_lot_position_sizing_authority(
+                        symbol="78780",
+                        selected_position_amount=70_000.0,
+                        one_lot_notional=100_000.0,
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] in {
+        "estimated amount exceeds selected_position_amount",
+        "one_lot_authority_quantity_mismatch",
+        "one_lot_authority_notional_mismatch",
+    }
+
+
+def test_phase30_ak3r1_mixed_atomic_batch_allows_legacy_and_authorized_one_lot(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=500_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item("buy-legacy", amount=50_000.0, symbol="7203", quantity=100),
+            _item(
+                "buy-ak2",
+                amount=100_000.0,
+                symbol="78780",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0)
+                | {
+                    "selected_notional": 100_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _ak2_minimum_one_lot_position_sizing_authority(
+                        symbol="78780",
+                        selected_position_amount=70_000.0,
+                        one_lot_notional=100_000.0,
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_buy_item_ids == ("buy-legacy", "buy-ak2")
+    assert linked.planning_submit_feasibility["status"] == "PASS"
+    assert [item["status"] for item in linked.planning_submit_feasibility["items"]] == ["PASS", "PASS"]
+
+
+def test_phase30_ak9r1b_accepts_pc_discrete_quantity_over_selected_amount(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-pc-discrete",
+                amount=45_300.0,
+                symbol="23880",
+                quantity=300,
+                quantity_contract=_quantity_contract(symbol="23880", amount=39_054.0)
+                | {
+                    "selected_notional": 45_300.0,
+                    "selected_quantity": 300,
+                    "planned_quantity": 300,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _pc_discrete_position_sizing_authority(
+                        symbol="23880",
+                        selected_position_amount=39_054.0,
+                        executable_quantity=300,
+                        executable_notional=45_300.0,
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_buy_item_ids == ("buy-pc-discrete",)
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["selected_position_amount"] == 39_054.0
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_precedence_applied"] is True
+
+
+def test_phase30_ak9r1b_preserves_selected_amount_review_without_pc_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-no-pc-discrete",
+                amount=45_300.0,
+                symbol="23880",
+                quantity=300,
+                quantity_contract=_quantity_contract(symbol="23880", amount=39_054.0),
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "estimated amount exceeds selected_position_amount"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "NOT_APPLICABLE"
+
+
+def test_phase30_ak9r1b_blocks_pc_ps_quantity_mismatch(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-pc-mismatch",
+                amount=45_300.0,
+                symbol="23880",
+                quantity=200,
+                quantity_contract=_quantity_contract(symbol="23880", amount=39_054.0)
+                | {
+                    "selected_notional": 45_300.0,
+                    "selected_quantity": 200,
+                    "planned_quantity": 200,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _pc_discrete_position_sizing_authority(
+                        symbol="23880",
+                        selected_position_amount=39_054.0,
+                        executable_quantity=300,
+                        executable_notional=45_300.0,
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "pc_discrete_quantity_authority_quantity_mismatch"
+
+
+def test_phase30_ak9r1b_blocks_pc_discrete_strategy_or_safety_breach(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="23880",
+        selected_position_amount=39_054.0,
+        executable_quantity=300,
+        executable_notional=45_300.0,
+    )
+    authority["phase29_l19_lot_resolution"]["safety_hard_cap_preserved"] = False
+    pending = _pending(
+        (
+            _item(
+                "buy-pc-safety-breach",
+                amount=45_300.0,
+                symbol="23880",
+                quantity=300,
+                quantity_contract=_quantity_contract(symbol="23880", amount=39_054.0)
+                | {
+                    "selected_notional": 45_300.0,
+                    "selected_quantity": 300,
+                    "planned_quantity": 300,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "pc_discrete_quantity_authority_safety_hard_cap_not_preserved"
+
+
+def test_phase30_ak9r21_buy_new_pc_discrete_soft_cap_overshoot_passes_submit(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=900_000, positions=[_position("1111", 100, 1000)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="47770",
+        selected_position_amount=60_000.0,
+        executable_quantity=100,
+        executable_notional=68_400.0,
+        intent="BUY_NEW",
+    )
+    lot_resolution = authority["phase29_l19_lot_resolution"]
+    lot_resolution.update(
+        {
+            "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+            "lot_overshoot_reason": "LOT_AWARE_STRATEGY_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+            "strategy_cap_overshoot_applied": True,
+            "maximum_strategy_feasible_lots": 0,
+            "maximum_safety_feasible_lots": 1,
+            "strategy_cap_preserved": True,
+            "safety_hard_cap_preserved": True,
+        }
+    )
+    pending = _pending(
+        (
+            _item(
+                "buy-new-pc-overshoot",
+                amount=68_400.0,
+                symbol="47770",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="47770", amount=60_000.0)
+                | {
+                    "selected_notional": 68_400.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.APPROVED
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_precedence_applied"] is True
+
+
+def test_phase30_ak9r21_buy_add_second_lot_promotion_passes_submit(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=900_000, positions=[_position("89180", 100, 1000)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="89180",
+        selected_position_amount=85_000.0,
+        executable_quantity=100,
+        executable_notional=95_000.0,
+        intent="BUY_ADD",
+    )
+    authority["current_quantity"] = 100
+    lot_resolution = authority["phase29_l19_lot_resolution"]
+    lot_resolution.update(
+        {
+            "boundary_classification": "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX",
+            "current_quantity": 100,
+            "lot_overshoot_reason": "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
+            "maximum_strategy_feasible_lots": 0,
+            "maximum_safety_feasible_lots": 2,
+            "second_lot_plus_promotion": {"promotion_candidate": True, "decision": "PROMOTE"},
+            "semantic_type": "BUY_ADD",
+            "strategy_cap_overshoot_applied": True,
+            "strategy_cap_preserved": True,
+            "safety_hard_cap_preserved": True,
+        }
+    )
+    pending = _pending(
+        (
+            _item(
+                "buy-add-pc-overshoot",
+                amount=95_000.0,
+                symbol="89180",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="89180", amount=85_000.0)
+                | {
+                    "selected_notional": 95_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_ADD",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.APPROVED
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_precedence_applied"] is True
+
+
+def test_phase30_ak9r21_rejects_unknown_pc_discrete_overshoot_reason(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=900_000, positions=[_position("1111", 100, 1000)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="23880",
+        selected_position_amount=60_000.0,
+        executable_quantity=100,
+        executable_notional=68_400.0,
+    )
+    lot_resolution = authority["phase29_l19_lot_resolution"]
+    lot_resolution.update(
+        {
+            "lot_overshoot_reason": "UNAUTHORIZED_SOFT_CAP_OVERSHOOT",
+            "maximum_strategy_feasible_lots": 0,
+            "maximum_safety_feasible_lots": 1,
+            "strategy_cap_preserved": True,
+            "safety_hard_cap_preserved": True,
+        }
+    )
+    pending = _pending(
+        (
+            _item(
+                "buy-unknown-overshoot",
+                amount=68_400.0,
+                symbol="23880",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="23880", amount=60_000.0)
+                | {
+                    "selected_notional": 68_400.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "pc_discrete_quantity_authority_strategy_cap_not_preserved"
+
+
+def test_phase30_ak9r21_rejects_malformed_second_lot_promotion(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=900_000, positions=[_position("89180", 100, 1000)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="89180",
+        selected_position_amount=85_000.0,
+        executable_quantity=100,
+        executable_notional=95_000.0,
+        intent="BUY_ADD",
+    )
+    lot_resolution = authority["phase29_l19_lot_resolution"]
+    lot_resolution.update(
+        {
+            "lot_overshoot_reason": "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
+            "maximum_strategy_feasible_lots": 1,
+            "maximum_safety_feasible_lots": 2,
+            "second_lot_plus_promotion": {"promotion_candidate": False, "decision": "NO_PROMOTION"},
+            "semantic_type": "BUY_ADD",
+            "strategy_cap_preserved": True,
+            "safety_hard_cap_preserved": True,
+        }
+    )
+    pending = _pending(
+        (
+            _item(
+                "buy-add-malformed-promotion",
+                amount=95_000.0,
+                symbol="89180",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="89180", amount=85_000.0)
+                | {
+                    "selected_notional": 95_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_ADD",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "pc_discrete_quantity_authority_lot_overshoot_unresolved"
+
+
 def test_phase24_id_planning_aggregate_cash_reservation_blocks_later_buy(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
@@ -869,5 +1479,157 @@ def _one_lot_position_sizing_authority(intent: str) -> dict:
             "safety_hard_cap_preserved": True,
             "safety_margin_after_trade": 0.006811,
             "lot_overshoot_reason": "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+        },
+    }
+
+
+def _ak2_minimum_one_lot_position_sizing_authority(
+    *,
+    symbol: str,
+    selected_position_amount: float,
+    one_lot_notional: float,
+    intent: str = "BUY_NEW",
+) -> dict:
+    one_lot_weight = one_lot_notional / 1_000_000.0
+    selected_weight = selected_position_amount / 1_000_000.0
+    return {
+        "symbol": symbol,
+        "security_code": symbol,
+        "selected_position_amount": selected_position_amount,
+        "remaining_add_capacity": selected_position_amount,
+        "selected_position_weight": selected_weight,
+        "target_weight": selected_weight,
+        "target_notional": selected_position_amount,
+        "incremental_buy_notional": selected_position_amount,
+        "maximum_position_weight": 0.18,
+        "semantic_buy_type": intent,
+        "membership_intent": "ADD_CANDIDATE",
+        "pm_action": "NEW",
+        "current_quantity": 0,
+        "final_quantity_delta": 100,
+        "discrete_authorized_quantity": 100,
+        "discrete_authorized_notional": one_lot_notional,
+        "portfolio_policy_source": "phase30_ak3r1_fixture_portfolio_policy",
+        "phase29_l19_lot_resolution": {
+            "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+            "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+            "current_weight": 0.0,
+            "executable_lots": 1,
+            "executable_quantity_delta": 100,
+            "final_allocated_quantity": 100,
+            "final_target_weight": one_lot_weight,
+            "lot_overshoot_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+            "maximum_safety_feasible_lots": 2,
+            "maximum_strategy_feasible_lots": 1,
+            "minimum_executable_one_lot_admitted": True,
+            "minimum_executable_one_lot_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+            "minimum_executable_one_lot_authority": {
+                "schema_version": "minimum_executable_one_lot_authority.v1",
+                "authority_type": "PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION",
+                "decision": "ADMIT",
+                "reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+                "admission_decision": "PASS",
+                "admission_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
+                "symbol": symbol,
+                "intent": intent,
+                "current_quantity": 0,
+                "original_pc_target_weight": selected_weight,
+                "original_pc_increment_weight": selected_weight,
+                "original_pc_target_notional": selected_position_amount,
+                "one_lot_weight": one_lot_weight,
+                "one_lot_notional": one_lot_notional,
+                "projected_one_lot_portfolio_weight": one_lot_weight,
+                "final_promoted_target_weight": one_lot_weight,
+                "ps_final_quantity": 100,
+                "strategy_cap": 0.18,
+                "safety_cap": 0.25,
+                "future_information_used": False,
+            },
+            "one_lot_fallback_applied": True,
+            "one_lot_feasibility_status": "PASS",
+            "one_lot_notional": one_lot_notional,
+            "one_lot_quantity": 100,
+            "one_lot_weight": one_lot_weight,
+            "post_trade_weight": one_lot_weight,
+            "requested_incremental_weight": selected_weight,
+            "requested_lots": 0,
+            "requested_target_weight": selected_weight,
+            "safety_hard_cap": 0.25,
+            "safety_hard_cap_preserved": True,
+            "safety_hard_cap_weight": 0.25,
+            "safety_margin_after_trade": 0.25 - one_lot_weight,
+            "semantic_type": intent,
+            "strategy_cap_overshoot_applied": False,
+            "strategy_cap_overshoot_weight": 0.0,
+            "strategy_cap_preserved": True,
+            "strategy_cap_weight": 0.18,
+            "strategy_target_cap": 0.18,
+            "symbol": symbol,
+        },
+    }
+
+
+def _pc_discrete_position_sizing_authority(
+    *,
+    symbol: str,
+    selected_position_amount: float,
+    executable_quantity: int,
+    executable_notional: float,
+    intent: str = "BUY_NEW",
+) -> dict:
+    one_lot_quantity = 100
+    executable_lots = executable_quantity // one_lot_quantity
+    executable_weight = executable_notional / 1_000_000.0
+    selected_weight = selected_position_amount / 1_000_000.0
+    return {
+        "symbol": symbol,
+        "security_code": symbol,
+        "selected_position_amount": selected_position_amount,
+        "remaining_add_capacity": selected_position_amount,
+        "selected_position_weight": selected_weight,
+        "target_weight": selected_weight,
+        "target_notional": selected_position_amount,
+        "incremental_buy_notional": selected_position_amount,
+        "maximum_position_weight": 0.18,
+        "semantic_buy_type": intent,
+        "current_quantity": 0,
+        "final_quantity_delta": executable_quantity,
+        "portfolio_policy_source": "phase30_ak9r1b_fixture_portfolio_policy",
+        "phase29_l19_lot_resolution": {
+            "authority_type": "PHASE29_L19_CAP_CONSTRAINED_LOT_RESOLUTION",
+            "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+            "current_weight": 0.0,
+            "executable_lots": executable_lots,
+            "executable_quantity_delta": executable_quantity,
+            "final_allocated_quantity": executable_quantity,
+            "final_target_weight": executable_weight,
+            "lot_overshoot_reason": "",
+            "maximum_safety_feasible_lots": max(executable_lots, 1),
+            "maximum_strategy_feasible_lots": max(executable_lots, 1),
+            "normal_lot_quantity": executable_quantity,
+            "one_lot_fallback_applied": False,
+            "one_lot_feasibility_status": "PASS",
+            "one_lot_notional": executable_notional / max(executable_lots, 1),
+            "one_lot_quantity": one_lot_quantity,
+            "one_lot_weight": executable_weight / max(executable_lots, 1),
+            "pc_positive_executable_quantity_authority": {
+                "accepted_lot_increment_weight": executable_weight,
+                "authority_type": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+                "final_allocated_quantity": executable_quantity,
+                "future_information_used": False,
+                "ps_must_consume_canonical_quantity": True,
+                "status": "PASS",
+            },
+            "post_trade_weight": executable_weight,
+            "preflight_executable_quantity_delta": executable_quantity,
+            "safety_hard_cap": 0.25,
+            "safety_hard_cap_preserved": True,
+            "safety_hard_cap_weight": 0.25,
+            "safety_margin_after_trade": 0.25 - executable_weight,
+            "semantic_type": intent,
+            "strategy_cap_preserved": True,
+            "strategy_cap_weight": 0.18,
+            "strategy_target_cap": 0.18,
+            "symbol": symbol,
         },
     }

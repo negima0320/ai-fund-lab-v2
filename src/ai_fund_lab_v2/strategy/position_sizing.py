@@ -23,6 +23,10 @@ PRODUCER_VERSION = "phase22_j_position_sizing_producer.v1"
 LOT_FEASIBILITY_SCHEMA_VERSION = "ps_lot_feasibility_preflight.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
+PRODUCTION_ARTIFACT_LIFECYCLE_STATUS = "ACCEPTED"
+PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
+ARTIFACT_LIFECYCLE_STATUSES = {"DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED"}
+RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED", "BLOCKED"}
 ALLOCATION_QUALITY_AUTHORITY = "ALLOCATION_QUALITY_AUTHORITY"
 ALLOCATION_QUALITY_CANONICAL_FIELD = "allocation_quality_score"
 ALLOCATION_QUALITY_LEGACY_FIELD = "quality_score"
@@ -257,6 +261,7 @@ def produce_position_sizing_artifact(
     output_path: Path | str,
     as_of: str | None = None,
     expected_config_hash: str | None = None,
+    production_consumer_connected: bool = False,
 ) -> PositionSizingProducerResult:
     payload, evidence = build_position_sizing_payload(
         business_date=business_date,
@@ -272,6 +277,7 @@ def produce_position_sizing_artifact(
         config=config,
         as_of=as_of,
         expected_config_hash=expected_config_hash,
+        production_consumer_connected=production_consumer_connected,
     )
     validate_position_sizing_artifact(payload)
     artifact_hash = position_sizing_hash(payload)
@@ -296,6 +302,7 @@ def build_position_sizing_payload(
     config: PositionSizingConfig | None,
     as_of: str | None = None,
     expected_config_hash: str | None = None,
+    production_consumer_connected: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _date(business_date)
     as_of = as_of or f"{business_date}T00:00:00+00:00"
@@ -443,6 +450,9 @@ def build_position_sizing_payload(
     source_hashes = [{"role": name, "path": s.source_ref, "sha256": _strip_sha256(s.source_hash)} for name, s in summaries.items()]
     if config:
         source_hashes.append({"role": "position_sizing_config", "path": config.config_source, "sha256": config_source_hash})
+    production_ready = bool(production_consumer_connected) and status == "PASS"
+    lifecycle = PRODUCTION_ARTIFACT_LIFECYCLE_STATUS if production_ready else ARTIFACT_LIFECYCLE_STATUS
+    consumer_eligibility = PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY if production_ready else RUNTIME_CONSUMER_ELIGIBILITY
 
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -450,14 +460,14 @@ def build_position_sizing_payload(
         "business_date": business_date,
         "as_of": as_of,
         "feature_date": feature_date,
-        "artifact_lifecycle_status": ARTIFACT_LIFECYCLE_STATUS,
+        "artifact_lifecycle_status": lifecycle,
         "source_authority_status": source_status,
         "producer_result_status": status,
-        "runtime_consumer_eligibility": RUNTIME_CONSUMER_ELIGIBILITY,
+        "runtime_consumer_eligibility": consumer_eligibility,
         **status_contract_fields(
             producer_result_status=status,
-            artifact_lifecycle_status=ARTIFACT_LIFECYCLE_STATUS,
-            runtime_consumer_eligibility=RUNTIME_CONSUMER_ELIGIBILITY,
+            artifact_lifecycle_status=lifecycle,
+            runtime_consumer_eligibility=consumer_eligibility,
             reason_codes=sorted(set(reasons)),
             decision_resolution="UNRESOLVED" if target_exposure_unresolved or status != "PASS" else "RESOLVED",
         ),
@@ -503,8 +513,8 @@ def build_position_sizing_payload(
         "residual_cash_ratio": round(max(1.0 - sum(float(item["target_weight"]) for item in positions), 0.0), TARGET_WEIGHT_DECIMALS),
         "concrete_target_weight_decided": status == "PASS",
         "target_notional_decided": status == "PASS",
-        "share_quantity_decided": False,
-        "lot_rounding_decided": False,
+        "share_quantity_decided": production_ready,
+        "lot_rounding_decided": production_ready,
         "order_price_decided": False,
         "pending_decided": False,
         "submit_decided": False,
@@ -524,9 +534,9 @@ def build_position_sizing_payload(
         "source_hashes": source_hashes,
         "temporal_safety": {"point_in_time": not future, "future_leakage_used": future, "feature_date_lte_business_date": feature_date <= business_date, "implicit_latest_fallback_used": False, "previous_day_position_sizing_copied": False},
         "shadow_comparison": {"legacy_max_position_weight": 0.20, "legacy_quantity_result": "downstream_runtime_authority_preserved", "would_change_buy_allocation": status == "PASS", "would_change_add_allocation": status == "PASS", "would_change_reduce_target": status == "PASS", "would_change_exit_target": status == "PASS", "runtime_behavior_changed": False},
-        "production_consumer_connected": False,
+        "production_consumer_connected": production_ready,
         "runtime_switch_performed": False,
-        "legacy_authority_active": True,
+        "legacy_authority_active": not production_ready,
     }
     return payload, {"schema_version": "phase22_j_position_sizing_evidence.v1", "producer_result_status": status, "reason_codes": payload["reason_codes"]}
 
@@ -535,8 +545,10 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
     required = {"schema_version","business_date","as_of","feature_date","artifact_lifecycle_status","source_authority_status","producer_result_status","runtime_consumer_eligibility","target_gross_exposure_ratio","positions","total_target_weight","residual_cash_ratio","concrete_target_weight_decided","target_notional_decided","share_quantity_decided","lot_rounding_decided","source_artifacts","source_hashes","temporal_safety","strategy_maximum_position_weight","strategy_maximum_position_weight_source","safety_maximum_position_weight","safety_maximum_position_weight_source","safety_authority_status","effective_maximum_position_weight","effective_maximum_position_weight_derivation","explicit_zero_cap","emergency_brake_active","market_context_risk_state","dynamic_cash_exposure","aggregate_exposure_cap"}
     errors = [f"required_field_missing:{f}" for f in sorted(required - set(payload))]
     if payload.get("schema_version") != SCHEMA_VERSION: errors.append("unsupported_schema_version")
-    if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS: errors.append("artifact_lifecycle_must_be_draft")
-    if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY: errors.append("runtime_consumer_eligibility_must_be_not_eligible")
+    if payload.get("artifact_lifecycle_status") not in ARTIFACT_LIFECYCLE_STATUSES:
+        errors.append("invalid_artifact_lifecycle_status")
+    if payload.get("runtime_consumer_eligibility") not in RUNTIME_CONSUMER_ELIGIBILITIES:
+        errors.append("invalid_runtime_consumer_eligibility")
     target_unresolved = (
         payload.get("target_gross_exposure_ratio_resolution") == "UNRESOLVED"
     )
@@ -581,9 +593,30 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
             errors.extend(_validate_position(position, index=index, safety_cap=safety_cap))
     for field in sorted(FORBIDDEN_FIELDS & set(payload)):
         errors.append(f"quantity_or_runtime_field_forbidden:{field}")
-    for field in ("share_quantity_decided","lot_rounding_decided","order_price_decided","pending_decided","submit_decided","production_consumer_connected","runtime_switch_performed"):
-        if payload.get(field) is not False:
-            errors.append(f"{field}_must_be_false")
+    production_ready = (
+        payload.get("producer_result_status") == "PASS"
+        and payload.get("artifact_lifecycle_status") == PRODUCTION_ARTIFACT_LIFECYCLE_STATUS
+        and payload.get("runtime_consumer_eligibility") == PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY
+    )
+    if production_ready:
+        for field in ("share_quantity_decided", "lot_rounding_decided", "production_consumer_connected"):
+            if payload.get(field) is not True:
+                errors.append(f"{field}_must_be_true_for_production")
+        for field in ("order_price_decided", "pending_decided", "submit_decided", "runtime_switch_performed"):
+            if payload.get(field) is not False:
+                errors.append(f"{field}_must_be_false")
+        if payload.get("legacy_authority_active") is not False:
+            errors.append("legacy_authority_must_be_inactive_for_production")
+    else:
+        if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
+            errors.append("artifact_lifecycle_must_be_draft_or_phase30_s_production_ready")
+        if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
+            errors.append("runtime_consumer_eligibility_must_be_not_eligible_or_phase30_s_production_ready")
+        for field in ("share_quantity_decided","lot_rounding_decided","order_price_decided","pending_decided","submit_decided","production_consumer_connected","runtime_switch_performed"):
+            if payload.get(field) is not False:
+                errors.append(f"{field}_must_be_false")
+        if payload.get("legacy_authority_active") is not True:
+            errors.append("legacy_authority_must_remain_active")
     temporal = payload.get("temporal_safety") if isinstance(payload.get("temporal_safety"), dict) else {}
     if temporal.get("implicit_latest_fallback_used") is not False: errors.append("implicit_latest_fallback_forbidden")
     if temporal.get("previous_day_position_sizing_copied") is not False: errors.append("previous_day_copy_forbidden")
@@ -605,7 +638,13 @@ def load_position_sizing_fixture(path: Path | str, *, for_production: bool = Fal
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     validate_position_sizing_artifact(payload)
     if for_production:
-        raise PositionSizingConsumerError("Phase22-J Position Sizing is not production-consumable")
+        if (
+            payload.get("runtime_consumer_eligibility") == PRODUCTION_RUNTIME_CONSUMER_ELIGIBILITY
+            and payload.get("share_quantity_decided") is True
+            and payload.get("lot_rounding_decided") is True
+        ):
+            return payload
+        raise PositionSizingConsumerError("Position Sizing artifact is not production-consumable")
     return payload
 
 
@@ -823,7 +862,16 @@ def _raw_position(
         price=price,
         trading_unit=trading_unit,
     )
+    pc_discrete_quantity_authority = _resolve_pc_discrete_executable_quantity_authority(
+        row,
+        target=target,
+        strategy_cap=max_weight,
+        current_quantity=int(current_quantity),
+        price=price,
+        trading_unit=trading_unit,
+    )
     one_lot_authority_consumed = False
+    pc_discrete_quantity_authority_consumed = False
     if existing_position and pm_action in {"HOLD", "UNRESOLVED"}:
         target_quantity_candidate = int(current_quantity)
         quantity_status = "RESOLVED_ZERO_DELTA"
@@ -853,7 +901,15 @@ def _raw_position(
             reasons.append(str(reference_price_resolution["review_reason"] or "reference_price_unavailable"))
         else:
             transaction_quantity_candidate = _lot_quantity(transaction_target_notional, price=price, trading_unit=trading_unit)
-            if one_lot_quantity_authority["authorized"] and one_lot_quantity_authority["semantic_type"] == "BUY_ADD":
+            if pc_discrete_quantity_authority["authorized"] and pc_discrete_quantity_authority["semantic_type"] == "BUY_ADD":
+                transaction_quantity_candidate = int(pc_discrete_quantity_authority["discrete_authorized_quantity"])
+                transaction_target_notional = round(float(pc_discrete_quantity_authority["discrete_authorized_notional"]), 2)
+                target_quantity_candidate = int(pc_discrete_quantity_authority["final_target_quantity"])
+                quantity_status = "RESOLVED_CANDIDATE"
+                pc_discrete_quantity_authority_consumed = True
+                reasons.append("PC_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY_CONSUMED")
+                reasons.append("ADD_POSITIVE_QUANTITY_DELTA")
+            elif one_lot_quantity_authority["authorized"] and one_lot_quantity_authority["semantic_type"] == "BUY_ADD":
                 transaction_quantity_candidate = int(one_lot_quantity_authority["discrete_authorized_quantity"])
                 transaction_target_notional = round(float(one_lot_quantity_authority["discrete_authorized_notional"]), 2)
                 target_quantity_candidate = int(current_quantity) + transaction_quantity_candidate
@@ -930,6 +986,15 @@ def _raw_position(
             transaction_target_notional = round(float(one_lot_quantity_authority["discrete_authorized_notional"]), 2)
             one_lot_authority_consumed = True
             reasons.append("ONE_LOT_DISCRETE_QUANTITY_AUTHORITY_CONSUMED")
+        elif (
+            pc_discrete_quantity_authority["authorized"]
+            and pc_discrete_quantity_authority["semantic_type"] in {"BUY_NEW", "REENTRY"}
+        ):
+            target_quantity_candidate = int(pc_discrete_quantity_authority["final_target_quantity"])
+            transaction_quantity_candidate = int(pc_discrete_quantity_authority["discrete_authorized_quantity"])
+            transaction_target_notional = round(float(pc_discrete_quantity_authority["discrete_authorized_notional"]), 2)
+            pc_discrete_quantity_authority_consumed = True
+            reasons.append("PC_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY_CONSUMED")
         quantity_status = "RESOLVED_ZERO_DELTA" if target_quantity_candidate == current_quantity else "RESOLVED_CANDIDATE"
     if status in {"SIZED", "CAPPED"} and not existing_position and 0 < target_notional < min_notional:
         reasons.append("minimum_meaningful_notional_diagnostic_unmet")
@@ -979,6 +1044,20 @@ def _raw_position(
             reasons.append("SAFETY_CAP_DRIFT_NO_RISK_INCREASE")
         elif risk_reducing:
             reasons.append("SAFETY_CAP_DRIFT_RISK_REDUCING_TRANSACTION_ALLOWED")
+    zero_delta_taxonomy = _pc_ps_zero_delta_taxonomy(
+        row,
+        quantity_status=quantity_status,
+        quantity_delta_candidate=quantity_delta_candidate,
+        target=target,
+        current_weight=current_weight,
+        target_notional=target_notional,
+        transaction_target_notional=transaction_target_notional,
+        min_notional=min_notional,
+        price=price,
+        trading_unit=trading_unit,
+        max_weight=max_weight,
+        portfolio_value=portfolio_value,
+    )
     return {
         "security_code": code,
         "position_reference": str(row.get("position_reference") or row.get("member_id") or code),
@@ -1056,10 +1135,14 @@ def _raw_position(
         "continuous_target_notional": target_notional,
         "discrete_authorized_quantity": int(one_lot_quantity_authority["discrete_authorized_quantity"]),
         "discrete_authorized_notional": round(float(one_lot_quantity_authority["discrete_authorized_notional"]), 2),
+        "pc_discrete_authorized_quantity": int(pc_discrete_quantity_authority["discrete_authorized_quantity"]),
+        "pc_discrete_authorized_notional": round(float(pc_discrete_quantity_authority["discrete_authorized_notional"]), 2),
         "final_target_quantity": int(target_quantity_candidate),
         "final_quantity_delta": int(quantity_delta_candidate),
         "one_lot_authority_consumed": one_lot_authority_consumed,
+        "pc_discrete_quantity_authority_consumed": pc_discrete_quantity_authority_consumed,
         "one_lot_authority_reason": str(one_lot_quantity_authority["authority_reason"] if one_lot_authority_consumed else ""),
+        "pc_discrete_quantity_authority_reason": str(pc_discrete_quantity_authority["authority_reason"] if pc_discrete_quantity_authority_consumed else ""),
         "safety_hard_cap_validation": str(one_lot_quantity_authority["safety_hard_cap_validation"]),
         "target_weight_authority": dict(row.get("target_weight_authority") or {}),
         "target_weight_resolution": dict(target_weight_resolution),
@@ -1068,6 +1151,7 @@ def _raw_position(
         "current_quantity": int(current_quantity),
         "quantity_delta_candidate": quantity_delta_candidate,
         "quantity_status": quantity_status,
+        "pc_ps_zero_delta_taxonomy": zero_delta_taxonomy,
         "reference_price": price if reference_price_resolution["status"] == "PASS" else None,
         "reference_price_authority": dict(row.get("reference_price_authority") or {}),
         "reference_price_resolution": reference_price_resolution,
@@ -1138,6 +1222,62 @@ def _phase29_l16_strategy_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
         "allocation_cap_reason",
     )
     return {field: row.get(field) for field in fields if field in row}
+
+
+def _pc_ps_zero_delta_taxonomy(
+    row: Mapping[str, Any],
+    *,
+    quantity_status: str,
+    quantity_delta_candidate: int,
+    target: float,
+    current_weight: float,
+    target_notional: float,
+    transaction_target_notional: float,
+    min_notional: float,
+    price: float,
+    trading_unit: float,
+    max_weight: float,
+    portfolio_value: float,
+) -> dict[str, Any]:
+    if quantity_status != "RESOLVED_ZERO_DELTA" or quantity_delta_candidate > 0:
+        classification = "NOT_APPLICABLE"
+    else:
+        quality_action = str(row.get("quality_action") or "").upper()
+        selection_tier = str(row.get("selection_quality_tier") or "").upper()
+        membership = str(row.get("membership_intent") or "").upper()
+        pm_action = str(row.get("pm_action") or "").upper()
+        positive_target = target > current_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE if bool(row.get("current_position")) else target > 0
+        one_lot_notional = price * trading_unit if price > 0 and trading_unit > 0 else 0.0
+        one_lot_weight = one_lot_notional / portfolio_value if portfolio_value > 0 and one_lot_notional > 0 else 0.0
+        concentration_headroom = max(max_weight - current_weight, 0.0)
+        draft_notional = max(transaction_target_notional, target_notional if not row.get("current_position") else 0.0, 0.0)
+        if quality_action in {"BUY_WAIT", "REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED", "REJECT", "BUY_REJECTED"} or selection_tier in {
+            "CAUTION_CONTINUATION",
+            "INSUFFICIENT_QUALITY",
+            "REJECT",
+        }:
+            classification = "QUALITY_DEFERRED_TO_CASH"
+        elif not positive_target or membership in {"EXCLUDE", "UNRESOLVED"} or pm_action in {"HOLD", "UNRESOLVED"}:
+            classification = "ZERO_INCREMENTAL_TARGET"
+        elif one_lot_weight > 0 and concentration_headroom + TARGET_WEIGHT_ABSOLUTE_TOLERANCE < one_lot_weight:
+            classification = "CONCENTRATION_HEADROOM_LIMIT"
+        elif one_lot_notional > 0 and draft_notional < one_lot_notional:
+            classification = "GENUINE_LOT_INFEASIBILITY"
+        elif 0 < draft_notional < min_notional:
+            classification = "MINIMUM_MEANINGFUL_NOTIONAL"
+        else:
+            classification = "RESIDUAL_CAPITAL_TOO_SMALL"
+    return {
+        "schema_version": "pc_ps_zero_delta_taxonomy.v1",
+        "classification": classification,
+        "quantity_status": quantity_status,
+        "quantity_delta_candidate": int(quantity_delta_candidate),
+        "target_weight": round(target, TARGET_WEIGHT_DECIMALS),
+        "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "rank_score_not_action_authority": True,
+        "selection_quality_tier": str(row.get("selection_quality_tier") or ""),
+        "future_information_used": False,
+    }
 
 
 def _lot_preflight_required(row: Mapping[str, Any]) -> bool:
@@ -1780,7 +1920,53 @@ def resolve_adaptive_buy_quality(row: Mapping[str, Any]) -> dict[str, Any]:
     score = _optional_quality_score(row.get("quality_score"))
     adjustment_raw = _optional_quality_score(row.get("quality_allocation_adjustment"))
     decision_id = str(row.get("quality_decision_id") or "")
+    authority = dict(row.get("buy_quality_authority") or {})
+    canonical_actions = {
+        "FULL_ALLOCATION_ELIGIBLE",
+        "REDUCED_ALLOCATION_ONLY",
+        "BUY_WAIT",
+        "TEMPORARY_BUY_INELIGIBLE",
+        "REVIEW_REQUIRED",
+        "BUY_REVIEW_REQUIRED",
+        "REJECT",
+        "BUY_REJECTED",
+    }
+    if action and action not in canonical_actions:
+        authority_action = str(row.get("legacy_buy_quality_action") or authority.get("quality_action") or "")
+        if authority_action in canonical_actions:
+            action = authority_action
+            if not decision_id:
+                decision_id = str(authority.get("quality_decision_id") or "")
+            if score is None:
+                score = _optional_quality_score(authority.get("quality_score"))
+            if not status:
+                status = "PASS"
     if not decision_id or not action:
+        reason_codes = {str(item) for item in row.get("reason_codes") or []}
+        if "buy_quality_full_allocation_eligible" in reason_codes:
+            return _adaptive_quality_result(
+                row,
+                action="FULL_ALLOCATION_ELIGIBLE",
+                status=status or "PASS",
+                adjustment=1.0,
+                reason="buy_quality_action_resolved_from_portfolio_construction_reason_code",
+            )
+        if "buy_quality_reduced_allocation_only" in reason_codes:
+            return _adaptive_quality_result(
+                row,
+                action="REDUCED_ALLOCATION_ONLY",
+                status=status or "PASS",
+                adjustment=adjustment_raw if adjustment_raw is not None else (min(max(score or 0.0, 0.25), 0.85) if score is not None else 0.0),
+                reason="buy_quality_action_resolved_from_portfolio_construction_reason_code",
+            )
+        if "buy_quality_rejected" in reason_codes:
+            return _adaptive_quality_result(
+                row,
+                action="REJECT",
+                status=status or "PASS",
+                adjustment=0.0,
+                reason="buy_quality_action_resolved_from_portfolio_construction_reason_code",
+            )
         return _adaptive_quality_result(
             row,
             action="REVIEW_REQUIRED",
@@ -1895,7 +2081,14 @@ def _resolve_one_lot_discrete_quantity_authority(
     }
     if semantic not in {"BUY_NEW", "REENTRY", "BUY_ADD"}:
         return empty
-    if not _lot_aware_strategy_cap_overshoot_authorized_row(row, target=target, strategy_cap=strategy_cap):
+    strategy_overshoot_authorized = _lot_aware_strategy_cap_overshoot_authorized_row(row, target=target, strategy_cap=strategy_cap)
+    minimum_one_lot_authorized = _minimum_executable_one_lot_authorized_row(
+        row,
+        target=target,
+        strategy_cap=strategy_cap,
+        current_quantity=current_quantity,
+    )
+    if not strategy_overshoot_authorized and not minimum_one_lot_authorized:
         return empty
     one_lot_quantity = _positive_int(lot_resolution.get("one_lot_quantity"), 0)
     if one_lot_quantity <= 0:
@@ -1933,8 +2126,78 @@ def _resolve_one_lot_discrete_quantity_authority(
         "final_target_quantity": int(current_quantity + authorized_quantity),
         "authority_reason": str(
             lot_resolution.get("lot_overshoot_reason")
-            or "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+            or ("MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED" if minimum_one_lot_authorized else "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP")
         ),
+        "safety_hard_cap_validation": "PASS",
+    }
+
+
+def _resolve_pc_discrete_executable_quantity_authority(
+    row: Mapping[str, Any],
+    *,
+    target: float,
+    strategy_cap: float,
+    current_quantity: int,
+    price: float,
+    trading_unit: float,
+) -> dict[str, Any]:
+    lot_resolution = _lot_aware_strategy_cap_lot_resolution(row)
+    semantic = str(row.get("semantic_buy_type") or lot_resolution.get("semantic_type") or "").upper()
+    empty = {
+        "authorized": False,
+        "semantic_type": semantic,
+        "discrete_authorized_quantity": 0,
+        "discrete_authorized_notional": 0.0,
+        "final_target_quantity": current_quantity,
+        "authority_reason": "",
+        "safety_hard_cap_validation": "NOT_APPLICABLE",
+    }
+    if semantic not in {"BUY_NEW", "REENTRY", "BUY_ADD"}:
+        return empty
+    authority = lot_resolution.get("pc_positive_executable_quantity_authority")
+    nested = {}
+    resolution = row.get("target_weight_resolution")
+    if isinstance(resolution, Mapping):
+        lot_aware = resolution.get("lot_aware_final_reallocation")
+        if isinstance(lot_aware, Mapping):
+            nested = lot_aware.get("pc_positive_executable_quantity_authority") if isinstance(lot_aware.get("pc_positive_executable_quantity_authority"), Mapping) else {}
+    if not isinstance(authority, Mapping):
+        authority = nested
+    if not isinstance(authority, Mapping) or str(authority.get("status") or "") != "PASS":
+        return empty
+    authorized_quantity = _positive_int(authority.get("final_allocated_quantity"), 0)
+    if authorized_quantity <= 0:
+        return empty
+    unit = int(trading_unit) if trading_unit > 0 else 0
+    if unit <= 0 or authorized_quantity % unit != 0:
+        return empty
+    if price <= 0:
+        return empty
+    if lot_resolution.get("safety_hard_cap_preserved") is False:
+        return empty
+    safety_cap = _optional_ratio_value(lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")))
+    post_trade_weight = _optional_ratio_value(lot_resolution.get("post_trade_weight", lot_resolution.get("final_target_weight")))
+    if safety_cap is None:
+        return empty
+    if target > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if post_trade_weight is not None and post_trade_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if target > strategy_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE and not _lot_aware_strategy_cap_overshoot_authorized_row(row, target=target, strategy_cap=strategy_cap):
+        return empty
+    if semantic == "BUY_ADD" and not _lot_aware_strategy_cap_add_economics_pass(row):
+        return empty
+    if semantic in {"BUY_NEW", "REENTRY"} and current_quantity != 0:
+        return empty
+    if semantic == "BUY_ADD" and current_quantity <= 0:
+        return empty
+    return {
+        "authorized": True,
+        "semantic_type": semantic,
+        "discrete_authorized_quantity": int(authorized_quantity),
+        "discrete_authorized_notional": round(price * authorized_quantity, 2),
+        "final_target_quantity": int(current_quantity + authorized_quantity),
+        "authority_reason": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
         "safety_hard_cap_validation": "PASS",
     }
 
@@ -2268,6 +2531,61 @@ def _lot_aware_strategy_cap_overshoot_authorized_row(row: Mapping[str, Any], *, 
     return _lot_aware_strategy_cap_overshoot_authorized_position(projected, target=target, strategy_cap=strategy_cap)
 
 
+def _minimum_executable_one_lot_authorized_row(
+    row: Mapping[str, Any],
+    *,
+    target: float,
+    strategy_cap: float,
+    current_quantity: int,
+) -> bool:
+    lot_resolution = _lot_aware_strategy_cap_lot_resolution(row)
+    authority = lot_resolution.get("minimum_executable_one_lot_authority")
+    if not isinstance(authority, Mapping):
+        authority = row.get("minimum_executable_one_lot_authority")
+    if not isinstance(authority, Mapping):
+        return False
+    semantic = str(row.get("semantic_buy_type") or lot_resolution.get("semantic_type") or authority.get("intent") or "").upper()
+    if semantic not in {"BUY_NEW", "REENTRY"}:
+        return False
+    if current_quantity != 0 or _positive_float(row.get("current_quantity"), 0.0) > 0:
+        return False
+    if str(row.get("membership_intent") or "").upper() != "ADD_CANDIDATE":
+        return False
+    if str(authority.get("decision") or "") != "ADMIT":
+        return False
+    if str(authority.get("reason") or authority.get("admission_reason") or "") != "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED":
+        return False
+    if str(lot_resolution.get("minimum_executable_one_lot_reason") or "") != "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED":
+        return False
+    if lot_resolution.get("minimum_executable_one_lot_admitted") is not True:
+        return False
+    if target > strategy_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    if str(lot_resolution.get("one_lot_feasibility_status") or "") != "PASS":
+        return False
+    if lot_resolution.get("one_lot_fallback_applied") is not True:
+        return False
+    if lot_resolution.get("safety_hard_cap_preserved") is False:
+        return False
+    one_lot_quantity = _positive_int(lot_resolution.get("one_lot_quantity"), 0)
+    final_quantity = _positive_int(lot_resolution.get("final_allocated_quantity"), 0)
+    if one_lot_quantity <= 0 or final_quantity <= 0 or final_quantity > one_lot_quantity:
+        return False
+    safety_cap = _optional_ratio_value(lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")))
+    post_trade_weight = _optional_ratio_value(lot_resolution.get("post_trade_weight", lot_resolution.get("final_target_weight")))
+    if safety_cap is None or target > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    if post_trade_weight is not None and post_trade_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    accepted = _ratio(row.get("lot_aware_accepted_buy_new_weight"), 0.0)
+    if accepted <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    one_lot_weight = _optional_ratio_value(lot_resolution.get("one_lot_weight"))
+    if one_lot_weight is not None and accepted > one_lot_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return False
+    return True
+
+
 def _lot_aware_strategy_cap_overshoot_authorized_position(position: Mapping[str, Any], *, target: float, strategy_cap: float) -> bool:
     if target <= strategy_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
         return False
@@ -2300,11 +2618,29 @@ def _lot_aware_strategy_cap_overshoot_authorized_position(position: Mapping[str,
                 return False
         except (TypeError, ValueError):
             return False
-    if str(lot_resolution.get("lot_overshoot_reason") or "") not in {
+    lot_overshoot_reason = str(lot_resolution.get("lot_overshoot_reason") or "")
+    if lot_overshoot_reason not in {
         "LOT_AWARE_STRATEGY_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
         "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP",
+        "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
     }:
         return False
+    if lot_overshoot_reason == "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION":
+        pc_quantity_authority = lot_resolution.get("pc_positive_executable_quantity_authority")
+        if not isinstance(pc_quantity_authority, Mapping):
+            return False
+        if str(pc_quantity_authority.get("status") or "") != "PASS":
+            return False
+        if pc_quantity_authority.get("ps_must_consume_canonical_quantity") is not True:
+            return False
+        pc_authorized_quantity = _positive_int(pc_quantity_authority.get("final_allocated_quantity"), 0)
+        lot_authorized_quantity = (
+            _positive_int(lot_resolution.get("final_allocated_quantity"), 0)
+            or _positive_int(lot_resolution.get("executable_quantity_delta"), 0)
+            or _positive_int(lot_resolution.get("preflight_executable_quantity_delta"), 0)
+        )
+        if pc_authorized_quantity <= 0 or lot_authorized_quantity <= 0 or pc_authorized_quantity != lot_authorized_quantity:
+            return False
     safety_cap = _optional_ratio_value(lot_resolution.get("safety_hard_cap", lot_resolution.get("safety_hard_cap_weight")))
     if safety_cap is None or target > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
         return False

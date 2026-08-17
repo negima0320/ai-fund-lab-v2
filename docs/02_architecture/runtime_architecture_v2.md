@@ -2823,3 +2823,160 @@ current position + negative delta and target_quantity_candidate = 0 -> SELL_EXIT
 ```
 
 Runtime Planning must not recalculate Ranking, Momentum, Quality, Opportunity, Incremental Eligibility, PM decision, Portfolio target weight, Position Sizing formula, cash policy, Safety, Submit, or Execution. It records `canonical_quantity_source`, `canonical_quantity_delta_priority`, `pm_fallback_used`, and `pm_fallback_scope` so duplicate authority can be audited.
+
+## Phase30 Final Amendment: Runtime Authority Ownership
+
+Phase30 closed the Production / Demo / Historical common Runtime authority
+architecture as conformant. The following contracts are permanent Runtime
+architecture rules, not Phase-local test exceptions.
+
+### Canonical Pending Review Scope Authority
+
+`runtime_v2.pending.review_scope_authority` owns only Pending review-scope
+semantics:
+
+- structural validity
+- lifecycle review scope
+- executable and reviewed item membership
+- item-scoped review versus batch-level failure semantics
+- partial submit eligibility
+- sell continuation eligibility
+- reviewed items must not submit
+
+It does not own cash, quantity, Strategy cap, Safety hard cap, broker
+feasibility, valuation, PM intent, Portfolio Construction allocation, or
+Position Sizing.
+
+Consumers must not infer executable subsets from top-level `REVIEW_REQUIRED`
+or diagnostic reason strings. They must consume the canonical reviewed and
+executable item sets. Reviewed BUY items remain fail-closed for BUY execution.
+Reviewed SELL items remain fail-closed for SELL execution. A reviewed BUY must
+not block an otherwise valid SELL when the canonical scope explicitly allows
+SELL continuation.
+
+### Historical Safety Temporal Authority
+
+`runtime_v2.historical_support.safety_temporal_authority` owns the shared
+Historical Safety and temporal binding result consumed by Data Readiness,
+Sell Planning, Submit Data Readiness, Execution, Current Valuation, and Pending
+Lifecycle. It consumes Pending review-scope authority but must not reconstruct
+Pending item membership, cash, quantity, PM, sizing, or valuation semantics.
+
+Historical-only temporal shortcuts, date-specific bypasses, and fail-open
+fallbacks are prohibited. Stage-specific temporal validation remains valid when
+it validates a distinct responsibility, such as market evidence date, execution
+terminal evidence, or current valuation quote date.
+
+### Runtime Guard Taxonomy
+
+`runtime_v2.guard_taxonomy` owns typed classification of Runtime review and
+block evidence. Supported guard classes include:
+
+```text
+MARKET_PORTFOLIO_SAFETY
+EXECUTION_SAFETY
+DATA_INTEGRITY_SAFETY
+INTERNAL_SYSTEM_CONSISTENCY
+ITEM_SCOPED_REVIEW
+BATCH_LEVEL_FAILURE
+```
+
+Diagnostic reason text may remain in artifacts for human investigation, but
+business semantics must be carried by typed fields such as guard class, guard
+code, scope, affected side, affected item ids, batch-blocking flag,
+recoverability, system-defect flag, canonical owner, and consumer action.
+
+`INTERNAL_SYSTEM_CONSISTENCY` is fail-closed and must not be represented as
+normal market risk, opportunity scarcity, cash scarcity, or investment Safety.
+
+### Legitimate Multi-Layer Validation Principle
+
+Phase30 centralization does not mean every check moves to one component. The
+rule is narrower: the same business decision must not have multiple owners.
+Distinct validation responsibilities may remain multi-layered.
+
+Valid multi-layer checks include:
+
+- symbol-level order amount feasibility
+- aggregate batch cash feasibility
+- broker buying power
+- Strategy deployable budget validation
+- Safety hard-cap validation
+- canonical quantity equality validation
+- stage-specific temporal validation
+- post-fill accounting reconciliation
+
+Invalid duplication includes downstream consumers resizing Strategy quantity,
+reclassifying item-scoped Pending review as batch failure, deriving BUY/SELL
+side semantics from reason strings, or collapsing distinct cash meanings into
+one generic authority.
+
+### Runtime Orchestration Order
+
+The real Runtime order must preserve producer-before-consumer authority:
+
+```text
+market_refresh
+-> runtime_state_refresh
+-> pending_lifecycle_pre_data_readiness_when_required
+-> runtime_data_readiness_gate
+-> historical_safety_authority
+-> morning candidate / PM / Strategy / Pending generation
+-> sell_planning
+-> submit data readiness / submit guard / submit
+-> execution
+-> pending consume / terminalization
+-> current state apply
+-> current valuation
+-> day completion
+```
+
+Lifecycle logic may be invoked by orchestration, but orchestration must not
+reimplement lifecycle decisions. Pending lifecycle remains the authority for
+whether stale residual reviewed BUY state expires, remains active, or fails
+closed.
+
+### Cash Semantics Separation
+
+Runtime must keep these cash meanings distinct:
+
+- Strategy deployable budget
+- Portfolio Construction residual allocation budget
+- Current cash and buying power
+- Pending reserved notional
+- Submit aggregate cash
+- broker buying power
+- post-fill cash
+
+Planning and Submit may both validate cash or buying power, but they must
+validate their own boundary using the selected upstream authority. They must
+not collapse the above meanings into a single generic cash authority or reuse
+same-day SELL proceeds before those proceeds are materialized into Current or
+broker authority.
+
+### Final Phase30 Architecture Gate
+
+At Phase30 closure:
+
+```text
+FINAL_RUNTIME_AUTHORITY_ARCHITECTURE_STATUS = CONFORMANT
+DUPLICATE_DECISION_INVALID_COUNT = 0
+REVIEW_SCOPE_CONFORMANCE_GAP_COUNT = 0
+NONCANONICAL_BATCH_ESCALATION_COUNT = 0
+SYSTEM_GUARD_MISCLASSIFIED_AS_NORMAL_SAFETY_COUNT = 0
+QUANTITY_REDECISION_LOCATION_COUNT = 0
+CASH_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+TEMPORAL_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+INVALID_BUY_SELL_COUPLING_COUNT = 0
+PRODUCER_BEFORE_CONSUMER_VIOLATION_COUNT = 0
+TEST_FIDELITY_GAP_COUNT = 0
+REMAINING_LATENT_CRITICAL_COUNT = 0
+REMAINING_LATENT_HIGH_COUNT = 0
+```
+
+The accepted final validation run is
+`runtime-test-historical-extended-smoke-20260817T222423827667Z`, which completed
+25 requested business days from `2022-08-10` through `2022-09-14` with no
+mid-run HALT and final pending state `EMPTY`. Its close-level
+`REVIEW_REQUIRED` was a non-mutating Strategy shadow validation condition, not
+a Runtime, authority, Safety, data, accounting, or trading-state defect.

@@ -356,6 +356,13 @@ def _current_position(row: dict[str, Any], *, business_date: str) -> CurrentAsse
         valuation_price_basis=str(row.get("valuation_price_basis") or ""),
         valuation_price_role=str(row.get("valuation_price_role") or ""),
         valuation_price_provenance=str(row.get("valuation_price_provenance") or ""),
+        valuation_as_of=str(row.get("valuation_as_of") or ""),
+        source_market_date=str(row.get("source_market_date") or ""),
+        valuation_source=str(row.get("valuation_source") or ""),
+        valuation_price_type=str(row.get("valuation_price_type") or ""),
+        valuation_quote_status=str(row.get("valuation_quote_status") or ""),
+        quote_business_date=str(row.get("quote_business_date") or ""),
+        valuation_business_date=str(row.get("valuation_business_date") or ""),
         execution_price_basis=str(row.get("execution_price_basis") or ""),
         fill_price_basis=str(row.get("fill_price_basis") or ""),
     )
@@ -447,6 +454,13 @@ def _projected_position_row(
             canonical_events=canonical_events,
         )
     )
+    row.update(
+        _position_valuation_metadata(
+            symbol=symbol,
+            latest_position=latest,
+            current_sot_before=current_sot_before,
+        )
+    )
     return row
 
 
@@ -523,6 +537,41 @@ def _basis_provenance(row: dict[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _position_valuation_metadata(
+    *,
+    symbol: str,
+    latest_position: dict[str, Any],
+    current_sot_before: dict[str, Any],
+) -> dict[str, str]:
+    before_position = _current_position_payload(symbol, current_sot_before=current_sot_before)
+    metadata: dict[str, str] = {}
+    for field in (
+        "valuation_as_of",
+        "source_market_date",
+        "valuation_source",
+        "valuation_price_type",
+        "valuation_quote_status",
+        "quote_business_date",
+        "valuation_business_date",
+    ):
+        value = str(before_position.get(field) or latest_position.get(field) or "")
+        if value:
+            metadata[field] = value
+    if not metadata.get("valuation_as_of"):
+        value = str(current_sot_before.get("valuation_as_of") or "")
+        if value:
+            metadata["valuation_as_of"] = value
+    if not metadata.get("source_market_date"):
+        value = str(current_sot_before.get("source_market_date") or "")
+        if value:
+            metadata["source_market_date"] = value
+    if not metadata.get("valuation_source"):
+        value = str(before_position.get("valuation_price_provenance") or latest_position.get("valuation_price_provenance") or "")
+        if value:
+            metadata["valuation_source"] = value
+    return metadata
 
 
 def _basis_value_from_events(
@@ -863,6 +912,13 @@ def _public_position(position: CurrentAssetPosition) -> dict[str, Any]:
         "valuation_price_basis",
         "valuation_price_role",
         "valuation_price_provenance",
+        "valuation_as_of",
+        "source_market_date",
+        "valuation_source",
+        "valuation_price_type",
+        "valuation_quote_status",
+        "quote_business_date",
+        "valuation_business_date",
         "execution_price_basis",
         "fill_price_basis",
     ):

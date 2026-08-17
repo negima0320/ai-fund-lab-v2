@@ -579,8 +579,6 @@ def run_sell_planning_pending_pipeline(
         )
     if (
         pre_sell_active_pending is not None
-        and existing_buy_pending is None
-        and existing_buy_pending_reason == "active_buy_missing"
         and int(pre_sell_pending_snapshot.get("buy_item_count") or 0) > 0
     ):
         scoped_pending, scoped_order_plan_path, scoped_approval_path, scoped_evidence = (
@@ -602,6 +600,12 @@ def run_sell_planning_pending_pipeline(
         if scoped_evidence.get("composition_status") == "PASS":
             pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
             write_pending_order_plan(pending_path, scoped_pending)
+            _write_buy_sell_pending_composition_evidence(
+                artifact_dir=artifact_dir,
+                status="PASS",
+                evidence=scoped_evidence,
+                pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+            )
             blocked_count = sum(1 for item in planning_result.order_plan.items if item.blocked)
             return SellPlanningPipelineResult(
                 status="PASS",
@@ -730,6 +734,12 @@ def run_sell_planning_pending_pipeline(
     )
     pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
     write_pending_order_plan(pending_path, pending)
+    _write_buy_sell_pending_composition_evidence(
+        artifact_dir=artifact_dir,
+        status="PASS" if composition_evidence.get("composition_status") == "PASS" else "NOT_APPLICABLE",
+        evidence=composition_evidence,
+        pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+    )
     blocked_count = sum(1 for item in planning_result.order_plan.items if item.blocked)
     return SellPlanningPipelineResult(
         status="PASS" if pending_items else "REVIEW_REQUIRED",
@@ -2054,6 +2064,41 @@ def _write_pending_continuity_evidence(
     }
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "pending_continuity_evidence.json").write_text(
+        _json_dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def _write_buy_sell_pending_composition_evidence(
+    *,
+    artifact_dir: Path,
+    status: str,
+    evidence: Mapping[str, Any],
+    pre_sell_pending_snapshot: Mapping[str, Any],
+) -> None:
+    payload = {
+        "schema_version": "phase30_ak8r_buy_sell_pending_composition_evidence.v1",
+        "status": status,
+        "composition_model": str(evidence.get("composition_model") or ""),
+        "composition_status": str(evidence.get("composition_status") or ""),
+        "pre_sell_buy_pending_count": int(
+            evidence.get("pre_sell_buy_pending_count")
+            if evidence.get("pre_sell_buy_pending_count") is not None
+            else pre_sell_pending_snapshot.get("buy_item_count") or 0
+        ),
+        "preservable_buy_count": int(evidence.get("preservable_buy_count") or 0),
+        "sell_count": int(evidence.get("sell_count") or evidence.get("composed_sell_item_count") or 0),
+        "composed_buy_count": int(evidence.get("composed_buy_count") or evidence.get("composed_buy_item_count") or 0),
+        "composed_sell_count": int(evidence.get("composed_sell_count") or evidence.get("composed_sell_item_count") or 0),
+        "dropped_buy_count": int(evidence.get("dropped_buy_count") or 0),
+        "explicit_drop_defer_reasons": list(evidence.get("explicit_drop_defer_reasons") or ()),
+        "final_canonical_pending_count": int(evidence.get("final_canonical_pending_count") or evidence.get("composed_item_count") or 0),
+        "pending_source_lineage": dict(evidence.get("pending_source_lineage") or {}),
+        "valid_buy_pending_silent_overwrite_prohibited": True,
+        "sell_existence_alone_cannot_drop_valid_buy": True,
+    }
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "pending_composition_evidence.json").write_text(
         _json_dumps(payload),
         encoding="utf-8",
     )

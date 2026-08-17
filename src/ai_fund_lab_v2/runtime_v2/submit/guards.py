@@ -13,6 +13,10 @@ from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import (
 )
 from ai_fund_lab_v2.runtime_v2.pending.consume import can_submit_pending_plan
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    build_pending_review_scope_authority,
+    pending_scope_allows_partial_submit,
+)
 from ai_fund_lab_v2.runtime_v2.submit.models import (
     RuntimeV2SubmitCommand,
     RuntimeV2SubmitPreflightResult,
@@ -139,7 +143,8 @@ def _blocked_reason(
         return "live order disabled"
     if source_current_path != "pending_order_plan/pending_order_plan.json":
         return "submit source must be pending_order_plan current"
-    if pending_plan.state != PendingPlanState.APPROVED:
+    scope_authority = build_pending_review_scope_authority(pending_plan)
+    if pending_plan.state != PendingPlanState.APPROVED and not pending_scope_allows_partial_submit(scope_authority):
         return "pending state is not APPROVED"
     if approval_artifact.status != ApprovalStatus.APPROVED:
         return "approval artifact is not APPROVED"

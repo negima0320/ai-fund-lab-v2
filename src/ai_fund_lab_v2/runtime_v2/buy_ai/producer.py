@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 import numpy as np
@@ -61,6 +61,8 @@ OPPORTUNITY_ARTIFACT_SCHEMA_VERSION = "runtime_v2_opportunity_ranking_v1"
 OPPORTUNITY_ARTIFACT_SCHEMA_NAME = "runtime_v2_buy_opportunity_ranking"
 OPPORTUNITY_ARTIFACT_ROLE = "BUY_OPPORTUNITY_RANKING"
 BUY_AI_INFERENCE_VERSION = "candidate_opportunity_ai_regular_path_v1"
+CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION = "candidate_pit_quality_surface.v1"
+CANDIDATE_HYBRID_ORDERING_SCHEMA_VERSION = "candidate_hybrid_ordering_contract.v1"
 DEFAULT_CANDIDATE_MODEL_PATH = Path(".runtime/candidate_ai/models/phase4bf_formal_candidate_model.pkl")
 DEFAULT_OPPORTUNITY_MODEL_PATH = Path("reports/opportunity_ai/phase5p/models/opportunity_model.pkl")
 PROHIBITED_OPPORTUNITY_PHASE5E_METRICS_PATH = Path("reports/opportunity_ai/phase5e/opportunity_training_metrics.json")
@@ -81,6 +83,7 @@ BUY_QUALITY_PROPAGATED_FEATURE_COLUMNS = (
     "trend_ma_20_60_ratio",
     "volume_momentum_ratio_5d",
     "volume_momentum_ratio_1d_20d",
+    "liquidity_avg_volume_20d",
 )
 
 
@@ -803,6 +806,19 @@ def _produce_candidate_artifact(
     rows = sorted(rows, key=lambda row: (-float(row["candidate_score"]), str(row["code"])))
     for index, row in enumerate(rows, start=1):
         row["candidate_rank"] = index
+        row["score_only_candidate_rank"] = index
+        row["candidate_score_semantic_role"] = "momentum_candidate_label_model_score"
+    liquidity_lineage_evidence = _candidate_liquidity_lineage_evidence(
+        rows,
+        feature_path=feature_path,
+        business_date=business_date,
+        feature_date=feature_date,
+    )
+    surfaced_rows, surface_evidence = _apply_candidate_pit_quality_surface(
+        rows,
+        top_n=top_n,
+        liquidity_lineage_evidence=liquidity_lineage_evidence,
+    )
     payload = _candidate_payload(
         business_date=business_date,
         feature_date=feature_date,
@@ -814,8 +830,9 @@ def _produce_candidate_artifact(
         feature_path=feature_path,
         model_path=model_path,
         artifact_path=artifact_path,
-        rows=tuple(rows[:top_n]),
+        rows=tuple(surfaced_rows),
         schema_evidence=schema_evidence,
+        surface_evidence=surface_evidence,
     )
     if generation_binding is not None:
         payload["generation_bound_inference"] = generation_binding.evidence()
@@ -1478,6 +1495,388 @@ def _buy_quality_feature_metadata(row: Mapping[str, Any] | None) -> dict[str, An
     return metadata
 
 
+def _candidate_liquidity_lineage_evidence(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    feature_path: Path | None,
+    business_date: str,
+    feature_date: str,
+) -> dict[str, Any]:
+    materialized_rows = list(rows)
+    present_count = sum(
+        1
+        for row in materialized_rows
+        if _optional_float(row.get("liquidity_avg_volume_20d")) is not None
+    )
+    return {
+        "source_artifact": str(feature_path or ""),
+        "source_field": "liquidity_avg_volume_20d",
+        "source_date": feature_date,
+        "as_of_date": feature_date,
+        "business_date": business_date,
+        "pit_safety": {
+            "feature_date_lte_business_date": str(feature_date) <= str(business_date),
+            "source_is_candidate_feature_artifact": True,
+            "future_row_used": False,
+            "same_day_future_execution_used": False,
+            "eod_future_reconstruction_used": False,
+        },
+        "missing_status": "PASS" if present_count > 0 else "MISSING",
+        "present_row_count": present_count,
+        "missing_row_count": len(materialized_rows) - present_count,
+        "total_row_count": len(materialized_rows),
+        "canonical_liquidity_authority_reused": True,
+        "duplicate_liquidity_authority_created": False,
+        "fallback_liquidity_heuristic_used": False,
+    }
+
+
+def _apply_candidate_pit_quality_surface(
+    rows: list[dict[str, Any]],
+    *,
+    top_n: int,
+    liquidity_lineage_evidence: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    score_only_top = rows[:top_n]
+    score_only_symbols = [str(row.get("code") or "") for row in score_only_top]
+    surfaced_population = [
+        _with_candidate_hybrid_ordering(_with_candidate_pit_quality_surface(row))
+        for row in rows
+    ]
+    quality_ordered = sorted(
+        surfaced_population,
+        key=lambda row: (
+            _semantic_hybrid_priority(row),
+            -_candidate_score_sort_value(row),
+            _surface_state_preference(row),
+            str(row.get("code") or ""),
+        ),
+    )
+    quality_top = quality_ordered[:top_n]
+    for index, row in enumerate(quality_top, start=1):
+        row["quality_aware_candidate_rank"] = index
+        row["quality_aware_top50_member"] = True
+    quality_symbols = [str(row.get("code") or "") for row in quality_top]
+    added = [symbol for symbol in quality_symbols if symbol not in set(score_only_symbols)]
+    removed = [symbol for symbol in score_only_symbols if symbol not in set(quality_symbols)]
+    liquidity_present_count = sum(
+        1
+        for row in surfaced_population
+        if _optional_float(row.get("liquidity_avg_volume_20d")) is not None
+    )
+    evidence = {
+        "schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
+        "hybrid_ordering_schema_version": CANDIDATE_HYBRID_ORDERING_SCHEMA_VERSION,
+        "ordering_contract": (
+            "SEMANTIC_HYBRID_ELIGIBILITY_BANDS_WITH_CANDIDATE_SCORE_WITHIN_CLASS_AUTHORITY"
+        ),
+        "not_buy_authority": True,
+        "candidate_model_preserved": True,
+        "candidate_score_semantic_role": "momentum_candidate_label_model_score",
+        "candidate_score_role": "CO_EQUAL_HYBRID_EVIDENCE",
+        "candidate_rank_semantic_role": "score_only_model_rank_observable_evidence",
+        "candidate_surface_role": "SEMANTIC_HYBRID_AUTHORITY",
+        "quality_aware_candidate_rank_semantic_role": "candidate_stage_semantic_hybrid_surface_order",
+        "top_n": top_n,
+        "market_eligible_count": len(rows),
+        "candidate_pre_cut_count": len(rows),
+        "liquidity_source_field": "liquidity_avg_volume_20d",
+        "liquidity_present_row_count": liquidity_present_count,
+        "liquidity_missing_row_count": len(surfaced_population) - liquidity_present_count,
+        "liquidity_evidence_lineage": liquidity_lineage_evidence or {},
+        "candidate_score_distribution": _numeric_distribution(row.get("candidate_score") for row in rows),
+        "candidate_rank_distribution": _numeric_distribution(row.get("candidate_rank") for row in rows),
+        "score_evidence_class_distribution": _field_distribution(surfaced_population, "score_evidence_class"),
+        "semantic_hybrid_class_distribution": _field_distribution(surfaced_population, "semantic_hybrid_class"),
+        "top50_score_evidence_class_distribution": _field_distribution(quality_top, "score_evidence_class"),
+        "top50_semantic_hybrid_class_distribution": _field_distribution(quality_top, "semantic_hybrid_class"),
+        "candidate_pit_surface_distribution": _surface_distribution(surfaced_population),
+        "top50_surface_distribution": _surface_distribution(quality_top),
+        "market_healthy_proxy_count": sum(1 for row in surfaced_population if row.get("candidate_pit_market_healthy_proxy")),
+        "candidate_healthy_proxy_count": sum(1 for row in quality_top if row.get("candidate_pit_market_healthy_proxy")),
+        "healthy_proxy_capture_ratio": _safe_rate(
+            sum(1 for row in quality_top if row.get("candidate_pit_market_healthy_proxy")),
+            sum(1 for row in surfaced_population if row.get("candidate_pit_market_healthy_proxy")),
+        ),
+        "final_top50_symbol_order": quality_symbols,
+        "score_only_top50_symbol_order": score_only_symbols,
+        "score_only_ordering_changed": quality_symbols != score_only_symbols,
+        "quality_aware_added_symbols": added,
+        "quality_aware_removed_symbols": removed,
+        "quality_aware_added_count": len(added),
+        "quality_aware_removed_count": len(removed),
+        "future_information_used": False,
+        "historical_outcome_used_as_runtime_input": False,
+        "historical_outcome_used_for_production_parameter_selection": False,
+        "test_result_used_as_strategy_input": False,
+        "candidate_top50_count_changed": False,
+        "candidate_model_retrained": False,
+        "candidate_accepted_generation_changed": False,
+        "new_ai_created": False,
+        "parallel_candidate_path_created": False,
+        "weighted_hybrid_score_created": False,
+        "hard_lexicographic_surface_first_retired": True,
+        "score_only_dominance_retired": True,
+        "one_production_candidate_path": True,
+    }
+    return quality_top, evidence
+
+
+def _semantic_hybrid_priority(row: Mapping[str, Any]) -> int:
+    value = row.get("semantic_hybrid_class_priority")
+    if value is None:
+        return 99
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 99
+
+
+def _candidate_score_sort_value(row: Mapping[str, Any]) -> float:
+    value = _optional_float(row.get("candidate_score"))
+    return float(value) if value is not None else 0.0
+
+
+def _surface_state_preference(row: Mapping[str, Any]) -> int:
+    value = row.get("candidate_pit_surface_priority")
+    if value is None:
+        return 99
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 99
+
+
+def _with_candidate_hybrid_ordering(row: dict[str, Any]) -> dict[str, Any]:
+    score_class = _candidate_score_evidence_class(row)
+    semantic_class, priority, reason = _candidate_semantic_hybrid_class(
+        score_class,
+        str(row.get("candidate_pit_surface_state") or ""),
+    )
+    return {
+        **row,
+        "candidate_hybrid_ordering_schema_version": CANDIDATE_HYBRID_ORDERING_SCHEMA_VERSION,
+        "score_evidence_class": score_class,
+        "semantic_hybrid_class": semantic_class,
+        "semantic_hybrid_class_priority": priority,
+        "semantic_hybrid_class_reason": reason,
+        "candidate_score_role": "CO_EQUAL_HYBRID_EVIDENCE",
+        "candidate_surface_role": "SEMANTIC_HYBRID_AUTHORITY",
+        "weighted_hybrid_score_created": False,
+        "candidate_hybrid_ordering_future_information_used": False,
+    }
+
+
+def _candidate_score_evidence_class(row: Mapping[str, Any]) -> str:
+    score = _optional_float(row.get("candidate_score"))
+    if score is None or score <= 0.0:
+        return "WEAK_DISCOVERY_SCORE"
+    reason = str(row.get("candidate_reason") or row.get("reason") or "")
+    if "high_candidate_score" in {part.strip() for part in reason.split(";") if part.strip()}:
+        return "STRONG_DISCOVERY_SCORE"
+    if score >= 0.5:
+        return "STRONG_DISCOVERY_SCORE"
+    return "MODERATE_DISCOVERY_SCORE"
+
+
+def _candidate_semantic_hybrid_class(score_class: str, surface_state: str) -> tuple[str, int, str]:
+    strong_score = score_class == "STRONG_DISCOVERY_SCORE"
+    moderate_score = score_class == "MODERATE_DISCOVERY_SCORE"
+    strong_surface = surface_state == "STRONG_CONTINUATION_SURFACE"
+    valid_surface = surface_state == "VALID_MOMENTUM_SURFACE"
+    caution_surface = surface_state == "CAUTION_MOMENTUM_SURFACE"
+    insufficient_surface = surface_state == "INSUFFICIENT_SURFACE_EVIDENCE"
+    if strong_score and (strong_surface or valid_surface):
+        return (
+            "CONFIRMED_DISCOVERY_AND_SURFACE",
+            1,
+            "strong discovery score with strong_or_valid_current_pit_surface",
+        )
+    if (strong_score and caution_surface) or (moderate_score and strong_surface):
+        return (
+            "CONFLICT_RESOLUTION_HIGH_DISCOVERY_OR_STRONG_SURFACE",
+            2,
+            "high discovery caution or moderate discovery strong surface conflict band",
+        )
+    if (moderate_score and valid_surface) or (strong_score and insufficient_surface):
+        return (
+            "VALID_BUT_INCOMPLETE_CONFIRMATION",
+            3,
+            "valid surface with moderate score or strong score with insufficient surface",
+        )
+    if (moderate_score and caution_surface) or (
+        score_class == "WEAK_DISCOVERY_SCORE" and (strong_surface or valid_surface)
+    ):
+        return (
+            "LOW_CONVICTION_OR_SURFACE_ONLY_CHALLENGER",
+            4,
+            "moderate caution or weak discovery with supportive surface",
+        )
+    return (
+        "INSUFFICIENT_OR_WEAK",
+        5,
+        "weak discovery or insufficient current PIT confirmation",
+    )
+
+
+def _with_candidate_pit_quality_surface(row: dict[str, Any]) -> dict[str, Any]:
+    surface = _candidate_pit_quality_surface(row)
+    return {
+        **row,
+        "candidate_pit_quality_surface": {
+            key: value
+            for key, value in surface.items()
+            if key not in {"priority"}
+        },
+        "candidate_pit_surface_schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
+        "candidate_pit_surface_state": surface["surface_state"],
+        "surface_state": surface["surface_state"],
+        "candidate_pit_surface_priority": surface["priority"],
+        "candidate_pit_surface_reason_codes": surface["reason_codes"],
+        "candidate_pit_surface_evidence_sufficiency": surface["evidence_sufficiency"],
+        "candidate_pit_market_healthy_proxy": surface["market_healthy_proxy"],
+        "candidate_pit_surface_not_buy_authority": True,
+        "candidate_pit_surface_future_information_used": False,
+    }
+
+
+def _candidate_pit_quality_surface(row: Mapping[str, Any]) -> dict[str, Any]:
+    required = (
+        "price_momentum_return_5d",
+        "price_momentum_return_20d",
+        "price_momentum_return_60d",
+        "trend_close_over_ma_20d",
+        "trend_ma_5_20_ratio",
+        "trend_ma_20_60_ratio",
+        "momentum_5d_vs_20d_delta",
+        "volume_momentum_ratio_5d",
+        "volatility_return_std_20d",
+        "liquidity_avg_volume_20d",
+    )
+    raw = {key: _optional_float(row.get(key)) for key in required}
+    missing = [key for key, value in raw.items() if value is None]
+    if missing:
+        return {
+            "schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
+            "surface_state": "INSUFFICIENT_SURFACE_EVIDENCE",
+            "priority": 3,
+            "reason_codes": ["candidate_surface_missing_pit_evidence"],
+            "evidence_sufficiency": "INSUFFICIENT",
+            "missing_inputs": missing,
+            "raw_pit_evidence": raw,
+            "market_healthy_proxy": False,
+            "not_buy_authority": True,
+            "future_information_used": False,
+        }
+    trend_positive = raw["price_momentum_return_5d"] > 0 and raw["price_momentum_return_20d"] > 0
+    ma_supportive = raw["trend_close_over_ma_20d"] >= 1.0 and raw["trend_ma_5_20_ratio"] >= 1.0
+    long_trend_supportive = raw["price_momentum_return_60d"] >= 0 and raw["trend_ma_20_60_ratio"] >= 1.0
+    acceleration_supportive = raw["momentum_5d_vs_20d_delta"] >= 0.0
+    acceleration_valid = raw["momentum_5d_vs_20d_delta"] >= -0.02
+    participation_supportive = raw["volume_momentum_ratio_5d"] >= 1.0
+    volatility_controlled = raw["volatility_return_std_20d"] <= 0.04
+    volatility_valid = raw["volatility_return_std_20d"] <= 0.08
+    liquidity_valid = raw["liquidity_avg_volume_20d"] > 0
+    market_healthy_proxy = bool(trend_positive and ma_supportive and acceleration_valid and liquidity_valid)
+    reason_codes: list[str] = []
+    if trend_positive:
+        reason_codes.append("candidate_surface_positive_5d_20d_momentum")
+    if ma_supportive:
+        reason_codes.append("candidate_surface_supportive_ma_structure")
+    if long_trend_supportive:
+        reason_codes.append("candidate_surface_supportive_long_trend")
+    if acceleration_supportive:
+        reason_codes.append("candidate_surface_supportive_acceleration")
+    elif not acceleration_valid:
+        reason_codes.append("candidate_surface_deceleration_caution")
+    if participation_supportive:
+        reason_codes.append("candidate_surface_supportive_participation")
+    else:
+        reason_codes.append("candidate_surface_weak_participation")
+    if volatility_controlled:
+        reason_codes.append("candidate_surface_controlled_volatility")
+    elif not volatility_valid:
+        reason_codes.append("candidate_surface_elevated_volatility")
+    if not liquidity_valid:
+        reason_codes.append("candidate_surface_invalid_liquidity")
+    if trend_positive and ma_supportive and long_trend_supportive and acceleration_supportive and participation_supportive and volatility_controlled and liquidity_valid:
+        state = "STRONG_CONTINUATION_SURFACE"
+        priority = 0
+    elif trend_positive and ma_supportive and acceleration_valid and participation_supportive and volatility_valid and liquidity_valid:
+        state = "VALID_MOMENTUM_SURFACE"
+        priority = 1
+    else:
+        state = "CAUTION_MOMENTUM_SURFACE"
+        priority = 2
+        if not trend_positive:
+            reason_codes.append("candidate_surface_trend_not_confirmed")
+        if not ma_supportive:
+            reason_codes.append("candidate_surface_ma_structure_not_confirmed")
+    return {
+        "schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
+        "surface_state": state,
+        "priority": priority,
+        "reason_codes": reason_codes,
+        "evidence_sufficiency": "SUFFICIENT",
+        "missing_inputs": [],
+        "raw_pit_evidence": raw,
+        "market_healthy_proxy": market_healthy_proxy,
+        "not_buy_authority": True,
+        "future_information_used": False,
+    }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _surface_distribution(rows: list[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        state = str(row.get("candidate_pit_surface_state") or row.get("surface_state") or "")
+        if not state:
+            surface = row.get("candidate_pit_quality_surface")
+            if isinstance(surface, Mapping):
+                state = str(surface.get("surface_state") or "")
+        if state:
+            counts[state] = counts.get(state, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _field_distribution(rows: list[Mapping[str, Any]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = str(row.get(field) or "")
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _numeric_distribution(values: Iterable[Any]) -> dict[str, Any]:
+    numeric = [_optional_float(value) for value in values]
+    clean = [value for value in numeric if value is not None]
+    if not clean:
+        return {"count": 0, "min": None, "max": None, "mean": None}
+    return {
+        "count": len(clean),
+        "min": round(float(min(clean)), 8),
+        "max": round(float(max(clean)), 8),
+        "mean": round(float(np.mean(clean)), 8),
+    }
+
+
+def _safe_rate(numerator: int, denominator: int) -> float:
+    return round(float(numerator) / float(denominator), 8) if denominator else 0.0
+
+
 def _listed_info_payload(parent: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
     product_category = str(row.get("product_category") or row.get("ProdCat") or "").strip()
     security_type = str(row.get("security_type") or row.get("SecType") or row.get("Type") or product_category).strip()
@@ -1518,6 +1917,7 @@ def _candidate_payload(
     artifact_path: Path,
     rows: tuple[dict[str, Any], ...],
     schema_evidence: dict[str, Any] | None = None,
+    surface_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evidence = schema_evidence or _empty_schema_evidence(
         schema_status="READY" if status == "PASS" else "REVIEW_REQUIRED",
@@ -1541,6 +1941,37 @@ def _candidate_payload(
             "candidate_reason": str(row.get("candidate_reason") or ""),
             "reason": str(row.get("candidate_reason") or ""),
             "confidence": _confidence_from_rank(int(row.get("candidate_rank") or 999999)),
+            "score_only_candidate_rank": int(row.get("score_only_candidate_rank") or row.get("candidate_rank") or 0),
+            "candidate_score_semantic_role": str(
+                row.get("candidate_score_semantic_role") or "momentum_candidate_label_model_score"
+            ),
+            "candidate_score_role": str(row.get("candidate_score_role") or "CO_EQUAL_HYBRID_EVIDENCE"),
+            "score_evidence_class": str(row.get("score_evidence_class") or ""),
+            "candidate_rank_semantic_role": "score_only_model_rank_observable_evidence",
+            "quality_aware_candidate_rank": int(row.get("quality_aware_candidate_rank") or 0),
+            "quality_aware_candidate_rank_semantic_role": "candidate_stage_semantic_hybrid_surface_order",
+            "candidate_hybrid_ordering_schema_version": str(
+                row.get("candidate_hybrid_ordering_schema_version") or CANDIDATE_HYBRID_ORDERING_SCHEMA_VERSION
+            ),
+            "semantic_hybrid_class": str(row.get("semantic_hybrid_class") or ""),
+            "semantic_hybrid_class_priority": int(row.get("semantic_hybrid_class_priority") or 0),
+            "semantic_hybrid_class_reason": str(row.get("semantic_hybrid_class_reason") or ""),
+            "candidate_surface_role": str(row.get("candidate_surface_role") or "SEMANTIC_HYBRID_AUTHORITY"),
+            "candidate_pit_surface_schema_version": str(
+                row.get("candidate_pit_surface_schema_version") or CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION
+            ),
+            "candidate_pit_surface_state": str(row.get("candidate_pit_surface_state") or ""),
+            "surface_state": str(row.get("surface_state") or row.get("candidate_pit_surface_state") or ""),
+            "candidate_pit_surface_reason_codes": list(row.get("candidate_pit_surface_reason_codes") or []),
+            "candidate_pit_surface_evidence_sufficiency": str(
+                row.get("candidate_pit_surface_evidence_sufficiency") or ""
+            ),
+            "candidate_pit_quality_surface": dict(row.get("candidate_pit_quality_surface") or {}),
+            "candidate_pit_market_healthy_proxy": bool(row.get("candidate_pit_market_healthy_proxy")),
+            "candidate_pit_surface_not_buy_authority": bool(row.get("candidate_pit_surface_not_buy_authority", True)),
+            "candidate_pit_surface_future_information_used": bool(
+                row.get("candidate_pit_surface_future_information_used", False)
+            ),
             **_buy_quality_feature_metadata(row),
             **_candidate_listed_info_metadata(row),
         }
@@ -1568,6 +1999,11 @@ def _candidate_payload(
         "review_required": status != "PASS",
         "review_reason": reason if status != "PASS" else "",
         "candidate_count": len(decisions),
+        "candidate_pit_quality_surface_evidence": surface_evidence or {},
+        "candidate_pit_surface_distribution": dict(
+            (surface_evidence or {}).get("top50_surface_distribution") or {}
+        ),
+        "candidate_coverage_evidence": surface_evidence or {},
         "rows": decisions,
     }
 

@@ -94,6 +94,117 @@ def test_phase17ab_isolated_cli_reaches_current_valuation_producer_after_pre_gat
     assert evidence["blocked_before_producer"] is False
 
 
+def test_phase30_ak9r6_post_submit_residual_buy_review_allows_current_valuation_readiness(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_post_submit_residual_buy_review_pending(runtime_root, tmp_path)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    pending = result.payload["components"]["pending"]
+    safety = result.payload["components"]["safety"]["pending_safety_authority"]
+    assert result.status == "READY"
+    assert pending["reason"] == "post_submit_residual_buy_review_current_valuation_ready"
+    assert pending["post_submit_residual_buy_review_current_valuation_ready"] is True
+    assert safety["status"] == "READY"
+    assert safety["reason"] == "historical_post_submit_residual_buy_review_current_valuation_ready"
+    assert safety["post_submit_residual_buy_review_current_valuation_ready"] is True
+    assert "pending_review_required" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase30_ak9r6_isolated_cli_reaches_current_valuation_producer_with_residual_buy_review(tmp_path):
+    pd = pytest.importorskip("pandas")
+    runtime_root = _runtime_root(tmp_path)
+    evidence_root = _evidence_root(tmp_path)
+    _write_post_submit_residual_buy_review_pending(runtime_root, tmp_path)
+    _write_stale_latest_safety(runtime_root)
+    _write_historical_asof_view(evidence_root, tmp_path, pd)
+    policy_path = _write_policy(tmp_path / "capital_policy.json")
+
+    exit_code = main(
+        [
+            "--mode",
+            "historical",
+            "--job",
+            "current_valuation_refresh",
+            "--business-date",
+            BUSINESS_DATE,
+            "--broker-environment",
+            "historical_simulated",
+            "--runtime-root",
+            str(runtime_root),
+            "--reports-root",
+            str(tmp_path / "reports" / "runtime_v2"),
+            "--public-reports-root",
+            str(tmp_path / "reports" / "public" / "runtime_v2"),
+            "--manifest-root",
+            str(runtime_root / "runtime_state" / "run_manifest"),
+            "--log-root",
+            str(runtime_root / "runtime_state" / "logs"),
+            "--capital-deployment-policy",
+            str(policy_path),
+            "--runtime-test-run-id",
+            RUN_ID,
+            "--runtime-test-profile-id",
+            PROFILE_ID,
+            "--runtime-test-evidence-root",
+            str(evidence_root),
+            "--evaluation-time",
+            "2026-07-06T15:35:00+09:00",
+        ]
+    )
+
+    manifest = _latest_manifest(runtime_root)
+    evidence = _read_json(evidence_root / "daily" / BUSINESS_DATE / "current_valuation_refresh" / "valuation_projection.json")
+    pending = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    reviewed_states = {
+        item["pending_item_id"]: item["state"]
+        for item in pending["items"]
+        if item["pending_item_id"] in pending["review_required_buy_item_ids"]
+    }
+    assert exit_code == 0
+    assert manifest["data_readiness_status"] == "READY"
+    assert evidence["execution_reached"] is True
+    assert evidence["blocked_before_producer"] is False
+    assert pending["state"] == "REVIEW_REQUIRED"
+    assert reviewed_states == {"review-38410": "REVIEW_REQUIRED", "review-39950": "REVIEW_REQUIRED"}
+
+
+def test_phase30_ak9r6_reviewed_buy_accidentally_consumed_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_post_submit_residual_buy_review_pending(runtime_root, tmp_path, reviewed_state="CONSUMED")
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase30_ak9r6_aggregate_cash_failure_remains_fail_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_post_submit_residual_buy_review_pending(runtime_root, tmp_path, violated_policy="aggregate_cash")
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+
+
+def test_phase30_ak9r6_unresolved_sell_review_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_post_submit_residual_buy_review_pending(runtime_root, tmp_path, include_review_sell=True)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+
+
 def test_phase17ab_run_id_mismatch_fails_closed(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_consumed_pending(runtime_root, tmp_path, run_id="wrong-run")
@@ -348,6 +459,109 @@ def _write_consumed_pending(
             "items": [],
         },
     )
+
+
+def _write_post_submit_residual_buy_review_pending(
+    runtime_root: Path,
+    tmp_path: Path,
+    *,
+    reviewed_state: str = "REVIEW_REQUIRED",
+    violated_policy: str = "pc_discrete_quantity_authority_lot_overshoot_unresolved",
+    include_review_sell: bool = False,
+) -> None:
+    safety_context = _historical_safety_context(tmp_path)
+    approved_ids = ["approved-23700", "approved-94320"]
+    review_ids = ["review-38410", "review-39950"]
+    items = [
+        _pending_item("approved-23700", "23700", "BUY", "CONSUMED", True, "PASS_ITEM_SUBMITTABLE", safety_context),
+        _pending_item("approved-94320", "94320", "BUY", "CONSUMED", True, "PASS_ITEM_SUBMITTABLE", safety_context),
+        _pending_item("review-38410", "38410", "BUY", reviewed_state, False, "ITEM_REVIEW_REQUIRED", safety_context),
+        _pending_item("review-39950", "39950", "BUY", reviewed_state, False, "ITEM_REVIEW_REQUIRED", safety_context),
+    ]
+    review_sell_ids: list[str] = []
+    if include_review_sell:
+        review_sell_ids.append("review-sell-81050")
+        items.append(_pending_item("review-sell-81050", "81050", "SELL", "REVIEW_REQUIRED", False, "ITEM_REVIEW_REQUIRED", safety_context))
+    feasibility_items = [
+        {"pending_item_id": item_id, "symbol": symbol, "side": "BUY", "status": "PASS"}
+        for item_id, symbol in (("approved-23700", "23700"), ("approved-94320", "94320"))
+    ]
+    feasibility_items.extend(
+        {
+            "pending_item_id": item_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "status": "REVIEW_REQUIRED",
+            "violated_policy": violated_policy,
+            "violated_policy_source": "position_sizing_authority",
+        }
+        for item_id, symbol in (("review-38410", "38410"), ("review-39950", "39950"))
+    )
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "phase30_ak9r6_fixture_v1",
+            "pending_plan_id": "pending-phase30-ak9r6",
+            "state": "REVIEW_REQUIRED",
+            "environment": "historical",
+            "target_session_date": BUSINESS_DATE,
+            "review_reason": "pending_review_required",
+            "review_scope": "BUY_ITEM_SCOPED_REVIEW",
+            "sell_continuation_allowed": True,
+            "plan_overall_status": "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW",
+            "buy_items_status": "REVIEW_REQUIRED",
+            "sell_items_status": "NOT_PRESENT",
+            "approved_buy_item_ids": approved_ids,
+            "review_required_buy_item_ids": review_ids,
+            "review_required_sell_item_ids": review_sell_ids,
+            "approval": {"approval_status": "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW", "pending_policy_hash": "policy-hash"},
+            "consume": {"consumed": False},
+            "safety_policy_version": "historical_replay_neutral_safety_v1",
+            "safety_context": safety_context,
+            "planning_submit_feasibility": {
+                "status": "REVIEW_REQUIRED",
+                "items": feasibility_items,
+            },
+            "items": items,
+        },
+    )
+
+
+def _historical_safety_context(tmp_path: Path) -> dict:
+    return {
+        "safety_authority": "historical_initial_no_external_effect",
+        "safety_decision_id": f"historical-neutral-safety:{BUSINESS_DATE}",
+        "safety_policy_version": "historical_replay_neutral_safety_v1",
+        "safety_source": "data_readiness_historical_temporal_authority",
+        "safety_decision": "ALLOW",
+        "safety_reason": "historical_neutral_no_event_safety_ready",
+        "safety_business_date": BUSINESS_DATE,
+        "runtime_test_run_id": RUN_ID,
+        "runtime_test_profile_id": PROFILE_ID,
+        "runtime_test_evidence_root": str(_evidence_root(tmp_path)),
+    }
+
+
+def _pending_item(
+    item_id: str,
+    symbol: str,
+    side: str,
+    state: str,
+    approved: bool,
+    batch_submit_status: str,
+    safety_context: dict,
+) -> dict:
+    return {
+        "pending_item_id": item_id,
+        "symbol": symbol,
+        "side": side,
+        "state": state,
+        "approved": approved,
+        "batch_submit_status": batch_submit_status,
+        "quantity": 100,
+        "temporal_authority_business_date": BUSINESS_DATE,
+        **safety_context,
+    }
 
 
 def _write_stale_latest_safety(runtime_root: Path) -> None:

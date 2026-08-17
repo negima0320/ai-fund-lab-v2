@@ -398,6 +398,150 @@ jquants_daily_quote
 
 Safety may require wall-clock quote freshness for risk monitoring. Valuation may accept daily close or valid carryover, depending on trading calendar and publication window.
 
+### 12.1 Held-Position Missing Quote Taxonomy
+
+Current valuation must not treat every held-position quote absence as the same
+condition. A market business day with a runtime-owned holding and no same-day
+quote must be classified before valuation continuity is allowed.
+
+Minimum Production-common classes:
+
+| Class | Meaning | Current valuation behavior |
+|---|---|---|
+| `AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION` | Current-day fresh quote is unavailable, but authoritative listing/trading-state evidence explains the absence, prior valuation is authoritative, CA ambiguity is clear, and basis/provenance are stable | May use explicit stale accounting valuation |
+| `DATA_OR_SOURCE_FAILURE` | Symbol is expected to have quote evidence, but vendor/source/pipeline/normalization evidence is missing or inconsistent | `REVIEW_REQUIRED` / fail closed |
+| `LISTING_OR_CORPORATE_ACTION_AMBIGUITY` | Listing transition, delisting, symbol transition, split/consolidation, liquidation, or CA status is insufficiently classified | `REVIEW_REQUIRED` / fail closed |
+| `UNKNOWN_MISSING_QUOTE` | Missing reason cannot be authoritatively classified | `REVIEW_REQUIRED` / fail closed |
+
+`missing quote -> previous close` is forbidden. Prior valuation may be carried
+only under `AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION`.
+
+### 12.2 Authorized Stale Valuation
+
+Authorized stale valuation is a Portfolio accounting continuity semantic, not a
+fresh market quote. It reuses `VALID_CARRYOVER` only when the carryover is
+explicitly authorized and visible.
+
+Required metadata:
+
+```text
+valuation_quote_status = AUTHORIZED_STALE_VALUATION
+quote_business_date
+valuation_business_date
+staleness_business_days
+stale_reason
+stale_authority
+price_basis
+source_provenance
+listing_status_evidence
+corporate_action_ambiguity_status
+stale_accounting_valuation_not_fresh_market_signal = true
+```
+
+`quote_business_date` must remain the original quote date. It must not be
+fabricated as the valuation business date when the source price is stale.
+
+For fresh valuation:
+
+```text
+valuation_quote_status = FRESH_CURRENT_QUOTE
+quote_business_date = valuation_business_date
+staleness_business_days = 0
+```
+
+### 12.3 Corporate Action and Basis Guard
+
+Authorized stale valuation is prohibited unless:
+
+- `corporate_action_ambiguity_status = CLEAR`,
+- runtime-owned symbol identity is stable,
+- previous authoritative valuation exists,
+- `quantity_basis` and `valuation_price_basis` are known and match,
+- valuation price role and provenance are retained,
+- stale age is explicit.
+
+Raw price x adjusted quantity, adjusted price x raw quantity, basis metadata
+loss, and economic/analytical price confusion remain fail-closed.
+
+### 12.4 Strategy Isolation
+
+Authorized stale accounting valuation must not become a fresh Strategy market
+signal. It must not be used as fresh input for momentum, continuation quality,
+downside-risk price dimensions, relative strength, volatility, Expected Edge,
+or BUY Quality unless a separate Strategy contract explicitly allows stale
+market evidence.
+
+Portfolio accounting continuity and Strategy market evidence freshness are
+separate authorities.
+
+### 12.5 Resume / Idempotency Boundary
+
+If execution has already been applied and current valuation remains pending,
+repair or resume may restart only at `current_valuation_refresh` after explicit
+authorization. The following must remain true:
+
+- duplicate execution append count = 0,
+- duplicate Ledger append count = 0,
+- duplicate Cash mutation count = 0,
+- duplicate Pending terminalization count = 0,
+- valuation apply executes exactly once,
+- Current pointer/hash remains consistent.
+
+### 12.6 Listing / Corporate Action Authority Binding
+
+Held-position missing quote classification is owned by Production-common
+authorities. Current Valuation consumes authority evidence; it does not create
+duplicate listing or corporate-action truth.
+
+Listing State Authority distinguishes:
+
+```text
+CURRENTLY_LISTED
+PREVIOUSLY_LISTED_CURRENT_ABSENT
+LISTING_TRANSITION_CONFIRMED
+LISTING_TRANSITION_REASON_UNKNOWN
+```
+
+Yesterday-listed and today-absent is insufficient by itself. It may indicate a
+listing transition, a symbol transition, source coverage loss, suspension, or
+corporate action. Stale valuation is allowed only when the transition is
+authoritatively confirmed with reason, prior quote date, provenance, and stale
+age.
+
+Corporate Action Ambiguity Authority distinguishes:
+
+```text
+CLEAR
+RESOLVED_EVENT
+UNRESOLVED
+COVERAGE_INCOMPLETE
+UNKNOWN
+```
+
+Event row absence is not automatically `CLEAR`. `CLEAR` requires sufficient
+coverage for the symbol/date window and no unresolved event affecting symbol
+identity, quantity basis, valuation basis, or economic valuation price.
+
+Tradability Authority may additionally identify an authoritative no-current-
+quote condition such as suspension, no valid close, or authorized untradability.
+If that authority is unavailable, missing quote classification must fail closed
+unless a separate explicit missing-quote class already satisfies all stale
+valuation requirements.
+
+Current Valuation maps these authorities into the Phase30-Q1 classes:
+
+```text
+AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION
+DATA_OR_SOURCE_FAILURE
+LISTING_OR_CORPORATE_ACTION_AMBIGUITY
+UNKNOWN_MISSING_QUOTE
+```
+
+Authorized stale accounting valuation still requires
+`corporate_action_ambiguity_status = CLEAR`, matching quantity/price basis,
+original quote date, stale reason, stale authority, and provenance. Stale
+valuation must remain isolated from Strategy fresh market evidence.
+
 ## 13. J-Quants Availability Contract
 
 `latest_available_market_date < latest_expected_trading_date` must be classified, not automatically failed.

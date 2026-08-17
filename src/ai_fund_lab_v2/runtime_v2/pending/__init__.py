@@ -4,6 +4,11 @@ from ai_fund_lab_v2.runtime_v2.pending.consume import (
     can_submit_pending_plan,
     consume_pending_plan,
 )
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    PendingReviewScopeAuthority,
+    build_pending_review_scope_authority,
+    pending_scope_allows_partial_submit,
+)
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle import (
     PendingTransition,
     is_pending_transition_allowed,
@@ -42,6 +47,9 @@ __all__ = [
     "attach_approval_link",
     "can_submit_pending_plan",
     "consume_pending_plan",
+    "PendingReviewScopeAuthority",
+    "build_pending_review_scope_authority",
+    "pending_scope_allows_partial_submit",
     "is_pending_transition_allowed",
     "pending_order_plan_to_payload",
     "promote_order_plan_to_pending",
@@ -49,4 +57,3 @@ __all__ = [
     "validate_pending_transition",
     "write_pending_order_plan",
 ]
-

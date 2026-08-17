@@ -197,7 +197,7 @@ def test_phase29_l21k_23880_reproduction_reaches_existing_l16_reentry_contract(t
     assert semantic["business_days_since_exit"] == 1
     assert recovery["reentry_score_gate_status"] == "DIAGNOSTIC_ONLY"
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "reentry_corporate_action_source_missing"
+    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
 
 
 def test_phase29_l21r3_23880_prior_exit_persists_through_temporary_exclude_then_reentry(tmp_path: Path) -> None:
@@ -240,7 +240,7 @@ def test_phase29_l21p_reentry_recovery_passes_when_corporate_action_evidence_is_
         root / "persistent_ledger" / "executions.jsonl",
         [
             {"business_date": "2022-08-23", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100},
-            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "EXIT"},
+            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "EXIT_BY_TREND_AND_EDGE_BREAK"},
         ],
     )
 
@@ -281,7 +281,7 @@ def test_phase29_l21p_reentry_recovery_requires_corporate_action_evidence(tmp_pa
         root / "persistent_ledger" / "executions.jsonl",
         [
             {"business_date": "2022-08-23", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100},
-            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "EXIT"},
+            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "EXIT_BY_TREND_AND_EDGE_BREAK"},
         ],
     )
 
@@ -319,9 +319,9 @@ def test_phase29_l21p_runtime_opportunity_score_is_canonical_reentry_score(tmp_p
         root / "persistent_ledger" / "executions.jsonl",
         [
             {"business_date": "2022-08-23", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100},
-            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104},
+            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "EXIT_BY_TREND_AND_EDGE_BREAK"},
             {"business_date": "2022-08-23", "side": "BUY", "symbol": "22220", "quantity": 100, "price": 100},
-            {"business_date": "2022-08-26", "side": "SELL", "symbol": "22220", "quantity": 100, "price": 104},
+            {"business_date": "2022-08-26", "side": "SELL", "symbol": "22220", "quantity": 100, "price": 104, "source_decision_type": "EXIT_BY_TREND_AND_EDGE_BREAK"},
         ],
     )
 
@@ -337,6 +337,7 @@ def test_phase29_l21p_runtime_opportunity_score_is_canonical_reentry_score(tmp_p
                 "opportunity_buy_rank": 2,
                 "quality_action": "FULL_ALLOCATION_ELIGIBLE",
                 "trend_close_over_ma_20d": 1.01,
+                "price_momentum_return_20d": 0.02,
                 "corporate_action_status": "NO_EVENT",
             },
             {
@@ -346,6 +347,7 @@ def test_phase29_l21p_runtime_opportunity_score_is_canonical_reentry_score(tmp_p
                 "opportunity_buy_rank": 2,
                 "quality_action": "FULL_ALLOCATION_ELIGIBLE",
                 "trend_close_over_ma_20d": 1.01,
+                "price_momentum_return_20d": 0.02,
                 "corporate_action_status": "NO_EVENT",
             },
         ),

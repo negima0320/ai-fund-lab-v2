@@ -30,11 +30,17 @@ from ai_fund_lab_v2.runtime_v2.buy_ai.producer import _isolated_test_artifact_pa
 from ai_fund_lab_v2.runtime_v2.position_management.producer import (
     validate_position_management_input_contract,
 )
-from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
+from ai_fund_lab_v2.runtime_v2.historical_support.safety_temporal_authority import (
+    HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE,
+    HISTORICAL_PENDING_SAFETY_AUTHORITY_TYPE,
     HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
-    HISTORICAL_NEUTRAL_SAFETY_DECISIONS,
     HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
     HISTORICAL_NEUTRAL_SAFETY_SOURCE,
+    evaluate_historical_daily_neutral_safety_authority as _historical_daily_neutral_safety_authority,
+    evaluate_historical_pending_safety_authority as _historical_pending_safety_authority,
+    pending_scope_current_valuation_adapter_ready as _pending_scope_current_valuation_adapter_ready,
+    pending_scope_sell_continuation_adapter_ready as _pending_scope_sell_continuation_adapter_ready,
+    same_day_failed_attempt_pending_retry_ineligible as _same_day_failed_attempt_pending_retry_ineligible,
 )
 from ai_fund_lab_v2.runtime_v2.safety_decision import load_runtime_safety_decision
 from ai_fund_lab_v2.runtime_v2.human_review import (
@@ -42,6 +48,10 @@ from ai_fund_lab_v2.runtime_v2.human_review import (
     HIGH_RISK_REVIEW_ISSUE_CODE,
     HIGH_RISK_REVIEW_REASON,
     validate_human_review_artifact,
+)
+from ai_fund_lab_v2.runtime_v2.guard_taxonomy import (
+    normalize_component_review_results,
+    taxonomy_consumer_summary,
 )
 from ai_fund_lab_v2.runtime_v2.runtime_state import validate_runtime_operation_state
 
@@ -62,9 +72,6 @@ MORNING_VALUATION_SCOPES = {*FULL_MORNING_SCOPES, REVIEW_ONLY_MORNING_SCOPE, "se
 SAME_DAY_CLOSE_REQUIRED_SCOPES = {"current_valuation", "execution"}
 JST = timezone(timedelta(hours=9))
 CURRENT_VALUATION_CLOSE_CONFIRMED_TIME = time(15, 40)
-HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE = "HISTORICAL_DAILY_NEUTRAL"
-HISTORICAL_PENDING_SAFETY_AUTHORITY_TYPE = "HISTORICAL_PENDING_SAFETY_CONTEXT"
-
 
 @dataclass(frozen=True)
 class RuntimeDataReadinessResult:
@@ -131,6 +138,11 @@ class RuntimeDataReadinessResult:
             "runtime_execution_path",
             "component_reasons",
             "effective_component_statuses",
+            "review_guard_classes",
+            "review_guard_codes",
+            "system_defect_guard_count",
+            "batch_blocking_review_guard_count",
+            "review_guard_summary",
         ):
             fields[key] = self.payload.get(key)
         fields.update(_compat_manifest_fields(self.payload))
@@ -798,6 +810,7 @@ def evaluate_runtime_data_readiness(
         root=root,
         business_date=business_date,
         mode=mode,
+        readiness_scope=readiness_scope,
         runtime_test_run_id=runtime_test_run_id or "",
         runtime_test_profile_id=runtime_test_profile_id or "",
         runtime_test_evidence_root=str(runtime_test_evidence_root or ""),
@@ -814,6 +827,7 @@ def evaluate_runtime_data_readiness(
         root=root,
         business_date=business_date,
         mode=mode,
+        readiness_scope=readiness_scope,
         broker_environment=broker_environment or mode,
         current_payload=current_payload,
         pending_payload=pending_payload,
@@ -921,6 +935,29 @@ def evaluate_runtime_data_readiness(
         "runtime_state": runtime_state_payload["status"],
         "human_review": review_only_scope_payload["status"],
     }
+    component_payloads_for_guard_taxonomy = {
+        "market": market_payload,
+        "quote": {"quote_status": effective_quote_status, "quote_reason": market_payload.get("quote_reason") or ""},
+        "broker": broker_payload,
+        "safety": safety_payload,
+        "feature": feature_payload,
+        "candidate": candidate_status,
+        "opportunity": opportunity_status,
+        "current": {
+            "current_status": current_status,
+            "current_freshness": current_freshness,
+            "current_valuation_temporal_authority": valuation_temporal_authority,
+        },
+        "pending": pending_payload,
+        "runtime_environment": environment_payload,
+        "runtime_state": runtime_state_payload,
+        "human_review": review_only_scope_payload,
+    }
+    review_guard_results = normalize_component_review_results(
+        component_reasons=component_reasons,
+        components=component_payloads_for_guard_taxonomy,
+    )
+    review_guard_summary = taxonomy_consumer_summary(review_guard_results)
     artifact_path = (
         Path(runtime_test_evidence_root) / "daily" / business_date / "data_readiness" / "data_readiness.json"
         if runtime_test_evidence_root
@@ -999,6 +1036,12 @@ def evaluate_runtime_data_readiness(
         "mismatched_dates": _unique(mismatched_dates),
         "source_paths": {key: value for key, value in source_paths.items() if value},
         "review_reasons": _unique(review_reasons),
+        "review_guard_results": review_guard_results,
+        "review_guard_summary": review_guard_summary,
+        "review_guard_classes": review_guard_summary["guard_classes"],
+        "review_guard_codes": review_guard_summary["guard_codes"],
+        "system_defect_guard_count": review_guard_summary["system_defect_count"],
+        "batch_blocking_review_guard_count": review_guard_summary["batch_blocking_count"],
         "halt_reasons": _unique(halt_reasons),
         "next_operator_action": _next_operator_action(overall_status, review_reasons, halt_reasons),
         "current_expected_as_of": expected_current_as_of,
@@ -1762,6 +1805,7 @@ def _safety_readiness_payload(
     root: Path,
     business_date: str,
     mode: str,
+    readiness_scope: str,
     broker_environment: str,
     current_payload: dict[str, Any],
     pending_payload: dict[str, Any],
@@ -1781,6 +1825,7 @@ def _safety_readiness_payload(
         pending_authority = _historical_pending_safety_authority(
             pending_payload=pending_payload,
             business_date=business_date,
+            readiness_scope=readiness_scope,
             runtime_test_run_id=runtime_test_run_id,
             runtime_test_profile_id=runtime_test_profile_id,
             runtime_test_evidence_root=runtime_test_evidence_root,
@@ -1829,6 +1874,7 @@ def _safety_readiness_payload(
             broker_environment=broker_environment,
             current_payload=current_payload,
             pending_payload=pending_payload,
+            readiness_scope=readiness_scope,
             runtime_test_run_id=runtime_test_run_id,
             runtime_test_profile_id=runtime_test_profile_id,
             runtime_test_evidence_root=runtime_test_evidence_root,
@@ -1884,215 +1930,6 @@ def _previous_empty_pending_present(*, pending_payload: dict[str, Any], business
     target_session_date = str(payload.get("target_session_date") or "")
     items = payload.get("items") or ()
     return bool(state == "EMPTY" and not active_pending and not items and target_session_date and target_session_date < business_date)
-
-
-def _pending_allows_daily_neutral_safety(*, pending_payload: dict[str, Any], business_date: str) -> bool:
-    payload = dict(pending_payload.get("payload") or {})
-    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
-    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
-    items = payload.get("items") or ()
-    target_session_date = str(payload.get("target_session_date") or "")
-    consumed = bool((payload.get("consume") or {}).get("consumed")) or state == "CONSUMED"
-    if _pending_buy_item_scoped_sell_continuation_ready(
-        pending_payload=pending_payload,
-        business_date=business_date,
-        mode="historical",
-    ):
-        return True
-    if _same_day_failed_attempt_pending_retry_ineligible(
-        pending_payload=pending_payload,
-        business_date=business_date,
-    )["retry_input_ineligible"]:
-        return True
-    if state in {"APPROVED", "PENDING_APPROVAL", "SUBMITTED", "ACTIVE", "CONSUMED"} or active_pending or consumed:
-        return False
-    if state == "EMPTY" and not active_pending and not items:
-        return not target_session_date or target_session_date <= business_date
-    return False
-
-
-def _same_day_failed_attempt_pending_retry_ineligible(
-    *,
-    pending_payload: dict[str, Any],
-    business_date: str,
-) -> dict[str, Any]:
-    payload = dict(pending_payload.get("payload") or {})
-    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
-    target_session_date = str(payload.get("target_session_date") or "")
-    source_order_plan = dict(payload.get("source_order_plan") or {})
-    source_order_plan_id = str(source_order_plan.get("order_plan_id") or "")
-    source_order_plan_path = str(source_order_plan.get("path") or "")
-    safety_context = payload.get("safety_context") if isinstance(payload.get("safety_context"), dict) else {}
-    planning_context = (
-        payload.get("planning_lineage_context")
-        if isinstance(payload.get("planning_lineage_context"), dict)
-        else {}
-    )
-    planning_authority_complete = bool(
-        payload.get("planning_authority_hash")
-        and payload.get("planning_authority_source")
-        and payload.get("planning_authority_version")
-    ) or bool(
-        planning_context.get("planning_authority_hash")
-        and planning_context.get("planning_authority_source")
-        and planning_context.get("planning_authority_version")
-    )
-    safety_context_complete = bool(
-        safety_context.get("safety_authority")
-        and safety_context.get("safety_decision")
-        and safety_context.get("safety_policy_version")
-        and safety_context.get("safety_source")
-        and safety_context.get("safety_business_date")
-    )
-    items = payload.get("items") or ()
-    review_scope = str(payload.get("review_scope") or "")
-    sell_continuation_allowed = bool(payload.get("sell_continuation_allowed"))
-    producer_matches_retry_target = bool(
-        target_session_date == business_date
-        and (
-            source_order_plan_id == f"strategy-review-{business_date}"
-            or f"/strategy_planning/{business_date}/" in source_order_plan_path
-            or f"strategy_planning/{business_date}/" in source_order_plan_path
-        )
-    )
-    empty_unscoped_same_day_strategy_attempt = bool(
-        state in {"BLOCKED", "REVIEW_REQUIRED"}
-        and target_session_date == business_date
-        and not items
-        and producer_matches_retry_target
-        and review_scope != "BUY_ITEM_SCOPED_REVIEW"
-        and not sell_continuation_allowed
-    )
-    incomplete_blocked_failed_attempt = bool(
-        state == "BLOCKED"
-        and empty_unscoped_same_day_strategy_attempt
-        and not safety_context_complete
-        and not planning_authority_complete
-    )
-    review_required_empty_unscoped_failed_attempt = bool(
-        state == "REVIEW_REQUIRED"
-        and empty_unscoped_same_day_strategy_attempt
-        and (
-            source_order_plan_id.startswith("strategy-plan-")
-            or source_order_plan_id == f"strategy-review-{business_date}"
-        )
-    )
-    retry_input_ineligible = bool(
-        incomplete_blocked_failed_attempt
-        or review_required_empty_unscoped_failed_attempt
-    )
-    reason = (
-        "failed_attempt_pending_retry_input_ineligible"
-        if retry_input_ineligible
-        else "pending_retry_input_eligible_or_not_failed_attempt"
-    )
-    return {
-        "pending_artifact_present": bool(payload),
-        "pending_artifact_producer_business_date": business_date if producer_matches_retry_target else "",
-        "pending_artifact_producer_job": "morning" if producer_matches_retry_target else "",
-        "pending_artifact_producer_attempt_id": str(payload.get("producer_attempt_id") or ""),
-        "pending_artifact_attempt_status": state,
-        "pending_artifact_commit_status": "NOT_COMMITTED" if retry_input_ineligible else "",
-        "pending_artifact_retry_eligibility": "RETRY_INPUT_INELIGIBLE"
-        if retry_input_ineligible
-        else "NOT_CLASSIFIED_INELIGIBLE",
-        "pending_artifact_authority_eligibility": "AUTHORITY_INELIGIBLE"
-        if retry_input_ineligible
-        else "AUTHORITY_ELIGIBILITY_NOT_OVERRIDDEN",
-        "pending_restore_performed": False,
-        "pending_restore_source": "",
-        "pending_restore_before_hash": "",
-        "pending_restore_after_hash": "",
-        "failed_attempt_artifact_quarantined": retry_input_ineligible,
-        "reason": reason,
-        "retry_input_ineligible": retry_input_ineligible,
-        "safety_context_complete": safety_context_complete,
-        "planning_authority_complete": planning_authority_complete,
-        "source_order_plan_id": source_order_plan_id,
-        "source_order_plan_path": source_order_plan_path,
-        "review_scope": review_scope,
-        "sell_continuation_allowed": sell_continuation_allowed,
-        "empty_unscoped_same_day_strategy_attempt": empty_unscoped_same_day_strategy_attempt,
-        "incomplete_blocked_failed_attempt": incomplete_blocked_failed_attempt,
-        "review_required_empty_unscoped_failed_attempt": review_required_empty_unscoped_failed_attempt,
-    }
-
-
-def _historical_daily_neutral_safety_authority(
-    *,
-    business_date: str,
-    mode: str,
-    broker_environment: str,
-    current_payload: dict[str, Any],
-    pending_payload: dict[str, Any],
-    runtime_test_run_id: str,
-    runtime_test_profile_id: str,
-    runtime_test_evidence_root: str,
-    broker_write: bool,
-    external_delivery: bool,
-    previous_empty_pending_present: bool,
-) -> dict[str, Any]:
-    mismatched: list[str] = []
-    missing: list[str] = []
-    if mode != "historical":
-        mismatched.append("runtime_mode")
-    if broker_environment != "historical_simulated":
-        mismatched.append("broker_environment")
-    if broker_write:
-        mismatched.append("broker_write")
-    if external_delivery:
-        mismatched.append("external_delivery")
-    if not runtime_test_run_id:
-        missing.append("runtime_test_run_id")
-    if not runtime_test_profile_id:
-        missing.append("runtime_test_profile_id")
-    if not runtime_test_evidence_root:
-        missing.append("runtime_test_evidence_root")
-    if not _pending_allows_daily_neutral_safety(
-        pending_payload=pending_payload,
-        business_date=business_date,
-    ):
-        mismatched.append("pending_lifecycle_state")
-    pending_retry = _same_day_failed_attempt_pending_retry_ineligible(
-        pending_payload=pending_payload,
-        business_date=business_date,
-    )
-    status = "READY" if not mismatched and not missing else "REVIEW_REQUIRED"
-    reason = (
-        "historical_daily_neutral_safety_authority_ready"
-        if status == "READY"
-        else "historical_daily_neutral_safety_authority_not_available"
-    )
-    return {
-        "status": status,
-        "reason": reason,
-        "missing_evidence": missing,
-        "stale_artifacts": [],
-        "mismatched_fields": sorted(set(mismatched)),
-        "safety_authority_type": HISTORICAL_DAILY_NEUTRAL_SAFETY_AUTHORITY_TYPE,
-        "safety_authority_business_date": business_date,
-        "safety_authority_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
-        "safety_authority_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
-        "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
-        "safety_decision": "NEUTRAL",
-        "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
-        "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
-        "historical_neutral_authority_generated_or_resolved": status == "READY",
-        "previous_empty_pending_present": previous_empty_pending_present,
-        "previous_empty_pending_ignored_as_safety_authority": previous_empty_pending_present,
-        "broker_write": bool(broker_write),
-        "external_delivery": bool(external_delivery),
-        "broker_environment": broker_environment,
-        "runtime_test_run_id": runtime_test_run_id,
-        "runtime_test_profile_id": runtime_test_profile_id,
-        "runtime_test_evidence_root": runtime_test_evidence_root,
-        "failed_attempt_pending_retry": pending_retry,
-        "pending_artifact_retry_eligibility": pending_retry["pending_artifact_retry_eligibility"],
-        "pending_artifact_authority_eligibility": pending_retry["pending_artifact_authority_eligibility"],
-        "failed_attempt_artifact_quarantined": pending_retry["failed_attempt_artifact_quarantined"],
-        "historical_neutral_safety_resolution_status": status,
-        "historical_neutral_safety_resolution_reason": reason,
-    }
 
 
 def _safety_dependency_payload(*, safety_payload: dict[str, Any], broker_payload: dict[str, Any]) -> dict[str, Any]:
@@ -2187,6 +2024,7 @@ def _pending_readiness_payload(
     root: Path,
     business_date: str,
     mode: str,
+    readiness_scope: str,
     runtime_test_run_id: str,
     runtime_test_profile_id: str,
     runtime_test_evidence_root: str,
@@ -2214,6 +2052,7 @@ def _pending_readiness_payload(
     safety_authority = _historical_pending_safety_authority(
         pending_payload={"payload": payload, "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending},
         business_date=business_date,
+        readiness_scope=readiness_scope,
         runtime_test_run_id=runtime_test_run_id,
         runtime_test_profile_id=runtime_test_profile_id,
         runtime_test_evidence_root=runtime_test_evidence_root,
@@ -2242,10 +2081,11 @@ def _pending_readiness_payload(
                 "historical_pending_safety_authority": safety_authority,
                 "failed_attempt_pending_retry": pending_retry,
             }
-        if _pending_buy_item_scoped_sell_continuation_ready(
+        if _pending_scope_sell_continuation_adapter_ready(
             pending_payload={"payload": payload, "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending},
             business_date=business_date,
             mode=mode,
+            readiness_scope=readiness_scope,
         ):
             return {
                 "status": "READY",
@@ -2259,6 +2099,34 @@ def _pending_readiness_payload(
                 "payload": payload,
                 "review_scope": str(payload.get("review_scope") or ""),
                 "sell_continuation_allowed": True,
+                "historical_pending_safety_authority": safety_authority,
+                "failed_attempt_pending_retry": pending_retry,
+            }
+        if (
+            readiness_scope == "current_valuation"
+            and _pending_scope_current_valuation_adapter_ready(
+                pending_payload={
+                    "payload": payload,
+                    "source_paths": {"pending": str(path)},
+                    "slot_status": state,
+                    "active_pending": active_pending,
+                },
+                business_date=business_date,
+                mode=mode,
+            )
+        ):
+            return {
+                "status": "READY",
+                "reason": "post_submit_residual_buy_review_current_valuation_ready",
+                "missing_evidence": [],
+                "stale_artifacts": [],
+                "mismatched_dates": [],
+                "source_paths": {"pending": str(path)},
+                "slot_status": state,
+                "active_pending": active_pending,
+                "payload": payload,
+                "review_scope": str(payload.get("review_scope") or ""),
+                "post_submit_residual_buy_review_current_valuation_ready": True,
                 "historical_pending_safety_authority": safety_authority,
                 "failed_attempt_pending_retry": pending_retry,
             }
@@ -2285,246 +2153,6 @@ def _pending_readiness_payload(
             }
         return {"status": "REVIEW_REQUIRED", "reason": "pending_safety_evidence_missing", "missing_evidence": ["pending_safety_evidence"], "stale_artifacts": [], "mismatched_dates": [], "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending, "payload": payload, "historical_pending_safety_authority": safety_authority}
     return {"status": "READY", "reason": "pending_lifecycle_ready", "missing_evidence": [], "stale_artifacts": [], "mismatched_dates": [], "source_paths": {"pending": str(path)}, "slot_status": state or "PRESENT", "active_pending": active_pending, "payload": payload, "historical_pending_safety_authority": safety_authority, "failed_attempt_pending_retry": pending_retry}
-
-
-def _historical_pending_safety_authority(
-    *,
-    pending_payload: dict[str, Any],
-    business_date: str,
-    runtime_test_run_id: str,
-    runtime_test_profile_id: str,
-    runtime_test_evidence_root: str,
-) -> dict[str, Any]:
-    payload = dict(pending_payload.get("payload") or {})
-    safety_context = dict(payload.get("safety_context") or {})
-    approval = dict(payload.get("approval") or {})
-    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
-    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
-    consumed = bool((payload.get("consume") or {}).get("consumed")) or state == "CONSUMED"
-    target_session_date = str(payload.get("target_session_date") or "")
-    no_action_terminal = bool(state == "EMPTY" and not active_pending and not (payload.get("items") or ()))
-    consumed_prior_session = bool(consumed and target_session_date and target_session_date < business_date)
-    expected_safety_business_date = target_session_date if consumed_prior_session else business_date
-    mismatched: list[str] = []
-    buy_item_scoped_sell_continuation = _pending_buy_item_scoped_sell_continuation_ready(
-        pending_payload=pending_payload,
-        business_date=business_date,
-        mode="historical",
-    )
-    pending_retry = _same_day_failed_attempt_pending_retry_ineligible(
-        pending_payload=pending_payload,
-        business_date=business_date,
-    )
-    no_action_terminal_without_safety_binding_required = _historical_no_action_terminal_without_safety_binding_required(
-        pending_payload=pending_payload,
-        business_date=business_date,
-        no_action_terminal=no_action_terminal,
-        consumed=consumed,
-        buy_item_scoped_sell_continuation=buy_item_scoped_sell_continuation,
-        pending_retry=pending_retry,
-    )
-    if no_action_terminal_without_safety_binding_required:
-        return {
-            "status": "READY",
-            "reason": "historical_no_action_pending_safety_authority_ready",
-            "mismatched_fields": [],
-            "authority": str(safety_context.get("safety_authority") or ""),
-            "pending_lifecycle_state": state,
-            "pending_consumed": consumed,
-            "no_action_terminal": no_action_terminal,
-            "target_session_date": target_session_date,
-            "safety_business_date_expected": expected_safety_business_date,
-            "consumed_prior_session_carry_forward": consumed_prior_session,
-            "buy_item_scoped_sell_continuation_ready": buy_item_scoped_sell_continuation,
-            "review_scope": str(payload.get("review_scope") or ""),
-            "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
-            "safety_context": safety_context,
-            "failed_attempt_pending_retry": pending_retry,
-            "empty_terminal_contract": "EMPTY_NO_ACTION_TERMINAL_NO_SAFETY_BINDING_REQUIRED",
-        }
-    if (
-        state not in {"APPROVED", "CONSUMED"}
-        and not consumed
-        and not no_action_terminal
-        and not buy_item_scoped_sell_continuation
-        and not pending_retry["retry_input_ineligible"]
-    ):
-        mismatched.append("pending_lifecycle_state")
-    expected = {
-        "safety_authority": HISTORICAL_NEUTRAL_SAFETY_AUTHORITY,
-        "safety_policy_version": HISTORICAL_NEUTRAL_SAFETY_POLICY_VERSION,
-        "safety_source": HISTORICAL_NEUTRAL_SAFETY_SOURCE,
-        "safety_business_date": expected_safety_business_date,
-    }
-    requires_decision_id = bool(
-        (state == "APPROVED" and active_pending and not consumed) or buy_item_scoped_sell_continuation
-    )
-    if requires_decision_id:
-        expected["safety_decision_id"] = f"historical-neutral-safety:{expected_safety_business_date}"
-    if runtime_test_run_id or safety_context.get("runtime_test_run_id"):
-        expected["runtime_test_run_id"] = runtime_test_run_id
-    if runtime_test_profile_id or safety_context.get("runtime_test_profile_id"):
-        expected["runtime_test_profile_id"] = runtime_test_profile_id
-    if runtime_test_evidence_root or safety_context.get("runtime_test_evidence_root"):
-        expected["runtime_test_evidence_root"] = runtime_test_evidence_root
-    for field, expected_value in expected.items():
-        actual = str(safety_context.get(field) or "")
-        if actual != str(expected_value):
-            mismatched.append(f"safety_context.{field}")
-    actual_decision = str(safety_context.get("safety_decision") or "").upper()
-    if actual_decision not in HISTORICAL_NEUTRAL_SAFETY_DECISIONS:
-        mismatched.append("safety_context.safety_decision")
-    item_mismatches = _historical_pending_item_safety_mismatches(
-        items=payload.get("items") or (),
-        expected=expected,
-        expected_safety_business_date=expected_safety_business_date,
-        require_decision_id=requires_decision_id,
-    )
-    mismatched.extend(item_mismatches)
-    if not consumed_prior_session and target_session_date != business_date:
-        mismatched.append("target_session_date")
-    if consumed_prior_session and target_session_date > business_date:
-        mismatched.append("target_session_date")
-    if str(payload.get("environment") or "") != "historical":
-        mismatched.append("environment")
-    explicit_safety_id_present = bool(payload.get("safety_decision_id") or approval.get("safety_decision_id"))
-    if explicit_safety_id_present and not mismatched:
-        return {
-            "status": "READY",
-            "reason": "explicit_safety_decision_id_present",
-            "mismatched_fields": [],
-            "authority": str(safety_context.get("safety_authority") or ""),
-        }
-    status = "READY" if not mismatched else "REVIEW_REQUIRED"
-    return {
-        "status": status,
-        "reason": "historical_consumed_pending_safety_authority_carry_forward"
-        if status == "READY" and consumed_prior_session
-        else "historical_no_action_pending_safety_authority_ready"
-        if status == "READY" and no_action_terminal
-        else "historical_pending_safety_authority_ready"
-        if status == "READY"
-        else "historical_pending_safety_authority_mismatch",
-        "mismatched_fields": sorted(set(mismatched)),
-        "authority": str(safety_context.get("safety_authority") or ""),
-        "pending_lifecycle_state": state,
-        "pending_consumed": consumed,
-        "no_action_terminal": no_action_terminal,
-        "target_session_date": target_session_date,
-        "safety_business_date_expected": expected_safety_business_date,
-        "consumed_prior_session_carry_forward": consumed_prior_session,
-        "buy_item_scoped_sell_continuation_ready": buy_item_scoped_sell_continuation,
-        "review_scope": str(payload.get("review_scope") or ""),
-        "sell_continuation_allowed": bool(payload.get("sell_continuation_allowed")),
-        "safety_context": safety_context,
-        "failed_attempt_pending_retry": pending_retry,
-    }
-
-
-def _historical_no_action_terminal_without_safety_binding_required(
-    *,
-    pending_payload: dict[str, Any],
-    business_date: str,
-    no_action_terminal: bool,
-    consumed: bool,
-    buy_item_scoped_sell_continuation: bool,
-    pending_retry: dict[str, Any],
-) -> bool:
-    payload = dict(pending_payload.get("payload") or {})
-    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
-    active_pending = bool(pending_payload.get("active_pending", payload.get("active_pending", state != "EMPTY")))
-    if not no_action_terminal or active_pending or consumed:
-        return False
-    if buy_item_scoped_sell_continuation or bool(payload.get("sell_continuation_allowed")):
-        return False
-    if pending_retry["retry_input_ineligible"]:
-        return False
-    if pending_retry["incomplete_blocked_failed_attempt"] or pending_retry["review_required_empty_unscoped_failed_attempt"]:
-        return False
-    return _pending_allows_daily_neutral_safety(
-        pending_payload=pending_payload,
-        business_date=business_date,
-    )
-
-
-def _pending_buy_item_scoped_sell_continuation_ready(
-    *,
-    pending_payload: dict[str, Any],
-    business_date: str,
-    mode: str,
-) -> bool:
-    payload = dict(pending_payload.get("payload") or {})
-    state = str(pending_payload.get("slot_status") or payload.get("state") or payload.get("status") or "").upper()
-    if state != "REVIEW_REQUIRED":
-        return False
-    if str(payload.get("review_scope") or "") != "BUY_ITEM_SCOPED_REVIEW":
-        return False
-    if not bool(payload.get("sell_continuation_allowed")):
-        return False
-    if str(payload.get("target_session_date") or "") != business_date:
-        return False
-    if mode and str(payload.get("environment") or "") != mode:
-        return False
-    if payload.get("approved_buy_item_ids") not in ([], (), None):
-        return False
-    review_buy_ids = tuple(str(item_id) for item_id in payload.get("review_required_buy_item_ids") or () if item_id)
-    if not review_buy_ids:
-        return False
-    if payload.get("review_required_sell_item_ids") not in ([], (), None):
-        return False
-    if str(payload.get("buy_items_status") or "") != "REVIEW_REQUIRED":
-        return False
-    if str(payload.get("sell_items_status") or "") not in {"NOT_PRESENT", "APPROVED", "PASS", "READY"}:
-        return False
-    feasibility = payload.get("planning_submit_feasibility")
-    if not isinstance(feasibility, dict):
-        return False
-    if str(feasibility.get("status") or "") != "REVIEW_REQUIRED":
-        return False
-    items = tuple(item for item in feasibility.get("items") or () if isinstance(item, dict))
-    blocked = tuple(item for item in items if str(item.get("status") or "") != "PASS")
-    if not blocked:
-        return False
-    for item in blocked:
-        if str(item.get("side") or "").upper() != "BUY":
-            return False
-        if str(item.get("pending_item_id") or "") not in review_buy_ids:
-            return False
-        violated_policy = str(item.get("violated_policy") or "")
-        if not violated_policy or violated_policy.endswith("_missing"):
-            return False
-        if not str(item.get("violated_policy_source") or ""):
-            return False
-    return True
-
-
-def _historical_pending_item_safety_mismatches(
-    *,
-    items: Any,
-    expected: dict[str, str],
-    expected_safety_business_date: str,
-    require_decision_id: bool,
-) -> list[str]:
-    mismatched: list[str] = []
-    if not isinstance(items, list):
-        return mismatched
-    for index, raw_item in enumerate(items):
-        if not isinstance(raw_item, dict):
-            mismatched.append(f"items[{index}]")
-            continue
-        item = dict(raw_item)
-        expected_fields = dict(expected)
-        expected_fields["temporal_authority_business_date"] = expected_safety_business_date
-        if require_decision_id:
-            expected_fields["safety_decision_id"] = f"historical-neutral-safety:{expected_safety_business_date}"
-        for field, expected_value in expected_fields.items():
-            actual = str(item.get(field) or "")
-            if actual != str(expected_value):
-                mismatched.append(f"items[{index}].{field}")
-        actual_decision = str(item.get("safety_decision") or "").upper()
-        if actual_decision not in HISTORICAL_NEUTRAL_SAFETY_DECISIONS:
-            mismatched.append(f"items[{index}].safety_decision")
-    return mismatched
 
 
 def _environment_readiness_payload(

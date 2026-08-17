@@ -168,17 +168,68 @@ def attach_approval_link(
         if not feasibility.passed:
             scope = _review_scope_for_submit_feasibility(feasibility_payload)
             feasibility_by_id = _feasibility_items_by_pending_id(feasibility_payload)
+            approved_pass_ids = _approved_pass_item_ids(
+                approved_tuple,
+                feasibility_by_id=feasibility_by_id,
+                scope=scope,
+            )
+            approved_pass = set(approved_pass_ids)
+            review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+            approval = (
+                PendingApprovalLink(
+                    approval_path=approval_path,
+                    approval_hash=approval_hash,
+                    approval_status=approval_status,
+                    approved_item_ids=approved_pass_ids,
+                    approval_expires_at=approval_expires_at,
+                    policy_version=plan.policy_version,
+                    policy_source=plan.policy_source,
+                    pending_policy_hash=plan.pending_policy_hash,
+                    planning_authority_version=plan.planning_authority_version,
+                    planning_authority_source=plan.planning_authority_source,
+                    planning_authority_hash=plan.planning_authority_hash,
+                    submit_policy_version=plan.submit_policy_version,
+                    submit_policy_source=plan.submit_policy_source,
+                    submit_policy_hash=plan.submit_policy_hash,
+                    accepted_generation_id=plan.accepted_generation_id,
+                    accepted_generation_business_date=plan.accepted_generation_business_date,
+                    accepted_generation_binding_status=plan.accepted_generation_binding_status,
+                    accepted_generation_binding=plan.accepted_generation_binding,
+                    safety_decision_id=plan.safety_decision_id,
+                    safety_policy_version=plan.safety_policy_version,
+                    approved_order_conditions={
+                        item_id: condition
+                        for item_id, condition in dict(approved_order_conditions or {}).items()
+                        if item_id in approved_pass
+                    },
+                )
+                if approved_pass_ids and approval_status == "APPROVED"
+                else None
+            )
             return replace(
                 plan,
                 state=PendingPlanState.REVIEW_REQUIRED,
                 updated_at=approval_expires_at,
+                approval=approval,
                 planning_submit_feasibility=feasibility_payload,
-                approved_item_ids=(),
+                approved_item_ids=approved_pass_ids,
                 buy_items_status=scope["buy_items_status"],
                 sell_items_status=scope["sell_items_status"],
-                plan_overall_status="REVIEW_REQUIRED",
-                approved_buy_item_ids=(),
-                approved_sell_item_ids=(),
+                plan_overall_status=(
+                    "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW"
+                    if approved_pass_ids and scope["review_scope"] == "BUY_ITEM_SCOPED_REVIEW"
+                    else "REVIEW_REQUIRED"
+                ),
+                approved_buy_item_ids=tuple(
+                    item.pending_item_id
+                    for item in plan.items
+                    if item.pending_item_id in approved_pass and item.side.upper() == "BUY"
+                ),
+                approved_sell_item_ids=tuple(
+                    item.pending_item_id
+                    for item in plan.items
+                    if item.pending_item_id in approved_pass and item.side.upper() == "SELL"
+                ),
                 review_required_buy_item_ids=scope["review_required_buy_item_ids"],
                 review_required_sell_item_ids=scope["review_required_sell_item_ids"],
                 review_scope=scope["review_scope"],
@@ -190,6 +241,8 @@ def attach_approval_link(
                         item,
                         feasibility_by_id=feasibility_by_id,
                         scope=scope,
+                        approved_pass_ids=approved_pass,
+                        review_required_ids=review_required_ids,
                     )
                     if item.pending_item_id in approved_tuple
                     else item
@@ -392,10 +445,24 @@ def _materialize_item_scoped_review_state(
     *,
     feasibility_by_id: dict[str, dict],
     scope: dict,
+    approved_pass_ids: set[str] | None = None,
+    review_required_ids: set[str] | None = None,
 ) -> PendingOrderItem:
     feasibility = feasibility_by_id.get(item.pending_item_id, {})
     feasibility_status = str(feasibility.get("status") or "")
-    review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    review_required_ids = review_required_ids or (
+        set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    )
+    approved_pass_ids = approved_pass_ids or set()
+    if item.pending_item_id in approved_pass_ids:
+        return replace(
+            item,
+            approved=True,
+            state="APPROVED",
+            feasibility_status=feasibility_status or "PASS",
+            batch_submit_status="PASS_ITEM_SUBMITTABLE",
+            item_review_reason="",
+        )
     if item.pending_item_id in review_required_ids:
         review_reason = str(feasibility.get("reason") or scope["review_scope_reason"] or "planning_submit_feasibility_review_required")
         batch_submit_status = "ITEM_REVIEW_REQUIRED"
@@ -410,6 +477,34 @@ def _materialize_item_scoped_review_state(
         batch_submit_status=batch_submit_status,
         item_review_reason=review_reason,
     )
+
+
+def _approved_pass_item_ids(
+    approved_tuple: tuple[str, ...],
+    *,
+    feasibility_by_id: dict[str, dict],
+    scope: dict,
+) -> tuple[str, ...]:
+    if scope.get("review_scope") != "BUY_ITEM_SCOPED_REVIEW":
+        return ()
+    if _has_cash_review_item(feasibility_by_id, scope):
+        return ()
+    review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    return tuple(
+        item_id
+        for item_id in approved_tuple
+        if item_id not in review_required_ids
+        and str(feasibility_by_id.get(item_id, {}).get("status") or "") == "PASS"
+    )
+
+
+def _has_cash_review_item(feasibility_by_id: dict[str, dict], scope: dict) -> bool:
+    review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    for item_id in review_required_ids:
+        violated_policy = str(feasibility_by_id.get(item_id, {}).get("violated_policy") or "")
+        if violated_policy in {"cash", "reserved_cash", "aggregate_cash"}:
+            return True
+    return False
 
 
 def _side_status(items: tuple[PendingOrderItem, ...], approved_item_ids: tuple[str, ...], side: str) -> str:

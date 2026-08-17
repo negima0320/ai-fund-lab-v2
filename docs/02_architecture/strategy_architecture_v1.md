@@ -62,6 +62,12 @@ Phase27-D4 freezes the Expected Edge decision contract for this Strategy SoT.
 
 Expected Edge means whether forward-looking expected value remains sufficiently attractive from Point-in-Time data. It is a Strategy concept consumed by PM; it is not the same as profit rate, trend alone, rank alone, BUY Quality alone, or cash availability.
 
+Phase30-D promotes the Strategy Decision Quality / Continuation Quality research contract as a companion Architecture-level specification:
+
+- [Strategy Decision Quality and Continuation Quality Contract](/Users/negishi/work/ai-fund-lab-v2/docs/02_architecture/strategy_decision_quality_and_continuation_quality_contract.md)
+
+Continuation Quality / Forward Edge is a research concept for evaluating whether a current PIT-observable upward continuation thesis remains relatively strong. It does not implement a new model, threshold, action authority, or Runtime behavior. It sits upstream of Expected Edge / Opportunity comparison as a research and audit contract.
+
 Expected Edge is estimated from evidence including:
 
 - Trend and momentum continuation evidence

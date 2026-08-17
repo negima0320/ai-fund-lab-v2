@@ -462,6 +462,45 @@ def main(argv: list[str] | None = None) -> int:
 
         data_readiness_result = None
         if _data_readiness_required_for_job(args.job, mode=args.mode) and exit_code == EXIT_SUCCESS:
+            pre_readiness_lifecycle = _pre_data_readiness_pending_lifecycle_requirement(
+                runtime_root=Path(args.runtime_root),
+                business_date=business_date,
+            )
+            if pre_readiness_lifecycle["required"]:
+                pending_lifecycle_result = run_pending_lifecycle_review(
+                    runtime_root=Path(args.runtime_root),
+                    business_date=business_date,
+                    mode=args.mode,
+                    action="review",
+                    now=evaluation_time,
+                )
+                pending_lifecycle_manifest = {
+                    "pre_data_readiness_pending_lifecycle_invoked": True,
+                    "pre_data_readiness_pending_lifecycle_requirement": pre_readiness_lifecycle,
+                    **dict(pending_lifecycle_result.manifest_fields),
+                }
+                stages.append(
+                    _stage(
+                        "pre_data_readiness_pending_lifecycle",
+                        pending_lifecycle_result.status,
+                        "Pending lifecycle authority resolved active stale Pending before Data Readiness.",
+                        pending_lifecycle_manifest,
+                    )
+                )
+                if pending_lifecycle_result.status == "REVIEW_REQUIRED":
+                    exit_code = EXIT_REVIEW_REQUIRED
+                    final_state = "REVIEW_REQUIRED"
+                    warnings.append(pending_lifecycle_result.reason)
+                elif pending_lifecycle_result.status in {"EXPIRED", "CANCELLED", "SUPERSEDED", "CONSUMED", "NOOP"}:
+                    final_state = "CURRENT_STATE_LOADED"
+            else:
+                pending_lifecycle_manifest.update(
+                    {
+                        "pre_data_readiness_pending_lifecycle_invoked": False,
+                        "pre_data_readiness_pending_lifecycle_requirement": pre_readiness_lifecycle,
+                    }
+                )
+        if _data_readiness_required_for_job(args.job, mode=args.mode) and exit_code == EXIT_SUCCESS:
             data_readiness_result = evaluate_runtime_data_readiness(
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
@@ -1653,6 +1692,40 @@ def _data_readiness_required_for_job(job: str, *, mode: str = "") -> bool:
         "sell_hold_review_only_morning",
         "submit",
     }
+
+
+def _pre_data_readiness_pending_lifecycle_requirement(*, runtime_root: Path, business_date: str) -> dict[str, Any]:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    payload = _read_json_file(pending_path)
+    state = str(payload.get("state") or payload.get("status") or "").upper()
+    target_session_date = str(payload.get("target_session_date") or "")
+    active_pending = _pending_slot_active(payload)
+    required = bool(active_pending and target_session_date and target_session_date < business_date)
+    return {
+        "schema_version": "runtime_v2_pre_data_readiness_pending_lifecycle_requirement_v1",
+        "status": "PENDING_LIFECYCLE_REQUIRED" if required else "NOT_REQUIRED",
+        "required": required,
+        "reason": "active_pending_target_session_date_elapsed" if required else "no_pre_data_readiness_lifecycle_required",
+        "pending_path": str(pending_path) if pending_path.is_file() else "",
+        "pending_present": pending_path.is_file(),
+        "active_pending": active_pending,
+        "pending_state": state,
+        "target_session_date": target_session_date,
+        "business_date": business_date,
+        "orchestration_layer_reimplemented_lifecycle_rules": False,
+        "lifecycle_authority": "runtime_v2.pending.lifecycle_runner.run_pending_lifecycle_review",
+    }
+
+
+def _pending_slot_active(payload: dict[str, Any]) -> bool:
+    if not payload:
+        return False
+    state = str(payload.get("state") or payload.get("status") or "").upper()
+    if state == "EMPTY":
+        return False
+    if "active_pending" in payload:
+        return bool(payload.get("active_pending"))
+    return bool(payload.get("items"))
 
 
 def _readiness_scope_for_args(args: argparse.Namespace) -> str:

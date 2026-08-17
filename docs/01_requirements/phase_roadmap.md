@@ -16164,3 +16164,7049 @@ docs/02_architecture/portfolio_construction_and_position_sizing_contract.md
 docs/02_architecture/strategy_architecture_v1.md
 docs/phase_reports/phase30_a_entry_gate_100bd_baseline_status.md
 ```
+
+---
+
+## Phase30-A Post-BL Clean 20BD Integrity / Close Review / Performance Attribution Audit
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY AUDIT
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO FRESH-RUN / RESUME / REPLAY / RECOVERY / LONG HISTORICAL BY CODEX
+```
+
+Primary Judgment:
+
+```text
+PHASE30_A_CLEAN_20BD_MEASUREMENT_INTEGRITY_CONFIRMED_VALID_FOR_PHASE30_PERFORMANCE_ATTRIBUTION_WITH_ATTRIBUTION_LIMITATIONS
+```
+
+Summary:
+
+```text
+Phase30-A audited the post-BL 20BD run
+runtime-test-historical-extended-smoke-20260815T030154161245Z covering
+2022-08-10 through 2022-09-07. Gate A measurement integrity passed: daily
+Equity = Cash + position market value reconciled for all 20 days, price and
+quantity basis matched for all valued positions, valuation authority passed,
+and no material recurrence of the prior valuation contamination pattern was
+found.
+
+The final REVIEW_REQUIRED was caused by non-mutating Strategy Shadow review
+propagating through close authority, not by runtime execution, accounting,
+trading state, Pending, valuation, Ledger, or Current failure. The completed
+20BD performance is valid for Phase30 attribution with explicit limitations
+around pre-repair BUY fill lineage fields.
+
+The 20BD loss was -27,490 JPY. Clean attribution points first to poor deployed
+capital return from a small number of adverse entries, especially 78780 on
+2022-08-24, plus accumulated short-lived realized losses. Cash was high but no
+capital-conversion defect was proven. The next recommended task is Phase30-B
+Clean Long-Horizon Baseline Preparation.
+```
+
+Deliverable:
+
+```text
+docs/phase_reports/phase30_a_post_bl_clean_20bd_integrity_and_performance_attribution.md
+```
+
+---
+
+## Phase30-B Clean Long-Horizon Baseline Preparation
+
+Status:
+
+```text
+COMPLETE
+PREFLIGHT / READINESS ONLY
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO FOUR-YEAR HISTORICAL EXECUTION BY CODEX
+NO PERFORMANCE TUNING
+```
+
+Primary Judgment:
+
+```text
+PHASE30_B_CLEAN_LONG_HORIZON_BASELINE_PREFLIGHT_READY_WITH_KNOWN_TEST_FIXTURE_GAP_USER_977BD_RUN_READY
+```
+
+Summary:
+
+```text
+Phase30-B prepared the user-operated clean long-horizon Historical baseline
+after Phase30-A confirmed the clean 20BD measurement foundation. The requested
+2022-08-10 through 2026-08-09 window resolves in the current planner to the
+canonical trading window 2022-08-10 through 2026-08-07 with 977 business days.
+fresh-run dry-run returned DRY_RUN with exit code 0 and no run directory was
+created.
+
+BUY fill lineage was investigated before release. The old 20BD daily fill
+artifacts remain pre-repair artifacts, but current close-time replay validation
+reports buy_fill_lineage_validation.status PASS with missing_lineage_count 0.
+No current BUY lineage STOP condition was found.
+
+Focused regression passed 92 tests in the first batch and 97 tests in the
+second batch, with one known fresh-run mocked happy-path test fixture expectation
+gap: expected BLOCK versus current VALIDATION_FAILURE. This is tracked as a
+test maintenance residual risk, not as evidence of valuation, Pending, ADD,
+REDUCE, Corporate Action quarantine, BUY/SELL independence, or BUY lineage
+failure.
+
+The clean long-horizon baseline is released for user execution only. Codex did
+not execute the four-year Historical run.
+```
+
+Deliverable:
+
+```text
+docs/phase_reports/phase30_b_clean_long_horizon_baseline_preparation.md
+```
+
+---
+
+## Phase30-C In-Flight BUY Selection Quality / Objective Stock Quality Audit
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY IN-FLIGHT AUDIT
+NO TARGET RUN MUTATION
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO STOP / RESUME / CLOSE / REPAIR OF RUNNING HISTORICAL
+NO IMPLEMENTATION AUTHORIZED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_C_INFLIGHT_BUY_SELECTION_AUDIT_PRELIMINARY_STOCK_SELECTION_AND_EVENT_RISK_GAPS_FOUND_HOLD_SELL_SEPARATION_REQUIRED
+```
+
+Summary:
+
+```text
+Phase30-C audited the running long Historical run
+runtime-test-historical-extended-smoke-20260815T061857447380Z read-only. At
+the audit snapshot, run_state.status was RUNNING and the authoritative completed
+window had reached 2023-04-05 with 160 completed business days. The target run
+was not stopped, resumed, closed, repaired, or written to.
+
+The completed-window BUY inventory contained 137 BUY fills: 74 BUY_NEW, 16
+BUY_ADD, and 47 REENTRY across 74 unique symbols, with 5,560,900 JPY total BUY
+notional. Preliminary evidence shows that BUY Quality score and opportunity
+rank did not separate winners from losers. Loser and immediate-adverse cohorts
+were concentrated in MIXED_OR_UNRESOLVED trajectory entries, and very-low-price
+microstructure risk appeared in several worst PIT selection candidates.
+
+The strongest stock-selection/event-risk case is 93180 / アジア開発キャピタル.
+Runtime PIT listed-info proved current_listed and Standard market identity, but
+did not prove consumption of JPX special-alert / supervision / delisting-risk
+state. Public JPX evidence shows the security-on-alert designation was already
+available before the first observed 2022-08-10 BUY. This is classified as
+AVAILABLE_PUBLICLY_AT_THE_TIME_BUT_NOT_PROVEN_RUNTIME_INPUT.
+
+The 78780 / 光・彩 2022-08-24 adverse entry is primarily an entry-timing /
+overheated-momentum case, not a proven exchange-level event-risk case. PIT
+Runtime evidence showed HIGH quality and rank 3, but also MIXED_OR_UNRESOLVED
+trajectory, negative 1D momentum, extreme 20D/10D momentum, large deceleration,
+and high 20D volatility.
+
+Phase30-C does not authorize implementation. If the run remains healthy, the
+recommended next step is CONTINUE CURRENT 977BD RUN.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_c_inflight_buy_selection_quality_audit.md
+reports/phase_reports/phase30_c_inflight_buy_selection_quality_audit.json
+```
+
+---
+
+## Phase30-D Strategy Research Direction / Continuation Quality Thesis
+
+Status:
+
+```text
+COMPLETE
+DOCUMENTATION / RESEARCH DIRECTION FREEZE
+NO STRATEGY REDESIGN IMPLEMENTED
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO CURRENT 977BD HISTORICAL MUTATION
+NO IMPLEMENTATION AUTHORIZED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_D_STRATEGY_RESEARCH_DIRECTION_CONTINUATION_QUALITY_THESIS_DOCUMENTED_LONG_HORIZON_VALIDATION_REQUIRED
+```
+
+Summary:
+
+```text
+Phase30-D documents the canonical Phase30 research direction after Phase30-A,
+Phase30-B, and Phase30-C. Phase30 is moving from isolated performance tuning
+toward evidence-based reassessment of Strategy Decision Quality. The central
+hypothesis is provisionally named Continuation Quality / Forward Edge: a
+PIT-based thesis about whether a stock's current upward continuation remains
+healthy, persistent, and economically attractive.
+
+The document explicitly separates Phase30-A confirmed evidence from Phase30-C
+preliminary evidence. Phase30-A confirmed clean measurement and real Strategy
+loss attribution. Phase30-C preliminarily showed that BUY Quality score and
+Opportunity Rank did not separate winners from losers in the incomplete
+snapshot, that MIXED_OR_UNRESOLVED trajectory was prominent among losers, that
+78780 illustrates historical strength not necessarily equaling continuation
+quality, and that 93180 raises an upstream Corporate/Event eligibility gap.
+
+No redesign is approved. Continuation Quality is not an implemented score and
+no production thresholds are authorized. Strategy redesign requires completion
+of the clean 977BD baseline and evidence that PIT features reproducibly separate
+future continuation, deterioration, entry quality, ADD quality, and HOLD/SELL
+timing without future leakage or reopening closed Runtime/Safety contracts.
+
+The current clean 977BD Historical
+runtime-test-historical-extended-smoke-20260815T061857447380Z remains RUNNING
+and must continue independently.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_d_strategy_research_direction_and_continuation_quality_thesis.md
+reports/phase_reports/phase30_d_strategy_research_direction_and_continuation_quality_thesis.json
+docs/02_architecture/strategy_decision_quality_and_continuation_quality_contract.md
+```
+
+Architecture promotion:
+
+```text
+Phase30-D thesis has been promoted into an Architecture-level contract so it
+can be used beyond phase reporting as a durable specification for future
+Strategy research, long-horizon attribution, and redesign gates.
+```
+
+---
+
+## Phase30-F 2023-10-27 Current Valuation HALT Recurrence Audit
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY HALT RECURRENCE / CONTAMINATION-BOUNDARY AUDIT
+NO TARGET RUN MUTATION
+NO RESUME / FRESH-RUN / REPLAY / CLOSE / REPAIR
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO IMPLEMENTATION AUTHORIZED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_F_20231027_CURRENT_VALUATION_HALT_SAME_ROOT_CAUSE_REPRODUCED_PREHALT_EVIDENCE_VALID_RESEARCH_PIVOT_READY_RUNTIME_CONTINUITY_NOT_READY
+```
+
+Summary:
+
+```text
+Phase30-F audited the 2023-10-27 current_valuation_refresh HALT in
+runtime-test-historical-extended-smoke-20260815T061857447380Z read-only. The
+HALT reproduced the previous 2023-10-27 stop: held symbol 76710 had no
+current-day valuation quote, causing current_valuation_review_required,
+valuation apply NOT_APPLIED / NOT_EXECUTED, and daily CLI exit_code 20.
+
+This is not a Phase29 valuation/basis recurrence. The specific Phase29 failure
+modes were not found: no adjusted analytical price used as economic valuation,
+no raw price x adjusted-basis quantity, no adjusted price x raw-basis quantity,
+no basis metadata loss through the completed segment, and no contaminated
+Current valuation apply. The canonical failure class is
+HELD_POSITION_QUOTE_MISSING_FAIL_CLOSED_CURRENT_VALUATION_REVIEW_REQUIRED.
+
+No pre-HALT contamination was found. The completed segment remains valid through
+2023-10-26 with 299 completed business days. The current run is not evidence of
+runtime continuity beyond the repeated 2023-10-27 gate, but the completed
+segment is sufficient for Phase30 deep research into stock selection,
+Continuation Quality / Forward Edge, entry timing, ADD quality, HOLD/SELL
+timing, and MFE/giveback behavior.
+
+Recommended Phase30 direction is to freeze the current long-run evidence,
+pivot to deep stock-selection / continuation / hold-sell research, and track
+the 2023-10-27 missing-quote HALT as a separate runtime continuity workstream.
+```
+
+Deliverable:
+
+```text
+docs/phase_reports/phase30_f_20231027_current_valuation_halt_recurrence_audit.md
+```
+
+---
+
+## Phase30-G Stock Selection Intelligence / PIT Data / Feature Authority Deep Audit
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY STRATEGY INTELLIGENCE / DATA / FEATURE / AUTHORITY DEEP AUDIT
+NO TARGET RUN MUTATION
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO BUY QUALITY / BUY_WAIT / ADD / HOLD / REDUCE / EXIT CHANGE
+NO CORPORATE EVENT / SAFETY CHANGE
+NO HISTORICAL RESUME / FRESH-RUN / REPAIR
+NO IMPLEMENTATION AUTHORIZED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_G_STOCK_SELECTION_INTELLIGENCE_MULTI_CAUSAL_GAPS_CONFIRMED_CONTINUATION_QUALITY_DOWNSIDE_RISK_EXPECTED_EDGE_REDESIGN_RESEARCH_READY
+```
+
+Summary:
+
+```text
+Phase30-G audited the current Stock Selection Intelligence using the clean
+299BD evidence boundary from
+runtime-test-historical-extended-smoke-20260815T061857447380Z through
+2023-10-26. The audit used 14,950 BUY Quality decision rows, 219 BUY fills,
+231 SELL fills, and 186 campaigns. No evidence after 2023-10-26 and no failed
+2023-10-27 valuation candidate was used as completed performance evidence.
+
+The current PIT data foundation is research-usable, but the current BUY Quality
+and ranking architecture does not reliably separate future Winners from
+dangerous or mediocre stocks. The BUY Quality aggregate is mechanically
+correct, yet HIGH / FULL allocation rows did not show robust forward
+separation. runtime_opportunity_score is correctly documented as an
+uncalibrated relative model score, not expected return, but it still carries
+large practical authority through BUY Quality and ranking.
+
+The most important confirmed ignored/underweighted intelligence is
+multi-horizon trajectory. HEALTHY_CONTINUATION executed BUYs materially
+outperformed MIXED_OR_UNRESOLVED executed BUYs, but
+momentum_trajectory_quality has score weight 0.0 and mainly acts as a BUY_WAIT
+veto for certain classes. Severe-loss evidence also shows that volatility,
+short-term reversal after strong momentum, low-price / tick sensitivity, and
+event-risk gaps are visible before some large adverse outcomes, including
+78780 and 67310.
+
+Phase30-G recommends Option C: redesign Stock Selection Intelligence around
+Continuation Quality / Downside Risk / Expected Edge while preserving Strategy
+Architecture v1 authority boundaries. The next task should be offline research
+and design, not implementation.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_g_stock_selection_intelligence_pit_data_feature_authority_deep_audit.md
+reports/phase_reports/phase30_g_stock_selection_intelligence_pit_data_feature_authority_deep_audit.json
+reports/phase_reports/phase30_g/cohort_outcomes.json
+reports/phase_reports/phase30_g/feature_inventory.json
+reports/phase_reports/phase30_g/decision_authority_map.json
+reports/phase_reports/phase30_g/previous_hypothesis_reconciliation.json
+reports/phase_reports/phase30_g/improvement_candidate_ranking.json
+```
+
+---
+
+## Phase30-H Continuation Quality / Downside Risk Offline Research
+
+Status:
+
+```text
+COMPLETE
+READ-ONLY OFFLINE STRATEGY RESEARCH
+NO TARGET RUN MUTATION
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO BUY QUALITY / BUY_WAIT / ADD / HOLD / REDUCE / EXIT CHANGE
+NO HISTORICAL RESUME / FRESH-RUN / REPAIR
+NO IMPLEMENTATION AUTHORIZED BY PHASE30_H
+```
+
+Primary Judgment:
+
+```text
+PHASE30_H_CONTINUATION_QUALITY_DOWNSIDE_RISK_PIT_SEPARATION_CONFIRMED_INTERPRETABLE_DIMENSION_DESIGN_READY
+```
+
+Summary:
+
+```text
+Phase30-H performed read-only offline research using only the clean 299BD
+evidence boundary from runtime-test-historical-extended-smoke-20260815T061857447380Z
+through 2023-10-26. The failed 2023-10-27 valuation candidate was excluded.
+
+The research dataset contained 14,950 PIT decision rows, 635 symbols, 299
+dates, and 219 selected BUYs. Future 20BD return, MFE, MAE, severe-loss, and
+healthy-winner labels were used only as offline research outcomes.
+
+The main finding is strong evidence that PIT data can materially improve the
+Strategy, but not through blunt risk rejection. Broad downside filters catch
+many severe losers while also removing too many healthy Winners. A narrower
+failure signature, especially strong prior momentum followed by short-term
+reversal, caught a meaningful share of severe selected losers while preserving
+most healthy selected Winners.
+
+BUY_NEW is the most urgent redesign surface: 80 of 104 BUY_NEW selections fell
+into LOW_CQ_HIGH_RISK, with mean 20BD return -5.39%, median -11.27%, severe
+loss rate 55.84%, and median MAE -17.07%. ADD and REENTRY evidence also
+supports using incremental Continuation Quality and Downside Risk dimensions,
+not simple action-type rules.
+
+Phase30-H recommends designing interpretable Continuation Quality and Downside
+Risk representations before any implementation. Expected Edge research is now
+justified after those dimensions are specified.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_h_continuation_quality_downside_risk_offline_research.md
+reports/phase_reports/phase30_h_continuation_quality_downside_risk_offline_research.json
+reports/phase_reports/phase30_h/dataset_manifest.json
+reports/phase_reports/phase30_h/continuation_feature_results.json
+reports/phase_reports/phase30_h/downside_feature_results.json
+reports/phase_reports/phase30_h/temporal_validation.json
+reports/phase_reports/phase30_h/regime_validation.json
+reports/phase_reports/phase30_h/winner_signature.json
+reports/phase_reports/phase30_h/failure_signature.json
+reports/phase_reports/phase30_h/add_research.json
+reports/phase_reports/phase30_h/reentry_research.json
+reports/phase_reports/phase30_h/missed_winner_analysis.json
+reports/phase_reports/phase30_h/candidate_vs_selected.json
+reports/phase_reports/phase30_h/winner_preservation_tradeoff.json
+reports/phase_reports/phase30_h/research_dataset_sample.json
+```
+
+---
+
+## Phase30-I Continuation Quality / Downside Risk Strategy Architecture Design
+
+Status:
+
+```text
+COMPLETE
+STRATEGY ARCHITECTURE DESIGN / PRODUCTION-COMMON DESIGN FREEZE
+DESIGN ONLY
+NO PRODUCTION STRATEGY IMPLEMENTATION
+NO STRATEGY / RUNTIME / CONFIG / MODEL / THRESHOLD CHANGE
+NO BUY QUALITY / BUY_WAIT / ADD / HOLD / REDUCE / EXIT CHANGE
+NO SAFETY CHANGE
+NO IMPLEMENTATION AUTHORIZED BY PHASE30_I
+```
+
+Primary Judgment:
+
+```text
+PHASE30_I_STRATEGY_INTELLIGENCE_ARCHITECTURE_DESIGNED_PRODUCTION_COMMON_SHADOW_FIRST_IMPLEMENTATION_READY
+```
+
+Summary:
+
+```text
+Phase30-I designed the durable Production-common Strategy Intelligence
+architecture based on Phase30-G/H clean 299BD evidence. The design preserves
+Strategy Architecture v1 authority boundaries and does not rewrite Runtime,
+Safety, Portfolio Construction, PM, Position Sizing, or execution contracts.
+
+The new architecture separates Eligibility / Disqualifying Facts, Continuation
+Quality, Downside Risk, and Expected Edge / Opportunity Cost. These concepts
+must remain semantically distinct and must not be collapsed into one opaque
+score. runtime_opportunity_score remains an uncalibrated relative model score
+unless a later calibration gate proves economic expected-return semantics.
+
+The target first artifact is a unified strategy/strategy_intelligence.json with
+separate internal sections for eligibility/event facts, continuation quality,
+downside risk, expected edge, lifecycle context, provenance, and shadow
+decision comparison. The first implementation slice should be shadow-only and
+must record CURRENT_DECISION, PROPOSED_INTELLIGENCE_EVIDENCE, and
+PROPOSED_DECISION_IF_AUTHORIZED without changing production behavior.
+
+Phase30-I explicitly rejects broad risk veto design because Phase30-H showed it
+removes too many healthy Winners. Future changes must pass Winner Preservation,
+leakage firewall, closed-contract regression, multi-day lifecycle regression,
+and Production-common migration gates before any authority migration.
+```
+
+Deliverables:
+
+```text
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+docs/02_architecture/strategy_intelligence_data_contract_v1.md
+docs/02_architecture/strategy_intelligence_regression_contract_v1.md
+docs/02_architecture/strategy_decision_quality_and_continuation_quality_contract.md
+docs/phase_reports/phase30_i_continuation_quality_downside_risk_strategy_design.md
+```
+
+Recommended next task:
+
+```text
+Phase30-J — Strategy Intelligence Shadow Evidence Producer
+```
+
+## Phase30-J — Strategy Intelligence Shadow Evidence Producer
+
+Status:
+
+```text
+COMPLETED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_J_STRATEGY_INTELLIGENCE_SHADOW_EVIDENCE_PRODUCER_IMPLEMENTED_PRODUCTION_BEHAVIOR_UNCHANGED
+```
+
+Summary:
+
+```text
+Phase30-J implemented the first Production-common Strategy Intelligence
+shadow evidence producer. The new daily artifact is
+strategy/strategy_intelligence.json.
+
+The artifact separates eligibility, continuation_quality, downside_risk,
+expected_edge, current_decision, proposed_decision_if_authorized, and
+provenance. It records PIT boundary, source evidence, sufficiency, missing
+inputs, lineage, and explicit no-leakage/no-outcome-input flags.
+
+The implementation is shadow-only. It does not change BUY_NEW, BUY_WAIT, ADD,
+REENTRY, HOLD, REDUCE, EXIT, NO_ACTION, Safety, Portfolio Construction target
+weights, Position Sizing, Runtime Planning intent, Pending, Submit, Execution,
+valuation basis, or quantity basis.
+
+Expected Edge remains an uncalibrated research contract. runtime_opportunity_score
+is preserved only as an uncalibrated relative model score, not as economic
+expected return. Relative Strength is explicitly marked INSUFFICIENT_AUTHORITY
+until a later source authority exists. Missing event coverage is uncertainty,
+not SAFE and not production rejection authority.
+```
+
+Deliverables:
+
+```text
+src/ai_fund_lab_v2/strategy/strategy_intelligence.py
+docs/phase_reports/phase30_j_strategy_intelligence_shadow_evidence_producer.md
+reports/phase_reports/phase30_j_strategy_intelligence_shadow_evidence_producer.json
+tests/strategy/test_phase30_j_strategy_intelligence.py
+```
+
+Regression:
+
+```text
+compileall PASS
+tests/strategy/test_phase30_j_strategy_intelligence.py: 4 passed
+tests/runtime_v2/test_phase22_p_strategy_shadow_wiring.py: 17 passed
+```
+
+Boundary flags:
+
+```text
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+SHADOW_OUTPUT_CONNECTED_TO_PRODUCTION_ACTION_AUTHORITY = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+PRODUCTION_AUTHORITY_MIGRATION_AUTHORIZED = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-K — Strategy Intelligence Shadow End-to-End Validation
+```
+
+## Phase30-K — Strategy Intelligence Shadow End-to-End Validation
+
+Status:
+
+```text
+COMPLETED
+NON-INTERVENTION E2E VALIDATED
+PRODUCTION AUTHORITY MIGRATION BLOCKED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_K_STRATEGY_INTELLIGENCE_SHADOW_E2E_VALIDATED_NON_INTERVENTION_PRODUCTION_MIGRATION_BLOCKED
+```
+
+Summary:
+
+```text
+Phase30-K validated Phase30-J Strategy Intelligence against real
+Production-common PIT artifacts from
+runtime-test-historical-extended-smoke-20260815T061857447380Z.
+
+Validation generated Strategy Intelligence artifacts only under
+reports/phase_reports/phase30_k/generated_strategy_intelligence/ and did not
+mutate the source historical run directory.
+
+Non-intervention behavior is confirmed: actual trading behavior unchanged,
+runtime_planning hashes unchanged on all validation dates, no new AI/model,
+no Accepted Generation change, no future information used, and no Historical
+outcome/test result used as Strategy input.
+
+E2E lineage is connected for Trend Health, Persistence, Acceleration,
+Exhaustion/Reversal, Participation, Regime Compatibility, Reversal Risk,
+Volatility Risk, Exhaustion Risk, Participation Risk, Microstructure Risk,
+Regime Risk, and Event Uncertainty.
+
+Production authority migration is blocked. Relative Strength is
+AVAILABLE_BUT_NOT_CONNECTED. PROPOSED_DECISION_IF_AUTHORIZED is not yet
+lifecycle/action-specific enough for BUY_WAIT, ADD, REDUCE, and EXIT.
+Expected Edge remains UNCALIBRATED and research-only.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_k_strategy_intelligence_shadow_end_to_end_validation.md
+reports/phase_reports/phase30_k_strategy_intelligence_shadow_end_to_end_validation.json
+reports/phase_reports/phase30_k/validation_evidence.json
+reports/phase_reports/phase30_k/generated_strategy_intelligence/
+```
+
+Recommended next task:
+
+```text
+Phase30-L — Strategy Intelligence Data / Authority Gap Repair
+```
+
+## Phase30-L — Strategy Intelligence Data / Authority Gap Repair
+
+Status:
+
+```text
+COMPLETED
+SHADOW LIFECYCLE AUTHORITY GAPS REPAIRED
+PRODUCTION AUTHORITY MIGRATION STILL UNAUTHORIZED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_L_STRATEGY_INTELLIGENCE_SHADOW_LIFECYCLE_AUTHORITY_GAPS_REPAIRED_PRODUCTION_MIGRATION_STILL_UNAUTHORIZED
+```
+
+Summary:
+
+```text
+Phase30-L repaired the Phase30-K Strategy Intelligence shadow interpretation
+blockers without changing Production Strategy behavior.
+
+The repair added lifecycle-aware shadow interpretation and observed profit
+protection evidence to strategy_intelligence.v1 semantic version 1.1.0.
+The backward-compatible proposed_decision_if_authorized field remains present
+but is now an alias of the shadow interpretation and is not action authority.
+
+BUY_WAIT no longer collapses into BUY_NEW candidate wording. ADD / BUY_ADD no
+longer collapses into HOLD-worthiness. PM REDUCE and PM EXIT preserve current
+PM authority and no longer shadow-interpret as HOLD.
+
+Relative Strength is PARTIALLY_CONNECTED using existing PIT stock-vs-market
+return authority only. Opportunity rank, runtime opportunity score, and BUY
+Quality relative-opportunity score are not re-labeled as Relative Strength.
+Stock-vs-sector and sector-vs-market authority remain missing.
+
+Validation regenerated report-only Strategy Intelligence artifacts for the same
+11 Phase30-K dates under reports/phase_reports/phase30_l/ and confirmed
+runtime_planning hashes unchanged on all validation dates.
+```
+
+Deliverables:
+
+```text
+src/ai_fund_lab_v2/strategy/strategy_intelligence.py
+tests/strategy/test_phase30_l_strategy_intelligence_gap_repair.py
+docs/02_architecture/strategy_intelligence_data_contract_v1.md
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+docs/phase_reports/phase30_l_strategy_intelligence_data_authority_gap_repair.md
+reports/phase_reports/phase30_l_strategy_intelligence_data_authority_gap_repair.json
+reports/phase_reports/phase30_l/validation_evidence.json
+reports/phase_reports/phase30_l/generated_strategy_intelligence/
+```
+
+Validation:
+
+```text
+Focused pytest: 27 passed
+compileall: PASS
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+SHARED_INTELLIGENCE_BECAME_ACTION_AUTHORITY = NO
+SHADOW_OUTPUT_CONNECTED_TO_PRODUCTION_ACTION_AUTHORITY = NO
+PRODUCTION_AUTHORITY_MIGRATION_AUTHORIZED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-M — Strategy Intelligence Shadow Lifecycle Validation
+```
+
+## Phase30-M — Strategy Intelligence Shadow Lifecycle Validation
+
+Status:
+
+```text
+COMPLETED
+BROAD SHADOW LIFECYCLE VALIDATION PASS
+CURRENT POSITION AUTHORITY PARTIAL
+PRODUCTION MIGRATION DESIGN BLOCKED
+```
+
+Primary Judgment:
+
+```text
+PHASE30_M_STRATEGY_INTELLIGENCE_SHADOW_LIFECYCLE_VALIDATED_CURRENT_POSITION_AUTHORITY_PARTIAL_MIGRATION_DESIGN_BLOCKED
+```
+
+Summary:
+
+```text
+Phase30-M validated Phase30-L lifecycle-specific Strategy Intelligence shadow
+semantics against the full clean 299BD boundary of
+runtime-test-historical-extended-smoke-20260815T061857447380Z from
+2022-08-10 through 2023-10-26. The failed 2023-10-27 valuation candidate was
+excluded.
+
+Validation generated report-only Strategy Intelligence artifacts under
+reports/phase_reports/phase30_m/ and did not mutate the source Historical run.
+
+Lifecycle contradiction checks passed:
+BUY_WAIT interpreted as BUY_NEW = 0
+ADD interpreted as HOLD = 0
+REENTRY BUY_NEW collapse = 0
+REDUCE interpreted as HOLD = 0
+EXIT interpreted as HOLD = 0
+
+Coverage was broad: 299 business days, 15,040 symbol rows, 127 campaign refs,
+267 BUY_NEW, 3,348 BUY_WAIT, 516 ADD/BUY_ADD, 982 HOLD, 285 REDUCE, 179 EXIT,
+and 9,216 NO_ACTION/NO_ORDER rows.
+
+Relative Strength remains PARTIALLY_CONNECTED: stock-vs-market PIT relative
+returns are connected, while stock-vs-sector and sector-vs-market authority are
+still missing. Expected Edge remains UNCALIBRATED, RESEARCH_ONLY, and
+SHADOW_ONLY.
+
+Current position authority is PARTIAL. Quantity, average price, market value,
+valuation/quantity basis, observed embedded return, and PIT-safe observed
+MFE/giveback are available or derivable from Production-common artifacts, but
+campaign identity / opened-date authority is not consistently exposed through
+Strategy Intelligence lifecycle context. Production Migration Design is blocked
+until this Current/campaign-state authority gap is repaired.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_m_strategy_intelligence_shadow_lifecycle_validation.md
+reports/phase_reports/phase30_m_strategy_intelligence_shadow_lifecycle_validation.json
+reports/phase_reports/phase30_m/validation_evidence.json
+reports/phase_reports/phase30_m/generated_strategy_intelligence/
+```
+
+Validation:
+
+```text
+Focused pytest: 27 passed
+compileall: PASS
+PRODUCTION_BEHAVIOR_EQUIVALENCE = PASS
+IDEMPOTENCY = PASS
+BUY_SELL_INDEPENDENCE = PASS
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+SHADOW_OUTPUT_CONNECTED_TO_PRODUCTION_ACTION_AUTHORITY = NO
+PRODUCTION_AUTHORITY_MIGRATION_AUTHORIZED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-N — Strategy Intelligence Current Position Authority Gap Repair
+```
+
+## Phase30-N — Strategy Intelligence Current Position Authority Gap Repair
+
+Status:
+
+```text
+COMPLETED
+CURRENT POSITION / CAMPAIGN AUTHORITY REPAIRED
+PRODUCTION MIGRATION DESIGN READY
+```
+
+Primary Judgment:
+
+```text
+PHASE30_N_CURRENT_POSITION_CAMPAIGN_AUTHORITY_REPAIRED_MIGRATION_DESIGN_READY
+```
+
+Summary:
+
+```text
+Phase30-N repaired the Phase30-M CURRENT_POSITION_AUTHORITY_PARTIAL blocker.
+
+Strategy Intelligence now joins Current state with canonical campaign authority
+from daily/<business_date>/positions/position_campaigns.json and exposes
+position_campaign_id, campaign_opened_date, campaign_status, current quantity,
+average price, current market value, quantity basis, valuation price basis, and
+campaign history summaries in lifecycle_context.
+
+The repair keeps Current ownership and Campaign ownership separate. Current /
+PM current-position adapter owns current quantity, average price, market value,
+and valuation-facing basis state. positions/position_campaigns.json owns
+campaign identity and lifecycle history. Strategy Intelligence joins the two
+and does not create a duplicate campaign ledger.
+
+Same-day EXIT closure is handled explicitly: if a campaign is closed by a
+same-business-day SELL/EXIT event, Strategy Intelligence may reference that
+canonical campaign for EXIT-day lifecycle context, but does not treat it as an
+open current holding on later no-position days.
+
+Validation across the clean 299BD boundary confirmed 1,962/1,962 held rows had
+complete campaign ID, opened date, and campaign status. Missing count is 0.
+```
+
+Deliverables:
+
+```text
+src/ai_fund_lab_v2/strategy/strategy_intelligence.py
+src/ai_fund_lab_v2/strategy/shadow_runtime.py
+tests/strategy/test_phase30_n_strategy_intelligence_campaign_authority.py
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+docs/02_architecture/strategy_intelligence_data_contract_v1.md
+docs/02_architecture/strategy_intelligence_regression_contract_v1.md
+docs/phase_reports/phase30_n_strategy_intelligence_current_position_authority_gap_repair.md
+reports/phase_reports/phase30_n_strategy_intelligence_current_position_authority_gap_repair.json
+reports/phase_reports/phase30_n/validation_evidence.json
+reports/phase_reports/phase30_n/generated_strategy_intelligence/
+```
+
+Validation:
+
+```text
+Focused pytest: 32 passed
+compileall: PASS
+CURRENT_POSITION_AUTHORITY_COMPLETE
+held rows: 1,962
+campaign ID complete count: 1,962
+opened-date complete count: 1,962
+missing count: 0
+BUY_SELL_INDEPENDENCE = PASS
+VALUATION_BASIS_REGRESSION = PASS
+PRODUCTION_BEHAVIOR_EQUIVALENCE = PASS
+IDEMPOTENCY = PASS
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+DUPLICATE_CAMPAIGN_AUTHORITY_CREATED = NO
+SHADOW_OUTPUT_CONNECTED_TO_PRODUCTION_ACTION_AUTHORITY = NO
+PRODUCTION_AUTHORITY_MIGRATION_AUTHORIZED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-O — Strategy Intelligence Production Authority Migration and Legacy Retirement Design
+```
+
+## Phase30-O — Strategy Intelligence Production Authority Migration and Legacy Retirement Design
+
+Phase30-O completed the design-only Production migration and legacy retirement
+specification for Strategy Intelligence.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_o_strategy_intelligence_production_authority_migration_and_legacy_retirement_design.md
+reports/phase_reports/phase30_o_strategy_intelligence_production_authority_migration_and_legacy_retirement_design.json
+reports/phase_reports/phase30_o_legacy_inventory.json
+reports/phase_reports/phase30_o_consumer_authority_map.json
+docs/02_architecture/strategy_intelligence_production_migration_contract_v1.md
+docs/02_architecture/strategy_intelligence_legacy_retirement_contract_v1.md
+```
+
+Canonical judgment:
+
+```text
+PHASE30_O_STRATEGY_INTELLIGENCE_PRODUCTION_MIGRATION_AND_LEGACY_RETIREMENT_DESIGN_COMPLETE
+PRODUCTION_MIGRATION_DESIGN_COMPLETE
+ONE PRODUCTION STRATEGY AUTHORITY PATH
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+NO IMPLEMENTATION AUTHORIZED BY PHASE30_O
+```
+
+Phase30-O defines staged migration:
+
+```text
+Stage 0 Contract Freeze
+Stage 1 Production Evidence Connection
+Stage 2 BUY-Side Consumer Migration
+Stage 3 Existing-Position PM Evidence Migration
+Stage 4 Legacy Retirement
+Stage 5 10BD Entry Gate
+```
+
+The design preserves PC, PM, Position Sizing, Runtime Planning, and Safety
+authority. Strategy Intelligence is Production evidence / semantic /
+lifecycle context only, not Action Authority. Expected Edge remains
+UNCALIBRATED. Relative Strength first generation is stock-vs-market only;
+stock-vs-sector and sector-vs-market remain DEFERRED_DATA_FOUNDATION.
+
+Recommended next task:
+
+```text
+Phase30-P — Strategy Intelligence Production Consumer Migration Implementation and Legacy Retirement
+```
+
+## Phase30-P — Strategy Intelligence Production Consumer Migration Implementation and Legacy Retirement
+
+Phase30-P completed the Production consumer migration for Strategy
+Intelligence and retired the legacy shadow action path.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_p_strategy_intelligence_production_consumer_migration_and_legacy_retirement.md
+reports/phase_reports/phase30_p_strategy_intelligence_production_consumer_migration_and_legacy_retirement.json
+reports/phase_reports/phase30_p_legacy_retirement_evidence.json
+reports/phase_reports/phase30_p_final_production_authority_map.json
+```
+
+Canonical judgment:
+
+```text
+PHASE30_P_STRATEGY_INTELLIGENCE_PRODUCTION_CONSUMER_MIGRATION_COMPLETE_LEGACY_ACTION_PATH_RETIRED_10BD_READY
+PRODUCTION_STRATEGY_INTELLIGENCE_MIGRATION_COMPLETE = YES
+ACTUAL_TRADING_BEHAVIOR_CHANGED = YES
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+ACCEPTED_GENERATION_CHANGED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+```
+
+Strategy Intelligence is now Production-readable evidence for formal planning
+and remains non-authoritative. Portfolio Construction owns BUY-side target
+portfolio behavior, Position Management owns HOLD / ADD / REDUCE / EXIT,
+Position Sizing owns quantity, Runtime Planning maps, and Safety guards.
+
+Focused validation passed:
+
+```text
+compileall src/ai_fund_lab_v2/strategy = PASS
+focused pytest = 208 passed
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+10BD entry gate:
+
+```text
+USER_OPERATED_10BD_FRESH_HISTORICAL_READY
+```
+
+Recommended next task:
+
+```text
+Phase30-Q — Post-Migration Focused Audit and User 10BD Fresh Historical Entry
+```
+
+## Phase30-Q0 — 2023-10-27 Held-Position Missing Quote Runtime Continuity Re-Audit
+
+Phase30-Q0 re-audited the Phase30-F current valuation HALT at:
+
+```text
+runtime-test-historical-extended-smoke-20260815T061857447380Z
+2023-10-27:current_valuation_refresh
+```
+
+Canonical judgment:
+
+```text
+PHASE30_Q0_20231027_HELD_POSITION_MISSING_QUOTE_LISTING_STATUS_TRANSITION_STILL_PRESENT_RUNTIME_CONTINUITY_GATE_BLOCKED
+CURRENT_DEFECT_STATUS = STILL_PRESENT
+76710_MISSING_QUOTE_CLASSIFICATION = LISTING_STATUS_TRANSITION
+PHASE29_VALUATION_BASIS_DEFECT_RECURRENCE = NO
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+ACTUAL_TRADING_BEHAVIOR_CHANGED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+10BD_RUNTIME_CONTINUITY_GATE_BLOCKED
+CRITICAL_BLOCKER = YES
+```
+
+Read-only evidence confirmed that 76710 was listed and had raw / normalized
+bars on 2023-10-25 and 2023-10-26, but was absent from 2023-10-27 listed
+issues and raw / normalized bars while the market calendar marked 2023-10-27 as
+a trading day. Current valuation still fails closed with generic
+`current_valuation_quote_missing` / `quote_status_not_allowed`; no
+Production-common taxonomy yet distinguishes listing transition, suspension,
+no valid close, source defect, corporate-action ambiguity, or authorized stale
+valuation.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_q0_20231027_held_position_missing_quote_runtime_continuity_reaudit.md
+reports/phase_reports/phase30_q0_20231027_held_position_missing_quote_runtime_continuity_reaudit.json
+```
+
+Recommended next task:
+
+```text
+Phase30-Q1 — Production-Common Held-Position Missing Quote Valuation Continuity Repair
+```
+
+## Phase30-Q1 — Production-Common Held-Position Missing Quote Valuation Continuity Repair
+
+Phase30-Q1 implemented the Production-common Current Valuation missing-quote
+taxonomy and explicit authorized stale accounting valuation semantics.
+
+Canonical judgment:
+
+```text
+PHASE30_Q1_PRODUCTION_COMMON_MISSING_QUOTE_TAXONOMY_AND_AUTHORIZED_STALE_VALUATION_IMPLEMENTED_76710_REMAINS_BLOCKED_BY_AUTHORITY_GAP
+REPAIR_STATUS = BLOCKED_BY_AUTHORITY_GAP
+BLIND_PREVIOUS_CLOSE_FALLBACK = NO
+HISTORICAL_ONLY_FIX = NO
+PHASE29_VALUATION_BASIS_DEFECT_RECURRENCE = NO
+STALE_VALUATION_USED_AS_FRESH_STRATEGY_SIGNAL = NO
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+ACTUAL_RUNTIME_VALUATION_BEHAVIOR_CHANGED = YES
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+10BD_RUNTIME_CONTINUITY_GATE_BLOCKED
+```
+
+Implemented classes:
+
+```text
+AUTHORITATIVELY_LEGITIMATE_STALE_VALUATION
+DATA_OR_SOURCE_FAILURE
+LISTING_OR_CORPORATE_ACTION_AMBIGUITY
+UNKNOWN_MISSING_QUOTE
+```
+
+`VALID_CARRYOVER` is reused only for explicit authorized stale accounting
+valuation and is not a fresh quote semantic. Stale Current metadata includes
+quote date, valuation date, staleness age, stale reason, stale authority,
+listing evidence, CA ambiguity status, and the isolation flag
+`stale_accounting_valuation_not_fresh_market_signal`.
+
+76710 / 2023-10-27 remains:
+
+```text
+LISTING_OR_CORPORATE_ACTION_AMBIGUITY
+```
+
+because PIT evidence proves listing/quote absence but does not yet provide
+sufficient listing-transition reason and corporate-action-clear authority to
+authorize stale valuation.
+
+Validation:
+
+```text
+compileall src/ai_fund_lab_v2/runtime_v2/current_state = PASS
+focused pytest = 76 passed
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_q1_production_common_held_position_missing_quote_valuation_continuity_repair.md
+reports/phase_reports/phase30_q1_production_common_held_position_missing_quote_valuation_continuity_repair.json
+docs/02_architecture/runtime_temporal_freshness_contract.md
+```
+
+Recommended next task:
+
+```text
+Phase30-Q2 — Production-Common Listing Transition and Corporate Action Ambiguity Authority Repair
+```
+
+## Phase30-Q2 — Production-Common Listing Transition and Corporate Action Ambiguity Authority Repair
+
+Phase30-Q2 connected Production-common Listing State Authority, Corporate
+Action Ambiguity Authority, and Tradability Authority consumption into Current
+Valuation missing-quote classification.
+
+Canonical judgment:
+
+```text
+PHASE30_Q2_LISTING_CA_AUTHORITY_BINDING_IMPLEMENTED_76710_REMAINS_BLOCKED_BY_DATA_FOUNDATION
+REPAIR_STATUS = BLOCKED_BY_DATA_FOUNDATION
+76710 / 2023-10-27 = LISTING_OR_CORPORATE_ACTION_AMBIGUITY
+TRADABILITY_AUTHORITY = PARTIAL
+BLIND_PREVIOUS_CLOSE_FALLBACK = NO
+HISTORICAL_ONLY_FIX = NO
+FUTURE_INFORMATION_USED = FALSE
+FUTURE_LISTING_OUTCOME_USED = FALSE
+PHASE29_VALUATION_BASIS_DEFECT_RECURRENCE = NO
+STALE_VALUATION_USED_AS_FRESH_STRATEGY_SIGNAL = NO
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+DUPLICATE_LISTING_AUTHORITY_CREATED = NO
+DUPLICATE_CORPORATE_ACTION_AUTHORITY_CREATED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+10BD_RUNTIME_CONTINUITY_GATE_BLOCKED
+```
+
+Current Valuation remains a consumer of listing and corporate-action authority.
+It does not infer stale-safe delisting from yesterday-listed/today-absent
+evidence, and it does not treat corporate-event row absence as clear without
+coverage authority.
+
+Validation:
+
+```text
+compileall src/ai_fund_lab_v2/runtime_v2/current_state = PASS
+focused pytest = 84 passed
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_q2_production_common_listing_transition_and_corporate_action_ambiguity_authority_repair.md
+reports/phase_reports/phase30_q2_production_common_listing_transition_and_corporate_action_ambiguity_authority_repair.json
+docs/02_architecture/runtime_temporal_freshness_contract.md
+```
+
+Recommended next task:
+
+```text
+Phase30-Q3 — Production-Common Delisting / Listing Transition Data Foundation and CA Coverage Repair
+```
+
+## Phase30-Q — Post-Migration Final Focused Audit / 10BD Entry Gate
+
+Phase30-Q performed the final integrated focused audit across Phase30-P Strategy
+Intelligence Production migration and Phase30-Q1/Q2 Current Valuation
+missing-quote repairs.
+
+Canonical judgment:
+
+```text
+PHASE30_Q_POST_MIGRATION_FINAL_FOCUSED_AUDIT_PASS_USER_OPERATED_10BD_FRESH_HISTORICAL_READY
+STRATEGY_MIGRATION = PASS
+OLD_PRODUCTION_CONSUMER_REFERENCE_COUNT = 0
+LEGACY_FALLBACK_REFERENCE_COUNT = 0
+SHADOW_ACTION_PATH_REMAINING = NO
+ONE_PRODUCTION_STRATEGY_AUTHORITY_PATH = YES
+BUY_SELL_INDEPENDENCE = PASS
+CURRENT_CAMPAIGN = PASS
+VALUATION_BASIS = PASS
+MISSING_QUOTE_CONTRACT = PASS
+76710 = LEGITIMATE_REVIEW_REQUIRED_OPERATIONAL_CASE
+KNOWN_AUTOMATABLE_RUNTIME_DEFECT = NO
+FAIL_CLOSED_CONTRACT = PASS
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+CRITICAL_BLOCKER = NO
+USER_OPERATED_10BD_FRESH_HISTORICAL_READY
+```
+
+Phase30-Q reinterprets `76710 / 2023-10-27` as an expected fail-closed
+operational review case under the Q1/Q2 Production contract, not as a remaining
+automatable Runtime defect.
+
+Validation:
+
+```text
+compileall src/ai_fund_lab_v2/strategy src/ai_fund_lab_v2/runtime_v2/current_state = PASS
+focused pytest = 145 passed
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_q_post_migration_final_focused_audit_and_10bd_entry_gate.md
+reports/phase_reports/phase30_q_post_migration_final_focused_audit_and_10bd_entry_gate.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+User-operated Phase30 fresh 10BD Historical run and post-run correctness / early Strategy quality review
+```
+
+## Phase30-R - 3BD Zero-Buy Production Funnel Audit
+
+Phase30-R performed a read-only audit of the first three business days of:
+
+```text
+runtime-test-historical-extended-smoke-20260816T011219035058Z
+```
+
+Audited dates:
+
+```text
+2022-08-10
+2022-08-12
+2022-08-15
+```
+
+Canonical judgment:
+
+```text
+PHASE30_R_ZERO_BUY_NOT_JUSTIFIED_POSITION_SIZING_CONVERSION_GAP_CONFIRMED
+PRIMARY_CAUSE = POSITION_SIZING_CONVERSION_GAP
+ZERO_BUY_IS_JUSTIFIED = NO
+STRATEGY_MIGRATION_DEFECT_CONFIRMED = NO
+OVER_FILTERING_CANDIDATE = NO
+PHASE29_CAPITAL_CONVERSION_DEFECT_RECURRENCE = NO
+BUY_WAIT_OVERCONCENTRATION = NO
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+ONE_PRODUCTION_STRATEGY_AUTHORITY_PATH = YES
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_R
+```
+
+3BD evidence showed candidate count 50 and Strategy Intelligence Eligibility
+PASS 50 on all audited dates. BUY_WAIT did not dominate. Portfolio
+Construction produced positive draft/review allocation evidence, but Position
+Sizing remained `NOT_ELIGIBLE` / `REVIEW_REQUIRED` and produced zero concrete
+quantity, causing Runtime Planning `order_side_intent = NONE`.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_r_3bd_zero_buy_production_funnel_audit.md
+reports/phase_reports/phase30_r_3bd_zero_buy_production_funnel_audit.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-S - Position Sizing Production Consumer Eligibility / Concrete Quantity Handoff Repair
+```
+
+## Phase30-S - Position Sizing Production Consumer Eligibility / Concrete Quantity Handoff Repair
+
+Phase30-S repaired the Phase30-R zero-buy production handoff defect without
+changing Strategy thresholds, Expected Edge calibration, Safety, lot/cap policy,
+Portfolio Construction allocation logic, or Historical fit logic.
+
+Canonical judgment:
+
+```text
+PHASE30_S_POSITION_SIZING_PRODUCTION_CONSUMER_ELIGIBILITY_CONCRETE_QUANTITY_HANDOFF_REPAIRED
+REPAIR_STATUS = REPAIRED
+PC_TO_PS_HANDOFF = PASS
+PHASE29_CAPITAL_FLAG = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+FRESH_10BD_GATE = USER_OPERATED_FRESH_10BD_RERUN_READY
+```
+
+Required-date tmp recalculation against
+`runtime-test-historical-extended-smoke-20260816T011219035058Z` produced:
+
+```text
+2022-08-10: PC positive ADD 18, PS positive quantity 9, Runtime BUY intent 9
+2022-08-12: PC positive ADD 19, PS positive quantity 10, Runtime BUY intent 10
+2022-08-15: PC positive ADD 19, PS positive quantity 11, Runtime BUY intent 11
+```
+
+Validation:
+
+```text
+compileall src/ai_fund_lab_v2/strategy = PASS
+focused + related pytest = 288 passed, 60 warnings
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_s_position_sizing_production_consumer_eligibility_concrete_quantity_handoff_repair.md
+reports/phase_reports/phase30_s_position_sizing_production_consumer_eligibility_concrete_quantity_handoff_repair.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-T - Fresh 10BD Post-Repair Validation
+```
+
+## Phase30-T - 5BD Early Strategy Behavior / Capital Concentration Audit
+
+Phase30-T performed a read-only audit of the first five business days of:
+
+```text
+runtime-test-historical-extended-smoke-20260816T014640663183Z
+```
+
+Canonical judgment:
+
+```text
+EARLY_STRATEGY_BEHAVIOR_MIXED_LOSS_CONTAINMENT_IMPROVING_CAPITAL_CONCENTRATION_NOT_YET_WORKING
+LOSS_CONTAINMENT_DIRECTION = IMPROVING
+WINNER_HOLD_DIRECTION = IMPROVING
+CAPITAL_CONCENTRATION_DIRECTION = NOT_IMPROVING
+SELL_REDUCE_DIRECTION = IMPROVING
+EARLY_STRATEGY_DIRECTION = MIXED
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+PHASE30_S_HANDOFF_DEFECT_RECURRENCE = NO
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-T
+```
+
+5BD end state:
+
+```text
+Equity 989,170
+Return -1.08%
+Cash 830,200
+Exposure 16.07%
+Positions 7
+```
+
+The exposure drop was caused by intentional SELL/REDUCE/EXIT plus weak
+replacement conversion. Phase30-S handoff did not recur. By 2022-08-17, PC
+still produced 7 positive replacement candidates, but PS converted none because
+target notionals were below lot/minimum meaningful notional requirements.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_t_5bd_early_strategy_behavior_capital_concentration_audit.md
+reports/phase_reports/phase30_t_5bd_early_strategy_behavior_capital_concentration_audit.json
+reports/phase_reports/phase30_t/5bd_daily_funnel_and_behavior_evidence.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next action:
+
+```text
+Continue 10BD run; review full 10BD capital concentration after completion.
+```
+
+## Phase30-U - 10BD Entry Quality / Large Loss / Capital Reinvestment Audit
+
+Phase30-U performed a read-only audit of the completed 10BD run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T014640663183Z
+```
+
+Canonical judgment:
+
+```text
+PHASE30_10BD_STRATEGY_DIRECTION_MIXED_ENTRY_INTELLIGENCE_GAP_AND_CAPITAL_CONCENTRATION_QUALITY_POOR
+ENTRY_QUALITY_DIRECTION = NOT_IMPROVING
+SELL_REDUCE_DIRECTION = IMPROVING
+WINNER_PRESERVATION_DIRECTION = MIXED
+CAPITAL_CONCENTRATION_DIRECTION = NOT_IMPROVING
+LOSS_CONTAINMENT_DIRECTION = MIXED
+PHASE30_10BD_STRATEGY_DIRECTION = MIXED
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-U
+```
+
+10BD final state:
+
+```text
+Final Equity 939,110
+Return -6.09%
+Cash 462,710
+Exposure 50.73%
+Positions 4
+Close result REVIEW_REQUIRED
+```
+
+The 2022-08-24 `-48,800` daily PnL reconciled to:
+
+```text
+78780 -44,000
+36600  -5,200
+60540    +700
+94320    -280
+94340     -20
+Sum   -48,800
+```
+
+78780 was classified as `78780_ENTRY_LOGIC_GAP`: PIT evidence already showed
+strong 20D momentum, a short-term reversal, deceleration, elevated exhaustion /
+reversal / volatility risk, and one-lot fallback expanding requested 3.57%
+weight into 24.5% exposure.
+
+Close `REVIEW_REQUIRED` was classified as operational/non-blocking Strategy
+shadow review, not a runtime defect; PnL reconciliation remained PASS.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_u_10bd_entry_quality_large_loss_capital_reinvestment_audit.md
+reports/phase_reports/phase30_u_10bd_entry_quality_large_loss_capital_reinvestment_audit.json
+reports/phase_reports/phase30_u/10bd_entry_reinvestment_loss_evidence.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-V - Entry Intelligence / Overheated Momentum and One-Lot Capital Concentration Repair Design
+```
+
+## Phase30-V - Entry Intelligence / Overheated Momentum / One-Lot Capital Concentration Repair Design
+
+Phase30-V completed the design-only repair plan for the two Phase30-U defects:
+
+```text
+Entry Intelligence Gap
+One-Lot Capital Concentration Gap
+```
+
+Canonical judgment:
+
+```text
+PHASE30_V_ENTRY_INTELLIGENCE_AND_QUALITY_ADJUSTED_ONE_LOT_ADMISSION_DESIGNED_PHASE30_W_IMPLEMENTATION_READY
+PHASE30_W_IMPLEMENTATION_READY = YES
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-V
+```
+
+The design adds Entry Admission semantics to distinguish healthy continuation
+from overheated / decelerating / reversal-risk continuation, without a broad
+downside-risk veto and without 78780-specific rules. It also adds
+Quality-Adjusted One-Lot Admission so Safety hard cap feasibility is not treated
+as sufficient Strategy concentration approval.
+
+Existing Phase29 residual recycling, lot-aware sizing, Strategy/Safety cap
+separation, BUY_WAIT non-Pending semantics, and BUY / SELL independence are
+preserved. Cash remains valid when no quality-adjusted executable candidate
+exists.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_v_entry_intelligence_overheated_momentum_one_lot_capital_concentration_repair_design.md
+reports/phase_reports/phase30_v_entry_intelligence_overheated_momentum_one_lot_capital_concentration_repair_design.json
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-W - Entry Intelligence / One-Lot Capital Concentration Repair Implementation
+```
+
+## Phase30-W - Entry Intelligence / One-Lot Capital Concentration Repair Implementation
+
+Phase30-W implemented the Phase30-V Production-common design for:
+
+```text
+Entry Admission
+Quality-Adjusted One-Lot Admission
+```
+
+Canonical judgment:
+
+```text
+PHASE30_W_ENTRY_INTELLIGENCE_ONE_LOT_CONCENTRATION_REPAIR_IMPLEMENTED_FRESH_VALIDATION_READY
+IMPLEMENTATION_STATUS = IMPLEMENTED
+BUY_SELL_INDEPENDENCE = PASS
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+ONE_PRODUCTION_STRATEGY_AUTHORITY_PATH = YES
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+PHASE30_S_HANDOFF_DEFECT_RECURRENCE = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+USER_OPERATED_FRESH_VALIDATION_READY
+```
+
+Implementation summary:
+
+- Strategy Intelligence semantic version advanced to `1.3.0`.
+- `entry_admission` now separates healthy continuation, continuation with
+  caution, overheated / decelerating entry, reversal-risk entry, and
+  insufficient entry evidence.
+- Portfolio Construction consumes Entry Admission for BUY-side action semantics
+  while preserving SELL / REDUCE independence.
+- Lot-aware final reallocation now records and consumes `one_lot_admission` so
+  Safety hard cap pass alone does not authorize Strategy soft-cap one-lot
+  concentration.
+- Residual recycling remains active and can recycle skipped capital to the next
+  quality-adjusted executable candidate or Cash.
+- ADD remains possible for high-quality existing winners, while weak survivors
+  can remain HOLD-visible without ADD.
+
+Validation:
+
+```text
+compileall src/ai_fund_lab_v2/strategy = PASS
+focused / related pytest = 178 passed
+tests/strategy full sweep = 510 passed, 4 failed
+```
+
+The four full-sweep failures are retained as non-Phase30-W residual test gaps:
+three `test_phase22_pr_dynamic_capacity_asset_proportionality.py` expectations
+and one `test_phase24_hy_rank_authority.py` private helper call shape. The
+Phase30-W focused and related Strategy Intelligence / PC / PS / Runtime
+Planning regression set passed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_w_entry_intelligence_one_lot_capital_concentration_repair_implementation.md
+reports/phase_reports/phase30_w_entry_intelligence_one_lot_capital_concentration_repair_implementation.json
+tests/strategy/test_phase30_w_entry_one_lot_repair.py
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-X - Post-Repair Fresh Validation
+```
+
+## Phase30-X - 20BD Winner Amplification / Payoff / Re-entry / Capital Quality Audit
+
+Phase30-X audited the user-operated fresh 20BD run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T023934342407Z
+```
+
+Canonical judgment:
+
+```text
+PHASE30_X_20BD_STRATEGY_DIRECTION = MIXED
+100BD_ENTRY_GATE = USER_OPERATED_FRESH_100BD_READY
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_X
+```
+
+Summary:
+
+- Final equity was `1,000,490 JPY`, return `+0.049%`, cash `434,990 JPY`,
+  exposure `56.52%`, positions `8`.
+- Peak equity was `1,001,660 JPY`; trough was `973,880 JPY`; max drawdown from
+  peak was `-2.77%`, while drawdown from initial capital was `-2.61%`.
+- The 2022-09-07 `+26,610 JPY` recovery reconciled exactly. It was dominated by
+  47600 same-day PnL `+29,700 JPY`, with 94320 `+1,800 JPY` and 27880
+  `+1,900 JPY` partially offset by small open losers.
+- Closed-campaign payoff remains weak: 23 closed campaigns, 6 winners,
+  14 losers, payoff ratio `0.59`, profit factor `0.25`.
+- Winner preservation is improving: 94320 was held and ADDed, 27880 and 47600
+  remained open winners, and 37770-0002 was profit-protected.
+- ADD quality is `MIXED`; 94320 ADD process was mostly justified, and the
+  2022-08-31 weak-timing ADD was blocked by one-lot admission.
+- Re-entry quality is `MIXED_TO_POOR`, especially 23880 and 37820.
+- Phase30-W one-lot recurrence was not observed.
+
+Direction flags:
+
+```text
+ENTRY_QUALITY_DIRECTION = MIXED
+SELL_REDUCE_DIRECTION = IMPROVING
+WINNER_PRESERVATION_DIRECTION = IMPROVING
+WINNER_AMPLIFICATION_DIRECTION = MIXED
+REENTRY_DIRECTION = NOT_IMPROVING
+CAPITAL_QUALITY_DIRECTION = MIXED
+LOSS_CONTAINMENT_DIRECTION = IMPROVING
+PHASE30_20BD_STRATEGY_DIRECTION = MIXED
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_x_20bd_winner_amplification_payoff_reentry_capital_quality_audit.md
+reports/phase_reports/phase30_x_20bd_winner_amplification_payoff_reentry_capital_quality_audit.json
+```
+
+Recommended next task:
+
+```text
+Phase30-Y - Fresh 100BD Long-Horizon Validation
+```
+
+## Phase30-Y - Strategy Behavior Conformance Review
+
+Phase30-Y performed a READ-ONLY conformance review of the current Production
+Strategy against the intended investment behavior, durable Architecture,
+Production code / authority chain, and the Phase30-X 20BD real behavior.
+
+Target run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T023934342407Z
+```
+
+Canonical judgment:
+
+```text
+STRATEGY_BEHAVIOR_CONFORMANCE = PARTIAL
+100BD_GATE = 100BD_ENTRY_BLOCKED_BY_BEHAVIOR_GAP
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_Y
+```
+
+Required judgments:
+
+```text
+SELECTION_CONFORMANCE = PARTIAL
+ENTRY_CONFORMANCE = PASS
+HOLD_CONFORMANCE = PARTIAL
+ADD_CONFORMANCE = PARTIAL
+WINNER_AMPLIFICATION_CONFORMANCE = PARTIAL
+REDUCE_EXIT_CONFORMANCE = PASS
+REENTRY_CONFORMANCE = FAIL
+CAPITAL_REALLOCATION_CONFORMANCE = PARTIAL
+PAYOFF_ASYMMETRY_CONFORMANCE = FAIL
+STRATEGY_BEHAVIOR_CONFORMANCE = PARTIAL
+```
+
+Main finding:
+
+```text
+REENTRY genuine recovery is not strict enough relative to the durable
+Architecture. Actual REENTRY buys passed cooldown/recovery while carrying
+negative diagnostic expected edge, generic prior-exit context, or partial
+technical recovery. This contributed to repeated 23880 / 37820 losses and
+weak closed-campaign payoff asymmetry.
+```
+
+Preserved improvements:
+
+```text
+Phase30-W Entry Admission = PRESERVED
+one-lot concentration repair = PRESERVED
+SELL / REDUCE behavior = PRESERVED
+Loss containment direction = PRESERVED
+BUY / SELL independence = PRESERVED
+Phase30-P authority migration = PRESERVED
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_y_strategy_behavior_conformance_review.md
+reports/phase_reports/phase30_y_strategy_behavior_conformance_review.json
+reports/phase_reports/phase30_y/authority_behavior_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-Z - REENTRY Genuine Recovery Authority Repair
+```
+
+## Phase30-Z - REENTRY Genuine Recovery Authority Repair
+
+Phase30-Z implemented the Production-common REENTRY repair requested after
+Phase30-Y found `REENTRY_CONFORMANCE = FAIL`.
+
+Canonical judgment:
+
+```text
+PHASE30_Z_REENTRY_GENUINE_RECOVERY_AUTHORITY_REPAIRED
+REPAIR_STATUS = REPAIRED
+100BD_GATE = USER_OPERATED_FRESH_100BD_READY
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Repair summary:
+
+- REENTRY now requires sufficient prior EXIT context; generic `EXIT` /
+  `SELL` / `UNKNOWN` no longer proves genuine recovery.
+- Trend / momentum / hard-stop / corporate-action recovery no longer passes on
+  trend-only or momentum-only evidence.
+- Entry Admission is reused for REENTRY, preserving Phase30-W overheated,
+  reversal, and insufficient-evidence BUY_WAIT / reject semantics.
+- Repeated unresolved same-symbol churn is suppressed using PIT prior campaign
+  history, without using historical PnL outcomes.
+- Genuine recovery remains possible, including 37770-type recovery with
+  negative diagnostic Expected Edge when all other recovery evidence passes.
+
+Preserved boundaries:
+
+```text
+PHASE30_P_STRATEGY_MIGRATION_PRESERVED = YES
+PHASE30_W_ENTRY_ADMISSION_PRESERVED = YES
+PHASE30_W_ONE_LOT_REPAIR_PRESERVED = YES
+BUY_SELL_INDEPENDENCE = PASS
+LEGACY_STRATEGY_PATH_REINTRODUCED = NO
+Expected Edge = UNCALIBRATED
+```
+
+Focused validation:
+
+```text
+41 focused pytest cases passed
+compileall passed with workspace-local pycache prefix
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_z_reentry_genuine_recovery_authority_repair.md
+reports/phase_reports/phase30_z_reentry_genuine_recovery_authority_repair.json
+tests/strategy/test_phase30_z_reentry_genuine_recovery.py
+```
+
+Recommended next task:
+
+```text
+Phase30-AA - Fresh 100BD Long-Horizon Validation
+```
+
+## Phase30-AA - Existing Data / Component Utilization Gap Audit
+
+Phase30-AA performed a READ-ONLY audit before fresh 100BD execution to determine
+whether the Phase30-Y PARTIAL dimensions still have existing PIT data,
+artifacts, components, or authority that are present but underused.
+
+Boundary:
+
+```text
+READ_ONLY_AUDIT
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-AA
+NO_100BD_EXECUTION
+NO_STRATEGY_RUNTIME_CONFIG_MODEL_THRESHOLD_CHANGE
+NO_HISTORICAL_OUTCOME_FIT
+NO_NEW_EXTERNAL_DATA_SOURCE
+PHASE30_Z_REENTRY_REPAIR_UNCHANGED
+```
+
+Canonical judgment:
+
+```text
+EXISTING_DATA_COMPONENT_IMPROVEMENT_AVAILABLE = YES
+SELECTION_EXISTING_DATA_UTILIZATION = PARTIAL
+HOLD_EXISTING_DATA_UTILIZATION = PARTIAL
+ADD_EXISTING_DATA_UTILIZATION = PARTIAL
+CAPITAL_REALLOCATION_EXISTING_DATA_UTILIZATION = PARTIAL
+```
+
+Main finding:
+
+```text
+100BD_ENTRY_DEFERRED_FOR_EXISTING_DATA_REPAIR
+```
+
+The strongest remaining gap is not a new AI or new external data requirement.
+It is an existing-data utilization gap: `positions/position_campaigns.json`,
+Current/Ledger state, Strategy Intelligence lifecycle context, and profit
+protection evidence are not fully available or action-effective in the
+pre-action Production path for HOLD / ADD / winner amplification.
+
+Evidence from 2022-09-07 in the 20BD reference run:
+
+- `strategy/strategy_intelligence.json` reported
+  `position_campaigns_artifact_missing`.
+- Pre-action SI held positions had partial campaign identity, no campaign
+  opened date, no ADD history, and no observed MFE/giveback.
+- EOD shadow SI for 94320 recovered the campaign id, opened date, and ADD
+  history count 5, proving campaign data exists in run artifacts.
+- PM consumes SI status fields but not the structured profit-protection details
+  such as embedded return, observed MFE/giveback, deterioration connection, or
+  risk-rise connection.
+- PC/lot reallocation uses Entry Admission, priority, lot feasibility, and
+  score/opportunity evidence, while the full SI quality/lifecycle stack is not
+  yet the primary marginal-capital comparator.
+
+Preserved improvements:
+
+```text
+Phase30-W Entry Admission = PRESERVED
+Phase30-W one-lot concentration repair = PRESERVED
+Phase30-Z REENTRY repair = PRESERVED
+SELL / REDUCE / EXIT = PRESERVED
+BUY / SELL independence = PRESERVED
+Phase30-P authority migration = PRESERVED
+Expected Edge = UNCALIBRATED
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aa_existing_data_component_utilization_gap_audit.md
+reports/phase_reports/phase30_aa_existing_data_component_utilization_gap_audit.json
+reports/phase_reports/phase30_aa/lineage_gap_inventory.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AB - Production-Common Campaign Lifecycle / HOLD-ADD Winner Amplification Existing-Data Repair Design
+```
+
+## Phase30-AB - Campaign Lifecycle / HOLD-ADD Winner Amplification Repair and Legacy Retirement Design
+
+Phase30-AB converted the Phase30-AA existing-data utilization gap into a
+Production-common design for canonical campaign lifecycle, HOLD / Profit
+Protection evidence use, ADD / winner amplification, and legacy retirement.
+
+Canonical judgment:
+
+```text
+PHASE30_AB_CANONICAL_CAMPAIGN_LIFECYCLE_HOLD_ADD_REPAIR_DESIGN_COMPLETE
+PHASE30_AC_IMPLEMENTATION_READY = YES
+ONE_CANONICAL_PRODUCTION_PATH_DESIGNED = YES
+DUPLICATE_CAMPAIGN_AUTHORITY_DESIGN = NO
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AB
+NO IMPLEMENTATION AUTHORIZED BY_PHASE30_AB
+```
+
+Design summary:
+
+- `positions/position_campaigns.json` remains the single canonical campaign
+  authority and must be available to the pre-action Production path.
+- Strategy Intelligence consumes campaign truth; it does not create a duplicate
+  campaign ledger.
+- PM HOLD / Profit Protection should consume structured lifecycle evidence such
+  as campaign age, current return, observed MFE/giveback, CQ deterioration, and
+  Downside Risk rise.
+- ADD remains distinct from HOLD and should use lifecycle, quality, opportunity
+  cost, no-loss-averaging, exposure, and one-lot feasibility evidence.
+- Old EOD-only campaign proxies, symbol-only fallbacks, broad HOLD/ADD
+  heuristics, and duplicated lifecycle state are to be migrated and retired
+  after reference counts reach zero.
+
+Preserved boundaries:
+
+```text
+PHASE30_W_ENTRY_ADMISSION_PRESERVED = YES
+PHASE30_W_ONE_LOT_ADMISSION_PRESERVED = YES
+PHASE30_Z_REENTRY_PRESERVED = YES
+SELL_REDUCE_EXIT_SEMANTICS_PRESERVED = YES
+BUY_SELL_INDEPENDENCE_PRESERVED = YES
+PHASE30_P_SINGLE_STRATEGY_AUTHORITY_PATH_PRESERVED = YES
+PHASE30_S_QUANTITY_HANDOFF_PRESERVED = YES
+EXPECTED_EDGE = UNCALIBRATED
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ab_campaign_lifecycle_hold_add_winner_amplification_repair_and_legacy_retirement_design.md
+reports/phase_reports/phase30_ab_campaign_lifecycle_hold_add_winner_amplification_repair_and_legacy_retirement_design.json
+reports/phase_reports/phase30_ab_legacy_lifecycle_inventory.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AC - Campaign Lifecycle / HOLD-ADD Winner Amplification Repair Implementation and Legacy Retirement
+```
+
+## Phase30-AC - Campaign Lifecycle / HOLD-ADD Winner Amplification Repair Implementation and Legacy Retirement
+
+Phase30-AC implemented the Phase30-AB design in the Production-common Strategy
+path.
+
+Canonical judgment:
+
+```text
+PHASE30_AC_CAMPAIGN_LIFECYCLE_HOLD_ADD_WINNER_AMPLIFICATION_REPAIR_IMPLEMENTED
+IMPLEMENTATION_STATUS = IMPLEMENTED
+ONE_PRODUCTION_CAMPAIGN_LIFECYCLE_PATH = YES
+DUPLICATE_CAMPAIGN_AUTHORITY = NO
+USER_OPERATED_FRESH_VALIDATION_READY
+```
+
+Implementation summary:
+
+- Pre-action `positions/position_campaigns.json` is materialized from the
+  latest prior canonical campaign snapshot plus decision-time Current state.
+- Strategy Intelligence consumes canonical campaign lifecycle and exposes
+  campaign age, campaign-relative return, observed MFE/giveback, and campaign
+  history.
+- PM consumes structured HOLD / ADD / Profit Protection evidence while
+  remaining Action Authority.
+- PC consumes campaign-aware ADD-worthiness fields for winner amplification,
+  one-lot admission, and residual reallocation.
+- Legacy PM/current lifecycle campaign authority, status-only HOLD heuristics,
+  CQ-only ADD heuristics, and Current-only MFE/giveback assumptions were
+  retired from code/tests.
+
+Retirement gates:
+
+```text
+LEGACY_CAMPAIGN_FALLBACK_REFERENCE_COUNT = 0
+OBSOLETE_HOLD_ADD_HEURISTIC_REFERENCE_COUNT = 0
+ONE_PRODUCTION_CAMPAIGN_LIFECYCLE_PATH = YES
+```
+
+Validation:
+
+```text
+compileall PASS
+focused Phase30-AC 4 passed
+SI / PM lifecycle regression 14 passed
+Phase30-W / Phase30-Z / Phase30-S preservation 20 passed
+Strategy shadow wiring 18 passed
+Portfolio Construction focused regression 106 passed
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ac_campaign_lifecycle_hold_add_winner_amplification_repair_implementation_and_legacy_retirement.md
+reports/phase_reports/phase30_ac_campaign_lifecycle_hold_add_winner_amplification_repair_implementation_and_legacy_retirement.json
+reports/phase_reports/phase30_ac_legacy_retirement_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AD - Post-Repair Behavior Validation
+```
+
+## Phase30-AD0 - Post-AC Fresh-Run Position / Campaign Lifecycle HALT Root Cause Audit
+
+Phase30-AD0 performed a READ-ONLY audit of the post-AC fresh 20BD run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T043332338677Z
+```
+
+The run halted at:
+
+```text
+2022-08-12:morning
+Runtime CLI exit code 20
+fresh_run final_judgment = HALT
+```
+
+Canonical judgment:
+
+```text
+ROOT_CAUSE_CLASSIFICATION = PHASE30_AC_CANONICAL_CAMPAIGN_FIRST_DAY_BOOTSTRAP_GAP
+PHASE30_AC_REGRESSION = YES
+PERFORMANCE_EVIDENCE_VALID = NO
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-AD0
+```
+
+Required final judgments:
+
+```text
+ACCOUNTING_POSITION_STATE = CONSISTENT
+CURRENT_POSITION_STATE = CONSISTENT
+CANONICAL_CAMPAIGN_STATE = INCONSISTENT
+MONITOR_DISPLAY_STATE = INCONSISTENT
+MORNING_RESTORE_STATE = INCONSISTENT
+```
+
+Finding:
+
+- 2022-08-10 BUY / submit / fill / ledger / Current were consistent: 9 fills,
+  311,420 JPY buy notional, 9 Current positions, 305,420 JPY market value,
+  cash 688,580 JPY, equity 994,000 JPY.
+- The 2022-08-10 pre-action campaign artifact remained empty even though
+  post-execution Current held 9 positions.
+- 2022-08-12 pre-action campaign materialization used that empty strict-prior
+  campaign snapshot, producing 9 `missing_current_campaign_symbols`.
+- Strategy Intelligence marked all 9 held positions with missing campaign
+  identity. PM / PC / PS then became REVIEW_REQUIRED, Runtime Planning had
+  unresolved quantities, and morning halted.
+- The visible 2022-08-12 `positions/position_campaigns.json` with 9 campaigns
+  is post/pre-action-overwritten observability evidence; its hash differs from
+  the pre-action hash consumed by Strategy Intelligence.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ad0_post_ac_fresh_run_position_campaign_lifecycle_halt_root_cause_audit.md
+reports/phase_reports/phase30_ad0_post_ac_fresh_run_position_campaign_lifecycle_halt_root_cause_audit.json
+reports/phase_reports/phase30_ad0/reconciliation_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AD1 - Canonical Campaign Fresh-Run Bootstrap / Morning Continuity Repair
+```
+
+## Phase30-AD1 - Canonical Campaign Fresh-Run Bootstrap / Morning Continuity Repair
+
+Phase30-AD1 repaired the Phase30-AD0 regression:
+
+```text
+PHASE30_AC_CANONICAL_CAMPAIGN_FIRST_DAY_BOOTSTRAP_GAP
+```
+
+Canonical judgment:
+
+```text
+PHASE30_AD1_CANONICAL_CAMPAIGN_FRESH_RUN_BOOTSTRAP_REPAIRED
+REPAIR_STATUS = REPAIRED
+USER_OPERATED_FRESH_20BD_RERUN_READY
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Finding:
+
+- Pre-action canonical campaign materialization now uses the latest prior
+  `positions/position_campaigns.json`, strict-prior completed
+  `persistent_ledger/executions.jsonl`, and decision-time Current.
+- Fresh `BUY_NEW` positions missing from prior canonical campaign state are
+  bootstrapped only when strict-prior Ledger proves an open BUY campaign.
+- Missing campaign authority without strict-prior Ledger proof remains
+  fail-closed and explicit.
+- ADD preserves the same campaign, REDUCE preserves the same campaign, EXIT
+  closes the same campaign, and REENTRY creates a new deterministic campaign
+  identity after a ledger-proven full exit.
+- No legacy campaign fallback, symbol-only fallback, duplicate campaign
+  authority, Strategy tuning, threshold change, Entry Admission change,
+  REENTRY redesign, SELL/REDUCE/EXIT redesign, or Safety change was introduced.
+
+Integrity:
+
+```text
+LEGACY_CAMPAIGN_FALLBACK_REFERENCE_COUNT = 0
+OBSOLETE_HOLD_ADD_HEURISTIC_REFERENCE_COUNT = 0
+DUPLICATE_CAMPAIGN_AUTHORITY = NO
+ONE_PRODUCTION_CAMPAIGN_LIFECYCLE_PATH = YES
+PHASE30_AC_HOLD_ADD_REPAIR_PRESERVED = YES
+PHASE30_W_ENTRY_ADMISSION_PRESERVED = YES
+PHASE30_W_ONE_LOT_ADMISSION_PRESERVED = YES
+PHASE30_Z_REENTRY_PRESERVED = YES
+SELL_REDUCE_EXIT_SEMANTICS_PRESERVED = YES
+BUY_SELL_INDEPENDENCE = PASS
+PHASE30_S_HANDOFF_PRESERVED = YES
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+```
+
+Focused validation:
+
+```text
+compile = PASS
+phase30_ad1 / phase30_ac materialization = 4 passed
+strategy shadow + campaign authority = 26 passed
+Phase30-W / Phase30-Z / Phase30-S preservation = 20 passed
+retired fallback reference search = 0 matches
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ad1_canonical_campaign_fresh_run_bootstrap_morning_continuity_repair.md
+reports/phase_reports/phase30_ad1_canonical_campaign_fresh_run_bootstrap_morning_continuity_repair.json
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+```
+
+Recommended next task:
+
+```text
+Phase30-AD2 - Fresh 20BD Post-AC Bootstrap Validation
+```
+
+## Phase30-AD2 - Post-AC 20BD Behavior / Winner Amplification Validation
+
+Phase30-AD2 performed a READ-ONLY audit of the AC/AD1-after fresh 20BD run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T045533779694Z
+```
+
+Canonical judgment:
+
+```text
+PHASE30_AD2_BEHAVIOR_DIRECTION = MIXED
+100BD_GATE = 100BD_ENTRY_BLOCKED
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-AD2
+```
+
+Continuity:
+
+```text
+PHASE30_AD1_BOOTSTRAP_DEFECT_RECURRENCE = NO
+held campaign identity missing recurrence = NO
+PORTFOLIO_CONSTRUCTION_CURRENT_CAMPAIGN_ID_PROPAGATION_GAP = YES
+```
+
+Before / after:
+
+- Return improved from `+0.05%` to `+1.50%`.
+- Max drawdown improved from `-2.77%` to `-1.51%`.
+- Average exposure fell from `31.33%` to `15.69%`.
+- Final positions fell from `8` to `5`.
+- 94320 no longer ramped from `200` to `1,200`; it remained near `200`.
+- 2022-09-07 `+27,500` was dominated by 47600 same-day BUY_NEW gain
+  `+29,700`, not mature winner amplification.
+- Payoff ratio remained weak: `0.42` after vs `0.59` before.
+- Profit factor slightly improved: `0.27` after vs `0.25` before.
+
+Direction flags:
+
+```text
+CAMPAIGN_LIFECYCLE_DIRECTION = IMPROVING
+HOLD_DIRECTION = IMPROVING
+ADD_DIRECTION = MIXED
+WINNER_AMPLIFICATION_DIRECTION = MIXED
+REENTRY_DIRECTION = IMPROVING
+CAPITAL_UTILIZATION_DIRECTION = MIXED
+PAYOFF_ASYMMETRY_DIRECTION = NOT_IMPROVING
+PHASE30_AD2_BEHAVIOR_DIRECTION = MIXED
+```
+
+Dominant remaining gap:
+
+```text
+PC_CURRENT_CAMPAIGN_ID_PROPAGATION_AND_ADD_CONVERSION_GAP
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ad2_post_ac_20bd_behavior_winner_amplification_validation.md
+reports/phase_reports/phase30_ad2_post_ac_20bd_behavior_winner_amplification_validation.json
+reports/phase_reports/phase30_ad2/analysis_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AE0 - PC Current Campaign Identity Propagation / ADD Conversion Gap Audit
+```
+
+## Phase30-AE0 - PC Campaign Identity / ADD Conversion Regression Lineage Audit
+
+Phase30-AE0 performed a READ-ONLY lineage audit of the AC/AD1-after fresh 20BD
+run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T045533779694Z
+```
+
+Comparison run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T023934342407Z
+```
+
+Primary judgment:
+
+```text
+REGRESSION_CONFIRMED
+ADD_CONVERSION_REGRESSION = YES
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30-AE0
+```
+
+Contract flags:
+
+```text
+PC_CURRENT_CAMPAIGN_ID_PROPAGATION = FAIL
+PM_ADD_TO_PC_CONVERSION = FAIL
+PC_TO_PS_ADD_CONVERSION = FAIL
+PS_TO_RUNTIME_BUY_ADD = FAIL
+PHASE30_S_HANDOFF_DEFECT_RECURRENCE = NO
+PHASE29_ADD_CAPITAL_CONVERSION_DEFECT_RECURRENCE = NO
+```
+
+Root cause:
+
+- SI and PC member rows carry canonical campaign id
+  `pc-24c0e765c71b953f-94320-0001`.
+- PC `current_position_campaign_id` remains blank because Current does not
+  carry canonical `position_campaign_id`.
+- PC `pm_position_campaign_id` resolves to legacy-looking
+  `runtime-current-94320`.
+- ADD evidence compares that with opportunity campaign id and fails
+  `campaign_continuation`, which forces zero incremental target.
+
+Observed after-run ADD funnel:
+
+```text
+PM ADD actions = 14
+executed BUY_ADD fills = 0
+CAMPAIGN_ID_PROPAGATION_DROP = 13
+JUSTIFIED_NO_ADD = 1
+```
+
+AC-before comparison:
+
+```text
+PM ADD actions = 11
+executed BUY_ADD fill days = 5
+added quantity = 1,000
+```
+
+Production integrity remains preserved:
+
+```text
+PHASE30_AC_CAMPAIGN_LIFECYCLE_PRESERVED = YES
+PHASE30_W_ENTRY_ADMISSION_PRESERVED = YES
+PHASE30_Z_REENTRY_PRESERVED = YES
+LEGACY_CAMPAIGN_FALLBACK_REFERENCE_COUNT = 0
+ONE_PRODUCTION_CAMPAIGN_LIFECYCLE_PATH = YES
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ae0_pc_campaign_identity_add_conversion_regression_lineage_audit.md
+reports/phase_reports/phase30_ae0_pc_campaign_identity_add_conversion_regression_lineage_audit.json
+reports/phase_reports/phase30_ae0/add_funnel_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AE1 - Canonical Campaign-Aware ADD Conversion Regression Repair
+```
+
+## Phase30-AE1 - Canonical Campaign-Aware ADD Conversion Regression Repair
+
+Phase30-AE1 repaired the AE0-confirmed ADD conversion regression in the
+Production-common Strategy path.
+
+Primary judgment:
+
+```text
+PHASE30_AE1_CANONICAL_CAMPAIGN_AWARE_ADD_CONVERSION_REGRESSION_REPAIRED
+REPAIR_STATUS = REPAIRED
+```
+
+Implemented:
+
+- Position Management emits canonical `position_campaign_id` from Strategy
+  Intelligence lifecycle context.
+- Portfolio Construction supplies canonical campaign identity to
+  `current_position_campaign_id` and `pm_position_campaign_id`.
+- `runtime-current-*` is rejected as campaign authority.
+- PC ADD bridge now preserves and gates on ADD-worthiness and Entry Admission
+  evidence so campaign continuity alone cannot force ADD.
+- PC preserves reference price authority metadata needed for PS quantity
+  conversion.
+
+Contract flags:
+
+```text
+PC_CURRENT_CAMPAIGN_ID_PROPAGATION = PASS
+PM_ADD_TO_PC_CONVERSION = PASS
+PC_ADD_CONTINUATION = PASS
+PC_TO_PS_ADD_CONVERSION = PASS
+PS_TO_RUNTIME_BUY_ADD = PASS
+PHASE30_S_HANDOFF_PRESERVED = YES
+PHASE29_ADD_CAPITAL_CONVERSION_DEFECT_RECURRENCE = NO
+```
+
+Sentinels:
+
+```text
+Healthy ADD -> PC positive target -> PS positive quantity -> Runtime BUY_ADD = PASS
+REVERSAL_RISK_ENTRY / NO_ADD -> no target increase -> no BUY_ADD = PASS
+```
+
+Integrity:
+
+```text
+PHASE30_AC_CAMPAIGN_LIFECYCLE_PRESERVED = YES
+PHASE30_AD1_BOOTSTRAP_PRESERVED = YES
+PHASE30_W_ENTRY_ADMISSION_PRESERVED = YES
+PHASE30_W_ONE_LOT_ADMISSION_PRESERVED = YES
+PHASE30_Z_REENTRY_PRESERVED = YES
+SELL_REDUCE_EXIT_SEMANTICS_PRESERVED = YES
+BUY_SELL_INDEPENDENCE = PASS
+EXPECTED_EDGE = UNCALIBRATED
+runtime-current-* AS CAMPAIGN AUTHORITY = 0
+LEGACY_CAMPAIGN_FALLBACK_REFERENCE_COUNT = 0
+OBSOLETE_HOLD_ADD_HEURISTIC_REFERENCE_COUNT = 0
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_AS_RUNTIME_INPUT = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PRODUCTION_PARAMETER_SELECTION = FALSE
+TEST_RESULT_USED_AS_STRATEGY_INPUT = FALSE
+```
+
+Validation:
+
+```text
+compile = PASS
+focused ADD chain = 9 passed
+Phase30 preservation = 57 passed
+Portfolio Construction / Phase28-29 ADD related = 106 passed
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ae1_canonical_campaign_aware_add_conversion_regression_repair.md
+reports/phase_reports/phase30_ae1_canonical_campaign_aware_add_conversion_regression_repair.json
+```
+
+Fresh validation gate:
+
+```text
+USER_OPERATED_FRESH_20BD_RERUN_READY
+```
+
+Recommended next task:
+
+```text
+Phase30-AE2 - Fresh 20BD ADD Conversion / Winner Amplification Validation
+```
+
+## Phase30-AF - 60BD Selection / Winner Quality / Capital Utilization / Regime Attribution Audit
+
+Phase30-AF audited the user-operated run
+`runtime-test-historical-extended-smoke-20260816T061732506648Z` in READ-ONLY
+mode. The run was still progressing; the audit used only completed
+`run_state.completed_business_days` available at audit time, ending at
+2022-11-16.
+
+Primary judgment:
+
+```text
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+SELECTION_QUALITY = MIXED
+SELECTION_COVERAGE = PARTIAL
+WINNER_AMPLIFICATION = MIXED
+CAPITAL_UTILIZATION = MIXED
+PAYOFF_ASYMMETRY = MIXED
+PHASE30_AE1_ADD_CONVERSION_REPAIRED_IN_REAL_RUN = YES
+BEAR_CONVICTION_HYPOTHESIS = NOT_SUPPORTED
+PHASE30_AF_STRATEGY_DIRECTION = MIXED
+```
+
+Evidence:
+
+```text
+docs/phase_reports/phase30_af_60bd_selection_winner_capital_regime_attribution_audit.md
+reports/phase_reports/phase30_af_60bd_selection_winner_capital_regime_attribution_audit.json
+reports/phase_reports/phase30_af/
+```
+
+Run decision:
+
+```text
+CONTINUE_CURRENT_100BD_RUN
+```
+
+Recommended next task:
+
+```text
+Phase30-AG - Selection Coverage / Capital Utilization Design Audit
+```
+
+## Phase30-AG - Selection Coverage / Risk Caution / Capital Utilization Design Audit
+
+Phase30-AG performed a READ-ONLY design audit of the AF-confirmed selection
+coverage, risk caution, and capital utilization gaps for
+`runtime-test-historical-extended-smoke-20260816T061732506648Z`. The analysis
+window was fixed to the AF completed-day window, 2022-08-10 through
+2022-11-16, to avoid moving-target run-state drift.
+
+Primary judgment:
+
+```text
+MARKET_OPPORTUNITY_CAPTURE = PARTIAL
+SELECTION_RANKING_EFFECTIVENESS = PARTIAL
+RISK_CAUTION_CALIBRATION = MIXED
+LOW_POSITION_CAUSE = MULTI_CAUSAL
+UNUSED_OPPORTUNITY_CASH_REPAIRABLE_WITH_EXISTING_DATA = YES
+SELECTION_IMPROVEMENT_AVAILABLE_WITH_EXISTING_DATA = YES
+```
+
+Key finding:
+
+```text
+Market healthy proxy -> selected candidate -> PC positive -> PS positive
+capture is very narrow, while Runtime BUY authority remains intact.
+```
+
+The leading improvement candidate is a Selection quality comparator using
+existing PIT trend / CQ / RS / Risk evidence before final opportunity-rank
+dominance. This is an existing-data design candidate, not threshold tuning,
+forced investment, model retraining, or Runtime repair.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ag_selection_coverage_capital_utilization_design_audit.md
+reports/phase_reports/phase30_ag_selection_coverage_capital_utilization_design_audit.json
+reports/phase_reports/phase30_ag/
+```
+
+Implementation authorization:
+
+```text
+NO IMPLEMENTATION AUTHORIZED BY PHASE30-AG
+```
+
+Recommended next task:
+
+```text
+Phase30-AH - Selection Quality / Opportunity Capture Repair Design
+```
+
+## Phase30-AH - Selection Quality / Opportunity Capture Repair Design
+
+Phase30-AH completed a DESIGN ONLY Production-common repair design for the
+Phase30-AG Selection Coverage gap. The design uses existing PIT data and
+existing components; it does not create a new AI, retrain a model, add a
+parallel Selection path, change Runtime authority, force investment, or tune
+thresholds from Historical outcomes.
+
+Primary judgment:
+
+```text
+SELECTION_QUALITY_COMPARATOR_DESIGN = COMPLETE
+OPPORTUNITY_RANK_ROLE = SUPPORTING
+EXPECTED_EDGE_ROLE = UNCALIBRATED_SUPPORTING
+MARKET_CAUTION_INDIVIDUAL_QUALITY_DESIGN = COMPLETE
+CAPITAL_UTILIZATION_DESIGN = COMPLETE
+PARALLEL_SELECTION_PATH_CREATED = NO
+ONE_PRODUCTION_SELECTION_PATH = YES
+PHASE30_AI_IMPLEMENTATION_READY = YES
+```
+
+Core design:
+
+```text
+Selection Quality Comparator semantic tiers:
+HIGH_QUALITY_CONTINUATION
+VALID_CONTINUATION
+CAUTION_CONTINUATION
+INSUFFICIENT_QUALITY
+REJECT
+```
+
+Opportunity rank / score are preserved as supporting evidence, while
+score-only hard rejection from `below_opportunity_top20` and
+`non_positive_expected_edge_score` is deprecated for high-quality PIT
+opportunities because Expected Edge remains uncalibrated.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ah_selection_quality_opportunity_capture_repair_design.md
+reports/phase_reports/phase30_ah_selection_quality_opportunity_capture_repair_design.json
+reports/phase_reports/phase30_ah_selection_logic_inventory.json
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+```
+
+Implementation authorization:
+
+```text
+NO IMPLEMENTATION AUTHORIZED BY PHASE30-AH
+```
+
+Recommended next task:
+
+```text
+Phase30-AI - Selection Quality / Opportunity Capture Repair Implementation and Legacy Retirement
+```
+
+## Phase30-AI - Selection Quality / Opportunity Capture Repair Implementation and Legacy Retirement
+
+Phase30-AI implemented the Phase30-AH design in the existing Production-common
+SI -> PC -> PS path. The repair introduces semantic Selection Quality evidence
+without forcing BUY count, exposure, or Runtime authority.
+
+Primary judgment:
+
+```text
+PHASE30_AI_SELECTION_QUALITY_OPPORTUNITY_CAPTURE_REPAIR = IMPLEMENTED
+REGRESSION_REPAIR_STATUS = REPAIRED
+ONE_PRODUCTION_SELECTION_PATH = YES
+PARALLEL_SELECTION_PATH_CREATED = NO
+EXPECTED_EDGE_STATUS = UNCALIBRATED
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+USER_OPERATED_FRESH_100BD_READY
+```
+
+Implemented:
+
+- Strategy Intelligence emits `selection_quality_comparator.v1` with
+  `HIGH_QUALITY_CONTINUATION`, `VALID_CONTINUATION`,
+  `CAUTION_CONTINUATION`, `INSUFFICIENT_QUALITY`, and `REJECT`.
+- Portfolio Construction consumes the comparator as allocation evidence and
+  prioritizes quality tiers inside existing target-member competition.
+- `below_opportunity_top20` and `non_positive_expected_edge_score` remain soft
+  relative metadata under uncalibrated Expected Edge and are not standalone hard
+  rejection authority for high-quality PIT candidates.
+- Position Sizing emits `pc_ps_zero_delta_taxonomy.v1` for PC-positive /
+  PS-zero outcomes without weakening lot, capital, or Safety constraints.
+- AE1 ADD conversion, W Entry Admission / one-lot admission, Z REENTRY, S
+  handoff, SELL/REDUCE/EXIT independence, and cash validity remain preserved.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ai_selection_quality_opportunity_capture_repair_implementation_and_legacy_retirement.md
+reports/phase_reports/phase30_ai_selection_quality_opportunity_capture_repair_implementation_and_legacy_retirement.json
+reports/phase_reports/phase30_ai_legacy_selection_retirement_evidence.json
+docs/02_architecture/strategy_intelligence_architecture_v1.md
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ - Fresh 100BD Selection / Winner / Capital Validation
+```
+
+## Phase30-AJ0 - Post-AI 12BD Production Action Effectiveness / Candidate Coverage Audit
+
+Phase30-AJ0 completed a READ-ONLY audit comparing the Phase30-AI fresh run
+`runtime-test-historical-extended-smoke-20260816T084143736072Z` against the
+pre-AI baseline `runtime-test-historical-extended-smoke-20260816T061732506648Z`
+over 2022-08-10 -> 2022-08-26, 12BD.
+
+Primary judgment:
+
+```text
+QUALITY_COMPARATOR_MATERIALIZED = YES
+QUALITY_COMPARATOR_CHANGED_PC_COMPETITION = NO
+SOFT_REJECTION_RETIREMENT_ACTION_EFFECT = NO
+CANDIDATE_TOP50_CHANGED = NO
+CANDIDATE_GENERATION_COVERAGE_GAP = YES
+AI_PRODUCTION_ACTION_EFFECT = NO_EFFECT
+FIRST_BEHAVIORAL_DIFFERENCE_LAYER = NONE
+```
+
+Root cause:
+
+```text
+12BD_IDENTICAL_BEHAVIOR_ROOT_CAUSE =
+NO_UPSTREAM_CANDIDATE_DIFFERENCE_AND_PC_TARGET_RECONVERGENCE_AT_EXISTING_EQUAL_TARGETS
+```
+
+The comparator reached Production artifacts (`selection_quality_comparator.v1`
+materialized for all 12 days), but the Candidate Top50 symbols and ordering
+were unchanged, PC target membership and target weights were unchanged, PS
+quantities were unchanged, Runtime intents were unchanged, fills were
+unchanged, and portfolio state was unchanged.
+
+Candidate coverage remains the dominant limitation:
+
+```text
+market_healthy_proxy_count_avg = 460.250
+candidate_healthy_proxy_count_avg = 10.417
+candidate_capture_ratio_avg = 2.3465%
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj0_post_ai_12bd_action_effectiveness_candidate_coverage_audit.md
+reports/phase_reports/phase30_aj0_post_ai_12bd_action_effectiveness_candidate_coverage_audit.json
+reports/phase_reports/phase30_aj0/aggregate_evidence.json
+reports/phase_reports/phase30_aj0/daily_diff_evidence.json
+```
+
+Implementation authorization:
+
+```text
+NO IMPLEMENTATION AUTHORIZED BY_PHASE30_AJ0
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ1 - Candidate AI / Top50 Market PIT Quality Surface Design Audit
+```
+
+## Phase30-AJ1 - Candidate AI / Top50 Market PIT Quality Surface Design Audit
+
+Phase30-AJ1 completed a READ-ONLY design audit of the Candidate AI / Top50
+coverage gap confirmed by Phase30-AJ0.
+
+Primary judgment:
+
+```text
+PHASE30_AJ1_CANDIDATE_QUALITY_SURFACE_DESIGN = COMPLETE
+CANDIDATE_OBJECTIVE_ALIGNMENT = PARTIAL
+CANDIDATE_STAGE_QUALITY_EVIDENCE_SUFFICIENCY = PARTIAL
+DOWNSTREAM_QUALITY_SAFE_TO_SURFACE_UPSTREAM = PARTIAL
+CANDIDATE_TOP50_QUALITY_REPAIR_AVAILABLE_WITH_EXISTING_DATA = YES
+MODEL_RETRAINING_REQUIRED = NOT_YET
+NEW_AI_REQUIRED = NO
+PARALLEL_CANDIDATE_PATH_REQUIRED = NO
+```
+
+Candidate score semantics were confirmed from durable Candidate AI contracts
+and Runtime code:
+
+```text
+candidate_score = accepted-generation Candidate model score for
+label__momentum_candidate_label
+
+label__momentum_candidate_label =
+top_decile_20d AND NOT downside_bad_20d
+
+Top50 = first 50 eligible rows by candidate_score desc, code asc
+```
+
+The score is an upward-momentum candidate discovery score. It is not BUY
+authority, calibrated expected edge, Portfolio Construction authority, or
+current Strategy continuation-quality authority.
+
+AJ0 remains the current Candidate coverage authority:
+
+```text
+market_healthy_proxy_count_avg = 460.250/day
+candidate_healthy_proxy_count_avg = 10.417/day
+candidate_capture_ratio_avg = 2.3465%
+total_market_healthy_proxy_count = 5,523
+total_candidate_healthy_proxy_count = 125
+total_missed_healthy_proxy_count = 5,398
+```
+
+The root cause is that the current Candidate Top50 is score-dominant and only
+partially aligned with the Phase30 Strategy objective of sustainable
+continuation quality. The accepted Candidate feature order uses price momentum,
+MA structure, volume, liquidity, and volatility, but underuses or omits several
+PIT quality surfaces later used downstream:
+
+- acceleration / deceleration,
+- traded-value participation confirmation,
+- PIT market regime,
+- stock-vs-market / stock-vs-sector relative strength,
+- Entry Admission timing,
+- full Continuation Quality / Downside Risk rollups.
+
+Recommended design:
+
+```text
+Option C - Hybrid
+```
+
+Keep the existing Candidate AI authority and Top50 count, but add a
+Candidate-stage PIT quality surface using existing Candidate-stage features
+before the Top50 cut. Then pass the quality-aware Top50 into the existing
+Phase30-AI Selection Quality Comparator. Do not create a new AI, do not create
+a parallel Candidate path, and do not move the full downstream comparator into
+Candidate selection.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj1_candidate_ai_top50_market_pit_quality_surface_design_audit.md
+reports/phase_reports/phase30_aj1_candidate_ai_top50_market_pit_quality_surface_design_audit.json
+reports/phase_reports/phase30_aj1/candidate_feature_inventory.json
+reports/phase_reports/phase30_aj1/downstream_quality_timing.json
+reports/phase_reports/phase30_aj1/top50_quality_mismatch.json
+reports/phase_reports/phase30_aj1/candidate_objective_alignment.json
+reports/phase_reports/phase30_aj1/option_comparison.json
+```
+
+Implementation authorization:
+
+```text
+NO IMPLEMENTATION AUTHORIZED BY_PHASE30-AJ1
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ2 - Candidate Top50 PIT Quality Surface Repair Implementation and Legacy Retirement
+```
+
+## Phase30-AJ2 - Candidate Top50 PIT Quality Surface Repair Implementation and Legacy Retirement
+
+Phase30-AJ2 implemented the Phase30-AJ1 Option C design in the existing
+Production-common Candidate AI path.
+
+Primary judgment:
+
+```text
+PHASE30_AJ2_CANDIDATE_TOP50_PIT_QUALITY_SURFACE_REPAIR = IMPLEMENTED
+CANDIDATE_MODEL_PRESERVED = YES
+CANDIDATE_ACCEPTED_GENERATION_PRESERVED = YES
+CANDIDATE_STAGE_PIT_QUALITY_SURFACE = IMPLEMENTED
+QUALITY_AWARE_TOP50 = IMPLEMENTED
+TOP50_COUNT = 50
+NEW_AI_CREATED = NO
+PRODUCTION_MODEL_RETRAINED = NO
+CANDIDATE_TRAINING_TARGET_CHANGED = NO
+PARALLEL_CANDIDATE_PATH_CREATED = NO
+ONE_PRODUCTION_CANDIDATE_PATH = YES
+PHASE30_AI_SELECTION_COMPARATOR_PRESERVED = YES
+```
+
+Production-common Candidate flow is now:
+
+```text
+all eligible stocks
+-> accepted Candidate model
+-> candidate_score / candidate_rank
+-> Candidate-stage PIT Quality Surface
+-> quality-aware Top50
+-> Opportunity AI
+```
+
+The Candidate model contract remains unchanged:
+
+```text
+candidate_score = momentum_candidate_label model score
+candidate_rank = score-only Candidate model rank
+```
+
+The new Candidate PIT Quality Surface materializes:
+
+```text
+STRONG_CONTINUATION_SURFACE
+VALID_MOMENTUM_SURFACE
+CAUTION_MOMENTUM_SURFACE
+INSUFFICIENT_SURFACE_EVIDENCE
+```
+
+Each Candidate row carries raw PIT evidence, reason codes, evidence
+sufficiency, PIT safety metadata, not-BUY-authority metadata, preserved
+score-only rank, and `quality_aware_candidate_rank`.
+
+Candidate artifact coverage evidence now includes:
+
+- market eligible count,
+- Candidate pre-cut count,
+- candidate score/rank distributions,
+- Candidate PIT surface distribution,
+- Top50 surface distribution,
+- market healthy proxy count,
+- Candidate healthy proxy count,
+- healthy proxy capture ratio,
+- final Top50 symbol order,
+- score-only Top50 symbol order,
+- quality-aware added / removed symbols.
+
+Legacy retirement:
+
+```text
+OBSOLETE_SCORE_ONLY_TOP50_PATH_REFERENCE_COUNT = 0
+DUPLICATE_CANDIDATE_QUALITY_SURFACE_REFERENCE_COUNT = 0
+PARALLEL_CANDIDATE_PATH_REFERENCE_COUNT = 0
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj2_candidate_top50_pit_quality_surface_repair_implementation_and_legacy_retirement.md
+reports/phase_reports/phase30_aj2_candidate_top50_pit_quality_surface_repair_implementation_and_legacy_retirement.json
+reports/phase_reports/phase30_aj2_candidate_legacy_retirement_evidence.json
+tests/runtime_v2/test_phase30_aj2_candidate_pit_quality_surface.py
+```
+
+Long Historical:
+
+```text
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Fresh validation gate:
+
+```text
+USER_OPERATED_FRESH_VALIDATION_READY
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ3 - Fresh Candidate Top50 / Production Action Effect Validation
+```
+
+## Phase30-AK9R32 - Fresh 25BD Close REVIEW_REQUIRED Root-Cause / Validation Acceptance Audit
+
+Phase30-AK9R32 completed the READ-ONLY close acceptance audit for fresh 25BD run
+`runtime-test-historical-extended-smoke-20260817T222423827667Z`.
+
+Primary judgment:
+
+```text
+PHASE30_AK9R32_CLOSE_REVIEW_CLASSIFICATION = EXPECTED_VALIDATION_REVIEW
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+IMPLEMENTATION_REPAIR_REQUIRED = NO
+FRESH_100BD_VALIDATION_READY = YES
+```
+
+The run completed all requested 25 business days through `2022-09-14`.
+Runtime execution, accounting, trading state, production planning, PnL
+reconciliation, and final runtime judgment were `PASS`. The close-level
+`REVIEW_REQUIRED` was produced by non-mutating Strategy shadow validation:
+
+```text
+CLOSE_DIRECT_REASON = strategy_shadow_review_required_non_blocking
+strategy_shadow_close_classification =
+NON_MUTATING_STRATEGY_SHADOW_REVIEW_NON_BLOCKING
+```
+
+No AK9R27-31 regression, internal system consistency guard recurrence,
+pending lifecycle defect, submit/execution/current reconciliation defect, stale
+temporal authority, or capital deployment regression was confirmed. Final
+pending state was `EMPTY`; final ledger reconciled at cash `103710`, market
+value `977910`, and equity `1081620`.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r32_fresh_25bd_close_review_required_acceptance_audit.md
+reports/phase_reports/phase30_ak9r32_fresh_25bd_close_review_required_acceptance_audit.json
+reports/phase_reports/phase30_ak9r32/close_review_evidence.json
+reports/phase_reports/phase30_ak9r32/fresh_25bd_regression_comparison.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R33 - User-Operated Fresh 100BD Validation
+```
+
+## Phase30 Final Closure - Phase31 Entry
+
+Phase30 is formally closed by `Phase30-AK9R34`.
+
+Primary closure judgment:
+
+```text
+PHASE30_CLOSED_PHASE31_LONG_HORIZON_PERFORMANCE_CHARACTERIZATION_READY
+PHASE30_CLOSED = YES
+PHASE31_ENTRY_APPROVED = YES
+PHASE30_RUNTIME_ARCHITECTURE_CONFORMANT = YES
+PHASE30_CRITICAL_CONFORMANCE_GAPS = 0
+PHASE30_HIGH_CONFORMANCE_GAPS = 0
+PHASE30_FINAL_FRESH_25BD_ACCEPTED = YES
+PHASE31_PERFORMANCE_IMPLEMENTATION_AUTHORIZED_AT_ENTRY = NO
+```
+
+Phase30 original objective was:
+
+```text
+CLEAN_EVIDENCE_BASED_PERFORMANCE_IMPROVEMENT
+```
+
+Effective Phase30 scope expanded after clean performance work exposed
+Production-common Runtime authority and consumer conformance defects. Phase30
+therefore closed both a clean short-window performance validation path and the
+Runtime architecture conformance chain required before long-horizon Strategy
+performance interpretation.
+
+Final accepted Phase30 fresh run:
+
+```text
+run_id = runtime-test-historical-extended-smoke-20260817T222423827667Z
+period = 2022-08-10 through 2022-09-14
+requested / completed = 25 / 25 business days
+final_equity = 1081620
+final_return = +8.162%
+final_cash = 103710
+final_market_value = 977910
+final_exposure = 90.4116%
+average_exposure = 82.2480%
+BUY_fill_count = 60
+SELL_fill_count = 55
+total_BUY_filled_notional = 3219850
+total_SELL_filled_notional = 2323560
+system_caused_review_count = 0
+internal_system_consistency_review_count = 0
+PnL_reconciliation = PASS
+final_pending = EMPTY
+mid_run_HALT = NO
+2022-09-07_previous_failure_boundary = PASS
+```
+
+The final close returned `REVIEW_REQUIRED` only because of:
+
+```text
+strategy_shadow_review_required_non_blocking
+NON_MUTATING_STRATEGY_SHADOW_REVIEW_NON_BLOCKING
+```
+
+This close review is not a Runtime defect, authority defect, Safety defect,
+data integrity defect, accounting defect, or trading-state defect.
+
+Final architecture status:
+
+```text
+FINAL_RUNTIME_AUTHORITY_ARCHITECTURE_STATUS = CONFORMANT
+DUPLICATE_DECISION_INVALID_COUNT = 0
+REVIEW_SCOPE_CONFORMANCE_GAP_COUNT = 0
+NONCANONICAL_BATCH_ESCALATION_COUNT = 0
+SYSTEM_GUARD_MISCLASSIFIED_AS_NORMAL_SAFETY_COUNT = 0
+QUANTITY_REDECISION_LOCATION_COUNT = 0
+CASH_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+TEMPORAL_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+INVALID_BUY_SELL_COUPLING_COUNT = 0
+PRODUCER_BEFORE_CONSUMER_VIOLATION_COUNT = 0
+TEST_FIDELITY_GAP_COUNT = 0
+REMAINING_LATENT_CRITICAL_COUNT = 0
+REMAINING_LATENT_HIGH_COUNT = 0
+```
+
+Phase31 title:
+
+```text
+Phase31 - Long-Horizon Strategy Performance Characterization & Improvement
+```
+
+Phase31 objective:
+
+```text
+LONG_HORIZON_STRATEGY_PERFORMANCE_CHARACTERIZATION_AND_IMPROVEMENT
+```
+
+Phase31 starts with user-operated fresh 100BD validation:
+
+```text
+PHASE31_FIRST_TASK = USER_OPERATED_FRESH_100BD_VALIDATION
+recommended_start_date = 2022-08-10
+recommended_business_days = 100
+recommended_initial_cash = 1000000
+long_run_owner = USER
+```
+
+Phase31 performance research targets:
+
+- winner HOLD and profit retention;
+- ADD quality and ADD timing;
+- SELL / REDUCE timing;
+- short-hold churn;
+- Re-entry quality and churn;
+- BUY-time detectability using PIT-only evidence and control groups;
+- regime attribution;
+- Expected Edge calibration;
+- MDD, turnover, exposure, campaign, and capital deployment metrics.
+
+Phase31 inherited architecture requirements:
+
+- Production / Demo / Historical common Runtime contract;
+- canonical Pending Review Scope Authority;
+- canonical Historical Safety Temporal Authority;
+- typed Runtime Guard Taxonomy;
+- canonical quantity lineage;
+- distinct cash semantics;
+- BUY / SELL independence;
+- reviewed BUY fail-closed;
+- reviewed SELL fail-closed;
+- mandatory SELL independence;
+- genuine Safety / cash / data integrity fail-closed;
+- no Historical-only workaround;
+- real orchestration authority order;
+- no duplicate business authority redecision.
+
+Phase31 anti-leakage and anti-overfit requirements:
+
+- future information prohibited;
+- Historical outcome prohibited as Runtime input;
+- test result prohibited as Strategy input;
+- Paper Ledger / selected / bought / fill outcome prohibited as training
+  feature;
+- control group required for BUY-time predictor evaluation;
+- no threshold selection from one short Historical window;
+- no fixed investment or exposure target introduced merely to improve
+  Historical return.
+
+Phase31 runtime defect rule:
+
+If a Runtime, authority, data, temporal, or Safety defect appears during
+Phase31 validation, do not interpret it as Strategy failure and do not change
+Strategy to bypass it. Classify and repair the defect separately, then resume
+performance research after integrity is restored.
+
+Phase31 role separation:
+
+- User runs long Historical and fresh validations.
+- Codex performs READ-ONLY audits, implementation, and short compile/unit/
+  regression checks, and may supply commands for long runs, but does not
+  execute long Historical.
+- ChatGPT coordinates phases, prioritizes analysis, creates Codex instructions,
+  and governs phase transitions.
+
+Command rule:
+
+Do not append `--json` to CLI commands unless the user explicitly asks for JSON
+output.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_final_summary_and_phase31_handoff.md
+docs/phase_reports/phase30_to_phase31_chatgpt_handoff.md
+reports/phase_reports/phase30_final_summary_and_phase31_handoff.json
+reports/phase_reports/phase30_closure/phase30_major_repairs_and_contracts.json
+docs/02_architecture/runtime_architecture_v2.md
+docs/02_architecture/portfolio_construction_and_position_sizing_contract.md
+```
+
+Recommended next task:
+
+```text
+Phase31-A - User-Operated Fresh 100BD Validation
+```
+
+## Phase30-AK9R30 - Canonical Quantity / Cash Authority Consumer Contract Audit and Cleanup
+
+Phase30-AK9R30 completed the read-only-first consumer contract audit for
+canonical quantity and cash authority after the AK9R19/AK9R21/AK9R27/AK9R28/AK9R29
+repair chain.
+
+Primary judgment:
+
+```text
+CANONICAL_QUANTITY_CASH_CONSUMER_CONTRACT_AUDITED_NO_FOCUSED_IMPLEMENTATION_REQUIRED
+QUANTITY_AUTHORITY_LINEAGE_COMPLETE = YES
+VALID_QUANTITY_CHAIN_EQUALITY_ENFORCED = YES
+CASH_SEMANTIC_INVENTORY_COMPLETE = YES
+LEGITIMATE_MULTI_LAYER_CASH_VALIDATION_PRESERVED = YES
+SELECTED_POSITION_AMOUNT_SECOND_AUTHORITY_COUNT = 0
+QUANTITY_CASH_SHADOW_CASE_COUNT = 50
+QUANTITY_CASH_SHADOW_UNEXPLAINED_MISMATCH_COUNT = 0
+POST_REPAIR_QUANTITY_REDECISION_LOCATION_COUNT = 0
+POST_REPAIR_CASH_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+```
+
+No Production code was changed. No Strategy, budget, cash, cap, threshold,
+Safety, broker, fresh Historical, replay, resume, or long Historical action was
+performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r30_canonical_quantity_cash_authority_consumer_contract_cleanup.md
+reports/phase_reports/phase30_ak9r30_canonical_quantity_cash_authority_consumer_contract_cleanup.json
+reports/phase_reports/phase30_ak9r30/quantity_authority_lineage.json
+reports/phase_reports/phase30_ak9r30/cash_authority_ownership_matrix.json
+reports/phase_reports/phase30_ak9r30/quantity_cash_consumer_matrix.json
+reports/phase_reports/phase30_ak9r30/invalid_cash_authority_duplication_inventory.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R31 - Real-Orchestration Conformance Coverage / Final Architecture Gate
+```
+
+## Phase30-AK9R31 - Real-Orchestration Conformance Coverage / Final Architecture Gate
+
+Phase30-AK9R31 completed the final READ-ONLY architecture gate for the AK9R26
+conformance gap family. It verified current-code real orchestration, authority
+producer-before-consumer edges, same-day and next-day full-chain sentinels,
+reviewed BUY/SELL fail-closed behavior, cash/safety/data integrity boundaries,
+quantity/cash chain separation, and remaining latent gap closure.
+
+Primary judgment:
+
+```text
+FINAL_RUNTIME_AUTHORITY_ARCHITECTURE_CONFORMANT_FRESH_VALIDATION_READY
+REAL_RUNTIME_ORDER_CONFIRMED_FROM_CODE = YES
+REAL_ORCHESTRATION_AUTHORITY_EDGE_COUNT = 18
+PRODUCER_BEFORE_CONSUMER_VIOLATION_COUNT = 0
+MISSING_AUTHORITY_HANDOFF_COUNT = 0
+LEGACY_FALLBACK_OVERRIDE_COUNT = 0
+REMAINING_LATENT_CRITICAL_COUNT = 0
+REMAINING_LATENT_HIGH_COUNT = 0
+FINAL_RUNTIME_AUTHORITY_ARCHITECTURE_STATUS = CONFORMANT
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FRESH_VALIDATION_READY = YES
+```
+
+No implementation, refactor, schema change, Strategy/Candidate/PM/PC/PS/Cash
+policy/Safety change, fresh Historical, replay, resume, or long Historical was
+performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r31_real_orchestration_conformance_final_architecture_gate.md
+reports/phase_reports/phase30_ak9r31_real_orchestration_conformance_final_architecture_gate.json
+reports/phase_reports/phase30_ak9r31/real_orchestration_authority_edges.json
+reports/phase_reports/phase30_ak9r31/runtime_artifact_contract_matrix.json
+reports/phase_reports/phase30_ak9r31/latent_gap_closure_matrix.json
+reports/phase_reports/phase30_ak9r31/final_conformance_summary.json
+```
+
+Recommended validation sequence:
+
+```text
+1. User-operated fresh 20-25BD crossing the previously failing 2022-09-07 boundary
+2. If PASS, user-operated fresh 100BD
+3. If PASS, continue long validation
+```
+
+## Phase30-AK9R28 - Historical Safety Temporal Authority Consumer Centralization
+
+Phase30-AK9R28 repaired the remaining AK9R26 High gap for Historical Safety
+temporal authority consumer duplication after AK9R27 centralized Pending
+review-scope semantics.
+
+Primary judgment:
+
+```text
+HISTORICAL_SAFETY_TEMPORAL_AUTHORITY_CONSUMER_CENTRALIZATION_REPAIRED
+CENTRAL_HISTORICAL_SAFETY_TEMPORAL_AUTHORITY_IMPLEMENTED = YES
+AK9R27_PENDING_SCOPE_AUTHORITY_CONSUMED = YES
+PENDING_REVIEW_SCOPE_RECOMPUTED_IN_TEMPORAL_AUTHORITY = NO
+PRE_REPAIR_DUPLICATE_TEMPORAL_DECISION_COUNT = 6
+REMOVED_TEMPORAL_DUPLICATE_LOGIC_COUNT = 6
+POST_REPAIR_TEMPORAL_AUTHORITY_CONFORMANCE_GAP_COUNT = 0
+POST_REPAIR_DUPLICATE_TEMPORAL_DECISION_COUNT = 0
+POST_REPAIR_PENDING_SAFETY_SCOPE_EXCEPTION_COUNT = 0
+```
+
+Implemented:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/historical_support/safety_temporal_authority.py
+```
+
+`runtime_v2.data_readiness` now consumes the central Historical Safety temporal
+authority while preserving legitimate stage-specific checks for data readiness,
+Submit, Execution, Current Valuation, and Pending lifecycle.  The central
+authority consumes AK9R27 `PendingReviewScopeAuthority` and does not own cash,
+quantity, Strategy cap, Position Sizing, PM intent, valuation, or broker
+feasibility.
+
+Preservation:
+
+```text
+REVIEWED_BUY_ACCIDENTAL_SUBMISSION_COUNT = 0
+GENUINE_HISTORICAL_SAFETY_FAILURE_FAIL_CLOSED = YES
+GENUINE_TEMPORAL_CORRUPTION_FAIL_CLOSED = YES
+REVIEWED_SELL_FAIL_CLOSED_PRESERVED = YES
+HISTORICAL_ONLY_TEMPORAL_PATH_CREATED = NO
+PRODUCTION_DEMO_HISTORICAL_TEMPORAL_CONTRACT_COMMON = YES
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r28_historical_safety_temporal_authority_consumer_centralization.md
+reports/phase_reports/phase30_ak9r28_historical_safety_temporal_authority_consumer_centralization.json
+reports/phase_reports/phase30_ak9r28/temporal_consumer_migration_inventory.json
+reports/phase_reports/phase30_ak9r28/removed_temporal_duplicate_logic_inventory.json
+reports/phase_reports/phase30_ak9r28/post_repair_temporal_conformance.json
+```
+
+Recommended next task:
+
+```text
+Runtime System Guard Taxonomy / Review Reason Normalization
+```
+
+## Phase30-AK9R29 - Runtime System Guard Taxonomy / Review Reason Normalization
+
+Phase30-AK9R29 implemented a Production-common typed Runtime guard taxonomy for
+`REVIEW_REQUIRED` evidence, separating normal market/execution/data review from
+internal system consistency defects.
+
+Primary judgment:
+
+```text
+RUNTIME_SYSTEM_GUARD_TAXONOMY_AND_REVIEW_REASON_NORMALIZATION_REPAIRED
+CANONICAL_RUNTIME_GUARD_TAXONOMY_IMPLEMENTED = YES
+TYPED_REVIEW_RESULT_IMPLEMENTED = YES
+ACTIVE_REVIEW_REQUIRED_PRODUCER_COUNT = 24
+NORMALIZED_REVIEW_PRODUCER_COUNT = 24
+UNCLASSIFIED_REVIEW_PRODUCER_COUNT = 0
+POST_REPAIR_SYSTEM_GUARD_MISCLASSIFIED_AS_NORMAL_SAFETY_COUNT = 0
+POST_REPAIR_NONCANONICAL_BATCH_ESCALATION_COUNT = 0
+POST_REPAIR_REVIEW_SCOPE_CONFORMANCE_GAP_COUNT = 0
+```
+
+Implemented:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/guard_taxonomy.py
+tests/runtime_v2/test_phase30_ak9r29_runtime_guard_taxonomy.py
+```
+
+Data Readiness now emits typed guard metadata alongside diagnostic
+`review_reasons`:
+
+```text
+review_guard_results
+review_guard_summary
+review_guard_classes
+review_guard_codes
+system_defect_guard_count
+batch_blocking_review_guard_count
+```
+
+Preservation:
+
+```text
+AK9R27_PENDING_SCOPE_AUTHORITY_CONSUMED = YES
+PENDING_SCOPE_RECOMPUTED_BY_GUARD_TAXONOMY = NO
+AK9R28_TEMPORAL_AUTHORITY_CONSUMED = YES
+TEMPORAL_SEMANTICS_RECOMPUTED_BY_GUARD_TAXONOMY = NO
+GUARD_TAXONOMY_OWNS_CASH_ARITHMETIC = NO
+GUARD_TAXONOMY_OWNS_QUANTITY = NO
+STRATEGY_CHANGED = NO
+CANDIDATE_CHANGED = NO
+PM_CHANGED = NO
+PC_CHANGED = NO
+PS_CHANGED = NO
+CAP_VALUES_CHANGED = NO
+CASH_POLICY_CHANGED = NO
+SAFETY_POLICY_CHANGED = NO
+REVIEW_THRESHOLD_CHANGED = NO
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r29_runtime_system_guard_taxonomy_review_reason_normalization.md
+reports/phase_reports/phase30_ak9r29_runtime_system_guard_taxonomy_review_reason_normalization.json
+reports/phase_reports/phase30_ak9r29/review_producer_normalization_matrix.json
+reports/phase_reports/phase30_ak9r29/removed_review_semantic_logic_inventory.json
+reports/phase_reports/phase30_ak9r29/post_repair_guard_taxonomy_conformance.json
+```
+
+Recommended next task:
+
+```text
+Canonical Quantity / Cash Authority consumer contract cleanup
+```
+
+## Phase30-AK9R26 - Runtime Authority Ownership / Duplicate Guard / Consumer Conformance Audit
+
+Phase30-AK9R26 performed a READ-ONLY cross-runtime authority ownership and
+consumer-conformance audit after the AK9R1-AK9R25 repair chain.
+
+Primary judgment:
+
+```text
+ARCHITECTURE_STATUS = PARTIALLY_CONFORMANT_WITH_SYSTEMIC_DUPLICATION
+AUTHORITY_OWNERSHIP_MATRIX_COMPLETE = YES
+DUPLICATE_DECISION_INVALID_COUNT = 6
+DEFENSIVE_VALIDATION_VALID_COUNT = 5
+DUPLICATE_CHECK_CONDITIONAL_COUNT = 3
+DATA_READINESS_RESPONSIBILITY_CONFORMANT = NO
+PENDING_RESPONSIBILITY_CONFORMANT = NO
+SUBMIT_RESPONSIBILITY_CONFORMANT = NO
+LATENT_CONFORMANCE_GAP_COUNT = 10
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+FRESH_VALIDATION_READY = NO
+```
+
+The audit found that canonical producers mostly exist, but downstream consumers
+still duplicate authority semantics, especially `BUY_ITEM_SCOPED_REVIEW`
+executable-subset interpretation across Data Readiness, Pending consume, Submit
+pipeline, and Submit guard.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r26_runtime_authority_ownership_duplicate_guard_consumer_conformance_audit.md
+reports/phase_reports/phase30_ak9r26_runtime_authority_ownership_duplicate_guard_consumer_conformance_audit.json
+reports/phase_reports/phase30_ak9r26/authority_ownership_matrix.json
+reports/phase_reports/phase30_ak9r26/authority_consumer_conformance_matrix.json
+reports/phase_reports/phase30_ak9r26/duplicate_decision_inventory.json
+reports/phase_reports/phase30_ak9r26/review_required_producer_matrix.json
+reports/phase_reports/phase30_ak9r26/safety_guard_taxonomy.json
+reports/phase_reports/phase30_ak9r26/buy_sell_cross_dependency_inventory.json
+reports/phase_reports/phase30_ak9r26/latent_conformance_gap_inventory.json
+reports/phase_reports/phase30_ak9r26/repair_inventory.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R26
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R27 - Central Pending Review Scope Authority Contract Repair
+```
+
+## Phase30-AK9R27 - Central Pending Review Scope Authority Contract Repair
+
+Phase30-AK9R27 implemented the Production-common canonical Pending Review Scope
+Authority Contract and migrated Pending-scope consumers off duplicated local
+business semantics.
+
+Primary judgment:
+
+```text
+CENTRAL_PENDING_REVIEW_SCOPE_AUTHORITY_IMPLEMENTED = YES
+CENTRAL_CONTRACT_FIELD_COVERAGE_COMPLETE = YES
+CENTRAL_CONTRACT_SCOPE_NARROW = YES
+CENTRAL_CONTRACT_OWNS_CASH_AUTHORITY = NO
+CENTRAL_CONTRACT_OWNS_QUANTITY_AUTHORITY = NO
+CENTRAL_CONTRACT_OWNS_STRATEGY_CAP = NO
+CENTRAL_CONTRACT_OWNS_SAFETY_HARD_CAP = NO
+CENTRAL_CONTRACT_OWNS_BROKER_FEASIBILITY = NO
+CENTRAL_CONTRACT_OWNS_VALUATION = NO
+PENDING_CONSUME_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+SUBMIT_PIPELINE_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+SUBMIT_GUARD_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+PENDING_COMPOSITION_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+SELL_PLANNING_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+SUBMIT_DATA_READINESS_MIGRATED_TO_CENTRAL_AUTHORITY = YES
+REVIEWED_ITEMS_MUST_NOT_SUBMIT_INVARIANT_ACTION_EFFECTIVE = YES
+REVIEWED_BUY_ACCIDENTAL_SUBMISSION_COUNT = 0
+DEAD_DUPLICATE_SEMANTIC_LOGIC_REMOVED = YES
+LEGACY_LOCAL_PENDING_SCOPE_INTERPRETATION_COUNT_AFTER_REPAIR = 0
+POST_REPAIR_PENDING_SCOPE_DUPLICATE_DECISION_COUNT = 0
+POST_REPAIR_REVIEW_SCOPE_CONFORMANCE_GAP_COUNT = 0
+POST_REPAIR_NONCANONICAL_BATCH_ESCALATION_COUNT = 0
+POST_REPAIR_ITEM_SET_DERIVATION_GAP_COUNT = 0
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FRESH_VALIDATION_READY = NO
+```
+
+Implemented:
+
+```text
+src/ai_fund_lab_v2/runtime_v2/pending/review_scope_authority.py
+tests/runtime_v2/test_phase30_ak9r27_pending_review_scope_authority.py
+```
+
+Migrated consumers:
+
+```text
+Pending consume
+Pending composition / Sell Planning public adapter
+Submit pipeline
+Submit guard
+Data Readiness / Submit Data Readiness adapter
+Historical Safety pending-scope adapter
+Execution no-submission adapter
+Current Valuation / next-day lifecycle residual reviewed BUY adapter
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r27_central_pending_review_scope_authority_contract_repair.md
+reports/phase_reports/phase30_ak9r27_central_pending_review_scope_authority_contract_repair.json
+reports/phase_reports/phase30_ak9r27/removed_duplicate_logic_inventory.json
+reports/phase_reports/phase30_ak9r27/post_repair_pending_scope_conformance.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R28 - Historical Safety Temporal Authority Consumer Centralization
+```
+
+## Phase30-AK9R27A - Pending Review Scope Contract / Consumer Interface Compatibility Audit
+
+Phase30-AK9R27A performed a READ-ONLY compatibility audit before centralizing
+the `BUY_ITEM_SCOPED_REVIEW` / executable subset / item-vs-batch contract.
+
+Primary judgment:
+
+```text
+CENTRAL_CONTRACT_INTERFACE_COMPATIBLE_WITH_ADAPTERS_AND_SHADOW_FIRST_MIGRATION
+CURRENT_PENDING_FIELD_INVENTORY_COMPLETE = YES
+CONSUMER_INTERFACE_MATRIX_COMPLETE = YES
+DUPLICATE_SEMANTIC_FIELD_DEPENDENCY_COUNT = 12
+LEGACY_COMPATIBILITY_FIELD_DEPENDENCY_COUNT = 5
+CONTRACT_FIELD_COUNT = 22
+CONSUMER_FULL_COVERAGE_COUNT = 8
+CONSUMER_PARTIAL_COVERAGE_COUNT = 4
+CONSUMER_INSUFFICIENT_COVERAGE_COUNT = 0
+SAFE_DIRECT_REPLACEMENT_COUNT = 4
+ADAPTER_REQUIRED_COUNT = 4
+SCHEMA_PAYLOAD_BLOCKER_COUNT = 0
+FRAGILE_REASON_STRING_COUPLING_COUNT = 9
+SIDE_COMBINATION_UNREPRESENTABLE_COUNT = 0
+POST_SUBMIT_CONSUMER_INTERFACE_COMPLETE = YES
+SHADOW_COMPATIBILITY_CASE_COUNT = 8
+SHADOW_COMPATIBILITY_MATCH_COUNT = 7
+SHADOW_COMPATIBILITY_MISMATCH_COUNT = 1
+CENTRAL_CONTRACT_IMPLEMENTATION_READY = YES
+IMPLEMENTATION_REPAIR_REQUIRED = NO
+```
+
+The proposed central contract is ready only with a shadow-first migration and
+thin adapters for Data Readiness, Historical Safety, Execution, and Current
+Valuation / next-day lifecycle. It must not become a cash, quantity, cap,
+broker, or valuation authority.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r27a_pending_review_scope_contract_consumer_interface_compatibility_audit.md
+reports/phase_reports/phase30_ak9r27a_pending_review_scope_contract_consumer_interface_compatibility_audit.json
+reports/phase_reports/phase30_ak9r27a/current_pending_field_inventory.json
+reports/phase_reports/phase30_ak9r27a/consumer_interface_matrix.json
+reports/phase_reports/phase30_ak9r27a/field_dependency_classification.json
+reports/phase_reports/phase30_ak9r27a/proposed_pending_review_scope_contract.json
+reports/phase_reports/phase30_ak9r27a/contract_consumer_coverage_matrix.json
+reports/phase_reports/phase30_ak9r27a/local_semantic_migration_inventory.json
+reports/phase_reports/phase30_ak9r27a/reason_code_consumer_dependency_matrix.json
+reports/phase_reports/phase30_ak9r27a/item_set_derivation_matrix.json
+reports/phase_reports/phase30_ak9r27a/temporal_field_ownership_matrix.json
+reports/phase_reports/phase30_ak9r27a/real_runtime_payload_matrix.json
+reports/phase_reports/phase30_ak9r27a/shadow_compatibility_results.json
+reports/phase_reports/phase30_ak9r27a/consumer_adapter_inventory.json
+reports/phase_reports/phase30_ak9r27a/migration_risk_inventory.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R27A
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R27 - Central Pending Review Scope Authority Contract Repair
+```
+
+## Phase30-AK9R25 - Submit Data Readiness BUY_ITEM_SCOPED_REVIEW Temporal Authority Repair
+
+Phase30-AK9R25 repaired the Submit-side authority gap exposed by AK9R24.
+Same-day `BUY_ITEM_SCOPED_REVIEW` pending plans with approved executable
+BUY/SELL items and reviewed BUY-only items are no longer treated as a
+batch-level Submit Data Readiness / Historical Safety failure.
+
+Primary judgment:
+
+```text
+SUBMIT_DATA_READINESS_BUY_ITEM_SCOPED_REVIEW_TEMPORAL_AUTHORITY_REPAIRED
+BUY_ITEM_SCOPED_REVIEW_IS_NOT_BATCH_FAILURE = YES
+SUBMIT_DATA_READINESS_ITEM_SCOPED_REVIEW_SUPPORTED = YES
+APPROVED_BUY_NOT_BLOCKED_BY_REVIEWED_BUY = YES
+APPROVED_SELL_NOT_BLOCKED_BY_REVIEWED_BUY = YES
+REVIEWED_BUY_REMAINS_FAIL_CLOSED = YES
+REVIEWED_SELL_FAIL_CLOSED_PRESERVED = YES
+TRUE_BATCH_FAILURE_FAIL_CLOSED_PRESERVED = YES
+AK9R1_ITEM_SCOPED_PARTIAL_SUBMISSION_ACTION_EFFECTIVE = YES
+AK9R23_SELL_PLANNING_REPAIR_PRESERVED = YES
+REAL_SUBMIT_ORCHESTRATION_SENTINEL = YES
+ORCHESTRATION_FIDELITY = FULL
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+No Strategy, Candidate, PM, PC, PS, cap, threshold, Safety weakening, BUY
+auto-approval, BUY auto-submit, reviewed BUY bypass, or Historical run was
+performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r25_submit_data_readiness_buy_item_scoped_review_temporal_authority_repair.md
+reports/phase_reports/phase30_ak9r25_submit_data_readiness_buy_item_scoped_review_temporal_authority_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R26 - User-Operated Fresh 20BD Validation
+```
+
+## Phase30-AK9R24 - Post-AK9R23 2022-09-07 Submit HALT Root-Cause / Cross-Repair Audit
+
+Phase30-AK9R24 audited the fresh run
+`runtime-test-historical-extended-smoke-20260817T131147580500Z`, which halted at
+`2022-09-07:submit` with Runtime CLI exit code 20.
+
+Primary judgment:
+
+```text
+SUBMIT_DATA_READINESS_BUY_ITEM_SCOPED_REVIEW_TEMPORAL_AUTHORITY_GAP_CONFIRMED
+AK9R23_FRESH_SELL_PLANNING_ACTION_EFFECTIVE = YES
+SELL_PLANNING_STATUS_2022_09_07 = PASS
+HALT_DIRECT_PRODUCER = submit:data_readiness
+HALT_DIRECT_REASON = historical_safety_temporal_authority_missing
+FIRST_NON_PASS_LAYER = submit_data_readiness.safety.pending_safety_authority
+CASH_FAILURE_CLASSIFICATION = NOT_CASH_RELATED
+AK9R21_PC_DISCRETE_OVERSHOOT_REVIEW_RECURRENCE = NO
+SELECTED_POSITION_AMOUNT_DOUBLE_AUTHORITY_RECURRENCE = NO
+AK9R24_ROOT_CAUSE_CLASSIFICATION = PRE_EXISTING_SUBMIT_DEFECT_NEWLY_EXPOSED
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+Sell Planning now passes and preserves the approved BUY `67860`, approved SELL
+`43760`, and reviewed BUY `71380` in a same-day
+`BUY_ITEM_SCOPED_REVIEW_SELL_CONTINUATION_COMPOSITE_PENDING_PLAN`. Submit then
+halts before item-level Submit Guard because submit-scope Historical Safety
+temporal authority still rejects the `REVIEW_REQUIRED` pending lifecycle state.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r24_post_ak9r23_2022_09_07_submit_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak9r24_post_ak9r23_2022_09_07_submit_halt_root_cause_audit.json
+reports/phase_reports/phase30_ak9r24/submit_halt_evidence.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R24
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R25 - Submit Data Readiness BUY_ITEM_SCOPED_REVIEW Temporal Authority Focused Repair
+```
+
+## Phase30-AK9R23 - Sell Planning Historical Safety Temporal Authority for BUY_ITEM_SCOPED_REVIEW Pending Focused Repair
+
+Phase30-AK9R23 repaired the AK9R22 Sell Planning halt class where a valid
+same-day `BUY_ITEM_SCOPED_REVIEW` pending with `sell_continuation_allowed=true`
+incorrectly invalidated Sell Planning Historical Safety temporal authority.
+
+Primary judgment:
+
+```text
+SELL_PLANNING_HISTORICAL_SAFETY_TEMPORAL_AUTHORITY_REPAIRED_FOR_VALID_BUY_ITEM_SCOPED_REVIEW_PENDING
+BUY_ITEM_SCOPED_REVIEW_REMAINS_FAIL_CLOSED_FOR_BUY = YES
+SELL_PLANNING_CONTINUES_WITH_VALID_BUY_ITEM_SCOPED_REVIEW = YES
+REVIEWED_SELL_FAIL_CLOSED_PRESERVED = YES
+REVIEWED_BUY_REMAINS_REVIEW_ONLY = YES
+REAL_SELL_PLANNING_ORCHESTRATION_SENTINEL = YES
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r23_sell_planning_historical_safety_temporal_authority_buy_item_scoped_review_repair.md
+reports/phase_reports/phase30_ak9r23_sell_planning_historical_safety_temporal_authority_buy_item_scoped_review_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R24 - User-Operated Fresh 20BD Validation
+```
+
+## Phase30-AK9R21 - Submit Guard PC Discrete-Lot Overshoot Authority Consumption Repair
+
+Phase30-AK9R21 repaired the Submit-side consumption of canonical PC
+discrete-lot strategy soft-cap overshoot authority. The repair is limited to
+Submit feasibility / Submit guard authority handoff: valid PC discrete
+executable quantity, already consumed by PS and propagated by Runtime/Pending,
+is no longer re-reviewed solely because a canonical `lot_overshoot_reason`
+exists.
+
+Primary judgment:
+
+```text
+SUBMIT_GUARD_PC_DISCRETE_LOT_OVERSHOOT_AUTHORITY_CONSUMPTION_REPAIRED = YES
+AK9R20_SYSTEM_REVIEW_EQUIVALENT_COUNT = 44
+AK9R20_SYSTEM_REVIEW_EQUIVALENT_PASS_COUNT_AFTER_REPAIR = 44
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+Preserved:
+
+```text
+SUBMIT_REMAINS_EXECUTION_SAFETY_VERIFIER = YES
+SUBMIT_DOES_NOT_REDECIDE_CAPITAL_ALLOCATION = YES
+SAFETY_HARD_CAP_FAIL_CLOSED_PRESERVED = YES
+CASH_FEASIBILITY_FAIL_CLOSED_PRESERVED = YES
+MALFORMED_AUTHORITY_FAIL_CLOSED_PRESERVED = YES
+SELECTED_POSITION_AMOUNT_FALLBACK_GUARD_PRESERVED = YES
+```
+
+No Candidate, PM, PC allocation, PS sizing, Strategy cap value, Safety hard-cap
+value, cash policy, forced investment, exposure target, fresh Historical, or
+long Historical change was performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r21_submit_guard_pc_discrete_lot_overshoot_authority_consumption_repair.md
+reports/phase_reports/phase30_ak9r21_submit_guard_pc_discrete_lot_overshoot_authority_consumption_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R22 - User-Operated Fresh 20BD Capital Deployment Validation
+```
+
+## Phase30-AK9R22 - Post-AK9R21 Fresh 19BD Capital Deployment and Sell-Planning HALT Audit
+
+Phase30-AK9R22 audited user-operated fresh run
+`runtime-test-historical-extended-smoke-20260817T115935581273Z`, which
+completed 19 business days through 2022-09-06 and halted at
+`2022-09-07:sell_planning`.
+
+Primary judgments:
+
+```text
+AK9R21_FRESH_ACTION_EFFECTIVE = YES
+AK9R21_EQUIVALENT_SYSTEM_REVIEW_RECURRENCE = NO
+CAPITAL_DEPLOYMENT_RECOVERY_AFTER_AK9R21 = YES
+CURRENT_LOW_EXPOSURE_PRIMARY_CLASS = RESOLVED_BY_AK9R21
+```
+
+Completed-window deployment:
+
+```text
+SUBMIT_PASS_BUY_NOTIONAL = 2,999,790
+FILLED_BUY_NOTIONAL = 2,940,350
+AVERAGE_EXPOSURE = 79.80%
+FINAL_EXPOSURE = 84.97%
+FINAL_EQUITY = 1,054,530
+```
+
+The AK9R20 Submit review reasons
+`pc_discrete_quantity_authority_lot_overshoot_unresolved` and
+`pc_discrete_quantity_authority_strategy_cap_not_preserved` had zero
+completed-window recurrence.
+
+The 2022-09-07 Sell Planning HALT root cause is:
+
+```text
+HALT_DIRECT_PRODUCER = sell_planning:data_readiness_authority
+HALT_DIRECT_REASON = historical_safety_temporal_authority_missing
+FIRST_NON_PASS_LAYER = data_readiness.historical_safety_temporal_authority
+SELL_PLANNING_HALT_RECURRENCE_CLASSIFICATION = RELATED_BUT_DISTINCT
+AK9R22_SELL_PLANNING_ROOT_CAUSE_CLASSIFICATION =
+  HISTORICAL_SAFETY_TEMPORAL_AUTHORITY_MISSING_WITH_BUY_ITEM_SCOPED_PENDING_REVIEW
+```
+
+No implementation, replay, resume, fresh run, target-run mutation, Strategy
+change, Candidate change, PM/PC/PS change, cap change, Safety weakening,
+Pending mutation, or Historical-only workaround was performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r22_post_ak9r21_fresh_19bd_capital_deployment_and_sell_planning_halt_audit.md
+reports/phase_reports/phase30_ak9r22_post_ak9r21_fresh_19bd_capital_deployment_and_sell_planning_halt_audit.json
+reports/phase_reports/phase30_ak9r22/post_ak9r21_capital_deployment_comparison.json
+reports/phase_reports/phase30_ak9r22/sell_planning_halt_evidence.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R23 - Sell Planning Historical Safety Temporal Authority for BUY_ITEM_SCOPED_REVIEW Pending Focused Repair
+```
+
+## Phase30-AK9R19 - Final-PC Discrete Executable Remaining-Budget Comparison Repair
+
+Phase30-AK9R19 repaired the Final-PC remaining-budget authority mismatch
+confirmed by AK9R18.
+
+Primary judgment:
+
+```text
+FINAL_PC_DISCRETE_EXECUTABLE_REMAINING_BUDGET_COMPARISON_REPAIRED = YES
+AK9R18_60310_EQUIVALENT_PASS = YES
+SYSTEM_CAUSED_CASE_COUNT_AFTER_REPAIR = 0
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FUTURE_INFORMATION_USED = FALSE
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Repair:
+
+```text
+Final-PC compares and deducts remaining budget against the existing canonical
+discrete executable lot requirement when that authority is complete and
+coherent.
+```
+
+Preserved:
+
+```text
+draft continuous allocation evidence
+priority ordering
+capital conservation
+Strategy cap authority
+Safety hard-cap authority
+genuine lot infeasibility
+residual recycling
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r19_final_pc_discrete_executable_remaining_budget_comparison_repair.md
+reports/phase_reports/phase30_ak9r19_final_pc_discrete_executable_remaining_budget_comparison_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R20 - User-Operated Fresh Validation / Remaining-Budget Deployment Confirmation
+```
+
+## Phase30-AK9R20 - Final-PC Allocated Notional to Submitted/Filled Notional Reconciliation Audit
+
+Phase30-AK9R20 audited the completed days of
+`runtime-test-historical-extended-smoke-20260817T094656753507Z` from
+2022-08-10 through 2022-08-23.
+
+Primary judgment:
+
+```text
+SYSTEM_CAUSED_FINAL_PC_TO_FILL_LOSS_MATERIAL = YES
+FIRST_MATERIAL_NOTIONAL_LOSS_LAYER = PENDING_TO_SUBMIT_PASS_NOTIONAL_LOSS
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Material finding:
+
+```text
+44 BUY items / 4,490,060 JPY were preserved through Final-PC, PS, Runtime
+Planning, and Pending, but failed Submit pass as item-scoped REVIEW_REQUIRED
+with reason pc_discrete_quantity_authority_lot_overshoot_unresolved.
+```
+
+Preserved behavior:
+
+```text
+BUY_SELL_INDEPENDENCE_FRESH_ACTION_EFFECTIVE = YES
+FILL_TO_CURRENT_POSITION_RECONCILIATION = PASS
+FILL_TO_CASH_RECONCILIATION = PASS
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r20_final_pc_allocated_notional_to_submitted_filled_notional_reconciliation_audit.md
+reports/phase_reports/phase30_ak9r20_final_pc_allocated_notional_to_submitted_filled_notional_reconciliation_audit.json
+reports/phase_reports/phase30_ak9r20/daily_capital_funnel.json
+reports/phase_reports/phase30_ak9r20/final_pc_to_fill_loss_items.json
+reports/phase_reports/phase30_ak9r20/previous_vs_current_execution_comparison.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R21 - Submit Guard PC Discrete-Lot Overshoot Authority Consumption Focused Repair
+```
+
+## Phase30-AK9R16 - PC Discrete-Lot Strategy Soft-Cap Overshoot Authority Consumption in Position Sizing
+
+Phase30-AK9R16 repaired the AK9R15 `POSITION_SIZING_AUTHORITY_GAP` without
+changing Strategy, Portfolio Construction, Candidate, caps, cash, Submit, or
+Runtime. Position Sizing now consumes the canonical PC discrete executable
+quantity authority for `SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION`
+soft-cap overshoots only when the PC authority is PASS, PS consumption is
+explicitly required, quantity evidence is consistent, BUY_ADD economics pass,
+and the post-trade target remains within Safety hard cap.
+
+Primary judgment:
+
+```text
+PC_DISCRETE_QUANTITY_AUTHORITY_REMAINS_CANONICAL = YES
+PC_SOFT_CAP_DISCRETE_OVERSHOOT_AUTHORITY_RECOGNIZED = YES
+PS_CONSUMES_PC_AUTHORIZED_DISCRETE_QUANTITY = YES
+PS_DUPLICATE_SOFT_CAP_REJECTION_REMOVED = YES
+STRATEGY_SOFT_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_FAIL_CLOSED_PRESERVED = YES
+UNAUTHORIZED_SOFT_CAP_OVERSHOOT_FAIL_CLOSED_PRESERVED = YES
+AK9R15_94320_BUY_ADD_EQUIVALENT_PASS = YES
+```
+
+Fresh / long Historical were not run by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r16_pc_discrete_lot_strategy_soft_cap_overshoot_authority_consumption_in_position_sizing.md
+reports/phase_reports/phase30_ak9r16_pc_discrete_lot_strategy_soft_cap_overshoot_authority_consumption_in_position_sizing.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R17 - User-Operated Fresh 20BD End-to-End Validation
+```
+
+## Phase30-AK9R17 - PC-to-PS Capital Conversion Loss Legitimacy Audit
+
+Phase30-AK9R17 read-only audited the completed-window PC draft-positive to PS
+non-positive conversion losses from
+`runtime-test-historical-extended-smoke-20260817T094656753507Z`.
+
+Primary judgment:
+
+```text
+PC_TO_PS_CAPITAL_CONVERSION_PRIMARY_CLASS =
+  MULTI_CAUSAL_LEGITIMATE_SAFETY_AND_DISCRETE_LOT_BUDGET_CONSTRAINTS
+
+REGRESSION_CONFIRMED = NO
+VALID_PC_BUY_AUTHORITY_UNNECESSARILY_DROPPED_BY_PS = NO
+VALID_PC_ADD_AUTHORITY_UNNECESSARILY_DROPPED_BY_PS = NO
+SYSTEM_CAUSED_PC_PS_LOSS_MATERIAL_TO_LOW_EXPOSURE = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+IMPLEMENTATION_REPAIR_REQUIRED = NO
+```
+
+Recomputed population:
+
+```text
+PC_POSITIVE_BUY_NEW_COUNT = 121
+PS_POSITIVE_BUY_NEW_COUNT = 73
+PC_POSITIVE_BUY_NEW_TO_PS_NON_POSITIVE_COUNT = 48
+PC_POSITIVE_ADD_COUNT = 3
+PS_POSITIVE_ADD_COUNT = 3
+PC_POSITIVE_ADD_TO_PS_NON_POSITIVE_COUNT = 0
+```
+
+The 48 losses are all BUY_NEW rows where final Portfolio Construction set the
+draft-positive row to zero before Position Sizing. No loss row had valid
+canonical PC executable quantity authority requiring PS consumption. AK9R16
+equivalent loss count was zero.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r17_pc_to_ps_capital_conversion_loss_legitimacy_audit.md
+reports/phase_reports/phase30_ak9r17_pc_to_ps_capital_conversion_loss_legitimacy_audit.json
+reports/phase_reports/phase30_ak9r17/pc_to_ps_loss_items.json
+reports/phase_reports/phase30_ak9r17/ps_reason_legitimacy_matrix.json
+```
+
+Recommended next task:
+
+```text
+Return to user-operated fresh 20BD validation.
+```
+
+## Phase30-AK9R18 - Final PC Remaining-Budget / Capital Deployment Legitimacy Audit
+
+Phase30-AK9R18 read-only audited whether the final-PC
+`minimum_lot_exceeds_remaining_budget` behavior from the completed window was
+legitimate.
+
+Primary judgment:
+
+```text
+CURRENT_LOW_EXPOSURE_PRIMARY_CLASS = MULTI_CAUSAL
+CAPITAL_DEPLOYMENT_REGRESSION_CONFIRMED = PARTIAL
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES_MINOR_FINAL_PC_BUDGET_AUTHORITY_MISMATCH
+IMPLEMENTATION_REPAIR_REQUIRED = YES_FOCUSED_LOW_PRIORITY
+```
+
+Remaining-budget case distribution:
+
+```text
+REMAINING_BUDGET_CASE_CLASS_DISTRIBUTION = {
+  LEGITIMATE_PRIORITY_BUDGET_EXHAUSTION: 21,
+  SYSTEM_CAUSED_BUDGET_AUTHORITY_MISMATCH: 1
+}
+```
+
+The one system-caused case is `2022-08-12 / 60310`: final residual Strategy
+budget could fund the canonical discrete executable one lot, but the skip
+appears aligned to draft continuous target weight rather than discrete
+executable lot weight. The affected notional is `34,530`, so it is a real but
+small defect and does not explain the window's low exposure by itself.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r18_final_pc_remaining_budget_capital_deployment_legitimacy_audit.md
+reports/phase_reports/phase30_ak9r18_final_pc_remaining_budget_capital_deployment_legitimacy_audit.json
+reports/phase_reports/phase30_ak9r18/daily_capital_budget_reconstruction.json
+reports/phase_reports/phase30_ak9r18/remaining_budget_loss_items.json
+reports/phase_reports/phase30_ak9r18/capital_deployment_comparison.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R19 - Final-PC Discrete Executable Remaining-Budget Comparison Focused Repair
+```
+
+## Phase30-AK9R10 - Full Day1-to-Day2 Pending Lifecycle End-to-End Sentinel Implementation
+
+Phase30-AK9R10 added the missing test-only full-chain sentinel for the
+partial-approved BUY Pending lifecycle from Day1 through Day2 expiration.
+
+Primary judgment:
+
+```text
+FULL_DAY1_TO_DAY2_PENDING_LIFECYCLE_SENTINEL_IMPLEMENTED = YES
+FULL_CHAIN_SENTINEL_EXERCISES_PRODUCTION_COMPONENTS = YES
+FULL_CHAIN_SELL_PLANNING_PASS = YES
+FULL_CHAIN_PARTIAL_SUBMIT_PASS = YES
+FULL_CHAIN_EXECUTION_CONSUMPTION_PASS = YES
+FULL_CHAIN_SAME_DAY_CURRENT_VALUATION_PASS = YES
+FULL_CHAIN_DAY_COMPLETION_PASS = YES
+FULL_CHAIN_NEXT_DAY_EXPIRATION_PASS = YES
+FULL_CHAIN_DAY2_DATA_READINESS_PASS = YES
+FULL_CHAIN_FRESH_DAY2_AUTHORITY_PASS = YES
+FULL_CHAIN_CURRENT_STATE_CONTINUITY_PASS = YES
+FULL_CHAIN_INVALID_STATE_FAIL_CLOSED_PRESERVED = YES
+STALE_REVIEW_PRIORITY_NOT_INHERITED = YES
+MANDATORY_SELL_INDEPENDENCE_PRESERVED = YES
+PRODUCTION_CODE_CHANGED = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FRESH_VALIDATION_BLOCKERS = []
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+The sentinel lives in:
+
+```text
+tests/runtime_v2/test_phase30_ak9r10_full_day1_day2_pending_lifecycle.py
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r10_full_day1_to_day2_pending_lifecycle_sentinel_implementation.md
+reports/phase_reports/phase30_ak9r10_full_day1_to_day2_pending_lifecycle_sentinel_implementation.json
+```
+
+Recommended next task:
+
+```text
+User-operated fresh 20BD validation
+```
+
+## Phase30-AK9R15 - 2022-08-24 Morning HALT Root-Cause and Decision-to-Fill Preservation Audit
+
+Phase30-AK9R15 audited fresh run
+`runtime-test-historical-extended-smoke-20260817T094656753507Z`, which
+completed through 2022-08-23 and halted at `2022-08-24:morning`.
+
+Primary judgment:
+
+```text
+AK9R15_ROOT_CAUSE_CLASSIFICATION = POSITION_SIZING_AUTHORITY_GAP
+Secondary = LEGITIMATE_FAIL_CLOSED
+PENDING_LIFECYCLE_BLOCKER_RECURRENCE_BEFORE_2022_08_24 = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+AK9R12 and AK9R14 were action-effective in the fresh run. 2022-08-24 Data
+Readiness passed with Pending lifecycle `EXPIRED`; the halt occurred later in
+Morning.
+
+Item-level root:
+
+```text
+symbol = 94320
+semantic = BUY_ADD
+PC target_weight = 0.181184
+strategy maximum_position_weight = 0.18
+PC authority = DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX
+PS error = target_weight_above_position_cap:4
+```
+
+Decision-to-fill preservation through 2022-08-23:
+
+```text
+UNEXPLAINED_VALID_BUY_DROP_COUNT = 0
+UNEXPLAINED_VALID_ADD_DROP_COUNT = 0
+VALID_BUY_AUTHORITY_PRESERVED_END_TO_END = YES
+VALID_ADD_AUTHORITY_PRESERVED_END_TO_END = YES
+SELL_INDEPENDENCE_PRESERVED = YES
+NEW_DOWNSTREAM_OPPORTUNITY_FILTER_CONFIRMED = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r15_2022_08_24_morning_halt_root_cause_and_decision_to_fill_preservation_audit.md
+reports/phase_reports/phase30_ak9r15_2022_08_24_morning_halt_root_cause_and_decision_to_fill_preservation_audit.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R16 - PC Discrete-Lot Strategy Soft-Cap Overshoot Authority Consumption in Position Sizing
+```
+
+## Phase30-AK9R13 - Post-AK9R12 Fresh Day3 Data-Readiness HALT Root-Cause Audit
+
+Phase30-AK9R13 audited the post-AK9R12 fresh run
+`runtime-test-historical-extended-smoke-20260817T092446100401Z`, which
+completed 2022-08-10 and 2022-08-12, then halted at
+`2022-08-15:data_readiness`.
+
+Primary judgment:
+
+```text
+AK9R13_ROOT_CAUSE_CLASSIFICATION =
+  MIXED_BUY_SELL_RESIDUAL_PENDING_LIFECYCLE_GAP
+
+Secondary = [
+  AK9R8_EXPIRATION_ELIGIBILITY_GAP,
+  STALE_PENDING_TEMPORAL_AUTHORITY_GAP,
+  LEGITIMATE_FAIL_CLOSED
+]
+
+AK9R12_ORIGINAL_DEFECT_REPAIRED_IN_FRESH_RUNTIME = YES
+AK9R12_WIRING_REGRESSION = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+AK9R12 was action-effective on 2022-08-12:
+
+```text
+AK9R12_PRE_DATA_READINESS_LIFECYCLE_INVOKED_ON_2022_08_12 = YES
+AK9R12_STALE_2022_08_10_PENDING_EXPIRED = YES
+AK9R12_DAY2_DATA_READINESS_AFTER_LIFECYCLE = READY
+```
+
+The new Day3 halt is a different lifecycle shape. The 2022-08-12 final Pending
+contains:
+
+```text
+CONSUMED BUY = 5
+CONSUMED SELL = 5
+REVIEW_REQUIRED BUY = 6
+REVIEW_REQUIRED SELL = 0
+```
+
+The Day3 pre-Data-Readiness lifecycle hook ran, but AK9R8 expiration failed
+closed because the residual-review authority currently requires:
+
+```text
+all_items_buy = true
+```
+
+For the Day3 composite Pending:
+
+```text
+all_items_buy = false
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r13_post_ak9r12_fresh_day3_data_readiness_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak9r13_post_ak9r12_fresh_day3_data_readiness_halt_root_cause_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R13
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R14 - Mixed BUY/SELL Residual Pending Lifecycle Invariant Repair
+```
+
+## Phase30-AK9R14 - Mixed BUY/SELL Residual Pending Lifecycle Invariant Repair
+
+Phase30-AK9R14 repaired the AK9R13-confirmed lifecycle gap in which a stale
+`BUY_ITEM_SCOPED_REVIEW` composite Pending failed closed because consumed SELL
+items made the plan non-BUY-only.
+
+Canonical invariant:
+
+```text
+If all executable BUY/SELL items are terminal, no unresolved reviewed SELL
+remains, and the only unresolved authority is stale non-submitted/non-filled
+BUY_ITEM_SCOPED_REVIEW BUY items, the stale residual BUY review authority may
+expire on the next business day.
+```
+
+Primary judgment:
+
+```text
+MIXED_BUY_SELL_RESIDUAL_PENDING_LIFECYCLE_GAP = REPAIRED
+AK9R13_MIXED_PENDING_SENTINEL_PASS = YES
+AK9R8_BUY_ONLY_EXPIRATION_PRESERVED = YES
+AK9R12_PRE_DATA_READINESS_WIRING_PRESERVED = YES
+BUY_SELL_LIFECYCLE_INDEPENDENCE_ACTION_EFFECTIVE = YES
+MANDATORY_SELL_INDEPENDENCE_PRESERVED = YES
+NEW_BUY_FILTER_CREATED = NO
+NEW_ADD_FILTER_CREATED = NO
+PRODUCTION_STRATEGY_CHANGED = NO
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r14_mixed_buy_sell_residual_pending_lifecycle_invariant_repair.md
+reports/phase_reports/phase30_ak9r14_mixed_buy_sell_residual_pending_lifecycle_invariant_repair.json
+```
+
+Recommended next task:
+
+```text
+User-operated fresh 20BD validation
+```
+
+## Phase30-AK9R11 - AK9R10 Sentinel vs Fresh Runtime Day2 Lifecycle Invocation-Order Audit
+
+Phase30-AK9R11 audited why the post-AK9R10 fresh run
+`runtime-test-historical-extended-smoke-20260817T090440719415Z` still halted at
+`2022-08-12:data_readiness`.
+
+Primary judgment:
+
+```text
+AK9R11_ROOT_CAUSE_CLASSIFICATION = RUNTIME_LIFECYCLE_INVOCATION_ORDER_GAP
+Secondary = [
+  AK9R8_AUTHORITY_NOT_WIRED_TO_FRESH_RUNTIME_PRE_DATA_READINESS,
+  AK9R10_TEST_ORCHESTRATION_FIDELITY_GAP,
+  DATA_READINESS_LIFECYCLE_CIRCULAR_DEPENDENCY
+]
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+Fresh Day2 actual order:
+
+```text
+2022-08-12:market_refresh
+2022-08-12:data_readiness
+HALT
+```
+
+AK9R10 manually invoked `run_pending_lifecycle_review()` before Day2
+`evaluate_runtime_data_readiness()`. The fresh runtime did not invoke
+`pending_lifecycle` before Day2 Data Readiness, so the stale residual
+`BUY_ITEM_SCOPED_REVIEW` Pending from 2022-08-10 remained active and correctly
+triggered:
+
+```text
+DATA_READINESS_REVIEW_REASONS = [
+  "historical_safety_temporal_authority_missing",
+  "pending_review_required"
+]
+```
+
+AK9R10 therefore proved real components in a manually chosen order, not the
+actual fresh runtime orchestration order.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r11_ak9r10_sentinel_vs_fresh_runtime_day2_lifecycle_invocation_order_audit.md
+reports/phase_reports/phase30_ak9r11_ak9r10_sentinel_vs_fresh_runtime_day2_lifecycle_invocation_order_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R11
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R12 - Fresh Runtime Pending Lifecycle Invocation Wiring Focused Repair
+```
+
+## Phase30-AK9R12 - Fresh Runtime Pending Lifecycle Invocation Wiring Focused Repair
+
+Phase30-AK9R12 repaired the AK9R11-confirmed Runtime lifecycle invocation
+order gap.
+
+Primary judgment:
+
+```text
+CANONICAL_PENDING_LIFECYCLE_AUTHORITY_REUSED = YES
+PRE_DATA_READINESS_PENDING_LIFECYCLE_INVOCATION_IMPLEMENTED = YES
+ORCHESTRATION_DOES_NOT_REIMPLEMENT_LIFECYCLE_RULES = YES
+DATA_READINESS_PENDING_LIFECYCLE_CIRCULAR_DEPENDENCY_REMOVED = YES
+POST_EXECUTION_PENDING_LIFECYCLE_HOOK_PRESERVED = YES
+AK9R8_EXPIRATION_SEMANTICS_PRESERVED = YES
+DATA_READINESS_FAIL_CLOSED_PRESERVED = YES
+REAL_RUNTIME_ORCHESTRATION_SENTINEL_ADDED = YES
+REAL_ORCHESTRATION_DAY1_TO_DAY2_PASS = YES
+REAL_ORCHESTRATION_INVALID_PENDING_FAIL_CLOSED = YES
+SENTINEL_FRESH_INVOCATION_ORDER_MATCH = YES
+ORCHESTRATION_FIDELITY = FULL
+PRODUCTION_RUNTIME_ORCHESTRATION_CHANGED = YES
+PRODUCTION_STRATEGY_CHANGED = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FRESH_VALIDATION_BLOCKERS = []
+FRESH_20BD_VALIDATION_READY = YES
+```
+
+Repair:
+
+```text
+run_daily_operation now invokes the existing
+runtime_v2.pending.lifecycle_runner.run_pending_lifecycle_review authority
+before evaluate_runtime_data_readiness when an active Pending slot has
+target_session_date < business_date.
+```
+
+The orchestration layer does not decide lifecycle semantics. It only invokes
+the existing authority at the correct pre-consumer boundary. The existing
+post-execution Pending lifecycle hook remains preserved.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r12_fresh_runtime_pending_lifecycle_invocation_wiring_repair.md
+reports/phase_reports/phase30_ak9r12_fresh_runtime_pending_lifecycle_invocation_wiring_repair.json
+tests/runtime_v2/test_phase30_ak9r12_pre_data_readiness_pending_lifecycle_orchestration.py
+```
+
+Historical:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+User-operated fresh 20BD validation
+```
+
+## Phase30-AK9R6 - Post-Submit Residual BUY Review Current-Valuation Readiness Repair
+
+Phase30-AK9R6 repaired the AK9R5 confirmed
+`CROSS_REPAIR_INTERACTION_REGRESSION` at the Current Valuation Data Readiness /
+Historical Safety boundary.
+
+Primary judgment:
+
+```text
+POST_SUBMIT_RESIDUAL_BUY_REVIEW_PENDING_RECOGNIZED = YES
+CURRENT_VALUATION_RESIDUAL_BUY_REVIEW_CONTINUATION_ALLOWED = YES
+RESIDUAL_REVIEWED_BUY_FAIL_CLOSED_PRESERVED = YES
+APPROVED_FILLED_BUY_LIFECYCLE_RECOGNIZED = YES
+VALUATION_READINESS_PENDING_SCOPE_SEPARATED = YES
+```
+
+The repair recognizes a valid post-submit residual
+`BUY_ITEM_SCOPED_REVIEW` pending only for `readiness_scope =
+current_valuation`: approved BUY items must already be `CONSUMED`, residual
+BUY review items must remain `REVIEW_REQUIRED`, reviewed SELL items must be
+absent, cash/buying-power aggregate failures remain blocking, and historical
+safety authority must still match the business date/run/profile/evidence root.
+
+No Strategy, Candidate, PC, PS, Submit quantity, cash pruning, Sell Planning,
+cap, threshold, fresh Historical, or long Historical change was performed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r6_post_submit_residual_buy_review_current_valuation_readiness_repair.md
+reports/phase_reports/phase30_ak9r6_post_submit_residual_buy_review_current_valuation_readiness_repair.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R7 - User-Operated Fresh 5BD Current-Valuation Continuation Validation
+```
+
+## Phase30-AK9R7 - Post-AK9R6 Fresh Day2 Data-Readiness HALT Root-Cause Audit
+
+Phase30-AK9R7 audited the post-AK9R6 fresh run
+`runtime-test-historical-extended-smoke-20260817T072159332960Z`, which completed
+2022-08-10 and halted at `2022-08-12:data_readiness`.
+
+Primary judgment:
+
+```text
+POST_AK9R6_DAY2_DATA_READINESS_HALT_CLASSIFICATION =
+  NEXT_DAY_RESIDUAL_PENDING_LIFECYCLE_GAP
+
+Secondary:
+  STALE_PENDING_TEMPORAL_AUTHORITY_GAP
+
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+Day1 successfully reached execution, fills, Current Valuation apply, and Day
+Completion. The Day2 halt is caused by the Day1 partial-submitted
+`BUY_ITEM_SCOPED_REVIEW` pending remaining active on the next business day:
+9 approved BUY items are `CONSUMED`, 4 reviewed BUY items remain
+`REVIEW_REQUIRED`, and the pending target/safety authority date remains
+2022-08-10 while Day2 morning expects 2022-08-12 authority.
+
+Recommended next-day semantic:
+
+```text
+RECOMMENDED_NEXT_DAY_RESIDUAL_REVIEW_SEMANTIC = EXPIRE
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r7_post_ak9r6_fresh_day2_data_readiness_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak9r7_post_ak9r6_fresh_day2_data_readiness_halt_root_cause_audit.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R7
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R8 - Next-Day Residual BUY Review Pending Expiration Focused Repair
+```
+
+## Phase30-AK9R8 - Next-Day Residual BUY Review Pending Expiration Repair
+
+Phase30-AK9R8 repaired the Phase30-AK9R7 confirmed
+`NEXT_DAY_RESIDUAL_PENDING_LIFECYCLE_GAP`.
+
+Primary judgment:
+
+```text
+NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRATION_IMPLEMENTED = YES
+RESIDUAL_REVIEW_EXPIRATION_EVIDENCE_COMPLETE = YES
+STALE_RESIDUAL_PENDING_TERMINAL_STATE = EXPIRED
+STALE_RESIDUAL_PENDING_NO_LONGER_ACTIVE = YES
+```
+
+The repair adds a narrow Pending lifecycle authority for stale
+partial-submitted `BUY_ITEM_SCOPED_REVIEW` pending artifacts. Same-day residual
+review remains visible. On the next business day, if approved BUY items are
+already `CONSUMED`, residual reviewed BUY items remain `REVIEW_REQUIRED`, no
+reviewed SELL exists, and reviewed BUY items have no submit/fill evidence, the
+stale pending is explicitly terminalized as:
+
+```text
+STALE_NEXT_DAY_RESIDUAL_BUY_REVIEW_EXPIRED
+```
+
+No reviewed BUY is auto-approved, submitted, retried, or carried as new-day
+authority. Invalid shapes remain fail-closed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r8_next_day_residual_buy_review_pending_expiration_repair.md
+reports/phase_reports/phase30_ak9r8_next_day_residual_buy_review_pending_expiration_repair.json
+docs/01_requirements/phase_roadmap.md
+```
+
+Historical execution:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R9 - Pending Lifecycle End-to-End Consolidated Regression
+```
+
+## Phase30-AK9R9 - Pending Lifecycle End-to-End Consolidated Regression Audit
+
+Phase30-AK9R9 completed a READ-ONLY consolidated audit of the AK9R1 through
+AK9R8 partial-approved `BUY_ITEM_SCOPED_REVIEW` Pending lifecycle.
+
+Primary judgment:
+
+```text
+PARTIAL_REVIEW_LIFECYCLE_CONTRACT_COMPLETE = YES
+PENDING_LIFECYCLE_CROSS_REPAIR_INTERACTION_STATUS = PARTIAL
+FULL_DAY1_TO_DAY2_PENDING_LIFECYCLE_SENTINEL_PRESENT = NO
+FRESH_VALIDATION_BLOCKER = YES
+FRESH_20BD_VALIDATION_READY = NO
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+```
+
+Distributed regression evidence passed for morning partial approval, Sell
+Planning readiness, partial Submit, canonical discrete quantity precedence,
+aggregate cash authority, approved BUY consumption, same-day Current Valuation
+continuation, next-business-day residual review expiration, invalid-shape
+fail-closed behavior, and BUY/SELL independence. No new runtime or authority
+defect was confirmed.
+
+The remaining blocker is test topology: the required full Day1-to-Day2
+state-transition sentinel is not present as one consolidated regression. Current
+coverage is split across focused AK9R1, AK9R4, AK9R6, AK9R7, AK9R8, AK8R,
+AK3R2B, AK7R, and AK9R1B tests / artifacts.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r9_pending_lifecycle_end_to_end_consolidated_regression_audit.md
+reports/phase_reports/phase30_ak9r9_pending_lifecycle_end_to_end_consolidated_regression_audit.json
+```
+
+Historical:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R10 - Full Day1-to-Day2 Pending Lifecycle End-to-End Sentinel Implementation
+```
+
+## Phase30-AK6 - Mid-Run Low-Exposure / Growth-Stagnation Attribution Audit
+
+Phase30-AK6 completed a read-only attribution audit for
+`runtime-test-historical-extended-smoke-20260817T014925194738Z`, covering the
+2022-09-13 through 2022-09-27 stagnation window after the 2022-09-12 equity
+anchor.
+
+Primary judgment:
+
+```text
+MID_RUN_STAGNATION_PRIMARY_CLASS = CAPITAL_CONVERSION_LIMITATION
+MID_RUN_STAGNATION_SECONDARY_CLASSES = [
+  MARKET_DRIVEN,
+  STRATEGY_DRIVEN_BUT_LEGITIMATE,
+  WINNER_CONCENTRATION_INSUFFICIENT
+]
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+IMPLEMENTATION_REPAIR_JUSTIFIED = INSUFFICIENT_EVIDENCE
+```
+
+Key measurements:
+
+```text
+WINDOW_RETURN_DELTA = -3.601 percentage points
+WINDOW_MAX_DRAWDOWN = -3.53%
+WINDOW_AVG_EXPOSURE = 59.89%
+MARKET_OPPORTUNITY_WEAKNESS_EXPLAINS_LOW_EXPOSURE = PARTIAL
+CASH_CONSTRAINT_PRIMARY_LOW_EXPOSURE_CAUSE = PARTIAL
+CAPITAL_FRAGMENTATION_CONFIRMED = PARTIAL
+COMPOUND_CAPITAL_SCALING_OBSERVED = PARTIAL
+```
+
+The audit found broad Candidate and PC-positive supply, but weak conversion
+from PC-positive intent into PS executable lots and fills, especially during a
+weak Correction/Bear regime. ADD conversion was action-effective for `94320`
+but narrow: `PM_ADD_COUNT = 9`, `PC_POSITIVE_ADD_COUNT = 5`,
+`PS_POSITIVE_ADD_COUNT = 5`, `RUNTIME_BUY_ADD_COUNT = 5`,
+`BUY_ADD_FILL_COUNT = 2`.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak6_mid_run_low_exposure_growth_stagnation_attribution_audit.md
+reports/phase_reports/phase30_ak6_mid_run_low_exposure_growth_stagnation_attribution_audit.json
+reports/phase_reports/phase30_ak6/evidence_summary.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK7 - Capital Conversion / ADD Fill Effectiveness Design Audit
+```
+
+## Phase30-AK7 - Capital Conversion / ADD Fill Effectiveness Design Audit
+
+Phase30-AK7 completed a read-only design and authority audit for the capital
+conversion limitation found in AK6.
+
+Primary judgment:
+
+```text
+CAPITAL_CONVERSION_REPAIR_JUSTIFIED = YES
+IMPLEMENTATION_RECOMMENDED = YES
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+```
+
+Key findings:
+
+```text
+PC_POSITIVE_BUY_NEW_COUNT = 87
+PS_POSITIVE_BUY_NEW_COUNT = 26
+PC_POSITIVE_TO_PS_ZERO_ROOT_CAUSE_DISTRIBUTION = {
+  RESIDUAL_PRIORITY: 31,
+  SAFETY_HARD_CAP: 22,
+  OTHER_PC_PS_DISCRETE_AUTHORITY_HANDOFF_GAP: 8
+}
+
+AK2_ELIGIBLE_PC_POSITIVE_COUNT = 46
+AK2_ADMITTED_COUNT = 18
+AK2_ELIGIBLE_BUT_NOT_ADMITTED_COUNT = 28
+
+BUY_NEW_RUNTIME_TO_FILL_DROP_DISTRIBUTION = {
+  cash-pruned: 2,
+  submit review/no submitted orders: 1,
+  superseded/sell-only execution boundary: 13
+}
+```
+
+The 8 PC/PS handoff-gap rows had PC lot-aware evidence with positive
+`final_allocated_quantity`, but PS top-level quantity remained zero. Current
+second-lot+ ADD semantics are safe but too conservative: ADD increments are
+effectively floor-rounded to the next 100-share lot unless a separate authority
+allows the discrete lot. AK2 remains scoped to BUY_NEW / REENTRY 0 -> 1lot and
+must not be blindly extended to 1lot -> 2lot+.
+
+Recommended design direction:
+
+```text
+RECOMMENDED_SECOND_LOT_PLUS_DESIGN =
+RESIDUAL_CAPITAL_AWARE_PROMOTION_WITH_NEAREST_LOT_DISTANCE_EVIDENCE
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak7_capital_conversion_add_fill_effectiveness_design_audit.md
+reports/phase_reports/phase30_ak7_capital_conversion_add_fill_effectiveness_design_audit.json
+reports/phase_reports/phase30_ak7/evidence_summary.json
+reports/phase_reports/phase30_ak7/pc_positive_buy_new_rows.json
+reports/phase_reports/phase30_ak7/runtime_buy_new_to_fill_rows.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK7
+```
+
+Recommended next task:
+
+```text
+Phase30-AK7R - Approved Capital Conversion / ADD Discrete-Lot Repair
+```
+
+## Phase30-AK7R - Capital Conversion / ADD Discrete-Lot Focused Repair
+
+Phase30-AK7R implemented the approved production-common capital conversion
+repair for the AK7 under-conversion findings.
+
+Primary judgment:
+
+```text
+PC_POSITIVE_EXECUTABLE_QUANTITY_TO_PS_HANDOFF_REPAIRED = YES
+SECOND_LOT_PLUS_RESIDUAL_PROMOTION_IMPLEMENTED = YES
+NEAREST_LOT_DISTANCE_EVIDENCE_MATERIALIZED = YES
+AK2_ZERO_TO_ONE_LOT_SCOPE_PRESERVED = YES
+PM_ADD_REMAINS_INTENT_ONLY = YES
+PC_REMAINS_CAPITAL_ALLOCATION_AUTHORITY = YES
+PS_REMAINS_EXECUTABLE_QUANTITY_CONSUMER = YES
+```
+
+Implementation summary:
+
+```text
+PC now emits PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY
+when lot-aware reallocation materializes a positive executable quantity.
+
+PS consumes that canonical PC quantity authority instead of recomputing a
+conflicting zero quantity.
+
+Existing-position ADD second-lot+ promotion now uses deterministic nearest-lot
+distance evidence and only competes through existing residual capital priority,
+Strategy cap, Safety hard cap, cash feasibility, opportunity cost, and ADD
+lifecycle/no-loss guards.
+```
+
+Non-scope preserved:
+
+```text
+Runtime BUY intent -> sell-only execution boundary was not repaired by AK7R.
+Fresh Historical and long Historical were not run by Codex.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak7r_capital_conversion_add_discrete_lot_repair.md
+reports/phase_reports/phase30_ak7r_capital_conversion_add_discrete_lot_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK8 - Runtime BUY Intent / Sell-Only Execution Boundary Root-Cause Audit
+```
+
+## Phase30-AK1 - ADD Conversion / PS Executable Capital Bridge Lineage and Root-Cause Audit
+
+Phase30-AK1 completed a READ-ONLY audit of the running 275BD cutoff for:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+AUDIT_CUTOFF_DATE = 2023-09-21
+```
+
+Primary judgment:
+
+```text
+PRIMARY_CAPITAL_BRIDGE_ROOT_CAUSE =
+BUY_NEW: QUALITY_DEFERRED_TO_CASH / lot-cap feasibility attrition before PS
+final quantity, plus submit guard quarantine after Runtime intent.
+
+BUY_ADD: existing-position baseline/cap-drift authority leaves most ADD intent
+with zero incremental target, especially when current weight already exceeds
+the Strategy 18% cap.
+
+CAPITAL_BRIDGE_LINEAGE_CLASSIFICATION =
+POLICY_CAP_AND_EXECUTION_GUARD_DOMINATED_ATTRITION_WITH_OBSERVABILITY_GAPS;
+NOT_CAMPAIGN_ID_MISMATCH
+```
+
+Key flags:
+
+```text
+ADD_CONVERSION_REGRESSION =
+NO_AE1_CAMPAIGN_REGRESSION; PARTIAL_ACTION_EFFECT_GAP_REMAINS_FOR_CAP_DRIFT_ADD
+
+CAPITAL_CONVERSION_REGRESSION =
+PARTIAL_BUY_NEW_PC_TO_PS_ATTRITION_AND_SUBMIT_QUARANTINE; PHASE30_S_HANDOFF_NOT_RECURRED
+
+PHASE30_AE1_ADD_CONVERSION_PRESERVED = YES
+PHASE30_S_HANDOFF_PRESERVED = YES
+SAFETY_WEAKENING_REQUIRED = NO
+FORCED_INVESTMENT_REQUIRED = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak1_add_conversion_ps_executable_capital_bridge_lineage_root_cause_audit.md
+reports/phase_reports/phase30_ak1_add_conversion_ps_executable_capital_bridge_lineage_root_cause_audit.json
+reports/phase_reports/phase30_ak1/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK2 - Executable Capital Policy / Submit Guard / Campaign Fill Lineage Repair Design
+```
+
+## Phase30-AK1R - QUALITY_DEFERRED_TO_CASH Decision Evidence Root-Cause Audit
+
+Phase30-AK1R completed a READ-ONLY audit of `QUALITY_DEFERRED_TO_CASH` cash
+decisions in the running historical run.
+
+Audit freeze:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+AUDIT_CUTOFF_DATE = 2023-10-04
+COMPLETED_BUSINESS_DAYS = 284
+```
+
+Primary judgment:
+
+```text
+CASH_DEFERRAL_PRIMARY_CLASS = MULTI_CAUSAL
+QUALITY_DEFERRED_TO_CASH_TAXONOMY = TOO_COARSE
+VALID_OPPORTUNITY_BUT_CASH_COUNT = 0
+CASH_POLICY_CONFORMS_TO_INVESTMENT_PHILOSOPHY = PARTIAL
+CASH_DEFERRAL_RUNTIME_DEFECT = NO
+CASH_DEFERRAL_AUTHORITY_DEFECT = YES
+```
+
+Key counts:
+
+```text
+QUALITY_DEFERRED_POPULATION_COUNT = 13,923
+BUY_NEW / REENTRY audited population = 11,471
+PC_POSITIVE_BUT_FINAL_ZERO_COUNT = 3,948
+POLICY_AND_SAFETY_ONE_LOT_EXECUTABLE_BUT_CASH_COUNT = 3,319
+REPAIRABLE_CASH_COUNT = 0
+```
+
+No forced investment, fixed exposure target, fixed position count, Strategy cap
+weakening, Safety hard-cap weakening, Candidate change, threshold tuning, or
+Winner concentration policy change was proposed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak1r_quality_deferred_to_cash_decision_evidence_root_cause_audit.md
+reports/phase_reports/phase30_ak1r_quality_deferred_to_cash_decision_evidence_root_cause_audit.json
+reports/phase_reports/phase30_ak1r/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK2 - Cash Decision Evidence / Taxonomy Observability Repair
+```
+
+## Phase30-AK1S - CAUTION Authority / Cash Deferral Decision Evidence Audit
+
+Phase30-AK1S completed a READ-ONLY audit of the CAUTION authorities behind
+`QUALITY_DEFERRED_TO_CASH`.
+
+Audit freeze:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+AUDIT_CUTOFF_DATE = 2023-10-10
+COMPLETED_BUSINESS_DAYS = 287
+```
+
+Primary judgment:
+
+```text
+CAUTION_POLICY_CONFORMS_TO_INVESTMENT_PHILOSOPHY = PARTIAL
+CAUTION_RUNTIME_DEFECT = NO
+CAUTION_AUTHORITY_DEFECT = YES
+DOUBLE_PENALIZATION_CONFIRMED = PARTIAL
+CAUTION_RESPONSIBILITY_OVERLAP = PARTIAL
+```
+
+Key findings:
+
+```text
+AUDITED_CASH_DEFER_ROWS = 13,083
+CASH_DEFER_CAUTION_DISTRIBUTION = {"multiple_caution": 13083}
+DOMINANT_CAUTION_AUTHORITY = Candidate Surface
+DOMINANT_CAUTION_ACTION_EFFECT_RATE = 0.8714
+UPSTREAM_STRONG_VALID_DOWNSTREAM_CAUTION_COUNT = 1,682
+PC_POSITIVE_ZERO_CAUTION_DISTRIBUTION = {"multiple_caution": 3999}
+INCUMBENCY_BIAS_CONFIRMED = NO
+```
+
+Actual BUY rows also carried multi-stage CAUTION, so CAUTION presence alone does
+not explain BUY vs Cash. The distinguishing layer is whether PC/PS lot-aware
+priority still materializes positive final quantity after caution-adjusted
+allocation.
+
+No threshold tuning, Candidate change, model retraining, forced BUY, fixed
+exposure, fixed position count, Strategy cap change, Safety cap change, or
+Winner concentration policy change was proposed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak1s_caution_authority_cash_deferral_decision_evidence_audit.md
+reports/phase_reports/phase30_ak1s_caution_authority_cash_deferral_decision_evidence_audit.json
+reports/phase_reports/phase30_ak1s/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK2 - CAUTION Responsibility / Cash Taxonomy Observability Repair Design
+```
+
+## Phase30-AK1T - PC/PS Positive-vs-Zero Allocation Audit
+
+Phase30-AK1T completed a READ-ONLY audit of why BUY_NEW / REENTRY PC-positive
+candidates become either PS-positive Runtime BUYs or PS final zero.
+
+Audit freeze:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+AUDIT_CUTOFF_DATE = 2023-10-10
+COMPLETED_BUSINESS_DAYS = 287
+```
+
+Primary judgment:
+
+```text
+PC_PS_ALLOCATION_PRIMARY_ROOT_CAUSE = LOT_ECONOMICS_FRICTION
+PC_PS_ALLOCATION_SECONDARY_ROOT_CAUSES = [
+  RESIDUAL_RECYCLING_GAP,
+  GENUINE_EXECUTION_CONSTRAINT
+]
+PRIMARY_BUY_VS_ZERO_DISCRIMINATOR =
+TARGET_TO_ONE_LOT_RATIO_AND_LOT_AWARE_RESIDUAL_PRIORITY
+```
+
+Key counts:
+
+```text
+ALLOCATION_SUCCESS_COUNT = 170
+PC_POSITIVE_FINAL_ZERO_COUNT = 4,076
+MEANINGFUL_TARGET_EXECUTABLE_BUT_ZERO_COUNT = 0
+STRICT_SUSPICIOUS_ALLOCATION_COUNT = 0
+LOW_NOTIONAL_LOT_BIAS_CONFIRMED = YES
+POSITION_SLOT_LIMIT_BLOCK_COUNT = 0
+PC_PS_RUNTIME_DEFECT = NO
+PC_PS_AUTHORITY_DEFECT = YES
+```
+
+The target-to-one-lot curve showed near-zero success below one executable lot
+and material success only at `>=1.5` lots. This supports one-lot economics and
+lot-aware residual priority as the main allocation discriminator.
+
+No threshold tuning, Candidate change, forced BUY, fixed exposure, fixed
+position count, lot size change, Strategy cap change, Safety cap change, or
+Winner concentration policy change was proposed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak1t_pc_ps_lot_aware_positive_vs_zero_allocation_audit.md
+reports/phase_reports/phase30_ak1t_pc_ps_lot_aware_positive_vs_zero_allocation_audit.json
+reports/phase_reports/phase30_ak1t/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK2 - PC/PS Lot-Aware Allocation Explainability and Residual Recycling Design
+```
+
+## Phase30-AK1U - Minimum Executable One-Lot Admission Contract Audit
+
+Phase30-AK1U completed a READ-ONLY design-conformance audit of whether
+BUY_NEW / REENTRY `0 -> 1lot` minimum executable admission is consistent with
+the existing Phase28/29/30 lot-aware architecture and investment philosophy.
+
+Target run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+```
+
+Canonical quantitative source:
+
+```text
+Phase30-AK1T PC-positive BUY_NEW / REENTRY population
+SOURCE_CUTOFF_DATE = 2023-10-10
+SOURCE_COMPLETED_BUSINESS_DAYS = 287
+```
+
+Primary judgment:
+
+```text
+ORIGINAL_ONE_LOT_ADMISSION_PURPOSE =
+prevent excessive zero-rounding of positive PC target weights at the Japanese
+100-share execution boundary, under PC-controlled and guard-constrained
+minimum executable allocation
+
+MINIMUM_EXECUTABLE_ONE_LOT_SEMANTIC_CONFORMS_TO_ARCHITECTURE = YES
+ONE_LOT_ROUND_UP_PRESERVES_PC_INTENT = YES
+ONE_LOT_LINEAGE_CLASSIFICATION = PRE_EXISTING_INCOMPLETE_ACTION_EFFECT
+MINIMUM_ONE_LOT_POLICY_CONFORMS_TO_INVESTMENT_PHILOSOPHY = YES
+IMPLEMENTATION_REPAIR_JUSTIFIED = YES
+```
+
+Key evidence:
+
+```text
+PC_POSITIVE_TOTAL = 4,246
+ALLOCATION_SUCCESS_COUNT = 170
+PC_POSITIVE_FINAL_ZERO_COUNT = 4,076
+
+SUB_LOT_ADMISSION_BLOCKER_DISTRIBUTION = {
+  LOT_ECONOMICS_FRICTION: 2250,
+  GENUINE_EXECUTION_CONSTRAINT: 752
+}
+
+0.75 <= target/lot < 1.0:
+  TOTAL = 880
+  SUCCESS = 3
+  ZERO = 877
+  BLOCKER = LOT_ECONOMICS_FRICTION
+
+ONE_LOT_OVER_STRATEGY_CAP_COUNT = 1179
+ONE_LOT_OVER_SAFETY_CAP_COUNT = 752
+```
+
+Conclusion:
+
+```text
+BUY_NEW / REENTRY 0 -> 1lot minimum executable admission is architecturally
+valid only when Quality, Entry, Risk, Cash, Strategy cap, Safety hard cap,
+lifecycle, broker, corporate-action, price/tick, and residual/opportunity-cost
+guards pass. It must not apply to ADD or second-lot-plus expansion.
+```
+
+No implementation, threshold change, cap change, forced BUY, forced exposure,
+Candidate/model change, lot-size change, fresh run, resume/replay, or target
+run mutation was performed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak1u_minimum_executable_one_lot_admission_contract_audit.md
+reports/phase_reports/phase30_ak1u_minimum_executable_one_lot_admission_contract_audit.json
+reports/phase_reports/phase30_ak1u/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK2 - Minimum Executable One-Lot Admission Repair Implementation
+```
+
+## Phase30-AK2 - Minimum Executable One-Lot Admission Repair Implementation
+
+Phase30-AK2 implemented the AK1U-approved Production-common repair for guarded
+BUY_NEW / REENTRY `0 -> 1lot` minimum executable admission.
+
+Primary judgment:
+
+```text
+MINIMUM_EXECUTABLE_ONE_LOT_REPAIR_IMPLEMENTED = YES
+BUY_NEW_ZERO_TO_ONE_LOT_ACTION_EFFECTIVE = YES
+REENTRY_ZERO_TO_ONE_LOT_ACTION_EFFECTIVE = YES
+BUY_ADD_BEHAVIOR_UNCHANGED = YES
+SECOND_LOT_PLUS_BEHAVIOR_UNCHANGED = YES
+STRATEGY_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_PRESERVED = YES
+ONE_PRODUCTION_ONE_LOT_PATH = YES
+PHASE30_W_ONE_LOT_ADMISSION_PRESERVED = YES
+PHASE30_S_PC_PS_HANDOFF_PRESERVED = YES
+PHASE30_AE1_ADD_CONVERSION_PRESERVED = YES
+```
+
+Implementation summary:
+
+```text
+Portfolio Construction now emits
+PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION
+with reason MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED when a BUY_NEW / REENTRY
+current-quantity-zero candidate has positive PC intent below one lot and all
+Entry, Quality, Risk, broker/lot, cash, Strategy cap, and Safety hard-cap
+guards pass.
+
+Position Sizing consumes that authority only after PC explicitly promotes the
+final target weight. PS does not independently round up a sub-lot target.
+```
+
+Preserved boundaries:
+
+```text
+BUY_ADD behavior changed = NO
+second-lot-plus behavior changed = NO
+Strategy cap changed = NO
+Safety hard cap changed = NO
+forced BUY / forced exposure = NO
+Candidate / threshold / lot size / model changed = NO
+```
+
+Regression evidence:
+
+```text
+compileall strategy = PASS
+Phase30-W + Position Sizing focused = 106 passed
+PC + Phase30-S + REENTRY + Runtime Planning focused = 167 passed
+```
+
+No fresh run or long Historical was executed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak2_minimum_executable_one_lot_admission_repair_implementation.md
+reports/phase_reports/phase30_ak2_minimum_executable_one_lot_admission_repair_implementation.json
+reports/phase_reports/phase30_ak2/
+```
+
+Fresh validation gate:
+
+```text
+USER_OPERATED_FRESH_VALIDATION_READY
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3 - Fresh 5-10BD One-Lot Admission / Price-Bias Validation
+```
+
+## Phase30-AK3 - Fresh One-Lot Admission / Price-Bias Validation
+
+Phase30-AK3 attempted the requested fresh runtime conformance validation for
+the Phase30-AK2 minimum executable one-lot admission repair.
+
+Boundary:
+
+```text
+READ_ONLY
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK3
+FRESH_RUN_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+No fresh post-AK2 run_id was provided in the task attachment, and no local
+AK2-post 5-10BD fresh validation run was available to audit.
+
+Existing local run directories found:
+
+```text
+runtime-test-historical-extended-smoke-20260816T114233352959Z
+runtime-test-historical-extended-smoke-20260816T120536241332Z
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+```
+
+These were not accepted as AK3 evidence because AK3 requires a user-operated
+fresh run after the AK2 Production-common implementation.
+
+Judgment:
+
+```text
+MINIMUM_ONE_LOT_ADMISSION_RUNTIME_MATERIALIZED = NO
+MINIMUM_ONE_LOT_ADMISSION_COUNT = 0
+ONE_LOT_AUTHORITY_CHAIN_PASS_RATE = NOT_APPLICABLE_NO_RUN
+LOW_NOTIONAL_LOT_BIAS_DIRECTION = INSUFFICIENT_SAMPLE
+AK2_RESCUED_SUB_LOT_SYMBOL_COUNT = 0
+ONE_LOT_GUARD_VIOLATION_COUNT = 0
+BUY_ADD_MINIMUM_ONE_LOT_EXCEPTION_COUNT = 0
+SECOND_LOT_PLUS_EXCEPTION_COUNT = 0
+STRATEGY_CAP_BREACH_ADMISSION_COUNT = 0
+SAFETY_HARD_CAP_BREACH_ADMISSION_COUNT = 0
+AK2_PRODUCTION_ACTION_EFFECT = NO
+AK2_RUNTIME_CONFORMANCE = INSUFFICIENT_SAMPLE
+PERFORMANCE_USED_FOR_AK2_VALIDATION = FALSE
+```
+
+Interpretation:
+
+```text
+This is not an AK2 implementation failure and does not authorize repair.
+The blocker is missing runtime sample.
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3_fresh_one_lot_admission_price_bias_validation.md
+reports/phase_reports/phase30_ak3_fresh_one_lot_admission_price_bias_validation.json
+reports/phase_reports/phase30_ak3/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R - User-Operated Fresh 5-10BD One-Lot Admission Validation
+```
+
+Required next input:
+
+```text
+fresh post-AK2 run_id
+```
+
+## Phase30-AK3R0 - Post-AK2 Zero-BUY Fresh Regression Root-Cause Audit
+
+Phase30-AK3R0 completed a READ-ONLY regression audit of the user-operated
+post-AK2 fresh run:
+
+```text
+After:  runtime-test-historical-extended-smoke-20260816T220031787551Z
+Before: runtime-test-historical-extended-smoke-20260816T120536241332Z
+Dates:  2022-08-10, 2022-08-12
+```
+
+Primary judgment:
+
+```text
+POST_AK2_ZERO_BUY_ROOT_CAUSE_CONFIRMED_SUBMIT_FEASIBILITY_AUTHORITY_HANDOFF_GAP
+```
+
+Findings:
+
+```text
+AK2_AUTHORITY_MATERIALIZED = YES
+PC_TARGETS_COLLAPSED_AFTER_AK2 = NO
+PS_POSITIVE_AFTER > PS_POSITIVE_BEFORE
+Runtime BUY-like pending items were generated.
+Submit converted Pending to REVIEW_REQUIRED.
+Execution had no submitted orders and no fills.
+```
+
+The zero-BUY regression is not Candidate/SI/Entry/PC/PS zeroing. AK2 one-lot
+admission produced extra executable one-lot BUY items whose executable notional
+exceeded `selected_position_amount`. Submit feasibility did not consume the
+minimum executable one-lot authority, marked those items `REVIEW_REQUIRED`, and
+atomic BUY batch semantics blocked all BUY submission, including otherwise
+PASS legacy BUY items.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r0_post_ak2_zero_buy_fresh_regression_root_cause_audit.md
+reports/phase_reports/phase30_ak3r0_post_ak2_zero_buy_fresh_regression_root_cause_audit.json
+reports/phase_reports/phase30_ak3r0/before_after_zero_buy_chain_summary.json
+```
+
+Implementation boundary:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK3R0
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R1 - Submit Feasibility Minimum Executable One-Lot Authority Handoff Repair
+```
+
+## Phase30-AK3R1 - Submit Feasibility Minimum Executable One-Lot Authority Handoff Repair
+
+Phase30-AK3R1 implemented the focused Production-common repair for the
+AK3R0-confirmed handoff gap:
+
+```text
+SUBMIT_FEASIBILITY_MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_HANDOFF_GAP
+```
+
+Primary judgment:
+
+```text
+SUBMIT_FEASIBILITY_MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_HANDOFF_REPAIRED
+```
+
+Runtime PositionSizingAuthority now consumes canonical AK2
+`PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION` evidence only
+when the authority is ADMIT, BUY_NEW/REENTRY, current quantity is zero, final
+quantity is exactly one trading lot, lot notional matches, Strategy cap is
+preserved, Safety hard cap is preserved, and lot feasibility is PASS.
+
+Submit feasibility now verifies item-level symbol, quantity, notional, intent,
+and cap/safety consistency before exempting the authorized selected-position
+overshoot. Unauthorized overshoot, tampered authority, second-lot-plus orders,
+cash/cap/safety failures, and atomic batch review semantics remain fail-closed.
+
+Required final judgments:
+
+```text
+SUBMIT_FEASIBILITY_ONE_LOT_HANDOFF_REPAIRED = YES
+AUTHORIZED_ONE_LOT_SELECTED_AMOUNT_OVERSHOOT_ACCEPTED = YES
+UNAUTHORIZED_OVERSHOOT_REVIEW_PRESERVED = YES
+NORMAL_BUY_SUBMISSION_PRESERVED = YES
+ATOMIC_BATCH_AK2_REGRESSION_REPAIRED = YES
+AK2_AUTHORITY_END_TO_END_CONSUMABLE = YES
+BUY_ADD_BEHAVIOR_UNCHANGED = YES
+```
+
+Validation:
+
+```text
+compileall runtime_v2 + strategy: PASS
+Submit feasibility sentinels: 20 passed
+Pending / PS authority / Submit guard: 42 passed
+Strategy PS / W one-lot / Runtime planning: 154 passed
+Runtime planning authority + Submit feasibility: 39 passed
+PC / S handoff / Z reentry: 119 passed
+AK2 focused rerun: 117 passed
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r1_submit_feasibility_minimum_executable_one_lot_handoff_repair.md
+reports/phase_reports/phase30_ak3r1_submit_feasibility_minimum_executable_one_lot_handoff_repair.json
+```
+
+Historical execution boundary:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2 - Fresh 5-10BD Post-AK3R1 Zero-BUY / One-Lot Submit Validation
+```
+
+## Phase30-AK3R2A - Post-AK3R1 Fresh 1BD Zero-BUY Root-Cause Audit
+
+Phase30-AK3R2A completed a READ-ONLY audit of the post-AK3R1 fresh run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T222751947653Z
+```
+
+Primary date:
+
+```text
+2022-08-10
+```
+
+Primary judgment:
+
+```text
+POST_AK3R1_ZERO_BUY_CLASSIFICATION = B_NEW_SUBMIT_OR_EXECUTION_GAP
+```
+
+AK3R1 was action-effective. All 5 AK2 minimum one-lot items consumed
+`PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION` in fresh Runtime
+and passed Submit feasibility. The AK3R0 selected-position overshoot review did
+not recur.
+
+The new zero-BUY cause is:
+
+```text
+SUBMIT_FEASIBILITY_AGGREGATE_CASH_REVIEW_TO_ATOMIC_PENDING_NO_SUBMISSION
+```
+
+Counts:
+
+```text
+CANDIDATE_COUNT = 50
+PC_POSITIVE_COUNT = 16
+AK2_ONE_LOT_AUTHORITY_COUNT = 5
+PS_POSITIVE_COUNT = 13
+RUNTIME_BUY_PLAN_COUNT = 13
+PENDING_BUY_ITEM_COUNT = 13
+SUBMIT_FEASIBILITY_PASS_COUNT = 12
+SUBMIT_FEASIBILITY_REVIEW_COUNT = 1
+SUBMITTED_ORDER_COUNT = 0
+BUY_FILL_COUNT = 0
+```
+
+The direct review item was `93180`:
+
+```text
+estimated_amount = 49,800
+reserved_notional = 290,500
+cash_at_check = 271,880
+reason = reserved notional exceeds Current cash
+```
+
+Batch totals:
+
+```text
+strategy_executable_notional_total = 715,650
+reserved_notional_total = 1,260,860
+cash = 1,000,000
+```
+
+Defect boundary:
+
+```text
+KNOWN_RUNTIME_DEFECT = NO_SUBMIT_FAIL_CLOSED_AS_DESIGNED
+KNOWN_AUTHORITY_DEFECT = YES_PLANNING_PENDING_BATCH_RESERVED_NOTIONAL_CASH_FEASIBILITY_GAP
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r2a_post_ak3r1_fresh_1bd_zero_buy_root_cause_audit.md
+reports/phase_reports/phase30_ak3r2a_post_ak3r1_fresh_1bd_zero_buy_root_cause_audit.json
+reports/phase_reports/phase30_ak3r2a/buy_chain_comparison_2022_08_10.json
+```
+
+Implementation boundary:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK3R2A
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2B - Reserved-Notional-Aware BUY Batch Construction / Cash Feasibility Repair
+```
+
+## Phase30-AK3R2B0 - Reserved-Notional Cash-Feasible BUY Batch Authority Design Audit
+
+Phase30-AK3R2B0 completed a READ-ONLY design audit for the AK3R2A root cause.
+No implementation was authorized.
+
+Primary judgment:
+
+```text
+RESERVED_NOTIONAL_CASH_FEASIBLE_BATCH_AUTHORITY_DESIGN_APPROVED
+IMPLEMENTATION_REPAIR_JUSTIFIED = YES
+```
+
+Canonical authority decisions:
+
+```text
+CASH_FEASIBLE_BATCH_CONSTRUCTION_AUTHORITY =
+  PLANNING_PENDING_BUY_BATCH_CONSTRUCTION_USING_CANONICAL_RESERVED_NOTIONAL_AND_CANONICAL_STRATEGY_PRIORITY
+
+RESERVED_NOTIONAL_CANONICAL_PRODUCER =
+  runtime_v2.order_reservation.resolve_order_cash_reservation
+
+RESERVED_NOTIONAL_AVAILABLE_BEFORE_PENDING_FINALIZATION = YES
+
+CANONICAL_BUY_PRIORITY_AUTHORITY =
+  STRATEGY_RUNTIME_PLANNING_ORDER_DERIVED_FROM_PORTFOLIO_CONSTRUCTION_AND_POSITION_SIZING
+
+CANONICAL_BUY_PRIORITY_AVAILABLE_TO_BATCH_CONSTRUCTION = YES
+NEW_INVESTMENT_PRIORITY_IN_PLANNING_REQUIRED = NO
+```
+
+Approved batch semantic:
+
+```text
+CASH_FEASIBLE_BATCH_SELECTION_SEMANTIC =
+  PRIORITY_ORDERED_RESERVED_NOTIONAL_SKIP_AND_CONTINUE_PRUNING
+
+NEW_BATCH_OPTIMIZATION_REQUIRED = NO
+ATOMIC_BATCH_REQUIRES_ALL_ORIGINAL_BUY_CANDIDATES = NO
+CASH_PRUNED_VALID_BATCH_CAN_SUBMIT = YES
+CASH_PRUNED_ITEM_SEMANTIC = DEFERRED_INSUFFICIENT_RESERVED_CASH
+AK2_ONE_LOT_CASH_PRIORITY_SPECIAL_CASE_REQUIRED = NO
+```
+
+Preservation requirements:
+
+```text
+SUBMIT_FINAL_CASH_FAIL_CLOSED_PRESERVED = YES
+ATOMIC_BATCH_PROTECTION_PRESERVED = YES
+PC_INVESTMENT_PRIORITY_PRESERVED = YES
+PS_QUANTITY_AUTHORITY_PRESERVED = YES
+AK2_ONE_LOT_AUTHORITY_PRESERVED = YES
+STRATEGY_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_PRESERVED = YES
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r2b0_reserved_notional_cash_feasible_buy_batch_authority_design_audit.md
+reports/phase_reports/phase30_ak3r2b0_reserved_notional_cash_feasible_buy_batch_authority_design_audit.json
+```
+
+Implementation boundary:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK3R2B0
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2B - Reserved-Notional-Aware Cash-Feasible BUY Batch Construction Repair
+```
+
+## Phase30-AK3R2B - Reserved-Notional-Aware Cash-Feasible BUY Batch Construction Repair
+
+Phase30-AK3R2B implemented the Phase30-AK3R2B0 approved Production-common
+Planning/Pending repair. Runtime Planning BUY candidates are now processed in
+canonical upstream order, using canonical `reserved_notional`, before the active
+Pending BUY batch is finalized.
+
+Primary judgment:
+
+```text
+RESERVED_NOTIONAL_AWARE_BUY_BATCH_REPAIR_IMPLEMENTED = YES
+CASH_FEASIBLE_BATCH_CONSTRUCTION_ACTION_EFFECTIVE = YES
+```
+
+Implemented behavior:
+
+```text
+CASH_FEASIBLE_BATCH_SELECTION_SEMANTIC =
+  PRIORITY_ORDERED_RESERVED_NOTIONAL_SKIP_AND_CONTINUE_PRUNING
+
+CASH_PRUNED_ITEM_SEMANTIC = DEFERRED_INSUFFICIENT_RESERVED_CASH
+ATOMIC_BATCH_REQUIRES_ALL_ORIGINAL_BUY_CANDIDATES = NO
+CASH_PRUNED_VALID_BATCH_CAN_SUBMIT = YES
+```
+
+Preservation:
+
+```text
+CANONICAL_BUY_PRIORITY_PRESERVED = YES
+NEW_INVESTMENT_PRIORITY_CREATED = NO
+NEW_BATCH_OPTIMIZATION_CREATED = NO
+SUBMIT_FINAL_CASH_FAIL_CLOSED_PRESERVED = YES
+ATOMIC_BATCH_PROTECTION_PRESERVED = YES
+AK2_ONE_LOT_AUTHORITY_PRESERVED = YES
+AK3R1_SUBMIT_HANDOFF_PRESERVED = YES
+STRATEGY_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_PRESERVED = YES
+BUY_ADD_BEHAVIOR_UNCHANGED = YES
+```
+
+Tests:
+
+```text
+AK3R2B sentinels: 7 passed
+Strategy planning + Submit feasibility: 39 passed
+Pending composition + Submit guard: 31 passed
+Position sizing + AK2 one-lot + Strategy sizing: 117 passed
+Runtime planning + Phase30-S/Z: 65 passed
+compileall runtime_v2 + strategy: PASS
+```
+
+Historical runs:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r2b_reserved_notional_aware_cash_feasible_buy_batch_construction_repair.md
+reports/phase_reports/phase30_ak3r2b_reserved_notional_aware_cash_feasible_buy_batch_construction_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2C - User-Operated Fresh 5BD End-to-End BUY Batch / One-Lot Validation
+```
+
+## Phase30-AK3R2C0 - Post-AK3R2B Fresh Submit HALT Root-Cause Audit
+
+Phase30-AK3R2C0 completed a READ-ONLY root-cause audit of fresh run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T225719066998Z
+```
+
+The run halted at:
+
+```text
+2022-08-10:submit
+exit_code = 20
+final_state = REVIEW_REQUIRED
+```
+
+AK3R2B runtime conformance:
+
+```text
+CASH_FEASIBLE_BATCH_RUNTIME_MATERIALIZED = YES
+DEFERRED_INSUFFICIENT_RESERVED_CASH_RUNTIME_COUNT = 1
+SKIP_AND_CONTINUE_RUNTIME_ACTION_EFFECTIVE = YES
+CANONICAL_PRIORITY_RUNTIME_PRESERVED = YES
+ACTIVE_BATCH_RESERVED_NOTIONAL_WITHIN_CASH = YES
+```
+
+Counts:
+
+```text
+RUNTIME_BUY_PLAN_COUNT = 13
+CASH_FEASIBLE_BATCH_CANDIDATE_COUNT = 13
+CASH_FEASIBLE_BATCH_INCLUDED_COUNT = 12
+CASH_PRUNED_COUNT = 1
+FINAL_RESERVED_NOTIONAL_TOTAL = 970,360
+STARTING_CASH = 1,000,000
+ACTIVE_PENDING_BUY_COUNT = 12
+SUBMIT_PASS_COUNT = 7
+SUBMIT_REVIEW_COUNT = 5
+SUBMIT_BLOCK_COUNT = 5
+```
+
+Primary judgment:
+
+```text
+FIRST_HALT_LAYER = SUBMIT_GUARD_ITEM_CANONICAL_EVIDENCE_REVALIDATION
+HALT_DIRECT_REASON = one_lot_authority_quantity_mismatch
+RESERVED_CASH_REVIEW_RECURRENCE = NO
+POST_AK3R2B_SUBMIT_HALT_CLASSIFICATION = SUBMIT_GUARD_AUTHORITY_GAP
+AK3R2B_RUNTIME_ACTION_EFFECTIVE = PARTIAL
+KNOWN_RUNTIME_DEFECT = YES
+KNOWN_AUTHORITY_DEFECT = YES
+```
+
+The direct blocked symbols were:
+
+```text
+38410, 39950, 47770, 83060, 99840
+```
+
+All are AK2 minimum executable one-lot items. Planning/Pending aggregate
+feasibility passed the 12-item cash-feasible batch, but Submit guard
+revalidation used a synthetic item without top-level `quantity`, causing
+`one_lot_authority_quantity_mismatch`.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r2c0_post_ak3r2b_fresh_submit_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak3r2c0_post_ak3r2b_fresh_submit_halt_root_cause_audit.json
+```
+
+Implementation boundary:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK3R2C0
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2C1 - Submit Guard One-Lot Quantity Handoff Focused Repair
+```
+
+## Phase30-AK3R2C1 - Submit Guard One-Lot Quantity Handoff Focused Repair
+
+Phase30-AK3R2C1 implemented the focused Production-common repair for the
+Phase30-AK3R2C0 `one_lot_authority_quantity_mismatch`.
+
+Primary judgment:
+
+```text
+SUBMIT_GUARD_ONE_LOT_QUANTITY_HANDOFF_REPAIRED = YES
+CANONICAL_EXECUTABLE_QUANTITY_PROPAGATED = YES
+AUTHORIZED_ONE_LOT_QUANTITY_REVALIDATION_PASS = YES
+TRUE_QUANTITY_MISMATCH_REVIEW_PRESERVED = YES
+NORMAL_BUY_SUBMIT_GUARD_PRESERVED = YES
+AK3R2B_CASH_FEASIBLE_BATCH_PRESERVED = YES
+SUBMIT_FINAL_FAIL_CLOSED_PRESERVED = YES
+STRATEGY_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_PRESERVED = YES
+FUTURE_INFORMATION_USED = FALSE
+```
+
+Repair:
+
+```text
+Pending canonical quantity
+-> SubmitGuardItem.quantity
+-> planning_submit_feasibility._one_lot_submit_authority()
+-> quantity == discrete_authorized_quantity
+-> PASS
+```
+
+The repair reuses canonical Pending evidence and does not recompute quantity,
+introduce a new authority, alter Strategy, alter Position Sizing semantics,
+change cash pruning, remove Submit guard, or weaken Safety.
+
+Validation:
+
+```text
+Submit guard sentinels: 11 passed
+Planning submit feasibility + AK3R2B cash batch: 27 passed
+PositionSizingAuthority / one-lot / sizing preservation: 117 passed
+Pending ADD consumer preservation: 24 passed
+compileall runtime_v2 + strategy: PASS
+JSON validation: PASS
+git diff --check: PASS
+```
+
+Historical:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak3r2c1_submit_guard_one_lot_quantity_handoff_focused_repair.md
+reports/phase_reports/phase30_ak3r2c1_submit_guard_one_lot_quantity_handoff_focused_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK3R2C2 - User-Operated Fresh 5BD End-to-End Validation
+```
+
+## Phase30-AK4 - 2023-10-27 Historical Morning HALT Root-Cause / Recurrence Audit
+
+Phase30-AK4 completed a READ-ONLY root-cause and recurrence audit of stale
+long Historical run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T121454359538Z
+target_date = 2023-10-27
+failed_job = morning
+```
+
+Primary judgment:
+
+```text
+PHASE30_AK4_20231027_HISTORICAL_MORNING_HALT_STALE_PRE_AK2_POSITION_SIZING_ONE_LOT_HELPER_DEFECT_NO_NEW_REPAIR_REQUIRED
+```
+
+Direct HALT:
+
+```text
+HALT_DIRECT_PRODUCER = runtime_v2 morning pipeline / phase23_i_strategy_planning_authority_pipeline
+HALT_DIRECT_STATUS = REVIEW_REQUIRED
+HALT_DIRECT_REASON = morning pipeline review required: strategy_planning_authority_unresolved
+HALT_DIRECT_ARTIFACT = daily/2023-10-27/morning/runtime_manifest.json
+```
+
+First non-PASS layer:
+
+```text
+FIRST_NON_PASS_LAYER = strategy.position_sizing
+strategy/position_sizing.json:
+  schema_version = position_sizing_shadow_error.v1
+  producer_result_status = BLOCK
+  error = name '_minimum_executable_one_lot_authorized_row' is not defined
+  reason_codes = ["strategy_shadow_generation_error"]
+```
+
+Propagation:
+
+```text
+Position Sizing BLOCK
+-> Runtime Planning REVIEW_REQUIRED
+-> Strategy Planning Authority REVIEW_REQUIRED
+-> pending not committed
+-> Morning REVIEW_REQUIRED / exit_code 20
+```
+
+Non-causes:
+
+```text
+PENDING_CONFLICT_CONFIRMED = NO
+BUY_SELL_INDEPENDENCE_PRESERVED = YES
+CORPORATE_ACTION_TRIGGERED_HALT = NO
+TEMPORAL_AUTHORITY_TRIGGERED_HALT = NO
+DATA_READINESS_TRIGGERED_HALT = NO
+SAFETY_TRIGGERED_HALT = NO
+RUNTIME_STATE_CONTINUITY = PASS
+```
+
+Recurrence / scope:
+
+```text
+HALT_RECURRENCE_CLASSIFICATION = RELATED_BUT_DISTINCT_BOUNDARY
+DEFECT_SCOPE = NOT_A_DEFECT_CURRENT_CODE_STALE_RUN_LINEAGE
+KNOWN_RUNTIME_DEFECT = YES
+KNOWN_AUTHORITY_DEFECT = YES
+RESUME_BEFORE_REPAIR_SAFE = NO
+IMPLEMENTATION_REPAIR_REQUIRED = NO
+```
+
+The target run is explicitly not post-AK2 / post-AK3R2C1 validation evidence.
+Current code contains `_minimum_executable_one_lot_authorized_row`, and AK2
+documents the Production-common minimum executable one-lot repair. No AK4R
+repair is recommended from this stale run evidence.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak4_2023_10_27_historical_morning_halt_root_cause_recurrence_audit.md
+reports/phase_reports/phase30_ak4_2023_10_27_historical_morning_halt_root_cause_recurrence_audit.json
+reports/phase_reports/phase30_ak4/evidence_summary.json
+```
+
+Recommended continuation:
+
+```text
+Return to fresh post-AK3R2C1 validation preparation.
+```
+
+## Phase30-AK5 - 2022-10-21 Current Valuation Refresh HALT Root-Cause Audit
+
+Phase30-AK5 completed a READ-ONLY root-cause audit of the latest fresh
+Production-common long Historical validation run:
+
+```text
+runtime-test-historical-extended-smoke-20260816T233330533557Z
+failed_job = 2022-10-21:current_valuation_refresh
+last_completed_business_day = 2022-10-20
+```
+
+Primary judgment:
+
+```text
+PHASE30_AK5_20221021_CURRENT_VALUATION_REFRESH_HALT_HELD_POSITION_44150_MISSING_QUOTE_LISTING_CA_AMBIGUITY_AND_VALUATION_METADATA_CONTINUITY_GAP_REPAIR_REQUIRED
+```
+
+Direct HALT:
+
+```text
+HALT_DIRECT_PRODUCER = ai_fund_lab_v2.runtime_v2.current_state.valuation.run_current_valuation_refresh
+HALT_DIRECT_STATUS = REVIEW_REQUIRED
+HALT_DIRECT_REASON = current_valuation_review_required
+HALT_DIRECT_ARTIFACT = daily/2022-10-21/current_valuation_refresh/current_valuation_manifest.json
+FIRST_NON_PASS_LAYER = current_valuation_refresh valuation_projection
+HALT_TRIGGER_SYMBOLS = ["44150"]
+```
+
+Root cause:
+
+```text
+44150 was still held at quantity 100.
+2022-10-21 listed issues contains 44150.
+2022-10-21 raw OHLCV contains 44150 but O/H/L/C/AdjC are NaN.
+2022-10-21 normalized OHLCV has no 44150 row.
+current_valuation missing_evidence includes
+current_valuation_quote_invalid:44150:missing_quote_class:LISTING_OR_CORPORATE_ACTION_AMBIGUITY.
+```
+
+Additional continuity gap:
+
+```text
+2022-10-21 execution-projected Current preserved price and basis fields, but
+remaining positions lack per-position valuation_as_of/source_market_date.
+valued_position_count = 0.
+```
+
+Non-causes:
+
+```text
+TEMPORAL_AUTHORITY_TRIGGERED_HALT = NO
+FUTURE_INFORMATION_USED = FALSE
+CORPORATE_ACTION_TRIGGERED_HALT = NO
+COST_BASIS_CONTINUITY = PASS
+VALUATION_ACCOUNTING_CONSISTENCY = PASS
+```
+
+Defect scope:
+
+```text
+HALT_RECURRENCE_CLASSIFICATION = RELATED_BUT_DISTINCT_BOUNDARY
+DEFECT_SCOPE = PRODUCTION_COMMON
+KNOWN_RUNTIME_DEFECT = YES
+KNOWN_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+RESUME_BEFORE_REPAIR_SAFE = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak5_2022_10_21_current_valuation_refresh_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak5_2022_10_21_current_valuation_refresh_halt_root_cause_audit.json
+reports/phase_reports/phase30_ak5/evidence_summary.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK5R — 44150 Held-Position No-Valid-Close Stale Valuation Authority and Execution-Projected Current Valuation Metadata Continuity Repair
+```
+
+## Phase30-AK5R - Held-Position No-Valid-Close Valuation Authority / Metadata Continuity Repair
+
+Phase30-AK5R implemented the focused Production-common repair for the two
+connected AK5 defects:
+
+1. runtime-owned execution projection dropped canonical per-position valuation
+   metadata for positions that remained open;
+2. held listed positions with a raw same-day row but no usable valid close could
+   not be classified into the existing authorized stale valuation architecture
+   even when Corporate Event authority was clear and previous valuation
+   provenance was complete.
+
+Primary judgment:
+
+```text
+PHASE30_AK5R_HELD_POSITION_NO_VALID_CLOSE_STALE_VALUATION_AUTHORITY_AND_EXECUTION_PROJECTED_CURRENT_METADATA_CONTINUITY_REPAIRED
+```
+
+Implemented:
+
+```text
+HELD_POSITION_NO_VALID_CLOSE_REPAIR_IMPLEMENTED = YES
+EXECUTION_PROJECTED_CURRENT_VALUATION_METADATA_CONTINUITY_REPAIRED = YES
+AUTHORITATIVE_STALE_VALUATION_NO_VALID_CLOSE_ACTION_EFFECTIVE = YES
+44150_EQUIVALENT_SENTINEL_PASS = YES
+```
+
+Preserved:
+
+```text
+BLIND_PREVIOUS_CLOSE_FALLBACK_CREATED = NO
+HISTORICAL_ONLY_VALUATION_PATH_CREATED = NO
+CORPORATE_ACTION_FAIL_CLOSED_PRESERVED = YES
+TEMPORAL_AUTHORITY_PRESERVED = YES
+BASIS_AUTHORITY_PRESERVED = YES
+NORMAL_FRESH_VALUATION_PRESERVED = YES
+FUTURE_INFORMATION_USED = FALSE
+```
+
+Validation:
+
+```text
+compileall = PASS
+focused AK5R/Q2/projection tests = 28 passed
+broader current valuation / stale / temporal / projection regression = 74 passed
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak5r_held_position_no_valid_close_stale_valuation_authority_metadata_continuity_repair.md
+reports/phase_reports/phase30_ak5r_held_position_no_valid_close_stale_valuation_authority_metadata_continuity_repair.json
+```
+
+Recommended next task:
+
+```text
+User-operated fresh long Historical validation from a clean state.
+```
+
+## Phase30-AK5R1 - Post-AK5R Fresh Current-Valuation HALT Recurrence Audit
+
+Phase30-AK5R1 completed a read-only recurrence audit of fresh run:
+
+```text
+runtime-test-historical-extended-smoke-20260817T014925194738Z
+failed job = 2022-10-21:current_valuation_refresh
+```
+
+Primary judgment:
+
+```text
+POST_AK5R_HALT_CLASSIFICATION = AK5R_STALE_CLASSIFICATION_NOT_ACTION_EFFECTIVE
+AK5R_REGRESSION_CONFIRMED = YES
+KNOWN_RUNTIME_DEFECT = YES
+KNOWN_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+AK7R_SAFE_TO_IMPLEMENT_BEFORE_VALUATION_FIX = NO
+```
+
+AK5R was partially action-effective. Execution-projected Current now preserves
+per-position valuation metadata for all 9 open positions, including `44150`.
+The old metadata continuity gap did not recur.
+
+The remaining failure is the stale valuation classification / quote-status
+boundary. `44150` is held, listed on `2022-10-21`, has a raw same-day row with
+no valid OHLC/AdjC close, has CA clear evidence, and has complete previous
+valuation provenance, but the target run did not materialize
+`AUTHORIZED_STALE_VALUATION` / `VALID_CARRYOVER`. The run halted with:
+
+```text
+HALT_DIRECT_REASON = current_valuation_review_required
+missing_symbols = []
+missing_evidence = ["quote_status_not_allowed"]
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak5r1_post_ak5r_fresh_current_valuation_halt_recurrence_audit.md
+reports/phase_reports/phase30_ak5r1_post_ak5r_fresh_current_valuation_halt_recurrence_audit.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK5R2 - Confirmed Post-AK5R Valuation Focused Repair
+```
+
+## Phase30-AK5R2 - Authorized Stale Valuation Final Quote-Status Acceptance Repair
+
+Phase30-AK5R2 implemented the focused Production-common repair for the
+post-AK5R final quote-status acceptance gap. The current valuation projection
+already had canonical authorized stale valuation metadata, but the final
+`quote_status_not_allowed` gate only cleared when every valued position was
+`AUTHORIZED_STALE_VALUATION`. Real portfolios with both fresh quotes and one
+authorized stale held position still halted.
+
+Primary judgment:
+
+```text
+AUTHORIZED_STALE_VALUATION_FINAL_ACCEPTANCE_REPAIRED = YES
+44150_EQUIVALENT_RUNTIME_PATH_PASS = YES
+MIXED_FRESH_AND_AUTHORIZED_STALE_PORTFOLIO_PASS = YES
+AK5R_METADATA_CONTINUITY_PRESERVED = YES
+GENERIC_MISSING_QUOTE_FAIL_CLOSED_PRESERVED = YES
+CORPORATE_ACTION_FAIL_CLOSED_PRESERVED = YES
+TEMPORAL_AUTHORITY_PRESERVED = YES
+BASIS_AUTHORITY_PRESERVED = YES
+NORMAL_FRESH_VALUATION_PRESERVED = YES
+BLIND_PREVIOUS_CLOSE_FALLBACK_CREATED = NO
+HISTORICAL_ONLY_PATH_CREATED = NO
+FUTURE_INFORMATION_USED = FALSE
+```
+
+The repair accepts only complete portfolios whose per-position quote statuses
+are `FRESH_CURRENT_QUOTE` or `AUTHORIZED_STALE_VALUATION`, with at least one
+authorized stale position and no missing or invalid symbols. It does not create
+blind previous-close fallback, historical-only bypasses, or alternative
+valuation authority.
+
+Focused validation:
+
+```text
+compileall = PASS
+phase30_q1 current valuation continuity = 11 passed
+phase30_q2 listing / corporate-action authority = 10 passed
+phase15az current valuation producer = 17 passed
+temporal / submit authority / fill projection preservation = 39 passed
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak5r2_authorized_stale_valuation_final_quote_status_acceptance_repair.md
+reports/phase_reports/phase30_ak5r2_authorized_stale_valuation_final_quote_status_acceptance_repair.json
+```
+
+Fresh / long Historical was not executed by Codex.
+
+Recommended next task:
+
+```text
+Phase30-AK8 — Runtime BUY Intent / Sell-Only Execution Boundary Root-Cause Audit
+```
+
+## Phase30-AK8 - Runtime BUY Intent / Sell-Only Execution Boundary Root-Cause Audit
+
+Phase30-AK8 completed a read-only Runtime execution authority audit of target
+run:
+
+```text
+runtime-test-historical-extended-smoke-20260817T014925194738Z
+primary window = 2022-09-13 through 2022-09-27
+```
+
+Primary judgment:
+
+```text
+SELL_ONLY_BOUNDARY_POPULATION_COUNT = 13
+FIRST_BUY_DISAPPEARANCE_LAYER_DISTRIBUTION = {"SELL_PLANNING_PENDING_COMPOSITION_OVERWRITE": 13}
+SELL_EXECUTION_SUCCESS_COUNT = 11
+BUY_SELL_INDEPENDENCE_PRESERVED = NO
+CURRENT_RUNTIME_SEMANTIC = SELL_ONLY
+SELL_ONLY_BEHAVIOR_ARCHITECTURALLY_INTENDED = NO
+BUY_EXECUTABLE_WITH_STARTING_CASH_COUNT = 13
+BUY_REQUIRES_SAME_DAY_SELL_PROCEEDS_COUNT = 0
+SAME_DAY_SELL_PROCEEDS_REUSE_CONTRACT = CONDITIONAL
+BUY_PENDING_LOST_OR_OVERWRITTEN_COUNT = 13
+MIXED_BUY_SELL_PENDING_SUPPORTED = CONDITIONAL
+SELL_ONLY_ROOT_CAUSE_DISTRIBUTION = {"BUY_PENDING_OVERWRITTEN": 13}
+SELL_ONLY_BOUNDARY_RECURRENCE_CLASSIFICATION = CONFIRMED_REGRESSION
+CURRENT_CODE_STILL_HAS_SELL_ONLY_BOUNDARY = PARTIAL
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_JUSTIFIED = YES
+```
+
+The 13 audited BUY_NEW rows all reached PC positive, PS positive, Runtime
+BUY_NEW, and morning pending generation. They disappeared after morning pending
+when sell planning wrote a later SELL-only pending plan to the single canonical
+current pending slot. Submit and Execution consumed the latest SELL-only
+authority and filled 11 SELL orders across the affected dates, with no audited
+BUY submitted or executed.
+
+This is not explained by same-day SELL proceeds timing: all 13 BUY rows were
+individually executable with starting cash. The correct architecture is
+SELL-first / independent item authority, not SELL-only replacement of valid BUY
+pending.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak8_runtime_buy_intent_sell_only_execution_boundary_root_cause_audit.md
+reports/phase_reports/phase30_ak8_runtime_buy_intent_sell_only_execution_boundary_root_cause_audit.json
+```
+
+Implementation was not authorized or performed.
+
+Recommended next task:
+
+```text
+Phase30-AK8R — BUY / SELL Independent Execution Focused Repair
+```
+
+## Phase30-AK8R - BUY / SELL Independent Pending Composition Focused Repair
+
+Phase30-AK8R repaired the AK8-confirmed
+`SELL_PLANNING_PENDING_COMPOSITION_OVERWRITE` defect in the production-common
+Runtime Pending path.
+
+Primary judgment:
+
+```text
+BUY_SELL_INDEPENDENT_PENDING_COMPOSITION_REPAIRED = YES
+VALID_BUY_PENDING_PRESERVED_ACROSS_SELL_PLANNING = YES
+VALID_BUY_PENDING_SILENT_OVERWRITE_PROHIBITED = YES
+MIXED_BUY_SELL_PENDING_ACTION_EFFECTIVE = YES
+SELL_EXISTENCE_ALONE_CANNOT_DROP_VALID_BUY = YES
+MANDATORY_SELL_INDEPENDENCE_PRESERVED = YES
+BUY_PENDING_COMPOSITION_EVIDENCE_COMPLETE = YES
+AK3R2B_CASH_FEASIBLE_BUY_BATCH_PRESERVED = YES
+AK7R_CAPITAL_CONVERSION_PRESERVED = YES
+SAME_DAY_SELL_PROCEEDS_CONTRACT_PRESERVED = YES
+NO_FORCED_BUY = YES
+SELL_SAFETY_WEAKENED = NO
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PARAMETER_SELECTION = FALSE
+```
+
+Sell Planning now preserves valid pre-sell BUY pending by composing it with
+new same-day SELL pending into one canonical mixed BUY/SELL Pending authority.
+The repair reuses the existing production-common composition path and does not
+recompute Strategy, Candidate, PC ranking, or PS sizing. SELL / REDUCE / EXIT
+authority remains independent and executable; SELL existence alone cannot
+silently drop a valid BUY.
+
+Runtime evidence now materializes
+`pending_composition_evidence.json` with schema
+`phase30_ak8r_buy_sell_pending_composition_evidence.v1`, including pre-sell
+BUY counts, preservable BUY counts, SELL counts, composed BUY/SELL counts,
+dropped BUY count, final canonical pending count, and source lineage.
+
+Focused sentinel added:
+
+```text
+test_phase30_ak8r_multiple_buy_multiple_sell_composes_and_reaches_submit
+```
+
+Test results:
+
+```text
+compileall runtime pending/planning = PASS
+pending composition / AK8R sentinel = 25 passed
+AK3R2B cash batch + submit feasibility + submit guard = 38 passed
+submit guard / mandatory sell / no-action execution regressions = 28 passed
+Phase30-S + Phase30-W strategy handoff regressions = 26 passed
+pending lifecycle + sell planning integration regressions = 52 passed, 60 warnings
+portfolio construction + position sizing regressions = 197 passed
+runtime planning + prior exit materialization regressions = 63 passed
+```
+
+Fresh / long Historical was not executed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak8r_buy_sell_independent_pending_composition_repair.md
+reports/phase_reports/phase30_ak8r_buy_sell_independent_pending_composition_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9 — Fresh Validation Readiness / Consolidated Regression Audit
+```
+
+## Phase30-AK9 - Fresh Long Validation Readiness / Consolidated Regression Audit
+
+Phase30-AK9 completed a read-only consolidated regression and validation
+readiness audit for the current Production-common repair chain:
+
+```text
+AK2 -> AK3R1/C1 -> AK3R2B -> AK5R/AK5R2 -> AK7R -> AK8R
+```
+
+Primary judgment:
+
+```text
+FRESH_LONG_VALIDATION_READY = YES
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+ONE_PRODUCTION_COMMON_PATH_PRESERVED = YES
+FRESH_VALIDATION_BLOCKERS = []
+```
+
+Required conformance flags:
+
+```text
+ZERO_TO_ONE_LOT_CHAIN_CONFORMANT = YES
+PC_PS_EXECUTABLE_QUANTITY_HANDOFF_CONFORMANT = YES
+SECOND_LOT_PLUS_PROMOTION_CONFORMANT = YES
+CASH_FEASIBLE_BUY_BATCH_CONFORMANT = YES
+SUBMIT_FINAL_CASH_FAIL_CLOSED_PRESERVED = YES
+BUY_SELL_PENDING_COMPOSITION_CONFORMANT = YES
+VALID_BUY_PENDING_SILENT_OVERWRITE_PROHIBITED = YES
+MANDATORY_SELL_INDEPENDENCE_PRESERVED = YES
+SAME_DAY_SELL_PROCEEDS_CONTRACT_UNCHANGED = YES
+MIXED_PENDING_TO_SUBMIT_CONFORMANT = YES
+MIXED_FRESH_STALE_VALUATION_CONFORMANT = YES
+GENERIC_MISSING_QUOTE_FAIL_CLOSED_PRESERVED = YES
+CA_FAIL_CLOSED_PRESERVED = YES
+BASIS_FAIL_CLOSED_PRESERVED = YES
+TEMPORAL_AUTHORITY_PRESERVED = YES
+CROSS_REPAIR_INTERACTION_STATUS = PASS
+POSITION_COUNT_AUTHORITY_CONFORMANT = YES
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PARAMETER_SELECTION = FALSE
+```
+
+Consolidated short regression:
+
+```text
+compileall runtime_v2 + strategy = PASS
+Strategy / PC / PS / REENTRY / prior-exit regressions = 293 passed
+Pending / Submit / Sell Planning / mandatory SELL regressions = 143 passed, 60 warnings
+Current Valuation / temporal / position-count authority regressions = 102 passed
+```
+
+The warnings are pre-existing `DeprecationWarning` messages from
+`runtime_v2/position_management/producer.py` about empty ndarray truth-value
+behavior.
+
+Fresh / long Historical was not executed by Codex. No implementation was
+authorized or performed.
+
+Post-validation observation items:
+
+```text
+performance
+Compound Capital Scaling
+one-lot lifecycle
+winner amplification
+Cash constraint rate
+position count distribution
+BUY fill conversion rate
+ADD fill conversion rate
+mixed BUY/SELL pending runtime frequency
+authorized stale valuation runtime frequency
+```
+
+## Phase30-AK9R0 - Post-AK9 Fresh Zero-BUY Regression Root-Cause Audit
+
+Phase30-AK9R0 completed a READ-ONLY root-cause audit of fresh run
+`runtime-test-historical-extended-smoke-20260817T040435873521Z`, where
+2022-08-10, 2022-08-12, and 2022-08-15 produced zero BUY/FILL despite fresh
+state integrity passing.
+
+Primary judgment:
+
+```text
+POST_AK9_ZERO_BUY_REGRESSION_CLASSIFICATION =
+  SUBMIT_BUY_ITEM_SCOPED_REVIEW_ATOMIC_BATCH_NO_SUBMISSION_REGRESSION
+FIRST_ZERO_BUY_LAYER = Submit
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+2022-08-10 BUY lineage:
+
+```text
+CANDIDATE_COUNT = 50
+PC_POSITIVE_BUY_NEW_COUNT = 16
+PC_POSITIVE_EXECUTABLE_QUANTITY_AUTHORITY_COUNT = 16
+AK2_ONE_LOT_AUTHORITY_COUNT = 0
+PS_POSITIVE_BUY_NEW_COUNT = 16
+RUNTIME_BUY_NEW_COUNT = 16
+CASH_FEASIBLE_BUY_INCLUDED_COUNT = 8
+CASH_PRUNED_COUNT = 0
+PENDING_BUY_COUNT = 16
+SUBMIT_BUY_PASS_COUNT = 0
+SUBMITTED_BUY_ORDER_COUNT = 0
+BUY_FILL_COUNT = 0
+```
+
+Root cause: AK7R materialized larger PC executable quantities and PS consumed
+them, while AK3R2B kept non-cash `position_sizing` `REVIEW_REQUIRED` BUY items
+inside the active BUY batch as `INCLUDE_REVIEW_REQUIRED`. Submit then preserved
+BUY atomicity via `BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION`, blocking otherwise
+PASS BUY items and submitting zero orders.
+
+The defect recurred with the same root cause on all three observed zero-BUY
+days. Cash constraint, AK2 one-lot authority, AK8R sell overwrite, and AK5R2
+valuation were not causal.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r0_post_ak9_fresh_zero_buy_regression_root_cause_audit.md
+reports/phase_reports/phase30_ak9r0_post_ak9_fresh_zero_buy_regression_root_cause_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R0
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R1 - Non-Cash BUY Review Batch Submit Boundary Focused Repair
+```
+
+## Phase30-AK9R1 - Non-Cash BUY Review Batch Submit Boundary Focused Repair
+
+Phase30-AK9R1 repaired the AK9R0-confirmed
+`SUBMIT_BUY_ITEM_SCOPED_REVIEW_ATOMIC_BATCH_NO_SUBMISSION_REGRESSION` in the
+Production-common submit path.
+
+Primary judgment:
+
+```text
+NON_CASH_BUY_REVIEW_BATCH_BOUNDARY_REPAIRED = YES
+BUY_ITEM_SCOPED_REVIEW_PRESERVED = YES
+ITEM_REVIEW_DOES_NOT_ESCALATE_TO_BATCH_FAILURE = YES
+TRUE_BATCH_FAILURE_ATOMICITY_PRESERVED = YES
+PARTIAL_PASS_BUY_SUBMISSION_ACTION_EFFECTIVE = YES
+REVIEWED_BUY_ITEM_EVIDENCE_PRESERVED = YES
+AK3R2B_CASH_PRUNING_PRESERVED = YES
+AK7R_EXECUTABLE_QUANTITY_PRESERVED = YES
+AK8R_BUY_SELL_INDEPENDENCE_PRESERVED = YES
+MANDATORY_SELL_CONTINUATION_PRESERVED = YES
+SUBMIT_FINAL_FAIL_CLOSED_PRESERVED = YES
+AK9_MISSING_SENTINEL_ADDED = YES
+```
+
+Repair boundary: non-cash item-scoped `REVIEW_REQUIRED` BUY items remain
+fail-closed, but their presence no longer escalates to zero submission for
+independently approved/PASS BUY items. Cash / aggregate cash review remains
+atomic fail-closed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r1_non_cash_buy_review_batch_submit_boundary_repair.md
+reports/phase_reports/phase30_ak9r1_non_cash_buy_review_batch_submit_boundary_repair.json
+```
+
+Historical:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R2 - Consolidated Post-Repair Fresh Readiness Regression
+```
+
+## Phase30-AK9R1A - selected_position_amount Submit Guard Authority Audit
+
+Phase30-AK9R1A completed a READ-ONLY authority audit of the AK9R0
+`estimated amount exceeds selected_position_amount` review population.
+
+Primary judgment:
+
+```text
+KNOWN_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_JUSTIFIED = YES
+SIZING_DOUBLE_AUTHORITY_CONFIRMED = YES
+SUBMIT_SELECTED_POSITION_AMOUNT_CHECK_RESPONSIBILITY = CONDITIONAL
+```
+
+Findings:
+
+```text
+REVIEW_ITEM_COUNT = 8
+REVIEW_ITEMS_WITH_VALID_PC_DISCRETE_AUTHORITY = 8
+OTHERWISE_FULLY_EXECUTABLE_REVIEW_COUNT = 8
+PC_AUTHORIZED_QUANTITY_IS_FINAL_STRATEGY_ALLOCATION = YES
+GUARD_STILL_REQUIRED_AFTER_AK7R = CONDITIONAL
+```
+
+The reviewed BUY items had PC
+`PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY` `PASS` and PS
+`final_quantity_delta` matching the PC executable quantity. The failing
+`selected_position_amount` comparison is therefore a duplicate sizing authority
+when canonical discrete quantity, Strategy cap, Safety hard cap, cash,
+buying-power, pending consistency, and broker feasibility otherwise pass.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r1a_selected_position_amount_submit_guard_authority_audit.md
+reports/phase_reports/phase30_ak9r1a_selected_position_amount_submit_guard_authority_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R1A
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R1B - Canonical Discrete Quantity selected_position_amount Guard Boundary Repair
+```
+
+## Phase30-AK9R1B - Canonical Discrete Quantity / selected_position_amount Guard Boundary Repair
+
+Phase30-AK9R1B repaired the AK9R1A-confirmed Submit sizing double authority.
+When PC supplies a valid
+`PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY` and PS consumes
+the same canonical executable quantity, Submit no longer re-reviews that same
+quantity using continuous `selected_position_amount`.
+
+Primary judgment:
+
+```text
+CANONICAL_DISCRETE_QUANTITY_PRECEDENCE_IMPLEMENTED = YES
+SELECTED_POSITION_AMOUNT_FALLBACK_GUARD_PRESERVED = YES
+SUBMIT_REMAINS_EXECUTION_SAFETY_VERIFIER = YES
+AK9R0_FALSE_SELECTED_AMOUNT_REVIEWS_ELIMINATED = YES
+AK9R1_ITEM_SCOPED_REVIEW_BOUNDARY_PRESERVED = YES
+```
+
+Preservation:
+
+```text
+AK7R_CANONICAL_QUANTITY_PRESERVED = YES
+AK3R2B_AGGREGATE_CASH_AUTHORITY_PRESERVED = YES
+STRATEGY_CAP_PRESERVED = YES
+SAFETY_HARD_CAP_PRESERVED = YES
+CASH_FAIL_CLOSED_PRESERVED = YES
+NO_FORCED_BUY = YES
+FUTURE_INFORMATION_USED = FALSE
+HISTORICAL_OUTCOME_USED_FOR_PARAMETER_SELECTION = FALSE
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r1b_canonical_discrete_quantity_selected_position_amount_guard_boundary_repair.md
+reports/phase_reports/phase30_ak9r1b_canonical_discrete_quantity_selected_position_amount_guard_boundary_repair.json
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R2 - Consolidated Post-Repair Fresh Readiness Regression
+```
+
+## Phase30-AK9R2 - Consolidated Post-Repair Fresh Readiness Regression
+
+Phase30-AK9R2 completed a READ-ONLY consolidated post-repair regression audit
+for the latest Production-common chain including AK9R1 and AK9R1B.
+
+Primary judgment:
+
+```text
+FRESH_SHORT_VALIDATION_READY = YES
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+FRESH_VALIDATION_BLOCKERS = []
+```
+
+Required conformance:
+
+```text
+AK9R0_ZERO_BUY_REGRESSION_CLOSED = YES
+CANONICAL_DISCRETE_QUANTITY_END_TO_END_CONFORMANT = YES
+SELECTED_POSITION_AMOUNT_DOUBLE_AUTHORITY_REMOVED = YES
+SELECTED_POSITION_AMOUNT_FALLBACK_GUARD_PRESERVED = YES
+BUY_ITEM_SCOPED_PARTIAL_SUBMISSION_CONFORMANT = YES
+TRUE_BATCH_ATOMICITY_PRESERVED = YES
+AGGREGATE_CASH_FEASIBILITY_CONFORMANT = YES
+NO_BUY_SUBMITTED_BEYOND_AVAILABLE_CASH = YES
+BUY_SELL_PENDING_COMPOSITION_CONFORMANT = YES
+MANDATORY_SELL_CONTINUATION_PRESERVED = YES
+AK7R_CAPITAL_CONVERSION_CONFORMANT = YES
+MIXED_FRESH_AUTHORIZED_STALE_VALUATION_CONFORMANT = YES
+VALUATION_FAIL_CLOSED_BOUNDARIES_PRESERVED = YES
+POST_REPAIR_CROSS_INTERACTION_STATUS = PASS
+```
+
+Codex executed only short regression tests:
+
+```text
+compileall = PASS
+Submit/Pending/Cash/PC-PS regression = 287 passed
+SELL/guard/REENTRY/one-lot regression = 88 passed
+Current Valuation/temporal/CA/basis regression = 77 passed
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r2_consolidated_post_repair_fresh_readiness_regression.md
+reports/phase_reports/phase30_ak9r2_consolidated_post_repair_fresh_readiness_regression.json
+```
+
+Recommended next task:
+
+```text
+User-operated fresh 3-5BD validation
+```
+
+## Phase30-AK9R3 - Post-AK9R2 Fresh Sell-Planning HALT Root-Cause Audit
+
+Phase30-AK9R3 completed a READ-ONLY root-cause audit of fresh run
+`runtime-test-historical-extended-smoke-20260817T061136142544Z`, which halted
+at `2022-08-10:sell_planning` with Runtime CLI exit code 20.
+
+Primary judgment:
+
+```text
+POST_AK9R2_SELL_PLANNING_HALT_CLASSIFICATION =
+  AK9R1_PENDING_STATE_COMPATIBILITY_REGRESSION
+
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+Direct halt:
+
+```text
+HALT_DIRECT_PRODUCER =
+  runtime_v2.data_readiness / historical safety temporal authority gate for sell_planning
+HALT_DIRECT_REASON = historical_safety_temporal_authority_missing
+FIRST_NON_PASS_LAYER = sell_planning pre-pipeline Data Readiness / Safety authority
+```
+
+Fresh morning produced an AK9R1 partial-approved pending shape:
+
+```text
+PRE_SELL_BUY_PENDING_COUNT = 13
+PRE_SELL_APPROVED_BUY_COUNT = 9
+PRE_SELL_REVIEW_BUY_COUNT = 4
+state = REVIEW_REQUIRED
+review_scope = BUY_ITEM_SCOPED_REVIEW
+plan_overall_status = APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW
+sell_continuation_allowed = true
+SELL_SIGNAL_COUNT = 0
+SELL_ITEM_COUNT = 0
+```
+
+Root cause:
+
+```text
+AK9R1_PENDING_STATE_COMPATIBLE_WITH_SELL_PLANNING = NO
+AK9R1B_PAYLOAD_COMPATIBLE_WITH_SELL_PLANNING = YES
+AK8R_COMPOSITION_STATUS = NOT_EXECUTED_PRE_PIPELINE_DATA_READINESS_REVIEW_REQUIRED
+FRESH_STATE_INTEGRITY = PASS
+```
+
+AK9R2 missed this because it did not include a no-position/no-SELL Sell
+Planning readiness sentinel for a BUY-only partial-approved
+`BUY_ITEM_SCOPED_REVIEW` pending with non-empty `approved_buy_item_ids` and
+non-empty `review_required_buy_item_ids`.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r3_post_ak9r2_fresh_sell_planning_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak9r3_post_ak9r2_fresh_sell_planning_halt_root_cause_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R3
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R4 - AK9R1 Partial-Approved BUY_ITEM_SCOPED_REVIEW Sell-Planning Readiness Repair
+```
+
+## Phase30-AK9R4 - AK9R1 Partial-Approved BUY_ITEM_SCOPED_REVIEW Sell-Planning Readiness Repair
+
+Phase30-AK9R4 repaired the AK9R3-confirmed Sell Planning readiness
+compatibility regression for AK9R1 partial-approved `BUY_ITEM_SCOPED_REVIEW`
+pending.
+
+Primary judgment:
+
+```text
+PARTIAL_APPROVED_BUY_REVIEW_PENDING_RECOGNIZED = YES
+SELL_PLANNING_DATA_READINESS_PARTIAL_REVIEW_COMPATIBLE = YES
+NO_SELL_PARTIAL_APPROVED_BUY_PENDING_PRESERVED = YES
+PARTIAL_APPROVED_BUY_PLUS_SELL_COMPOSITION_ACTION_EFFECTIVE = YES
+REVIEWED_BUY_FAIL_CLOSED_PRESERVED = YES
+APPROVED_BUY_ITEMS_PRESERVED = YES
+TRUE_PENDING_BATCH_FAILURE_FAIL_CLOSED_PRESERVED = YES
+AK8R_BUY_SELL_INDEPENDENCE_PRESERVED = YES
+AK9R1_PARTIAL_SUBMISSION_PRESERVED = YES
+AK9R1B_CANONICAL_QUANTITY_PRECEDENCE_PRESERVED = YES
+AK9R2_MISSING_SELL_READINESS_SENTINEL_ADDED = YES
+```
+
+Repair:
+
+```text
+Sell Planning Data Readiness / Historical Safety now recognizes valid AK9R1
+partial-approved BUY_ITEM_SCOPED_REVIEW pending with non-empty approved BUY ids
+and non-empty reviewed BUY ids.
+```
+
+Preserved fail-closed boundaries:
+
+```text
+overlapping approved/review BUY ids
+review-required SELL ids
+missing policy authority
+cash / reserved_cash / aggregate_cash / buying_power / dynamic_cash review
+approved BUY item missing or not submittable
+reviewed BUY item missing or incorrectly approved
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r4_partial_approved_buy_review_sell_planning_readiness_repair.md
+reports/phase_reports/phase30_ak9r4_partial_approved_buy_review_sell_planning_readiness_repair.json
+```
+
+Historical:
+
+```text
+FRESH_HISTORICAL_EXECUTED_BY_CODEX = NO
+LONG_HISTORICAL_EXECUTED_BY_CODEX = NO
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R5 - User-Operated Fresh 3-5BD Partial-Approved BUY Review Sell-Planning Validation
+```
+
+## Phase30-AK9R5 - Post-AK9R4 Fresh Initial-Day Current-Valuation HALT Root-Cause Audit
+
+Phase30-AK9R5 completed a READ-ONLY audit of fresh run
+`runtime-test-historical-extended-smoke-20260817T065335027152Z`, which halted
+at `2022-08-10:current_valuation_refresh` with Runtime CLI exit code 20.
+
+Primary judgment:
+
+```text
+POST_AK9R4_CURRENT_VALUATION_HALT_CLASSIFICATION =
+  CROSS_REPAIR_INTERACTION_REGRESSION
+
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+IMPLEMENTATION_REPAIR_REQUIRED = YES
+```
+
+Direct halt:
+
+```text
+HALT_DIRECT_PRODUCER =
+  runtime_v2.data_readiness / historical safety temporal authority gate for current_valuation_refresh
+HALT_DIRECT_REASON = historical_safety_temporal_authority_missing
+FIRST_NON_PASS_LAYER = current_valuation_refresh pre-producer Runtime Data Readiness / Safety authority
+HALT_TRIGGER_SYMBOLS = [38410, 39950, 47770, 83060]
+```
+
+AK9R4 was action-effective:
+
+```text
+AK9R4_SELL_PLANNING_READINESS_PASS = YES
+AK9R4_NO_SELL_PENDING_PRESERVATION_ACTION_EFFECTIVE = YES
+```
+
+Submit / Execution progressed:
+
+```text
+PENDING_BUY_COUNT = 13
+APPROVED_BUY_COUNT = 9
+REVIEW_BUY_COUNT = 4
+SUBMITTED_BUY_ORDER_COUNT = 9
+BUY_FILL_COUNT = 9
+SELL_FILL_COUNT = 0
+POST_FILL_POSITION_COUNT = 9
+```
+
+Root cause:
+
+```text
+After AK9R1 partial submission, 9 approved BUY items were consumed and filled,
+but 4 review-only BUY items remained in a REVIEW_REQUIRED BUY_ITEM_SCOPED_REVIEW
+pending plan. Current Valuation readiness does not yet recognize this residual
+post-submit review-only pending shape as safe for valuation-only continuation,
+so it fails before valuation projection with pending_review_required /
+historical_safety_temporal_authority_missing.
+```
+
+Current Valuation did not reach symbol-level quote evaluation:
+
+```text
+VALUED_POSITION_COUNT = 0
+REVIEW_REQUIRED_POSITION_COUNT = 0
+REVIEW_REQUIRED_SYMBOLS = []
+NEW_FILL_SAME_DAY_VALUATION_CONFORMANT = NO
+AK5R2_BOUNDARY_RELEVANT = NO
+VALUATION_ACCOUNTING_CONSISTENCY = PASS
+TEMPORAL_AUTHORITY_TRIGGERED_HALT = YES
+CORPORATE_ACTION_TRIGGERED_HALT = NO
+BASIS_AUTHORITY_TRIGGERED_HALT = NO
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9r5_post_ak9r4_fresh_initial_day_current_valuation_halt_root_cause_audit.md
+reports/phase_reports/phase30_ak9r5_post_ak9r4_fresh_initial_day_current_valuation_halt_root_cause_audit.json
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AK9R5
+```
+
+Recommended next task:
+
+```text
+Phase30-AK9R6 - Post-Submit Residual BUY_ITEM_SCOPED_REVIEW Pending Current-Valuation Readiness Authority Repair
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak9_fresh_validation_readiness_consolidated_regression_audit.md
+reports/phase_reports/phase30_ak9_fresh_validation_readiness_consolidated_regression_audit.json
+```
+
+Recommended next task:
+
+```text
+User-operated clean fresh long Historical validation
+```
+
+## Phase30-AK0 - Running 200BD Loss / Candidate-to-Capital / Valuation Integrity Attribution Audit
+
+Phase30-AK0 audited the running fresh 200BD run
+`runtime-test-historical-extended-smoke-20260816T121454359538Z` read-only
+through the completed business-day authority captured at audit start.
+
+Primary judgment:
+
+```text
+AUDIT_CUTOFF_DATE = 2023-09-06
+COMPLETED_BUSINESS_DAYS = 265
+LARGE_LOSS_VALUATION_INTEGRITY = PASS
+LONG_HORIZON_HYBRID_ACTION_EFFECTIVE = YES
+HYBRID_ADDED_TO_PC_POSITIVE_RATE = 0.2977
+HYBRID_ADDED_TO_BUY_FILL_RATE = 0.0025
+PAYOFF_ASYMMETRY = MIXED
+WINNER_AMPLIFICATION = INEFFECTIVE
+LOSS_CONTAINMENT = PARTIAL
+94320_CAMPAIGN_CLASSIFICATION = MIXED
+LONG_LIVED_CAMPAIGN_CAPITAL_LOCK = PARTIAL
+BEAR_CONVICTION_HYPOTHESIS = INSUFFICIENT
+CAPITAL_UTILIZATION = MIXED
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+RUN_RECOMMENDATION = CONTINUE_CURRENT_200BD_RUN
+```
+
+The audited large-loss days reconciled as real economic losses, not valuation,
+corporate-action, stale-price, or accounting defects. Candidate hybrid Top50
+membership remained action-effective over the long horizon, but hybrid-added
+names rarely converted into fills. The dominant performance structure is
+multi-causal: real entry losses, candidate-to-capital attrition, ineffective
+ADD conversion, and mixed payoff asymmetry.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak0_running_200bd_loss_candidate_to_capital_valuation_integrity_attribution_audit.md
+reports/phase_reports/phase30_ak0_running_200bd_loss_candidate_to_capital_valuation_integrity_attribution_audit.json
+reports/phase_reports/phase30_ak0/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK1 - ADD Conversion / PS Executable Capital Bridge Audit
+```
+
+## Phase30-AK0R - Candidate Feature / Model Inference / Score / Top50 Historical Runtime Lineage Audit
+
+Phase30-AK0R audited the top-of-funnel Candidate lineage for the running fresh
+200BD run `runtime-test-historical-extended-smoke-20260816T121454359538Z`
+read-only.
+
+Primary judgment:
+
+```text
+AUDIT_CUTOFF_DATE = 2023-09-19
+COMPLETED_BUSINESS_DAYS = 273
+CANDIDATE_FEATURE_GENERATION_MODE = RUNTIME_GENERATED
+CANDIDATE_SCORE_GENERATION_MODE = LIVE_RUNTIME_INFERENCE
+CANDIDATE_ACCEPTED_GENERATION_AUTHORITY_COMMON = YES
+CANDIDATE_SCORE_PIT_SAFE = YES
+HISTORICAL_CANDIDATE_MATERIALIZATION_CLASS = PRODUCTION_EQUIVALENT
+ONE_PRODUCTION_CANDIDATE_LOGIC_PATH = YES
+HISTORICAL_ONLY_CANDIDATE_SELECTION_REFERENCE_COUNT = 0
+HISTORICAL_ONLY_CANDIDATE_SCORE_REFERENCE_COUNT = 0
+CANDIDATE_SCORE_DETERMINISM = PASS
+TOP50_SELECTION_MODE = RUNTIME_FULL_POPULATION
+TOP50_PRECUT_POPULATION = min 3,260 / max 3,781 / avg 3,712.86
+CANDIDATE_RUNTIME_LINEAGE_JUDGMENT = PASS
+RUN_RECOMMENDATION = CONTINUE_CURRENT_200BD_RUN
+```
+
+Historical Runtime does not consume a precomputed Candidate Top50 shortcut.
+For each business day, market refresh generates PIT Candidate features, and
+morning BUY AI runs Accepted Generation-bound Candidate model inference to
+materialize `candidate_score`, score-only rank, semantic hybrid ordering, and
+Top50.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_ak0r_candidate_feature_model_inference_score_top50_historical_runtime_lineage_audit.md
+reports/phase_reports/phase30_ak0r_candidate_feature_model_inference_score_top50_historical_runtime_lineage_audit.json
+reports/phase_reports/phase30_ak0r/
+```
+
+Recommended next task:
+
+```text
+Phase30-AK1 - ADD Conversion / PS Executable Capital Bridge Audit
+```
+
+## Phase30-AJ3B - Candidate PIT Surface Liquidity Evidence Propagation Repair
+
+Phase30-AJ3B repaired the Production-common propagation gap confirmed by
+Phase30-AJ3A.
+
+Primary judgment:
+
+```text
+LIQUIDITY_PROPAGATION_ROOT_CAUSE = BUY_QUALITY_PROPAGATED_FEATURE_COLUMNS omitted liquidity_avg_volume_20d before candidate_pit_quality_surface.v1
+LIQUIDITY_PROPAGATION_REPAIRED = YES
+CANONICAL_LIQUIDITY_AUTHORITY_REUSED = YES
+DUPLICATE_LIQUIDITY_AUTHORITY_CREATED = NO
+CANDIDATE_SURFACE_SUFFICIENCY_RESTORED = YES
+SEMANTIC_HYBRID_ORDERING_PRESERVED = YES
+CANDIDATE_MODEL_PRESERVED = YES
+TOP50_COUNT = 50
+```
+
+Repair:
+
+```text
+Candidate feature artifact liquidity_avg_volume_20d
+-> Runtime BUY quality feature metadata
+-> Candidate PIT surface raw_pit_evidence
+-> candidate_coverage_evidence liquidity lineage
+```
+
+No Candidate model retraining, label change, accepted-generation change,
+candidate_score change, semantic hybrid ordering change, threshold tuning,
+Top50 count change, new AI path, Runtime authority change, BUY/PC/PS authority
+change, fresh Historical run, or long Historical run was performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj3b_candidate_pit_surface_liquidity_evidence_propagation_repair.md
+reports/phase_reports/phase30_aj3b_candidate_pit_surface_liquidity_evidence_propagation_repair.json
+reports/phase_reports/phase30_aj3b_liquidity_lineage_evidence.json
+docs/03_ai_design/candidate_ai_design.md
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ3C - Fresh Candidate Surface / Top50 Action Effect Validation
+```
+
+## Phase30-AJ3C - Fresh 5BD Candidate Surface / Top50 / Production Action Conformance Validation
+
+Phase30-AJ3C performed a READ-ONLY validation of the first completed 5 business
+days in the post-AJ3B fresh run
+`runtime-test-historical-extended-smoke-20260816T120536241332Z`.
+
+Primary judgment:
+
+```text
+AJ3B_LIQUIDITY_PROPAGATION_REAL_RUN = PASS
+ALL_MARKET_SURFACE_INSUFFICIENT_RECURRENCE = NO
+SEMANTIC_HYBRID_ACTION_EFFECTIVE = YES
+HYBRID_TOP50_MEMBERSHIP_CHANGED_DAYS = 5 / 5
+BEFORE_AFTER_TOP50_CHANGED = YES
+TOP50_CHANGE_EXPLAINABLE_BY_DECISION_TIME_PIT = YES
+PORTFOLIO_ACTION_CHANGE_EXPLAINABLE = YES
+CANDIDATE_PIT_QUALITY_DIRECTION = IMPROVED
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = NO
+LONG_HORIZON_VALIDATION_READY = YES
+```
+
+The validation confirmed that `liquidity_avg_volume_20d` reached Candidate rows
+and `candidate_pit_quality_surface.raw_pit_evidence` in the real run. Market
+surface insufficiency did not recur. Semantic hybrid ordering changed Top50
+membership on all five audited dates while preserving Candidate model,
+accepted-generation, Top50 count, and downstream authority boundaries.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj3c_fresh_5bd_candidate_surface_top50_production_action_conformance_validation.md
+reports/phase_reports/phase30_aj3c_fresh_5bd_candidate_surface_top50_production_action_conformance_validation.json
+reports/phase_reports/phase30_aj3c/
+```
+
+Recommended next task:
+
+```text
+User-operated fresh 200BD validation
+```
+
+## Phase30-AJ3A - Fresh 3BD Candidate Top50 / Production Action Effect Audit
+
+Phase30-AJ3A audited the first 3 completed business days of the post-AJ2R3
+fresh 200BD run read-only:
+
+```text
+AFTER = runtime-test-historical-extended-smoke-20260816T114233352959Z
+BEFORE = runtime-test-historical-extended-smoke-20260816T061732506648Z
+WINDOW = 2022-08-10, 2022-08-12, 2022-08-15
+```
+
+Primary judgment:
+
+```text
+AJ2R3_RUNTIME_MATERIALIZATION = PASS
+HYBRID_ORDERING_ACTION_EFFECTIVE = NO
+HYBRID_TOP50_MEMBERSHIP_CHANGED_DAYS = 0 / 3
+BEFORE_AFTER_CANDIDATE_TOP50_CHANGED = NO
+TOP50_CHANGE_EXPLAINABLE_BY_PIT_EVIDENCE = YES
+CANDIDATE_PIT_QUALITY_DIRECTION = UNCHANGED
+PORTFOLIO_EQUALITY_ROOT_CAUSE = NO_CANDIDATE_MEMBERSHIP_CHANGE
+KNOWN_RUNTIME_OR_AUTHORITY_DEFECT = YES
+DEFECT_CLASSIFICATION = CANDIDATE_PIT_SURFACE_LIQUIDITY_EVIDENCE_PROPAGATION_GAP
+```
+
+AJ2R3 semantic hybrid fields were present in runtime Candidate artifacts for
+all audited days. However, every Candidate PIT surface row was
+`INSUFFICIENT_SURFACE_EVIDENCE` because `liquidity_avg_volume_20d` was missing.
+As a result, score-only Top50 and hybrid Top50 were identical for all 3 days,
+and BEFORE/AFTER downstream-consumed Top50 membership/order was also identical.
+
+This is not a performance judgment and no PnL, future price, later winner/loser
+result, 200BD intermediate return, model retraining, threshold tuning, or
+Top50 count change was used or performed.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj3a_fresh_3bd_candidate_top50_production_action_effect_audit.md
+reports/phase_reports/phase30_aj3a_fresh_3bd_candidate_top50_production_action_effect_audit.json
+reports/phase_reports/phase30_aj3a/daily_candidate_diff.json
+reports/phase_reports/phase30_aj3a/added_removed_symbol_lineage.json
+reports/phase_reports/phase30_aj3a/downstream_propagation.json
+reports/phase_reports/phase30_aj3a/cut_line_observation.json
+```
+
+Run decision:
+
+```text
+200BD_RUN_REVIEW_REQUIRED
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ3B - Candidate PIT Surface Liquidity Evidence Propagation Repair
+```
+
+## Phase30-AJ2R - Candidate Surface Priority / Candidate Score Authority Conformance Audit
+
+Phase30-AJ2R completed a READ-ONLY conformance audit of the AJ2 Candidate Top50
+ordering:
+
+```text
+surface priority -> candidate_score descending -> code ascending
+```
+
+Primary judgment:
+
+```text
+AJ1_EXPLICITLY_AUTHORIZES_LEXICOGRAPHIC_SURFACE_FIRST = NO
+CANDIDATE_SURFACE_ROLE = HARD_ORDERING_TIER
+CANDIDATE_SCORE_AUTHORITY_PRESERVED = PARTIAL
+CANDIDATE_STAGE_OVERREACH = NO
+AJ2_ORDERING_CONFORMS_TO_DESIGN = PARTIAL
+AJ2_ORDERING_REPAIR_REQUIRED = NO
+```
+
+The audit confirms that AJ2 preserved the Candidate model, accepted generation,
+Top50 count, and Phase30-AI downstream comparator. It also confirms that AJ2 did
+not copy full CQ / Downside Risk / Entry Admission semantics into Candidate
+selection.
+
+The unresolved conformance issue is narrower: AJ2 made Candidate PIT surface
+state a hard lexicographic ordering tier. AJ1 authorized a hybrid surface and
+weakening score-only dominance, but did not explicitly authorize that one
+surface-state step always dominates any size of Candidate score gap.
+
+Case analysis:
+
+```text
+STRONG + very low candidate_score
+vs
+VALID + very high candidate_score
+=> current AJ2 always ranks STRONG first: AMBIGUOUS
+
+VALID + low candidate_score
+vs
+CAUTION + extremely high candidate_score
+=> current AJ2 always ranks VALID first: AMBIGUOUS
+
+same surface state
+=> candidate_score remains ordering authority: EXPECTED_BY_DESIGN
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj2r_candidate_surface_priority_candidate_score_authority_conformance_audit.md
+reports/phase_reports/phase30_aj2r_candidate_surface_priority_candidate_score_authority_conformance_audit.json
+reports/phase_reports/phase30_aj2r/ordering_case_analysis.json
+```
+
+Implementation authorization:
+
+```text
+NO IMPLEMENTATION AUTHORIZED_BY_PHASE30_AJ2R
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ2R2 - Candidate Surface / Score Hybrid Ordering Contract Design
+```
+
+## Phase30-AJ2R2 - Candidate Surface / Score Hybrid Ordering Contract Design
+
+Phase30-AJ2R2 completed a DESIGN ONLY contract design for the ambiguity found
+in Phase30-AJ2R.
+
+Primary judgment:
+
+```text
+PHASE30_AJ2R2_HYBRID_ORDERING_CONTRACT = COMPLETE
+CANDIDATE_SURFACE_ROLE = SEMANTIC_HYBRID_AUTHORITY
+CANDIDATE_SCORE_ROLE = CO_EQUAL_HYBRID_EVIDENCE
+RECOMMENDED_ORDERING_CONTRACT =
+SEMANTIC_HYBRID_ELIGIBILITY_BANDS_WITH_CANDIDATE_SCORE_WITHIN_CLASS_AUTHORITY
+HARD_LEXICOGRAPHIC_SURFACE_FIRST_JUSTIFIED = NO
+OPAQUE_WEIGHTED_SCORE_REQUIRED = NO
+MODEL_RETRAINING_REQUIRED = NO
+TOP50_COUNT_CHANGE_REQUIRED = NO
+AJ2_IMPLEMENTATION_CHANGE_REQUIRED = YES
+AJ3_VALIDATION_READY = NO
+```
+
+The selected contract rejects both hard lexicographic surface-first ordering and
+score-only dominance. Candidate score remains formal accepted-model momentum
+discovery evidence, while Candidate PIT surface becomes semantic hybrid
+authority for current PIT surfacing quality.
+
+Semantic class order:
+
+```text
+1. CONFIRMED_DISCOVERY_AND_SURFACE
+   strong score + strong/valid surface
+
+2. CONFLICT_RESOLUTION_HIGH_DISCOVERY_OR_STRONG_SURFACE
+   strong score + caution surface
+   moderate score + strong surface
+
+3. VALID_BUT_INCOMPLETE_CONFIRMATION
+   moderate score + valid surface
+   strong score + insufficient surface
+
+4. LOW_CONVICTION_OR_SURFACE_ONLY_CHALLENGER
+   moderate score + caution surface
+   weak score + strong/valid surface
+
+5. INSUFFICIENT_OR_WEAK
+   moderate score + insufficient surface
+   weak score + caution/insufficient surface
+```
+
+Within each class:
+
+```text
+candidate_score descending
+then surface-state preference
+then code ascending
+```
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj2r2_candidate_surface_score_hybrid_ordering_contract_design.md
+reports/phase_reports/phase30_aj2r2_candidate_surface_score_hybrid_ordering_contract_design.json
+reports/phase_reports/phase30_aj2r2/ordering_contract_cases.json
+docs/03_ai_design/candidate_ai_design.md
+```
+
+Implementation authorization:
+
+```text
+NO_IMPLEMENTATION_AUTHORIZED_BY_PHASE30_AJ2R2
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ2R3 - Candidate Hybrid Ordering Contract Implementation Repair
+```
+
+## Phase30-AJ2R3 - Candidate Hybrid Ordering Contract Implementation Repair
+
+Phase30-AJ2R3 implemented the Phase30-AJ2R2 semantic hybrid Candidate ordering
+contract in the single Production-common Candidate path.
+
+Primary judgment:
+
+```text
+SEMANTIC_HYBRID_ORDERING_IMPLEMENTED = YES
+CANDIDATE_SCORE_ROLE = CO_EQUAL_HYBRID_EVIDENCE
+CANDIDATE_SURFACE_ROLE = SEMANTIC_HYBRID_AUTHORITY
+HARD_LEXICOGRAPHIC_SURFACE_FIRST_RETIRED = YES
+SCORE_ONLY_DOMINANCE_RETIRED = YES
+CANDIDATE_MODEL_PRESERVED = YES
+CANDIDATE_ACCEPTED_GENERATION_PRESERVED = YES
+TOP50_COUNT = 50
+ONE_PRODUCTION_CANDIDATE_PATH = YES
+PHASE30_AI_SELECTION_COMPARATOR_PRESERVED = YES
+```
+
+Implemented ordering:
+
+```text
+semantic_hybrid_class priority
+then candidate_score descending
+then surface-state preference
+then code ascending
+```
+
+No Candidate model retraining, label change, accepted-generation change,
+weighted hybrid score, Top50 count change, Runtime authority change, fresh
+Historical run, or long Historical run was performed by Codex.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase30_aj2r3_candidate_hybrid_ordering_contract_implementation_repair.md
+reports/phase_reports/phase30_aj2r3_candidate_hybrid_ordering_contract_implementation_repair.json
+reports/phase_reports/phase30_aj2r3_candidate_hybrid_ordering_retirement_evidence.json
+docs/03_ai_design/candidate_ai_design.md
+```
+
+Recommended next task:
+
+```text
+Phase30-AJ3 - Fresh Candidate Top50 / Production Action Effect Validation
+```

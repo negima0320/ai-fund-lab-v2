@@ -21,6 +21,8 @@ AUTHORITY_WINNER = "strategy_position_sizing"
 MISSING_AUTHORITY_WINNER = "REVIEW_REQUIRED"
 ONE_LOT_SOFT_CAP_REASON = "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
 LEGACY_ONE_LOT_SOFT_CAP_REASON = "LOT_AWARE_STRATEGY_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+MINIMUM_EXECUTABLE_ONE_LOT_REASON = "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
+MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION"
 TARGET_WEIGHT_ABSOLUTE_TOLERANCE = 0.000001
 
 
@@ -210,14 +212,27 @@ def resolve_position_sizing_authority(
     selected_amount = max(float(incremental_buy), 0.0)
     binding = "PORTFOLIO_POLICY"
     reason = "position_sizing_authority_resolved"
-    one_lot_authority = _one_lot_strategy_soft_cap_authority(row, target_weight=target_weight, maximum_weight=maximum_weight)
+    minimum_one_lot_authority = _minimum_executable_one_lot_authority(row, target_weight=target_weight)
+    one_lot_authority = (
+        minimum_one_lot_authority
+        if minimum_one_lot_authority["status"] == "PASS"
+        else _one_lot_strategy_soft_cap_authority(row, target_weight=target_weight, maximum_weight=maximum_weight)
+    )
     if selected_amount <= 0:
         binding = "NO_NEW_DEPLOYMENT"
         reason = "position_sizing_no_new_deployment"
+    if one_lot_authority["status"] == "PASS" and one_lot_authority.get("authority_type") == MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE:
+        binding = "MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION"
+        reason = "minimum_executable_one_lot_authority_consumed"
+        selected_amount = max(selected_amount, float(one_lot_authority["authorized_notional"]))
     if maximum_weight is not None and target_weight > maximum_weight:
         if one_lot_authority["status"] == "PASS":
-            binding = "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
-            reason = "one_lot_strategy_soft_cap_overshoot_authority_consumed"
+            if one_lot_authority.get("authority_type") == MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE:
+                binding = "MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION"
+                reason = "minimum_executable_one_lot_authority_consumed"
+            else:
+                binding = "ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT_WITHIN_SAFETY_HARD_CAP"
+                reason = "one_lot_strategy_soft_cap_overshoot_authority_consumed"
             selected_amount = max(selected_amount, float(one_lot_authority["authorized_notional"]))
         else:
             binding = "SAFETY_CONCENTRATION_LIMIT"
@@ -257,7 +272,7 @@ def resolve_position_sizing_authority(
         one_lot_authority_reason=str(one_lot_authority.get("reason") or ""),
         discrete_authorized_quantity=float(one_lot_authority.get("authorized_quantity") or 0.0),
         discrete_authorized_notional=float(one_lot_authority.get("authorized_notional") or 0.0),
-        phase29_l19_lot_resolution=dict(one_lot_authority.get("lot_resolution") or {}),
+        phase29_l19_lot_resolution=dict(one_lot_authority.get("lot_resolution") or lot_resolution or {}),
     )
     if binding == "SAFETY_CONCENTRATION_LIMIT":
         return replace(authority, status="REVIEW_REQUIRED")
@@ -481,6 +496,111 @@ def _one_lot_strategy_soft_cap_authority(
     return {
         "status": "PASS",
         "reason": reason,
+        "authority_type": "PORTFOLIO_CONSTRUCTION_ONE_LOT_STRATEGY_SOFT_CAP_OVERSHOOT",
+        "authorized_quantity": float(one_lot_quantity),
+        "authorized_notional": float(authorized_notional),
+        "lot_resolution": dict(lot_resolution),
+    }
+
+
+def _minimum_executable_one_lot_authority(
+    row: Mapping[str, Any],
+    *,
+    target_weight: float,
+) -> dict[str, Any]:
+    empty = {
+        "status": "NOT_APPLICABLE",
+        "reason": "",
+        "authority_type": "",
+        "authorized_quantity": 0.0,
+        "authorized_notional": 0.0,
+        "lot_resolution": {},
+    }
+    lot_resolution = _lot_resolution(row)
+    if not lot_resolution:
+        return empty
+    authority = lot_resolution.get("minimum_executable_one_lot_authority")
+    if not isinstance(authority, Mapping):
+        authority = row.get("minimum_executable_one_lot_authority")
+    if not isinstance(authority, Mapping):
+        return empty
+    if str(authority.get("authority_type") or "") != MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE:
+        return empty
+    if str(authority.get("decision") or "") != "ADMIT":
+        return empty
+    if str(authority.get("reason") or authority.get("admission_reason") or "") != MINIMUM_EXECUTABLE_ONE_LOT_REASON:
+        return empty
+    if str(lot_resolution.get("minimum_executable_one_lot_reason") or "") != MINIMUM_EXECUTABLE_ONE_LOT_REASON:
+        return empty
+    if lot_resolution.get("minimum_executable_one_lot_admitted") is not True:
+        return empty
+    semantic = str(row.get("semantic_buy_type") or lot_resolution.get("semantic_type") or authority.get("intent") or "").upper()
+    if semantic not in {"BUY_NEW", "REENTRY"}:
+        return empty
+    if str(authority.get("intent") or semantic).upper() != semantic:
+        return empty
+    current_quantity = _optional_float(row.get("current_quantity"), authority.get("current_quantity"))
+    if current_quantity is not None and current_quantity > TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if _explicit_hard_blocker_present(row, semantic=semantic):
+        return empty
+    if str(lot_resolution.get("one_lot_feasibility_status") or "") != "PASS":
+        return empty
+    if lot_resolution.get("one_lot_fallback_applied") is not True:
+        return empty
+    if lot_resolution.get("safety_hard_cap_preserved") is not True:
+        return empty
+    if lot_resolution.get("strategy_cap_preserved") is not True:
+        return empty
+    one_lot_quantity = _optional_float(lot_resolution.get("one_lot_quantity"))
+    final_quantity = _optional_float(
+        row.get("discrete_authorized_quantity"),
+        row.get("final_quantity_delta"),
+        row.get("final_allocated_quantity"),
+        row.get("executable_quantity_delta"),
+        row.get("quantity_delta_candidate"),
+        row.get("transaction_quantity_candidate"),
+        row.get("target_quantity_candidate"),
+        row.get("lot_adjusted_quantity"),
+        row.get("planned_quantity"),
+        row.get("selected_quantity"),
+        lot_resolution.get("final_allocated_quantity"),
+        lot_resolution.get("executable_quantity_delta"),
+        authority.get("ps_final_quantity"),
+    )
+    if one_lot_quantity is None or one_lot_quantity <= 0:
+        return empty
+    if final_quantity is None or abs(final_quantity - one_lot_quantity) > TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    one_lot_notional = _optional_float(lot_resolution.get("one_lot_notional"), authority.get("one_lot_notional"))
+    authorized_notional = _optional_float(
+        row.get("discrete_authorized_notional"),
+        row.get("lot_adjusted_notional"),
+        authority.get("one_lot_notional"),
+        lot_resolution.get("one_lot_notional"),
+    )
+    if one_lot_notional is None or authorized_notional is None or authorized_notional <= 0:
+        return empty
+    if abs(authorized_notional - one_lot_notional) > max(0.01, one_lot_notional * TARGET_WEIGHT_ABSOLUTE_TOLERANCE):
+        return empty
+    one_lot_weight = _optional_float(lot_resolution.get("one_lot_weight"), authority.get("one_lot_weight"), target_weight)
+    strategy_cap = _optional_float(lot_resolution.get("strategy_cap_weight"), lot_resolution.get("strategy_target_cap"), authority.get("strategy_cap"))
+    safety_cap = _optional_float(lot_resolution.get("safety_hard_cap"), lot_resolution.get("safety_hard_cap_weight"), authority.get("safety_cap"))
+    post_trade_weight = _optional_float(lot_resolution.get("post_trade_weight"), lot_resolution.get("final_target_weight"), one_lot_weight)
+    projected_weight = _optional_float(authority.get("projected_one_lot_portfolio_weight"), one_lot_weight, post_trade_weight)
+    if strategy_cap is not None and projected_weight is not None and projected_weight > strategy_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if strategy_cap is not None and post_trade_weight is not None and post_trade_weight > strategy_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    if safety_cap is None or post_trade_weight is None or post_trade_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    safety_margin = _optional_float(lot_resolution.get("safety_margin_after_trade"))
+    if safety_margin is not None and safety_margin < -TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return empty
+    return {
+        "status": "PASS",
+        "reason": MINIMUM_EXECUTABLE_ONE_LOT_REASON,
+        "authority_type": MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE,
         "authorized_quantity": float(one_lot_quantity),
         "authorized_notional": float(authorized_notional),
         "lot_resolution": dict(lot_resolution),
