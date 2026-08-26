@@ -50,6 +50,16 @@ def promote_order_plan_to_pending(
     item_tuple = tuple(items)
     policy_context = _policy_context_from_items(item_tuple)
     planning_context = dict(planning_lineage_context or _planning_lineage_context_from_items(item_tuple))
+    strategy_authority_lineage = (
+        dict(planning_context.get("strategy_authority_lineage"))
+        if isinstance(planning_context.get("strategy_authority_lineage"), Mapping)
+        else None
+    )
+    strategy_authority_lineage_hash = str(
+        planning_context.get("strategy_authority_lineage_hash")
+        or (strategy_authority_lineage or {}).get("lineage_hash")
+        or ""
+    )
     submit_context = dict(submit_policy_context or _submit_policy_context_from_items(item_tuple))
     accepted_generation_context = _accepted_generation_context_from_items(item_tuple)
     safety_context = _safety_context_from_items(item_tuple, target_session_date=target_session_date)
@@ -90,6 +100,8 @@ def promote_order_plan_to_pending(
         policy_source=policy_source,
         pending_policy_hash=pending_policy_hash,
         planning_lineage_context=planning_context or None,
+        strategy_authority_lineage=strategy_authority_lineage,
+        strategy_authority_lineage_hash=strategy_authority_lineage_hash,
         planning_authority_version=planning_authority_version,
         planning_authority_source=planning_authority_source,
         planning_authority_hash=planning_authority_hash,

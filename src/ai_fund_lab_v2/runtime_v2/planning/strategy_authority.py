@@ -227,6 +227,11 @@ def activate_strategy_planning_authority(
     pending_items: list[PendingOrderItem] = []
     item_lineage: list[dict[str, Any]] = []
     plans = list(runtime_planning_payload.get("plans") or [])
+    strategy_authority_lineage = (
+        dict(runtime_planning_payload["strategy_authority_lineage"])
+        if isinstance(runtime_planning_payload.get("strategy_authority_lineage"), Mapping)
+        else {}
+    )
     for plan in plans:
         if not isinstance(plan, dict):
             continue
@@ -250,6 +255,11 @@ def activate_strategy_planning_authority(
                 "pending_item_generated": item is not None,
                 "reason": item_reason,
                 "position_sizing_used": bool(sizing_by_symbol.get(str(plan.get("security_code") or ""))),
+                "strategy_authority_lineage_hash": str(
+                    (plan.get("strategy_authority_lineage") or {}).get("lineage_hash")
+                    if isinstance(plan.get("strategy_authority_lineage"), Mapping)
+                    else ""
+                ),
                 **_rank_authority_lineage_from_plan(plan),
             }
         )
@@ -264,6 +274,7 @@ def activate_strategy_planning_authority(
         elif item_reason and not item_reason.startswith("no_action"):
             reason_codes.append(item_reason)
 
+    pending_items = list(_canonical_marginal_capital_pending_order(tuple(pending_items)))
     active_pending_items, cash_feasible_batch = _cash_feasible_buy_batch(
         items=tuple(pending_items),
         current=submit_feasibility_current,
@@ -292,6 +303,8 @@ def activate_strategy_planning_authority(
         "buy_sell_independence_preserved": True,
         "strategy_artifact_path": str(runtime_planning_path),
         "strategy_artifact_hash": _file_hash(runtime_planning_path),
+        "strategy_authority_lineage": strategy_authority_lineage,
+        "strategy_authority_lineage_hash": str(strategy_authority_lineage.get("lineage_hash") or ""),
         "position_sizing_artifact_path": str(position_sizing_path),
         "position_sizing_artifact_hash": _file_hash(position_sizing_path),
         "items": [_pending_item_payload(item) for item in pending_items],
@@ -569,6 +582,11 @@ def _cash_feasible_buy_batch(
                 "symbol": item.symbol,
                 "pending_item_id": item.pending_item_id,
                 "canonical_priority_index": buy_priority_index,
+                "canonical_marginal_capital_priority_index": item.canonical_marginal_capital_priority_index,
+                "marginal_capital_value_class": item.marginal_capital_value_class,
+                "marginal_capital_value_authority": dict(item.marginal_capital_value_authority or {}),
+                "canonical_strategy_order_index": item.canonical_strategy_order_index,
+                "canonical_strategy_order_source": item.canonical_strategy_order_source,
                 "executable_quantity": item.quantity,
                 "reservation_price": item_result.get("reservation_price", item.reservation_price),
                 "reserved_notional": reserved_notional,
@@ -595,6 +613,19 @@ def _cash_feasible_buy_batch(
         }
     )
     return tuple(active_items), evidence
+
+
+def _canonical_marginal_capital_pending_order(items: tuple[PendingOrderItem, ...]) -> tuple[PendingOrderItem, ...]:
+    indexed = list(enumerate(items))
+
+    def key(item: tuple[int, PendingOrderItem]) -> tuple[Any, ...]:
+        index, pending_item = item
+        if pending_item.side.upper() == "BUY":
+            priority = pending_item.canonical_marginal_capital_priority_index
+            return (0, priority if priority is not None else 999999, index)
+        return (1, index)
+
+    return tuple(item for _, item in sorted(indexed, key=key))
 
 
 def _pending_item_from_strategy_plan(
@@ -694,6 +725,16 @@ def _pending_item_from_strategy_plan(
         buy_notional_policy="phase22_position_sizing_incremental_notional",
         sizing_policy_reason="derived_from_phase22_position_sizing_target_notional",
         quantity_contract=quantity_contract,
+        strategy_authority_lineage=(
+            dict(plan["strategy_authority_lineage"])
+            if isinstance(plan.get("strategy_authority_lineage"), Mapping)
+            else None
+        ),
+        strategy_authority_lineage_hash=str(
+            (plan.get("strategy_authority_lineage") or {}).get("lineage_hash")
+            if isinstance(plan.get("strategy_authority_lineage"), Mapping)
+            else ""
+        ),
         source_decision_type=intent,
         source_pm_decision_id=str(plan.get("pm_position_reference") or ""),
         source_pm_business_date=business_date,
@@ -701,6 +742,11 @@ def _pending_item_from_strategy_plan(
         add_candidate_signal=intent in {"BUY_NEW", "BUY_ADD"},
         capital_allocation_status="APPROVED",
         capital_allocation_reason="phase22_strategy_position_sizing_consumed",
+        canonical_marginal_capital_priority_index=_int_or_none(plan.get("canonical_marginal_capital_priority_index")),
+        marginal_capital_value_class=str(plan.get("marginal_capital_value_class") or ""),
+        marginal_capital_value_authority=dict(plan.get("marginal_capital_value_authority") or {}),
+        canonical_strategy_order_index=_int_or_none(plan.get("canonical_strategy_order_index")),
+        canonical_strategy_order_source=str(plan.get("canonical_strategy_order_source") or ""),
     ), "pending_item_generated"
 
 
@@ -1563,12 +1609,19 @@ def _load_submit_feasibility_policy(submit_policy_context: Mapping[str, Any]) ->
 
 
 def _planning_lineage_context(*, order_plan_payload: Mapping[str, Any]) -> dict[str, Any]:
+    strategy_authority_lineage = (
+        dict(order_plan_payload["strategy_authority_lineage"])
+        if isinstance(order_plan_payload.get("strategy_authority_lineage"), Mapping)
+        else {}
+    )
     return {
         "planning_authority_version": str(order_plan_payload.get("planning_authority") or "phase22_strategy_runtime_planning"),
         "planning_authority_source": str(order_plan_payload.get("order_plan_id") or ""),
         "planning_authority_hash": str(order_plan_payload.get("strategy_artifact_hash") or ""),
         "runtime_plan_id": str(order_plan_payload.get("order_plan_id") or ""),
         "strategy_artifact_path": str(order_plan_payload.get("strategy_artifact_path") or ""),
+        "strategy_authority_lineage": strategy_authority_lineage,
+        "strategy_authority_lineage_hash": str(order_plan_payload.get("strategy_authority_lineage_hash") or strategy_authority_lineage.get("lineage_hash") or ""),
     }
 
 

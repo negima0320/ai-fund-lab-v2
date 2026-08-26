@@ -100,6 +100,37 @@ AI Fund Lab v2 の各 AI / システムは、以下の問いに答える。
 
 Runtime は、これらの判断を生成するのではなく、判断結果を運用可能な順序と状態遷移に載せる。
 
+Phase31-B10 以降、BUY_NEW / BUY_ADD の増分資本競争には
+Portfolio Construction 所有の次の Production-common authority を用いる。
+
+```text
+MARGINAL_CAPITAL_VALUE_AUTHORITY
+```
+
+Runtime Planning はこの canonical Strategy order を消費し、
+BUY reserved-cash feasibility / Pending order plan construction へ保持する。
+Runtime Planning / Pending は BUY_NEW と BUY_ADD の投資選好を再計算・再ランキングしない。
+
+この authority は BUY ordering のみを変える。SELL は BUY marginal
+capital competition から独立して扱われ、reviewed/pruned BUY が valid
+SELL をブロックしてはならない。
+
+変更しないもの:
+
+```text
+PM ADD semantics
+Expected Edge thresholds
+Incremental Investment Value thresholds
+Opportunity Cost thresholds
+Market Context logic
+normal Strategy cap
+Safety hard cap
+winner headroom
+Submit
+Execution
+SELL logic
+```
+
 Runtime は銘柄数の固定上限を持たない。購入候補の幅は Candidate AI / Opportunity AI / Position Management AI / Capital Allocation / Safety の判断に委ねる。Capital Allocation が結果として 5 銘柄、10 銘柄、20 銘柄などに絞ることはあり得るが、それは Runtime の固定ルールではない。
 
 ### 3.1 Capital Deployment Contract
@@ -2980,3 +3011,19 @@ The accepted final validation run is
 mid-run HALT and final pending state `EMPTY`. Its close-level
 `REVIEW_REQUIRED` was a non-mutating Strategy shadow validation condition, not
 a Runtime, authority, Safety, data, accounting, or trading-state defect.
+
+## Phase31-G136 High-Resolution Capital Value Runtime Boundary
+
+The permanent architecture SoT for future high-resolution marginal capital
+value and portfolio-wide capital rotation is:
+
+```text
+docs/02_architecture/high_resolution_marginal_capital_value_and_portfolio_rotation_architecture.md
+```
+
+Runtime remains a consumer. Future high-resolution Capital Value or Portfolio
+Rotation evidence must not cause Runtime to recompute Candidate ranking, Cash
+preference, target weights, discrete quantity, HOLD / ADD / REDUCE / EXIT
+actions, or rotation decisions. Runtime may only consume the canonical
+Strategy, Portfolio Construction, Position Sizing, Pending, Submit, Safety, and
+Execution authorities at their defined boundaries.

@@ -789,7 +789,17 @@ def _resolve_no_action_execution_authority(
         pending_read.plan is not None
         and _is_buy_item_scoped_review_no_submission_pending(pending_read.plan, business_date=business_date)
     )
-    if pending_read.classification != "EMPTY" and not active_no_order and not active_buy_item_review_no_submission:
+    active_submit_aggregate_terminal_noop = (
+        pending_read.plan is not None
+        and pending_read.classification == "VALID"
+        and _latest_submit_manifest_has_terminal_noop_authority(runtime_root=runtime_root, business_date=business_date)
+    )
+    if (
+        pending_read.classification != "EMPTY"
+        and not active_no_order
+        and not active_buy_item_review_no_submission
+        and not active_submit_aggregate_terminal_noop
+    ):
         return {"status": "NOT_APPLICABLE", "reason": "pending_not_empty", **evidence}
     if pending_read.classification == "EMPTY":
         empty_reason = _validate_empty_pending_payload(
@@ -807,6 +817,9 @@ def _resolve_no_action_execution_authority(
     elif active_buy_item_review_no_submission and pending_read.plan is not None:
         if pending_read.plan.target_session_date != business_date:
             return {"status": "BLOCKED", "reason": "pending BUY_ITEM_SCOPED_REVIEW target_session_date mismatch", **evidence}
+    elif active_submit_aggregate_terminal_noop and pending_read.plan is not None:
+        if pending_read.plan.target_session_date != business_date:
+            return {"status": "BLOCKED", "reason": "pending aggregate terminal target_session_date mismatch", **evidence}
     submit = _load_submit_no_action_authority(runtime_root=runtime_root, business_date=business_date)
     evidence.update(
         {
@@ -821,7 +834,7 @@ def _resolve_no_action_execution_authority(
     return {"status": "PASS", "reason": "no_submitted_orders", **evidence}
 
 
-def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) -> dict[str, str]:
+def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) -> dict[str, Any]:
     manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
     manifests = sorted(manifest_dir.glob("runtime-v2-submit-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     if not manifests:
@@ -858,48 +871,7 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
                     and submit_action == "NO_ACTION"
                     and _int_value(payload.get("pending_item_count"), 0) == 0
                 )
-                or (
-                    str(payload.get("pending_classification") or "") == "VALID"
-                    and bool(payload.get("pending_plan_present")) is True
-                    and submit_action == "NO_SUBMISSION_REQUIRED"
-                    and str(payload.get("no_order_authority_status") or "") == "PASS"
-                    and str((payload.get("no_order_authority_evidence") or {}).get("status") or "") == "PASS"
-                    and (
-                        (
-                            str((payload.get("no_order_authority_evidence") or {}).get("authority_type") or "")
-                            == "AUTHORIZED_NO_ORDER"
-                            and str((payload.get("no_order_authority_evidence") or {}).get("order_plan_status") or "")
-                            == "NO_ORDER_AUTHORIZED"
-                            and str(
-                                (payload.get("no_order_authority_evidence") or {}).get(
-                                    "planning_consumer_eligibility"
-                                )
-                                or ""
-                            )
-                            == "NO_ORDER_AUTHORIZED"
-                            and str((payload.get("no_order_authority_evidence") or {}).get("approval_status") or "")
-                            == "NO_ORDER_AUTHORIZED"
-                            and str((payload.get("no_order_authority_evidence") or {}).get("pending_state") or "")
-                            == "EMPTY"
-                            and _int_value(
-                                (payload.get("no_order_authority_evidence") or {}).get("pending_item_count"),
-                                -1,
-                            )
-                            == 0
-                            and _int_value(
-                                (payload.get("no_order_authority_evidence") or {}).get("pending_approved_item_count"),
-                                -1,
-                            )
-                            == 0
-                            and _int_value(payload.get("pending_item_count"), -1) == 0
-                        )
-                        or (
-                            str((payload.get("no_order_authority_evidence") or {}).get("authority_type") or "")
-                            == "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION"
-                            and _int_value(payload.get("pending_item_count"), 0) > 0
-                        )
-                    )
-                )
+                or _valid_pending_submit_no_action_authority_pass(payload, submit_action=submit_action)
             )
             and _int_value(payload.get("submitted_count"), 0) == 0
             and _int_value(payload.get("blocked_count"), 0) == 0
@@ -926,6 +898,137 @@ def _load_submit_no_action_authority(*, runtime_root: Path, business_date: str) 
         "path": "",
         "submit_action": "",
     }
+
+
+def _valid_pending_submit_no_action_authority_pass(payload: dict[str, Any], *, submit_action: str) -> bool:
+    if str(payload.get("pending_classification") or "") != "VALID" or bool(payload.get("pending_plan_present")) is not True:
+        return False
+    no_order = payload.get("no_order_authority_evidence") or {}
+    conventional_no_order_status_pass = (
+        str(payload.get("no_order_authority_status") or "") == "PASS"
+        and str(no_order.get("status") or "") == "PASS"
+    )
+    return bool(
+        (
+            conventional_no_order_status_pass
+            and (
+                _submit_authorized_no_order_authority_pass(payload, submit_action=submit_action)
+                or _submit_buy_item_scoped_review_no_submission_pass(payload, submit_action=submit_action)
+            )
+        )
+        or _submit_aggregate_terminal_noop_authority_pass(payload)
+    )
+
+
+def _submit_authorized_no_order_authority_pass(payload: dict[str, Any], *, submit_action: str) -> bool:
+    no_order = payload.get("no_order_authority_evidence") or {}
+    return bool(
+        submit_action == "NO_SUBMISSION_REQUIRED"
+        and str(no_order.get("authority_type") or "") == "AUTHORIZED_NO_ORDER"
+        and str(no_order.get("order_plan_status") or "") == "NO_ORDER_AUTHORIZED"
+        and str(no_order.get("planning_consumer_eligibility") or "") == "NO_ORDER_AUTHORIZED"
+        and str(no_order.get("approval_status") or "") == "NO_ORDER_AUTHORIZED"
+        and str(no_order.get("pending_state") or "") == "EMPTY"
+        and _int_value(no_order.get("pending_item_count"), -1) == 0
+        and _int_value(no_order.get("pending_approved_item_count"), -1) == 0
+        and _int_value(payload.get("pending_item_count"), -1) == 0
+    )
+
+
+def _submit_buy_item_scoped_review_no_submission_pass(payload: dict[str, Any], *, submit_action: str) -> bool:
+    no_order = payload.get("no_order_authority_evidence") or {}
+    return bool(
+        submit_action == "NO_SUBMISSION_REQUIRED"
+        and str(no_order.get("authority_type") or "") == "BUY_ITEM_SCOPED_REVIEW_NO_SUBMISSION"
+        and _int_value(payload.get("pending_item_count"), 0) > 0
+    )
+
+
+def _submit_aggregate_terminal_noop_authority_pass(payload: dict[str, Any]) -> bool:
+    no_order = payload.get("no_order_authority_evidence")
+    if not isinstance(no_order, dict):
+        return False
+    aggregate = no_order.get("submit_aggregate_terminal_noop_authority")
+    if not isinstance(aggregate, dict):
+        return False
+    if str(aggregate.get("authority_type") or "") != "SUBMIT_AGGREGATE_TERMINAL_NOOP_CONTINUATION":
+        return False
+    if str(aggregate.get("status") or "") != "PASS":
+        return False
+    if str(aggregate.get("reason") or "") != "zero_submission_terminal_noop_continuation":
+        return False
+    if not bool(aggregate.get("zero_submission_safe_terminal_pass_supported")):
+        return False
+    if _int_value(aggregate.get("submitted_count"), -1) != 0 or _int_value(aggregate.get("accepted_count"), -1) != 0:
+        return False
+    counts = aggregate.get("counts") if isinstance(aggregate.get("counts"), dict) else {}
+    if any(
+        _int_value(counts.get(key), 0) != 0
+        for key in ("blocked", "rejected", "retryable_executable", "unknown_or_ambiguous")
+    ):
+        return False
+    if _int_value(counts.get("submitted_or_reconciled"), 0) != 0:
+        return False
+    safe_count = _int_value(aggregate.get("known_safe_terminal_or_deferred_count"), 0)
+    if safe_count <= 0:
+        return False
+    if _int_value(counts.get("terminal_not_executable"), 0) + _int_value(counts.get("deferred_item_scoped_review"), 0) != safe_count:
+        return False
+    if any(
+        bool(aggregate.get(key))
+        for key in ("fake_submission_created", "fake_execution_created", "fake_cash_mutation", "fake_position_mutation")
+    ):
+        return False
+    item_classes = aggregate.get("item_classes") if isinstance(aggregate.get("item_classes"), dict) else {}
+    if not item_classes or any(
+        str(value) not in {"DEFERRED_ITEM_SCOPED_REVIEW", "TERMINAL_NOT_EXECUTABLE"}
+        for value in item_classes.values()
+    ):
+        return False
+    scope = aggregate.get("pending_review_scope_authority")
+    if not isinstance(scope, dict):
+        return False
+    if str(scope.get("structural_validity") or "") != "PASS":
+        return False
+    if bool(scope.get("batch_blocked")):
+        return False
+    if scope.get("executable_item_ids") or scope.get("non_terminal_item_ids") or scope.get("reviewed_sell_item_ids"):
+        return False
+    if not (scope.get("terminal_item_ids") or scope.get("reviewed_item_ids")):
+        return False
+    checks = aggregate.get("checks")
+    if isinstance(checks, dict):
+        required_checks = (
+            "all_items_have_known_dispositions",
+            "blocked_absent",
+            "item_scoped_reviews_deferred_by_authority",
+            "pending_review_scope_no_executable_items_after_terminalization",
+            "pending_review_scope_no_non_terminal_items_after_terminalization",
+            "pending_review_scope_not_batch_blocked",
+            "pending_review_scope_structural_valid",
+            "rejected_absent",
+            "retryable_executable_absent",
+            "reviewed_sell_absent",
+            "terminal_not_executable_items_safety_qualified",
+            "unknown_or_ambiguous_absent",
+        )
+        if not all(bool(checks.get(key)) for key in required_checks):
+            return False
+    return True
+
+
+def _latest_submit_manifest_has_terminal_noop_authority(*, runtime_root: Path, business_date: str) -> bool:
+    latest = _latest_submit_manifest(runtime_root=runtime_root, business_date=business_date)
+    if latest is None:
+        return False
+    _, payload = latest
+    no_order = payload.get("no_order_authority_evidence")
+    if not isinstance(no_order, dict):
+        return False
+    aggregate = no_order.get("submit_aggregate_terminal_noop_authority")
+    if not isinstance(aggregate, dict):
+        return False
+    return str(aggregate.get("authority_type") or "") == "SUBMIT_AGGREGATE_TERMINAL_NOOP_CONTINUATION"
 
 
 def _is_buy_item_scoped_review_no_submission_pending(pending, *, business_date: str) -> bool:
@@ -1596,6 +1699,8 @@ def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
         "order_id": order.get("order_id_hash") or order.get("order_id") or order.get("order_ref") or _stable_json_ref(order),
         "pending_plan_id": order.get("pending_plan_id") or "",
         "pending_item_id": order.get("pending_item_id") or "",
+        "strategy_authority_lineage": order.get("strategy_authority_lineage") or {},
+        "strategy_authority_lineage_hash": order.get("strategy_authority_lineage_hash") or "",
         "symbol": order.get("issue_code") or order.get("symbol") or "",
         "side": _normalize_side(str(order.get("side") or "")),
         "quantity": _float(order.get("quantity")),

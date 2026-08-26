@@ -26,6 +26,17 @@ SOURCE_AUTHORITY_STATUSES = {"VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTH
 PRODUCER_RESULT_STATUSES = {"PASS", "REVIEW_REQUIRED", "BLOCK"}
 ARTIFACT_LIFECYCLE_STATUSES = {"DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED"}
 RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED", "BLOCKED"}
+MARKET_QUALITY_STATES = {
+    "HEALTHY_EXPANSION",
+    "HEALTHY_RECOVERY",
+    "RECOVERY_CONFIRMATION_INCOMPLETE",
+    "FRAGILE_RECOVERY",
+    "SHORT_TERM_NARROWING_WITH_MEDIUM_STRENGTH",
+    "SHORT_TERM_BREADTH_BREAKDOWN",
+    "CONFLICTED_MARKET_STRUCTURE",
+    "INSUFFICIENT_EVIDENCE",
+}
+MARKET_QUALITY_COMPLETENESS = {"COMPLETE", "PARTIAL", "INSUFFICIENT"}
 
 
 class MarketContextError(RuntimeError):
@@ -269,6 +280,18 @@ def build_market_context_payload(
         producer_status = "REVIEW_REQUIRED"
     else:
         producer_status = "PASS"
+    market_quality = _market_quality_from_context(
+        business_date=business_date,
+        as_of=as_of,
+        source_status=source_status,
+        metrics_status=metrics_status,
+        benchmark_coverage_status=str(authority["benchmark_coverage_status"]),
+        config_present=config is not None,
+        metrics=metrics,
+        taxonomy=taxonomy,
+        thresholds=thresholds,
+        future_leakage_used=future_leakage_used,
+    )
     payload = {
         "schema_version": SCHEMA_VERSION,
         "producer_version": PRODUCER_VERSION,
@@ -299,6 +322,11 @@ def build_market_context_payload(
         "volatility_observation_count": authority["volatility_observation_count"],
         "regime_state": taxonomy["regime_state"],
         "regime_reason_codes": taxonomy["reason_codes"],
+        "market_quality_state": market_quality["market_quality_state"],
+        "market_quality_reason_codes": market_quality["market_quality_reason_codes"],
+        "market_quality_evidence_completeness": market_quality["market_quality_evidence_completeness"],
+        "market_quality_component_evidence": market_quality["market_quality_component_evidence"],
+        "market_quality_as_of": market_quality["market_quality_as_of"],
         "sector_contexts": authority["sector_contexts"],
         "confidence": taxonomy["confidence"],
         "uncertainty": taxonomy["uncertainty"],
@@ -342,6 +370,9 @@ def build_market_context_payload(
         "config_policy_present": config is not None,
         "benchmark_coverage_status": authority["benchmark_coverage_status"],
         "sector_source_status": authority["sector_source_status"],
+        "market_quality_state": market_quality["market_quality_state"],
+        "market_quality_evidence_completeness": market_quality["market_quality_evidence_completeness"],
+        "market_quality_reason_codes": market_quality["market_quality_reason_codes"],
     }
     return payload, evidence
 
@@ -484,6 +515,10 @@ def validate_market_context_artifact(payload: dict[str, Any]) -> dict[str, Any]:
     _enum_check(errors, payload, "source_authority_status", SOURCE_AUTHORITY_STATUSES)
     _enum_check(errors, payload, "producer_result_status", PRODUCER_RESULT_STATUSES)
     _enum_check(errors, payload, "runtime_consumer_eligibility", RUNTIME_CONSUMER_ELIGIBILITIES)
+    if "market_quality_state" in payload:
+        _enum_check(errors, payload, "market_quality_state", MARKET_QUALITY_STATES)
+    if "market_quality_evidence_completeness" in payload:
+        _enum_check(errors, payload, "market_quality_evidence_completeness", MARKET_QUALITY_COMPLETENESS)
     if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
         errors.append("phase22_a_artifact_lifecycle_must_be_draft")
     if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
@@ -518,6 +553,19 @@ def validate_market_context_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         errors.append("invalid_volatility_observation_count")
     if "regime_reason_codes" in payload and not isinstance(payload.get("regime_reason_codes"), list):
         errors.append("regime_reason_codes_not_list")
+    if "market_quality_reason_codes" in payload and not isinstance(payload.get("market_quality_reason_codes"), list):
+        errors.append("market_quality_reason_codes_not_list")
+    if "market_quality_component_evidence" in payload and not isinstance(payload.get("market_quality_component_evidence"), dict):
+        errors.append("market_quality_component_evidence_not_object")
+    if "market_quality_as_of" in payload:
+        try:
+            _validate_iso_date(str(payload.get("market_quality_as_of") or ""), field="market_quality_as_of")
+        except Exception:
+            errors.append("invalid_date_format:market_quality_as_of")
+        if str(payload.get("market_quality_as_of") or "9999-99-99") > str(payload.get("business_date") or ""):
+            errors.append("market_quality_as_of_after_business_date")
+    if payload.get("market_quality_state") in {"HEALTHY_EXPANSION", "HEALTHY_RECOVERY"} and payload.get("market_quality_evidence_completeness") != "COMPLETE":
+        errors.append("healthy_market_quality_requires_complete_evidence")
     if "sector_contexts" in payload and not isinstance(payload.get("sector_contexts"), list):
         errors.append("sector_contexts_not_list")
     if not isinstance(payload.get("reason_codes"), list):
@@ -671,6 +719,207 @@ def _taxonomy_from_metrics(
         "confidence": confidence,
         "uncertainty": "UNCERTAIN" if trend == "UNCERTAIN" else ("MEDIUM" if confidence < 0.8 else "LOW"),
     }
+
+
+def _market_quality_from_context(
+    *,
+    business_date: str,
+    as_of: str,
+    source_status: str,
+    metrics_status: str,
+    benchmark_coverage_status: str,
+    config_present: bool,
+    metrics: dict[str, Any],
+    taxonomy: dict[str, Any],
+    thresholds: MarketContextThresholds | None,
+    future_leakage_used: bool,
+) -> dict[str, Any]:
+    feature_date = str(metrics.get("feature_date") or business_date)
+    required_metric_names = (
+        "return_5d_equal_weight",
+        "return_20d_equal_weight",
+        "breadth_5d_positive_ratio",
+        "breadth_20d_positive_ratio",
+        "volatility_20d_equal_weight",
+        "volatility_observation_count",
+        "return_20d_valid_count",
+        "symbol_count",
+    )
+    missing_metrics = [name for name in required_metric_names if name not in metrics]
+    component_evidence = {
+        "schema_version": "market_quality_component_evidence.v1",
+        "owner": "MARKET_CONTEXT",
+        "authority": "EVIDENCE_ONLY",
+        "business_date": business_date,
+        "as_of": as_of,
+        "feature_date": feature_date,
+        "input_scope": [
+            "return_5d_equal_weight",
+            "return_20d_equal_weight",
+            "breadth_5d_positive_ratio",
+            "breadth_20d_positive_ratio",
+            "volatility_20d_equal_weight",
+            "confidence",
+            "uncertainty",
+            "coverage",
+        ],
+        "deferred_inputs": [
+            "sector_participation",
+            "transition_path",
+            "days_since_transition",
+            "transition_churn",
+            "external_feeds",
+            "historical_outcome",
+        ],
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "evidence_feedback_used": False,
+        "source_status": source_status,
+        "metrics_status": metrics_status,
+        "benchmark_coverage_status": benchmark_coverage_status,
+        "config_present": config_present,
+        "future_leakage_used": future_leakage_used,
+        "missing_metrics": missing_metrics,
+        "return_5d_equal_weight": _optional_float(metrics.get("return_5d_equal_weight")),
+        "return_20d_equal_weight": _optional_float(metrics.get("return_20d_equal_weight")),
+        "breadth_5d_positive_ratio": _optional_float(metrics.get("breadth_5d_positive_ratio")),
+        "breadth_20d_positive_ratio": _optional_float(metrics.get("breadth_20d_positive_ratio")),
+        "volatility_20d_equal_weight": _optional_float(metrics.get("volatility_20d_equal_weight")),
+        "trend_regime": taxonomy.get("trend_regime"),
+        "regime_state": taxonomy.get("regime_state"),
+        "market_breadth": taxonomy.get("market_breadth"),
+        "volatility_regime": taxonomy.get("volatility_regime"),
+        "confidence": _optional_float(taxonomy.get("confidence")),
+        "uncertainty": taxonomy.get("uncertainty"),
+    }
+    insufficient_reasons: list[str] = []
+    if source_status != "VALID":
+        insufficient_reasons.append("MARKET_QUALITY_INSUFFICIENT_EVIDENCE_SOURCE_AUTHORITY")
+    if thresholds is None:
+        insufficient_reasons.append("MARKET_QUALITY_INSUFFICIENT_EVIDENCE_THRESHOLD_POLICY")
+    if metrics_status == "BLOCK" or future_leakage_used or feature_date > business_date:
+        insufficient_reasons.append("MARKET_QUALITY_INSUFFICIENT_EVIDENCE_TEMPORAL_AUTHORITY")
+    if missing_metrics:
+        insufficient_reasons.append("MARKET_QUALITY_INSUFFICIENT_EVIDENCE_MISSING_COMPONENT")
+    if insufficient_reasons:
+        return {
+            "market_quality_state": "INSUFFICIENT_EVIDENCE",
+            "market_quality_reason_codes": sorted(set(insufficient_reasons)),
+            "market_quality_evidence_completeness": "INSUFFICIENT",
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date if feature_date <= business_date else business_date,
+        }
+
+    ret5 = float(metrics["return_5d_equal_weight"])
+    ret20 = float(metrics["return_20d_equal_weight"])
+    breadth5 = float(metrics["breadth_5d_positive_ratio"])
+    breadth20 = float(metrics["breadth_20d_positive_ratio"])
+    trend = str(taxonomy.get("trend_regime") or "UNCERTAIN")
+    breadth_state_5d = _breadth_state(breadth5, thresholds)
+    breadth_state_20d = _breadth_state(breadth20, thresholds)
+    volatility_state = str(taxonomy.get("volatility_regime") or "NORMAL")
+    reason_codes: list[str] = []
+    coverage_complete = benchmark_coverage_status == "PASS" or not config_present
+    completeness = "COMPLETE" if metrics_status == "PASS" and coverage_complete else "PARTIAL"
+    component_evidence = {
+        **component_evidence,
+        "breadth_5d_state": breadth_state_5d,
+        "breadth_20d_state": breadth_state_20d,
+    }
+
+    if trend == "UNCERTAIN" or str(taxonomy.get("uncertainty") or "") == "UNCERTAIN":
+        return {
+            "market_quality_state": "CONFLICTED_MARKET_STRUCTURE",
+            "market_quality_reason_codes": ["MARKET_STRUCTURE_CONFLICTED"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if completeness == "PARTIAL":
+        return {
+            "market_quality_state": "CONFLICTED_MARKET_STRUCTURE",
+            "market_quality_reason_codes": ["MARKET_STRUCTURE_CONFLICTED"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if volatility_state == "HIGH":
+        return {
+            "market_quality_state": "CONFLICTED_MARKET_STRUCTURE",
+            "market_quality_reason_codes": ["MARKET_STRUCTURE_CONFLICTED", "MARKET_QUALITY_FRAGILE"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if breadth_state_5d == "WEAK" and ret5 < 0:
+        state = "SHORT_TERM_BREADTH_BREAKDOWN"
+        reason_codes.extend(["SHORT_TERM_PARTICIPATION_NARROWING", "MARKET_QUALITY_FRAGILE"])
+        return {
+            "market_quality_state": state,
+            "market_quality_reason_codes": sorted(set(reason_codes)),
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if ret20 > 0 and (ret5 < 0 or breadth_state_5d == "WEAK"):
+        return {
+            "market_quality_state": "SHORT_TERM_NARROWING_WITH_MEDIUM_STRENGTH",
+            "market_quality_reason_codes": ["SHORT_TERM_PARTICIPATION_NARROWING", "MARKET_QUALITY_FRAGILE"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if trend == "RECOVERY" and (breadth_state_20d != "STRONG" or breadth_state_5d != "STRONG"):
+        return {
+            "market_quality_state": "RECOVERY_CONFIRMATION_INCOMPLETE",
+            "market_quality_reason_codes": ["RECOVERY_CONFIRMATION_INCOMPLETE"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if trend == "RECOVERY" and breadth_state_20d == "STRONG" and breadth_state_5d == "STRONG" and ret5 >= 0:
+        return {
+            "market_quality_state": "HEALTHY_RECOVERY",
+            "market_quality_reason_codes": ["MARKET_QUALITY_HEALTHY"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    if trend == "BULL" and breadth_state_20d == "STRONG" and breadth_state_5d == "STRONG" and ret5 >= 0:
+        return {
+            "market_quality_state": "HEALTHY_EXPANSION",
+            "market_quality_reason_codes": ["MARKET_QUALITY_HEALTHY"],
+            "market_quality_evidence_completeness": completeness,
+            "market_quality_component_evidence": component_evidence,
+            "market_quality_as_of": feature_date,
+        }
+    return {
+        "market_quality_state": "CONFLICTED_MARKET_STRUCTURE",
+        "market_quality_reason_codes": ["MARKET_STRUCTURE_CONFLICTED"],
+        "market_quality_evidence_completeness": completeness,
+        "market_quality_component_evidence": component_evidence,
+        "market_quality_as_of": feature_date,
+    }
+
+
+def _breadth_state(value: float, thresholds: MarketContextThresholds) -> str:
+    if value >= thresholds.strong_breadth_min:
+        return "STRONG"
+    if value <= thresholds.weak_breadth_max:
+        return "WEAK"
+    return "NEUTRAL"
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return _round_float(numeric)
 
 
 def _threshold_policy_payload(thresholds: MarketContextThresholds | None) -> dict[str, Any]:

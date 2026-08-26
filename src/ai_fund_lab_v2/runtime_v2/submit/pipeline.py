@@ -26,17 +26,19 @@ from ai_fund_lab_v2.runtime_v2.historical_support.corporate_action_quarantine im
     registry_path as corporate_action_quarantine_registry_path,
     unresolved_entry as unresolved_corporate_action_quarantine_entry,
 )
+from ai_fund_lab_v2.runtime_v2.guard_taxonomy import normalize_review_result
 from ai_fund_lab_v2.runtime_v2.ledger.models import LedgerOrderRecord
 from ai_fund_lab_v2.runtime_v2.ledger.writer import ledger_record_to_payload
 from ai_fund_lab_v2.runtime_v2.market_status.buy_eligibility import evaluate_buy_eligibility
 from ai_fund_lab_v2.runtime_v2.pending.consume import consume_pending_plan
-from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPlanState
+from ai_fund_lab_v2.runtime_v2.pending.models import PendingConsumeInfo, PendingOrderPlan, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_review_sell_continuation_pending
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import validate_materialized_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
     build_pending_review_scope_authority,
     pending_scope_allows_partial_submit,
+    pending_scope_no_submission_terminal_authority,
 )
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
@@ -71,6 +73,9 @@ from ai_fund_lab_v2.runtime_v2.submit.models import (
 
 DEMO_BASE_URL = "https://demo-kabuka.e-shiten.jp/e_api_v4r9"
 PROD_BASE_URL = "https://kabuka.e-shiten.jp/e_api_v4r9"
+EXECUTION_AUTHORITY_UNAVAILABLE_REASON = "EXECUTION_AUTHORITY_UNAVAILABLE"
+EXECUTION_AUTHORITY_UNAVAILABLE_FEASIBILITY_STATUS = "NOT_EXECUTABLE_EXECUTION_AUTHORITY_UNAVAILABLE"
+NOT_EXECUTABLE_ITEM_STATE = "NOT_EXECUTABLE"
 
 
 class RuntimeV2SubmitAdapter(Protocol):
@@ -120,6 +125,18 @@ class SubmitItemResult:
     configuration_diagnostic: dict[str, Any]
     next_action: str
     guard_evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExistingSubmittedItemRecord:
+    pending_item_id: str
+    symbol: str
+    side: str
+    quantity: float
+    order_id: str
+    ledger_order_record_id: str
+    source: str
+    evidence_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -368,6 +385,12 @@ def run_submit_pipeline(
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
     item_scoped_review_evidence = _buy_item_scoped_review_partial_submission_evidence(pending)
+    item_scoped_partial_submit = bool(item_scoped_review_evidence)
+    existing_submitted_items = _existing_submitted_item_records(
+        runtime_root_path,
+        pending=pending,
+        business_date=business_date,
+    )
     reviewed_item_results = _reviewed_buy_item_results(pending, item_scoped_review_evidence=item_scoped_review_evidence)
     approved_items = tuple(
         item
@@ -402,6 +425,58 @@ def run_submit_pipeline(
     }
     for approved_item_id in pending.approved_item_ids:
         item = next(item for item in pending.items if item.pending_item_id == approved_item_id)
+        existing_submitted = existing_submitted_items.get(item.pending_item_id)
+        if existing_submitted is not None:
+            item_results.append(
+                SubmitItemResult(
+                    pending_item_id=item.pending_item_id,
+                    symbol=item.symbol,
+                    side=item.side,
+                    quantity=item.quantity,
+                    preflight_status="RECONCILED",
+                    submit_status="ACCEPTED",
+                    submitted=True,
+                    accepted=True,
+                    rejected=False,
+                    unknown=False,
+                    blocked=False,
+                    review_required=False,
+                    broker_order_id_hash=existing_submitted.order_id,
+                    ledger_order_record_id=existing_submitted.ledger_order_record_id,
+                    reason="existing_item_submission_reconciled",
+                    issue_code_normalization={},
+                    response_classification={
+                        "business_classification": "EXISTING_ITEM_SUBMISSION_RECONCILED",
+                        "source": existing_submitted.source,
+                        "evidence_path": existing_submitted.evidence_path,
+                    },
+                    configuration_diagnostic={},
+                    next_action="no_resubmit_for_reconciled_item",
+                    guard_evidence={
+                        "authority_type": "PENDING_ITEM_EXISTING_SUBMISSION_RECONCILIATION",
+                        "status": "PASS",
+                        "idempotency_authority": "pending_item_existing_submission_reconciliation",
+                        "idempotency_status": "PASS_RECONCILED_EXISTING_SUBMISSION",
+                        "reconciliation_precedes_revalidation": True,
+                        "skipped_sell_available_quantity_guard": item.side.upper() == "SELL",
+                        "skipped_broker_preflight": True,
+                        "skipped_adapter_submit": True,
+                        "existing_order_id": existing_submitted.order_id,
+                        "existing_ledger_order_record_id": existing_submitted.ledger_order_record_id,
+                        "existing_submission_source": existing_submitted.source,
+                        "existing_submission_evidence_path": existing_submitted.evidence_path,
+                        "pending_plan_id": pending.pending_plan_id,
+                        "pending_item_id": item.pending_item_id,
+                        "symbol": item.symbol,
+                        "side": item.side,
+                        "quantity": item.quantity,
+                        "guard_decision": "PASS",
+                        "guard_reason": "existing_item_submission_reconciled_before_revalidation",
+                        "manual_review_required": False,
+                    },
+                )
+            )
+            continue
         sell_position_quantity = current_positions.get(str(item.symbol).strip()) if item.side == "SELL" else None
         broker_available_evidence = (
             _broker_available_quantity_evidence(item=item, snapshot=broker_available_positions)
@@ -476,11 +551,14 @@ def run_submit_pipeline(
                 )
             )
             continue
+        preflight_dedup_keys = set(existing_dedup_keys)
+        if item_scoped_partial_submit:
+            preflight_dedup_keys.discard(pending.pending_plan_id)
         preflight = run_submit_preflight(
             pending_plan=pending,
             approval_artifact=approval,
             approved_item_id=approved_item_id,
-            existing_order_dedup_keys=existing_dedup_keys,
+            existing_order_dedup_keys=preflight_dedup_keys,
             environment=settings_environment,
             base_url_is_demo=base_url_is_demo,
             base_url_is_production=base_url_is_production,
@@ -527,6 +605,38 @@ def run_submit_pipeline(
             continue
         adapter_preflight = submit_adapter.preflight(preflight.command)
         if adapter_preflight.blocked or adapter_preflight.status not in {"DRY_RUN_READY", "ACCEPTED"}:
+            if _is_execution_authority_unavailable_preflight_result(adapter_preflight):
+                terminal_evidence = _execution_authority_unavailable_terminal_evidence(
+                    item=item,
+                    pending=pending,
+                    adapter_preflight=adapter_preflight,
+                    guard_evidence=guard_evidence,
+                )
+                item_results.append(
+                    SubmitItemResult(
+                        pending_item_id=item.pending_item_id,
+                        symbol=item.symbol,
+                        side=item.side,
+                        quantity=item.quantity,
+                        preflight_status=NOT_EXECUTABLE_ITEM_STATE,
+                        submit_status="NOT_SUBMITTED",
+                        submitted=False,
+                        accepted=False,
+                        rejected=False,
+                        unknown=False,
+                        blocked=False,
+                        review_required=False,
+                        broker_order_id_hash="",
+                        ledger_order_record_id="",
+                        reason=EXECUTION_AUTHORITY_UNAVAILABLE_REASON,
+                        issue_code_normalization=dict(adapter_preflight.issue_code_normalization),
+                        response_classification=dict(adapter_preflight.response_classification),
+                        configuration_diagnostic=dict(adapter_preflight.configuration_diagnostic),
+                        next_action="next_business_day_fresh_pit_re_evaluation",
+                        guard_evidence=terminal_evidence,
+                    )
+                )
+                continue
             item_results.append(
                 SubmitItemResult(
                     pending_item_id=item.pending_item_id,
@@ -591,24 +701,73 @@ def run_submit_pipeline(
     item_results.extend(reviewed_item_results)
     orders_path = runtime_root_path / "persistent_ledger" / "orders.jsonl"
     unsubmitted_review_present = any(result.review_required and not result.submitted for result in item_results)
-    if ledger_records:
+    terminal_non_executable_present = any(_is_terminal_non_executable_result(result) for result in item_results)
+    submitted_order_ids = tuple(result.broker_order_id_hash for result in item_results if result.submitted)
+    ledger_order_record_ids = tuple(result.ledger_order_record_id for result in item_results if result.submitted)
+    aggregate_terminal_noop = _submit_aggregate_terminal_noop_authority(
+        pending=pending,
+        item_results=tuple(item_results),
+        item_scoped_review_evidence=item_scoped_review_evidence,
+    )
+    if submitted_order_ids:
         _append_ledger_order_records(orders_path, ledger_records)
-        submitted_order_ids = tuple(result.broker_order_id_hash for result in item_results if result.submitted)
-        ledger_order_record_ids = tuple(result.ledger_order_record_id for result in item_results if result.submitted)
         if any(result.unknown for result in item_results):
-            pending = replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=timestamp)
+            pending = _mark_pending_partial_submit_terminal(
+                _pending_with_accepted_items_consumed(
+                    replace(pending, state=PendingPlanState.POST_SEND_UNKNOWN, updated_at=timestamp),
+                    item_results=item_results,
+                ),
+                item_results=item_results,
+                submitted_order_ids=submitted_order_ids,
+                ledger_order_record_ids=ledger_order_record_ids,
+            )
         elif any(result.rejected or result.blocked for result in item_results):
-            pending = replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=timestamp)
+            pending = _mark_pending_partial_submit_terminal(
+                _pending_with_accepted_items_consumed(
+                    replace(pending, state=PendingPlanState.REVIEW_REQUIRED, updated_at=timestamp),
+                    item_results=item_results,
+                ),
+                item_results=item_results,
+                submitted_order_ids=submitted_order_ids,
+                ledger_order_record_ids=ledger_order_record_ids,
+            )
         elif unsubmitted_review_present:
             consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
-            pending = replace(
-                pending,
-                items=tuple(
-                    replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
-                    for item in pending.items
+            pending = _mark_pending_partial_submit_terminal(
+                _pending_with_terminal_non_executable_items(
+                    replace(
+                        pending,
+                        items=tuple(
+                            replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
+                            for item in pending.items
+                        ),
+                        state=PendingPlanState.REVIEW_REQUIRED,
+                        updated_at=timestamp,
+                    ),
+                    item_results=item_results,
                 ),
-                state=PendingPlanState.REVIEW_REQUIRED,
-                updated_at=timestamp,
+                item_results=item_results,
+                submitted_order_ids=submitted_order_ids,
+                ledger_order_record_ids=ledger_order_record_ids,
+            )
+        elif terminal_non_executable_present:
+            consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
+            pending = _mark_pending_partial_submit_terminal(
+                _pending_with_terminal_non_executable_items(
+                    replace(
+                        pending,
+                        items=tuple(
+                            replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
+                            for item in pending.items
+                        ),
+                        state=PendingPlanState.REVIEW_REQUIRED,
+                        updated_at=timestamp,
+                    ),
+                    item_results=item_results,
+                ),
+                item_results=item_results,
+                submitted_order_ids=submitted_order_ids,
+                ledger_order_record_ids=ledger_order_record_ids,
             )
         else:
             consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
@@ -627,6 +786,14 @@ def run_submit_pipeline(
                 ledger_order_record_ids=ledger_order_record_ids,
             )
         write_pending_order_plan(Path(pending_read.path), pending)
+    elif aggregate_terminal_noop["status"] == "PASS":
+        pending = _mark_pending_partial_submit_terminal(
+            _pending_with_terminal_non_executable_items(pending, item_results=item_results),
+            item_results=item_results,
+            submitted_order_ids=(),
+            ledger_order_record_ids=(),
+        )
+        write_pending_order_plan(Path(pending_read.path), pending)
 
     submitted_count = sum(1 for result in item_results if result.submitted)
     accepted_count = sum(1 for result in item_results if result.accepted)
@@ -639,6 +806,9 @@ def run_submit_pipeline(
         if any(result.guard_evidence.get("safety_guard_status") == "HALT" for result in item_results):
             status = "HALT"
             reason = "safety halt runtime"
+        elif aggregate_terminal_noop["status"] == "PASS":
+            status = "PASS"
+            reason = "zero_submission_terminal_noop_continuation"
         elif any(result.review_required for result in item_results):
             status = "REVIEW_REQUIRED"
             if any(
@@ -654,8 +824,12 @@ def run_submit_pipeline(
     elif unknown_count or rejected_count or blocked_count:
         status = "REVIEW_REQUIRED"
         reason = "submit completed with rejected/unknown/blocked items"
+    elif unsubmitted_review_present and terminal_non_executable_present:
+        reason = "submitted_with_reviewed_and_terminal_non_executable_items_not_submitted"
     elif unsubmitted_review_present:
         reason = "submitted_with_reviewed_buy_items_not_submitted"
+    elif terminal_non_executable_present:
+        reason = "submitted_with_terminal_non_executable_items_not_submitted"
 
     return SubmitPipelineResult(
         status=status,
@@ -687,7 +861,12 @@ def run_submit_pipeline(
         submit_policy_consistency=policy_consistency,
         no_order_authority_status=item_scoped_review_evidence.get("status", ""),
         no_order_authority_reason=item_scoped_review_evidence.get("reason", ""),
-        no_order_authority_evidence=item_scoped_review_evidence,
+        no_order_authority_evidence={
+            **item_scoped_review_evidence,
+            "submit_aggregate_terminal_noop_authority": aggregate_terminal_noop,
+        }
+        if aggregate_terminal_noop["status"] == "PASS"
+        else item_scoped_review_evidence,
         submit_guard_item_evidence=tuple(result.guard_evidence for result in item_results),
     )
 
@@ -858,11 +1037,12 @@ def _is_buy_item_scoped_review_no_submission_pending(pending: PendingOrderPlan, 
         target_session_date=business_date,
     ):
         return False
+    authority = build_pending_review_scope_authority(pending)
+    if not pending_scope_no_submission_terminal_authority(authority):
+        return False
     if pending.approved_item_ids or pending.approved_buy_item_ids or pending.approved_sell_item_ids:
         return False
     if any(item.approved for item in pending.items):
-        return False
-    if any(item.side.upper() != "BUY" for item in pending.items):
         return False
     return True
 
@@ -1425,6 +1605,16 @@ def _ledger_order_record(
         add_candidate_signal=bool(pending_item.add_candidate_signal if pending_item is not None else False),
         capital_allocation_status=str(pending_item.capital_allocation_status if pending_item is not None else ""),
         capital_allocation_reason=str(pending_item.capital_allocation_reason if pending_item is not None else ""),
+        strategy_authority_lineage=(
+            dict(pending_item.strategy_authority_lineage)
+            if pending_item is not None and isinstance(pending_item.strategy_authority_lineage, Mapping)
+            else dict(command.strategy_authority_lineage or {})
+        ),
+        strategy_authority_lineage_hash=str(
+            pending_item.strategy_authority_lineage_hash
+            if pending_item is not None and pending_item.strategy_authority_lineage_hash
+            else command.strategy_authority_lineage_hash
+        ),
     )
 
 
@@ -1446,6 +1636,462 @@ def _append_ledger_order_records(path: Path, records: list[LedgerOrderRecord]) -
             handle.write(line + "\n")
 
 
+def _mark_pending_partial_submit_terminal(
+    pending: PendingOrderPlan,
+    *,
+    item_results: list[SubmitItemResult],
+    submitted_order_ids: tuple[str, ...],
+    ledger_order_record_ids: tuple[str, ...],
+) -> PendingOrderPlan:
+    return replace(
+        pending,
+        consume=PendingConsumeInfo(
+            consumed=False,
+            consume_reason=_consume_reason(item_results),
+            consumed_at="",
+            submitted_order_ids=_unique_non_empty(submitted_order_ids),
+            ledger_order_record_ids=_unique_non_empty(ledger_order_record_ids),
+        ),
+    )
+
+
+def _pending_with_accepted_items_consumed(
+    pending: PendingOrderPlan,
+    *,
+    item_results: list[SubmitItemResult],
+) -> PendingOrderPlan:
+    consumed_item_ids = {result.pending_item_id for result in item_results if result.accepted}
+    if not consumed_item_ids:
+        return pending
+    return replace(
+        pending,
+        items=tuple(
+            replace(item, state="CONSUMED") if item.pending_item_id in consumed_item_ids else item
+            for item in pending.items
+        ),
+    )
+
+
+def _pending_with_terminal_non_executable_items(
+    pending: PendingOrderPlan,
+    *,
+    item_results: list[SubmitItemResult],
+) -> PendingOrderPlan:
+    terminal_results = {
+        result.pending_item_id: result for result in item_results if _is_terminal_non_executable_result(result)
+    }
+    if not terminal_results:
+        return pending
+    items = []
+    for item in pending.items:
+        result = terminal_results.get(item.pending_item_id)
+        if result is None:
+            items.append(item)
+            continue
+        items.append(
+            replace(
+                item,
+                approved=False,
+                state=NOT_EXECUTABLE_ITEM_STATE,
+                feasibility_status=str(
+                    result.guard_evidence.get("execution_feasibility_status")
+                    or result.guard_evidence.get("feasibility_status")
+                    or EXECUTION_AUTHORITY_UNAVAILABLE_FEASIBILITY_STATUS
+                ),
+                batch_submit_status=NOT_EXECUTABLE_ITEM_STATE,
+                item_review_reason=str(
+                    result.guard_evidence.get("terminal_reason")
+                    or result.guard_evidence.get("guard_reason")
+                    or result.reason
+                    or NOT_EXECUTABLE_ITEM_STATE
+                ),
+            )
+        )
+    terminal_ids = set(terminal_results)
+    return replace(
+        pending,
+        approved_item_ids=tuple(item_id for item_id in pending.approved_item_ids if item_id not in terminal_ids),
+        approved_buy_item_ids=tuple(item_id for item_id in pending.approved_buy_item_ids if item_id not in terminal_ids),
+        approved_sell_item_ids=tuple(item_id for item_id in pending.approved_sell_item_ids if item_id not in terminal_ids),
+        items=tuple(items),
+    )
+
+
+def _submit_aggregate_terminal_noop_authority(
+    *,
+    pending: PendingOrderPlan,
+    item_results: tuple[SubmitItemResult, ...],
+    item_scoped_review_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    pending_with_terminal_items = _pending_with_terminal_non_executable_items(pending, item_results=list(item_results))
+    scope_authority = build_pending_review_scope_authority(pending_with_terminal_items)
+    item_classes = {
+        result.pending_item_id: _submit_aggregate_item_class(
+            result,
+            item_scoped_review_evidence=item_scoped_review_evidence,
+        )
+        for result in item_results
+    }
+    counts = {
+        "submitted_or_reconciled": sum(1 for item_class in item_classes.values() if item_class == "SUBMITTED_OR_RECONCILED"),
+        "terminal_not_executable": sum(1 for item_class in item_classes.values() if item_class == "TERMINAL_NOT_EXECUTABLE"),
+        "deferred_item_scoped_review": sum(
+            1 for item_class in item_classes.values() if item_class == "DEFERRED_ITEM_SCOPED_REVIEW"
+        ),
+        "blocked": sum(1 for item_class in item_classes.values() if item_class == "BLOCKED"),
+        "rejected": sum(1 for item_class in item_classes.values() if item_class == "REJECTED"),
+        "unknown_or_ambiguous": sum(1 for item_class in item_classes.values() if item_class == "UNKNOWN_OR_AMBIGUOUS"),
+        "retryable_executable": sum(1 for item_class in item_classes.values() if item_class == "RETRYABLE_EXECUTABLE"),
+    }
+    checks = {
+        "items_present": bool(item_results),
+        "all_items_have_known_dispositions": bool(item_results)
+        and all(item_class != "UNKNOWN_OR_AMBIGUOUS" for item_class in item_classes.values()),
+        "blocked_absent": counts["blocked"] == 0,
+        "rejected_absent": counts["rejected"] == 0,
+        "unknown_or_ambiguous_absent": counts["unknown_or_ambiguous"] == 0,
+        "retryable_executable_absent": counts["retryable_executable"] == 0,
+        "item_scoped_reviews_deferred_by_authority": _deferred_item_scoped_reviews_safe(
+            item_results,
+            item_scoped_review_evidence=item_scoped_review_evidence,
+        ),
+        "terminal_not_executable_items_safety_qualified": all(
+            _is_terminal_non_executable_result(result)
+            for result in item_results
+            if item_classes.get(result.pending_item_id) == "TERMINAL_NOT_EXECUTABLE"
+        ),
+        "pending_review_scope_structural_valid": scope_authority.structural_validity == "PASS",
+        "pending_review_scope_not_batch_blocked": not scope_authority.batch_blocked,
+        "pending_review_scope_no_executable_items_after_terminalization": not scope_authority.executable_item_ids,
+        "pending_review_scope_no_non_terminal_items_after_terminalization": not scope_authority.non_terminal_item_ids,
+        "reviewed_sell_absent": not scope_authority.reviewed_sell_item_ids,
+    }
+    status = "PASS" if all(checks.values()) else "NOT_APPLICABLE"
+    return {
+        "authority_type": "SUBMIT_AGGREGATE_TERMINAL_NOOP_CONTINUATION",
+        "status": status,
+        "reason": (
+            "zero_submission_terminal_noop_continuation"
+            if status == "PASS"
+            else "submit_aggregate_terminal_noop_not_applicable"
+        ),
+        "classification_authority": "SubmitItemResult + PendingReviewScopeAuthority",
+        "pending_plan_id": pending.pending_plan_id,
+        "pending_review_scope_authority": scope_authority.to_dict(),
+        "item_classes": item_classes,
+        "counts": counts,
+        "submitted_count": sum(1 for result in item_results if result.submitted),
+        "accepted_count": sum(1 for result in item_results if result.accepted),
+        "known_safe_terminal_or_deferred_count": (
+            counts["submitted_or_reconciled"]
+            + counts["terminal_not_executable"]
+            + counts["deferred_item_scoped_review"]
+        ),
+        "checks": checks,
+        "zero_submission_safe_terminal_pass_supported": True,
+        "fake_submission_created": False,
+        "fake_execution_created": False,
+        "fake_cash_mutation": False,
+        "fake_position_mutation": False,
+        "corporate_action_safety_changed": False,
+        "same_day_retry_prevented_for_terminal_items": all(
+            result.guard_evidence.get("retry_eligible_same_day") is False
+            for result in item_results
+            if item_classes.get(result.pending_item_id) == "TERMINAL_NOT_EXECUTABLE"
+        ),
+    }
+
+
+def _submit_aggregate_item_class(
+    result: SubmitItemResult,
+    *,
+    item_scoped_review_evidence: Mapping[str, Any],
+) -> str:
+    if result.submitted or result.accepted:
+        return "SUBMITTED_OR_RECONCILED"
+    if result.blocked:
+        return "BLOCKED"
+    if result.rejected:
+        return "REJECTED"
+    if result.unknown:
+        return "UNKNOWN_OR_AMBIGUOUS"
+    if _is_terminal_non_executable_result(result):
+        return "TERMINAL_NOT_EXECUTABLE"
+    if _is_deferred_item_scoped_review_result(result, item_scoped_review_evidence=item_scoped_review_evidence):
+        return "DEFERRED_ITEM_SCOPED_REVIEW"
+    if not result.submitted and not result.review_required and str(result.preflight_status or "").upper() in {
+        "PASS",
+        "APPROVED",
+        "READY",
+        "DRY_RUN_READY",
+    }:
+        return "RETRYABLE_EXECUTABLE"
+    return "UNKNOWN_OR_AMBIGUOUS"
+
+
+def _deferred_item_scoped_reviews_safe(
+    item_results: tuple[SubmitItemResult, ...],
+    *,
+    item_scoped_review_evidence: Mapping[str, Any],
+) -> bool:
+    reviewed_results = tuple(result for result in item_results if result.review_required and not result.submitted)
+    if not reviewed_results:
+        return True
+    return all(
+        _is_deferred_item_scoped_review_result(result, item_scoped_review_evidence=item_scoped_review_evidence)
+        for result in reviewed_results
+    )
+
+
+def _is_deferred_item_scoped_review_result(
+    result: SubmitItemResult,
+    *,
+    item_scoped_review_evidence: Mapping[str, Any],
+) -> bool:
+    reviewed_ids = set(str(item_id) for item_id in item_scoped_review_evidence.get("review_required_buy_item_ids") or ())
+    return bool(
+        result.review_required
+        and not result.submitted
+        and not result.accepted
+        and not result.blocked
+        and not result.unknown
+        and not result.rejected
+        and result.pending_item_id in reviewed_ids
+        and str(result.guard_evidence.get("authority_type") or "") == "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+        and str(result.guard_evidence.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW"
+        and str(item_scoped_review_evidence.get("status") or "") == "PASS"
+        and bool(item_scoped_review_evidence.get("item_review_does_not_escalate_to_batch_failure"))
+        and not bool(result.guard_evidence.get("blocked_other_items"))
+    )
+
+
+def _is_terminal_non_executable_result(result: SubmitItemResult) -> bool:
+    evidence = result.guard_evidence
+    feasibility_status = str(evidence.get("execution_feasibility_status") or evidence.get("feasibility_status") or "")
+    side_effect_absent = all(
+        not bool(evidence.get(field))
+        for field in (
+            "adapter_submit_called",
+            "order_created",
+            "broker_side_effect_created",
+            "ledger_order_created",
+            "position_mutated",
+            "cash_mutated",
+            "realized_pnl_mutated",
+        )
+    )
+    return (
+        not result.submitted
+        and not result.accepted
+        and not result.blocked
+        and not result.unknown
+        and not result.rejected
+        and not result.review_required
+        and str(result.preflight_status or "").upper() == NOT_EXECUTABLE_ITEM_STATE
+        and str(evidence.get("status") or "") == "PASS"
+        and str(evidence.get("authority_type") or "").endswith("_TERMINAL")
+        and feasibility_status.startswith("NOT_EXECUTABLE")
+        and side_effect_absent
+    )
+
+
+def _is_execution_authority_unavailable_preflight_result(result: RuntimeV2SubmitResult) -> bool:
+    if result.submitted or result.accepted or result.post_send_unknown or result.broker_api_called:
+        return False
+    if result.status not in {"HALT", "BLOCKED", "REVIEW_REQUIRED"}:
+        return False
+    reason = str(result.reason or "")
+    classification_reason = str((result.response_classification or {}).get("reason") or "")
+    diagnostic_reason = str((result.configuration_diagnostic or {}).get("reason") or "")
+    combined = " ".join(part.lower() for part in (reason, classification_reason, diagnostic_reason) if part)
+    if not combined:
+        return False
+    authority_unavailable_markers = (
+        "execution_authority_unavailable",
+        "missing or non-unique target session ohlcv row",
+        "canonical same-day execution authority unavailable",
+        "execution price authority unavailable",
+    )
+    ambiguity_markers = (
+        "conflict",
+        "ambiguous",
+        "duplicate",
+        "post_send_unknown",
+        "partial mutation",
+        "identity mismatch",
+    )
+    return any(marker in combined for marker in authority_unavailable_markers) and not any(
+        marker in combined for marker in ambiguity_markers
+    )
+
+
+def _execution_authority_unavailable_terminal_evidence(
+    *,
+    item: Any,
+    pending: PendingOrderPlan,
+    adapter_preflight: RuntimeV2SubmitResult,
+    guard_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        **dict(guard_evidence),
+        "authority_type": "ITEM_EXECUTION_AUTHORITY_UNAVAILABLE_TERMINAL",
+        "status": "PASS",
+        "pending_plan_id": pending.pending_plan_id,
+        "pending_item_id": item.pending_item_id,
+        "symbol": item.symbol,
+        "side": item.side,
+        "planned_quantity": item.quantity,
+        "quantity": item.quantity,
+        "strategy_runtime_planning_intent": item.source_decision_type or str(item.side or "").upper(),
+        "execution_feasibility_status": EXECUTION_AUTHORITY_UNAVAILABLE_FEASIBILITY_STATUS,
+        "terminal_reason": EXECUTION_AUTHORITY_UNAVAILABLE_REASON,
+        "execution_authority_source": "submit_adapter_preflight",
+        "authority_resolution_status": "UNAVAILABLE",
+        "adapter_preflight_status": adapter_preflight.status,
+        "adapter_preflight_reason": adapter_preflight.reason,
+        "adapter_submit_called": False,
+        "order_created": False,
+        "broker_side_effect_created": False,
+        "ledger_order_created": False,
+        "position_mutated": False,
+        "cash_mutated": False,
+        "realized_pnl_mutated": False,
+        "retry_eligible_same_day": False,
+        "next_day_re_evaluation_required": True,
+        "future_information_used": False,
+        "fallback_price_used": False,
+        "previous_close_execution_fallback_used": False,
+        "broker_write": False,
+        "guard_decision": NOT_EXECUTABLE_ITEM_STATE,
+        "guard_reason": EXECUTION_AUTHORITY_UNAVAILABLE_REASON,
+        "manual_review_required": False,
+    }
+
+
+def _existing_submitted_item_records(
+    runtime_root: Path,
+    *,
+    pending: PendingOrderPlan,
+    business_date: str,
+) -> dict[str, ExistingSubmittedItemRecord]:
+    records = _existing_submitted_item_records_from_ledger(
+        runtime_root / "persistent_ledger" / "orders.jsonl",
+        pending=pending,
+        business_date=business_date,
+    )
+    broker_records = _existing_submitted_item_records_from_historical_broker(
+        runtime_root / "runtime_state" / "historical_broker" / business_date,
+        pending=pending,
+        business_date=business_date,
+    )
+    for item_id, broker_record in broker_records.items():
+        records.setdefault(item_id, broker_record)
+    return records
+
+
+def _existing_submitted_item_records_from_ledger(
+    path: Path,
+    *,
+    pending: PendingOrderPlan,
+    business_date: str,
+) -> dict[str, ExistingSubmittedItemRecord]:
+    if not path.exists():
+        return {}
+    records: dict[str, ExistingSubmittedItemRecord] = {}
+    items_by_id = {item.pending_item_id: item for item in pending.items}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(payload.get("pending_plan_id") or "") != pending.pending_plan_id:
+            continue
+        item_id = str(payload.get("pending_item_id") or "")
+        item = items_by_id.get(item_id)
+        if item is None:
+            continue
+        if str(payload.get("business_date") or business_date) != business_date:
+            continue
+        if str(payload.get("status") or "").upper() != "ACCEPTED":
+            continue
+        if not _submitted_item_payload_matches_pending_item(payload, item):
+            continue
+        order_id = str(payload.get("order_id") or "")
+        if not order_id:
+            continue
+        records[item_id] = ExistingSubmittedItemRecord(
+            pending_item_id=item_id,
+            symbol=str(payload.get("symbol") or ""),
+            side=str(payload.get("side") or ""),
+            quantity=_float(payload.get("quantity")),
+            order_id=order_id,
+            ledger_order_record_id=str(payload.get("ledger_record_id") or payload.get("record_id") or ""),
+            source="persistent_ledger.orders",
+            evidence_path=str(path),
+        )
+    return records
+
+
+def _existing_submitted_item_records_from_historical_broker(
+    directory: Path,
+    *,
+    pending: PendingOrderPlan,
+    business_date: str,
+) -> dict[str, ExistingSubmittedItemRecord]:
+    if not directory.exists():
+        return {}
+    records: dict[str, ExistingSubmittedItemRecord] = {}
+    items_by_id = {item.pending_item_id: item for item in pending.items}
+    for path in sorted(directory.glob("*.json")):
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if str(payload.get("pending_plan_id") or "") != pending.pending_plan_id:
+            continue
+        item_id = str(payload.get("pending_item_id") or "")
+        item = items_by_id.get(item_id)
+        if item is None:
+            continue
+        if str(payload.get("target_session_date") or payload.get("fill_date") or business_date) != business_date:
+            continue
+        if str(payload.get("status") or "").upper() != "ACCEPTED":
+            continue
+        if not _submitted_item_payload_matches_pending_item(payload, item):
+            continue
+        order_id = str(payload.get("order_identity") or "")
+        if not order_id:
+            continue
+        records[item_id] = ExistingSubmittedItemRecord(
+            pending_item_id=item_id,
+            symbol=str(payload.get("symbol") or ""),
+            side=str(payload.get("side") or ""),
+            quantity=_float(payload.get("quantity")),
+            order_id=order_id,
+            ledger_order_record_id="",
+            source="runtime_state.historical_broker",
+            evidence_path=str(path),
+        )
+    return records
+
+
+def _submitted_item_payload_matches_pending_item(payload: Mapping[str, Any], item: Any) -> bool:
+    if str(payload.get("side") or "").upper() != str(item.side).upper():
+        return False
+    if str(payload.get("symbol") or "") and str(payload.get("symbol") or "") != str(item.symbol):
+        return False
+    try:
+        if float(payload.get("quantity")) != float(item.quantity):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _existing_order_dedup_keys(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -1462,6 +2108,17 @@ def _existing_order_dedup_keys(path: Path) -> set[str]:
         if payload.get("pending_plan_id"):
             keys.add(str(payload["pending_plan_id"]))
     return keys
+
+
+def _unique_non_empty(values: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        result.append(value)
+        seen.add(value)
+    return tuple(result)
 
 
 def _current_position_quantities(path: Path) -> dict[str, float]:
@@ -2637,6 +3294,20 @@ def _blocked_guard_evidence(
     violated_policy_source: str,
     should_have_been_blocked_at_planning: bool = False,
 ) -> dict[str, Any]:
+    typed_guard = normalize_review_result(
+        producer=violated_policy or "runtime_v2_submit_guard",
+        reason=reason,
+        status="REVIEW_REQUIRED",
+        source_payload=evidence,
+        affected_item_ids=[str(evidence.get("pending_item_id") or "")]
+        if str(evidence.get("pending_item_id") or "")
+        else [],
+    )
+    typed_guard = _submit_item_typed_guard_overrides(
+        typed_guard,
+        evidence=evidence,
+        violated_policy=violated_policy,
+    )
     evidence.update(
         {
             "guard_decision": "BLOCKED",
@@ -2647,9 +3318,46 @@ def _blocked_guard_evidence(
             "violated_policy_source": violated_policy_source,
             "should_have_been_blocked_at_planning": should_have_been_blocked_at_planning,
             "blocked_at_submit_reason": reason,
+            "guard_class": typed_guard.get("guard_class"),
+            "guard_code": typed_guard.get("guard_code"),
+            "scope": typed_guard.get("scope"),
+            "affected_side": typed_guard.get("affected_side"),
+            "affected_item_ids": typed_guard.get("affected_item_ids"),
+            "batch_blocking": typed_guard.get("batch_blocking"),
+            "recoverability": typed_guard.get("recoverability"),
+            "canonical_owner": typed_guard.get("canonical_owner"),
+            "consumer_action": typed_guard.get("consumer_action"),
+            "typed_guard": typed_guard,
         }
     )
     return evidence
+
+
+def _submit_item_typed_guard_overrides(
+    typed_guard: dict[str, Any],
+    *,
+    evidence: Mapping[str, Any],
+    violated_policy: str,
+) -> dict[str, Any]:
+    guard = dict(typed_guard)
+    side = str(evidence.get("side") or "").upper()
+    pending_item_id = str(evidence.get("pending_item_id") or "")
+    if side in {"BUY", "SELL"} and guard.get("affected_side") in {"", "NONE", None}:
+        guard["affected_side"] = side
+    if pending_item_id and not guard.get("affected_item_ids"):
+        guard["affected_item_ids"] = [pending_item_id]
+    if violated_policy in {
+        "historical_corporate_action_symbol_quarantine",
+        "corporate_action_adjustment_authority",
+    }:
+        if side in {"BUY", "SELL"}:
+            guard["affected_side"] = side
+        if pending_item_id:
+            guard["affected_item_ids"] = [pending_item_id]
+        guard["scope"] = "ITEM"
+        guard["batch_blocking"] = False
+        guard["consumer_action"] = "FAIL_CLOSED_REVIEW_ITEM_ALLOW_UNAFFECTED_ITEMS"
+    return guard
 
 
 def _blocked_result(

@@ -398,6 +398,7 @@ def run_sell_planning_pending_pipeline(
             existing_buy_pending_reason=existing_buy_pending_reason,
             add_result=add_result,
             pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+            current_positions=current_positions,
         )
 
     quantity_decisions = tuple(
@@ -444,6 +445,11 @@ def run_sell_planning_pending_pipeline(
             status="PASS",
             safety_decision=runtime_safety_decision,
             non_executable_decisions=non_executable_decisions,
+            existing_buy_pending=existing_buy_pending,
+            existing_buy_pending_reason=existing_buy_pending_reason,
+            add_result=add_result,
+            pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+            current_positions=current_positions,
         )
 
     ai_signals = tuple(_ai_signal(decision, index) for index, decision in enumerate(executable_quantity_decisions, start=1))
@@ -784,6 +790,7 @@ def _write_no_signal_pending(
     existing_buy_pending_reason: str = "",
     add_result: AddConsumerResult | None = None,
     pre_sell_pending_snapshot: Mapping[str, Any] | None = None,
+    current_positions: Mapping[str, CurrentAssetPosition] | None = None,
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -882,31 +889,42 @@ def _write_no_signal_pending(
             target_session_date=target_session_date,
         )
     if existing_buy_pending is not None and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
-        pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
-        return SellPlanningPipelineResult(
-            status=status,
-            reason=reason,
-            current_position_count=current_position_count,
-            selected_count=0,
-            blocked_count=0,
-            pending_path=str(pending_path),
-            pending_plan_id=existing_buy_pending.pending_plan_id,
-            approval_artifact_path=str(approval_path),
-            order_plan_artifact_path=str(order_plan_path),
-            target_session_date=target_session_date,
-            selected_symbols=tuple(item.symbol for item in existing_buy_pending.items if item.side.upper() == "BUY"),
-            current_exposure=current_exposure,
-            pending_composition_model="PRESERVE_EXISTING_BUY_PENDING",
-            pending_composition_status="PASS",
-            preserved_existing_buy_pending=True,
-            composite_pending=False,
-            add_consumer_status=add_result.status if add_result is not None else "",
-            add_consumer_reason=add_result.reason if add_result is not None else existing_buy_pending_reason,
-            add_accepted_count=add_result.accepted_count if add_result is not None else 0,
-            add_rejected_count=add_result.rejected_count if add_result is not None else 0,
-            pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or {}),
-            **_result_safety_fields(safety_decision),
-        )
+        snapshot_for_buy_pending = dict(pre_sell_pending_snapshot or {})
+        if not snapshot_for_buy_pending:
+            _, _, snapshot_for_buy_pending = active_pending_snapshot(
+                runtime_root=runtime_root,
+                environment=environment,
+                business_date=business_date,
+                target_session_date=target_session_date,
+            )
+        if int(snapshot_for_buy_pending.get("sell_item_count") or 0) > 0:
+            existing_buy_pending = None
+        else:
+            pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+            return SellPlanningPipelineResult(
+                status=status,
+                reason=reason,
+                current_position_count=current_position_count,
+                selected_count=0,
+                blocked_count=0,
+                pending_path=str(pending_path),
+                pending_plan_id=existing_buy_pending.pending_plan_id,
+                approval_artifact_path=str(approval_path),
+                order_plan_artifact_path=str(order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=tuple(item.symbol for item in existing_buy_pending.items if item.side.upper() == "BUY"),
+                current_exposure=current_exposure,
+                pending_composition_model="PRESERVE_EXISTING_BUY_PENDING",
+                pending_composition_status="PASS",
+                preserved_existing_buy_pending=True,
+                composite_pending=False,
+                add_consumer_status=add_result.status if add_result is not None else "",
+                add_consumer_reason=add_result.reason if add_result is not None else existing_buy_pending_reason,
+                add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+                add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                pre_sell_pending_snapshot=snapshot_for_buy_pending,
+                **_result_safety_fields(safety_decision),
+            )
     active_pending, active_reason, active_snapshot = active_pending_snapshot(
         runtime_root=runtime_root,
         environment=environment,
@@ -914,6 +932,134 @@ def _write_no_signal_pending(
         target_session_date=target_session_date,
     )
     if active_pending is not None and status not in {"REVIEW_REQUIRED", "BLOCKED"}:
+        equivalence = _same_day_equivalent_sell_pending_evidence(
+            active_pending=active_pending,
+            current_positions=current_positions or {},
+            business_date=business_date,
+            target_session_date=target_session_date,
+            snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+        )
+        if equivalence["pending_equivalence_status"] != "EQUIVALENT":
+            composite_equivalence = _same_day_canonical_composite_pending_evidence(
+                runtime_root=runtime_root,
+                active_pending=active_pending,
+                current_positions=current_positions or {},
+                business_date=business_date,
+                target_session_date=target_session_date,
+                snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+            )
+            if composite_equivalence["pending_equivalence_status"] == "EQUIVALENT":
+                evidence = {
+                    **dict(pre_sell_pending_snapshot or active_snapshot),
+                    **composite_equivalence,
+                    "classification": "IDEMPOTENT_EXISTING_PENDING",
+                    "resolution_action": "REUSE_EXISTING_PENDING",
+                    "reason_codes": [
+                        "SAME_DAY_CANONICAL_BUY_SELL_COMPOSITE_PENDING_REUSED",
+                        "PENDING_PLAN_NO_SIGNAL_DID_NOT_OVERWRITE_ACTIVE",
+                    ],
+                    "review_required": False,
+                    "original_pending_preserved": True,
+                    "duplicate_pending_created": False,
+                    "no_signal_overwrite_prevented": True,
+                    "opposite_side_preserved": True,
+                }
+                (artifact_dir / "same_day_buy_sell_composite_pending_continuation_evidence.json").write_text(
+                    _json_dumps(evidence),
+                    encoding="utf-8",
+                )
+                _write_pending_continuity_evidence(
+                    artifact_dir=artifact_dir,
+                    reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_CANONICAL_BUY_SELL_COMPOSITE_PENDING_REUSED",
+                    status="PASS",
+                    evidence=evidence,
+                )
+                pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+                reusable_sell_items = tuple(
+                    item
+                    for item in active_pending.items
+                    if item.side.upper() == "SELL" and item.pending_item_id in set(active_pending.approved_item_ids)
+                )
+                return SellPlanningPipelineResult(
+                    status="PASS",
+                    reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_CANONICAL_BUY_SELL_COMPOSITE_PENDING_REUSED",
+                    current_position_count=current_position_count,
+                    selected_count=len(reusable_sell_items),
+                    blocked_count=0,
+                    pending_path=str(pending_path),
+                    pending_plan_id=active_pending.pending_plan_id,
+                    approval_artifact_path=str(approval_path),
+                    order_plan_artifact_path=str(order_plan_path),
+                    target_session_date=target_session_date,
+                    selected_symbols=tuple(item.symbol for item in reusable_sell_items),
+                    current_exposure=current_exposure,
+                    pending_composition_model="SAME_DAY_CANONICAL_BUY_SELL_COMPOSITE_PENDING_CONTINUATION",
+                    pending_composition_status="PASS",
+                    preserved_existing_buy_pending=True,
+                    composite_pending=True,
+                    add_consumer_status=add_result.status if add_result is not None else "",
+                    add_consumer_reason=add_result.reason if add_result is not None else active_reason,
+                    add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+                    add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                    pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+                    **_result_safety_fields(safety_decision),
+                )
+        if equivalence["pending_equivalence_status"] == "EQUIVALENT":
+            evidence = {
+                **dict(pre_sell_pending_snapshot or active_snapshot),
+                **equivalence,
+                "classification": "IDEMPOTENT_EXISTING_PENDING",
+                "resolution_action": "REUSE_EXISTING_PENDING",
+                "reason_codes": [
+                    "SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                    "PENDING_PLAN_NO_SIGNAL_DID_NOT_OVERWRITE_ACTIVE",
+                ],
+                "review_required": False,
+                "original_pending_preserved": True,
+                "duplicate_pending_created": False,
+                "no_signal_overwrite_prevented": True,
+                "opposite_side_preserved": False,
+            }
+            (artifact_dir / "same_day_sell_pending_equivalence_evidence.json").write_text(
+                _json_dumps(evidence),
+                encoding="utf-8",
+            )
+            _write_pending_continuity_evidence(
+                artifact_dir=artifact_dir,
+                reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                status="PASS",
+                evidence=evidence,
+            )
+            pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+            reusable_sell_items = tuple(
+                item
+                for item in active_pending.items
+                if item.side.upper() == "SELL" and item.pending_item_id in set(active_pending.approved_item_ids)
+            )
+            return SellPlanningPipelineResult(
+                status="PASS",
+                reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                current_position_count=current_position_count,
+                selected_count=len(reusable_sell_items),
+                blocked_count=0,
+                pending_path=str(pending_path),
+                pending_plan_id=active_pending.pending_plan_id,
+                approval_artifact_path=str(approval_path),
+                order_plan_artifact_path=str(order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=tuple(item.symbol for item in reusable_sell_items),
+                current_exposure=current_exposure,
+                pending_composition_model="SAME_DAY_EQUIVALENT_SELL_PENDING_IDEMPOTENCY",
+                pending_composition_status="PASS",
+                preserved_existing_buy_pending=False,
+                composite_pending=False,
+                add_consumer_status=add_result.status if add_result is not None else "",
+                add_consumer_reason=add_result.reason if add_result is not None else active_reason,
+                add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+                add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+                pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+                **_result_safety_fields(safety_decision),
+            )
         if is_buy_item_scoped_review_sell_continuation_pending(
             active_pending,
             business_date=business_date,
@@ -1009,6 +1155,57 @@ def _write_no_signal_pending(
             pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
             **_result_safety_fields(safety_decision),
         )
+    if (
+        status not in {"REVIEW_REQUIRED", "BLOCKED"}
+        and active_pending is None
+        and bool(active_snapshot.get("valid"))
+        and bool(active_snapshot.get("active"))
+        and not bool(active_snapshot.get("same_date"))
+    ):
+        reason_codes = [
+            f"ACTIVE_PENDING_NOT_EMPTY:{active_reason}",
+            "PENDING_PLAN_CONFLICT_ORIGINAL_PRESERVED",
+        ]
+        preservation_evidence = {
+            **dict(pre_sell_pending_snapshot or active_snapshot),
+            "classification": "REVIEW_REQUIRED",
+            "resolution_action": "ORIGINAL_PENDING_PRESERVED",
+            "reason_codes": reason_codes,
+            "review_required": True,
+            "no_signal_overwrite_prevented": True,
+            "opposite_side_preserved": bool(active_snapshot.get("buy_item_count") or active_snapshot.get("sell_item_count")),
+        }
+        _write_pending_continuity_evidence(
+            artifact_dir=artifact_dir,
+            reason=";".join(reason_codes),
+            status="REVIEW_REQUIRED",
+            evidence=preservation_evidence,
+        )
+        pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+        return SellPlanningPipelineResult(
+            status="REVIEW_REQUIRED",
+            reason=";".join(reason_codes),
+            current_position_count=current_position_count,
+            selected_count=0,
+            blocked_count=0,
+            pending_path=str(pending_path),
+            pending_plan_id=str(active_snapshot.get("pending_plan_id") or ""),
+            approval_artifact_path=str(approval_path),
+            order_plan_artifact_path=str(order_plan_path),
+            target_session_date=target_session_date,
+            selected_symbols=tuple(str(item.get("symbol") or "") for item in active_snapshot.get("items") or ()),
+            current_exposure=current_exposure,
+            pending_composition_model="PRESERVE_ACTIVE_PENDING_ON_NO_SIGNAL",
+            pending_composition_status="REVIEW_REQUIRED",
+            preserved_existing_buy_pending=bool(active_snapshot.get("buy_item_count")),
+            composite_pending=False,
+            add_consumer_status=add_result.status if add_result is not None else "",
+            add_consumer_reason=add_result.reason if add_result is not None else active_reason,
+            add_accepted_count=add_result.accepted_count if add_result is not None else 0,
+            add_rejected_count=add_result.rejected_count if add_result is not None else 0,
+            pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
+            **_result_safety_fields(safety_decision),
+        )
     pending = promote_order_plan_to_pending(
         order_plan_id=order_plan_payload["order_plan_id"],
         source_order_plan_path=str(order_plan_path),
@@ -1084,6 +1281,464 @@ def _write_no_signal_pending(
         pre_sell_pending_snapshot=dict(pre_sell_pending_snapshot or active_snapshot),
         **_result_safety_fields(safety_decision),
     )
+
+
+def _same_day_equivalent_sell_pending_evidence(
+    *,
+    active_pending: PendingOrderPlan,
+    current_positions: Mapping[str, CurrentAssetPosition],
+    business_date: str,
+    target_session_date: str,
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    evidence = {
+        "contract_version": "phase31_f1r_strict_multi_sell_pending_set_equivalence.v1",
+        "pending_equivalence_status": "NOT_EQUIVALENT",
+        "resolution_action": "ORIGINAL_PENDING_PRESERVED_REVIEW_REQUIRED",
+        "original_pending_preserved": True,
+        "duplicate_pending_created": False,
+        "equivalence_fields": [
+            "pending_plan_state",
+            "pending_item_count",
+            "approved_sell_item_count",
+            "pending_symbol_set",
+            "authoritative_sell_exit_symbol_set",
+            "symbol",
+            "side",
+            "target_session_date",
+            "plan_created_date",
+            "quantity",
+            "current_position_quantity",
+            "authoritative_sell_exit_quantity",
+            "sell_action_family",
+        ],
+        "reason_codes": [],
+        "existing_pending_plan_id": active_pending.pending_plan_id,
+        "existing_pending_state": active_pending.state.value,
+        "business_date": business_date,
+        "target_session_date": target_session_date,
+        "snapshot": dict(snapshot),
+        "future_information_used": False,
+    }
+    if active_pending.state != PendingPlanState.APPROVED:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_STATE_NOT_REUSABLE"]
+        return evidence
+    if active_pending.plan_created_date != business_date or active_pending.target_session_date != target_session_date:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_SESSION_MISMATCH"]
+        return evidence
+    if active_pending.consume.consumed:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_CONSUMED"]
+        return evidence
+    if any(item.side.upper() == "BUY" for item in active_pending.items):
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_BUY_ITEM_PRESENT"]
+        return evidence
+    approved_ids = set(active_pending.approved_item_ids)
+    approved_sell_items = tuple(
+        item
+        for item in active_pending.items
+        if item.side.upper() == "SELL" and item.pending_item_id in approved_ids and float(item.quantity or 0.0) > 0
+    )
+    if len(active_pending.items) != len(approved_sell_items) or not approved_sell_items:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_AMBIGUOUS_ITEM_SET"]
+        return evidence
+    if len(approved_sell_items) > 1:
+        return _multi_sell_pending_set_equivalence_evidence(
+            evidence=evidence,
+            approved_sell_items=approved_sell_items,
+            approved_ids=approved_ids,
+            current_positions=current_positions,
+        )
+    item = approved_sell_items[0]
+    if not bool(item.approved):
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ITEM_NOT_APPROVED"]
+        return evidence
+    if str(item.state or "").upper() not in {"CREATED", "READY", "APPROVED"}:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ITEM_STATE_NOT_REUSABLE"]
+        return evidence
+    if _pending_item_has_partial_fill_evidence(item):
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_PARTIAL_FILL_REVIEW"]
+        return evidence
+    position = _current_position_by_identity(dict(current_positions), item.symbol)
+    if position is None or float(position.quantity or 0.0) <= 0:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_CURRENT_POSITION_MISSING"]
+        return evidence
+    existing_quantity = float(item.quantity or 0.0)
+    current_quantity = float(position.quantity or 0.0)
+    if abs(existing_quantity - current_quantity) >= 1e-9:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_QUANTITY_NOT_FULL_EXIT"]
+        evidence["existing_quantity"] = existing_quantity
+        evidence["current_position_quantity"] = current_quantity
+        return evidence
+    intent = _pending_sell_intent_class(item)
+    if intent != "EXIT":
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ACTION_FAMILY_NOT_EXIT"]
+        evidence["sell_action_family"] = intent
+        return evidence
+    evidence.update(
+        {
+            "pending_equivalence_status": "EQUIVALENT",
+            "resolution_action": "REUSE_EXISTING_PENDING",
+            "reason_codes": ["SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED"],
+            "existing_pending_item_id": item.pending_item_id,
+            "symbol": item.symbol,
+            "side": item.side,
+            "quantity": existing_quantity,
+            "current_position_quantity": current_quantity,
+            "sell_action_family": intent,
+            "pending_state_eligibility": "APPROVED_PLAN_WITH_CREATED_READY_OR_APPROVED_ITEM",
+            "quantity_equivalence": "FULL_EXIT_QUANTITY_MATCHES_CURRENT_POSITION",
+        }
+    )
+    return evidence
+
+
+def _same_day_canonical_composite_pending_evidence(
+    *,
+    runtime_root: Path,
+    active_pending: PendingOrderPlan,
+    current_positions: Mapping[str, CurrentAssetPosition],
+    business_date: str,
+    target_session_date: str,
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    canonical_authority = _canonical_final_sell_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+    )
+    evidence = {
+        "contract_version": "phase31_f1t_buy_sell_composite_pending_continuation.v1",
+        "pending_equivalence_status": "NOT_EQUIVALENT",
+        "resolution_action": "ORIGINAL_PENDING_PRESERVED_REVIEW_REQUIRED",
+        "original_pending_preserved": True,
+        "duplicate_pending_created": False,
+        "continuation_decision": "REVIEW_REQUIRED",
+        "canonical_sell_authority_source": canonical_authority["source_path"],
+        "canonical_sell_authority_producer": canonical_authority["producer"],
+        "canonical_sell_authority_status": canonical_authority["status"],
+        "canonical_sell_symbol_set": sorted(canonical_authority["sell_exit_quantities"]),
+        "pending_sell_symbol_set": [],
+        "buy_items_preserved": False,
+        "future_information_used": False,
+        "snapshot": dict(snapshot),
+        "reason_codes": [],
+        "business_date": business_date,
+        "target_session_date": target_session_date,
+        "existing_pending_plan_id": active_pending.pending_plan_id,
+    }
+    if not any(item.side.upper() == "BUY" for item in active_pending.items):
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_BUY_COMPONENT_MISSING"]
+        return evidence
+    if not any(item.side.upper() == "SELL" for item in active_pending.items):
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_COMPONENT_MISSING"]
+        return evidence
+    if canonical_authority["status"] != "PASS":
+        evidence["reason_codes"] = ["CANONICAL_FINAL_SELL_AUTHORITY_MISSING"]
+        return evidence
+    if active_pending.state != PendingPlanState.APPROVED:
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_STATE_NOT_REUSABLE"]
+        return evidence
+    if active_pending.plan_created_date != business_date or active_pending.target_session_date != target_session_date:
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_SESSION_MISMATCH"]
+        return evidence
+    if active_pending.consume.consumed:
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_CONSUMED"]
+        return evidence
+    approved_ids = set(active_pending.approved_item_ids)
+    buy_items = tuple(item for item in active_pending.items if item.side.upper() == "BUY")
+    sell_items = tuple(item for item in active_pending.items if item.side.upper() == "SELL" and float(item.quantity or 0.0) > 0)
+    if len(buy_items) + len(sell_items) != len(active_pending.items):
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_UNSUPPORTED_ITEM_SET"]
+        return evidence
+    pending_symbols: list[str] = []
+    per_symbol: dict[str, Any] = {}
+    seen_symbols: set[str] = set()
+    for item in active_pending.items:
+        symbol = str(item.symbol or "").strip()
+        if item.pending_item_id not in approved_ids or not bool(item.approved):
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_ITEM_NOT_APPROVED"]
+            evidence["symbol"] = symbol
+            return evidence
+        if str(item.state or "").upper() not in {"CREATED", "READY", "APPROVED"}:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_ITEM_STATE_NOT_REUSABLE"]
+            evidence["symbol"] = symbol
+            evidence["item_state"] = str(item.state or "")
+            return evidence
+        if _pending_item_has_partial_fill_evidence(item):
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_PARTIAL_FILL_REVIEW"]
+            evidence["symbol"] = symbol
+            return evidence
+    for item in sell_items:
+        symbol = str(item.symbol or "").strip()
+        if not symbol:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_SYMBOL_MISSING"]
+            return evidence
+        if symbol in seen_symbols:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_DUPLICATE_SELL_SYMBOL"]
+            evidence["duplicate_symbol"] = symbol
+            return evidence
+        seen_symbols.add(symbol)
+        pending_symbols.append(symbol)
+        if _pending_sell_intent_class(item) != "EXIT":
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_ACTION_FAMILY_NOT_EXIT"]
+            evidence["symbol"] = symbol
+            evidence["sell_action_family"] = _pending_sell_intent_class(item)
+            return evidence
+        position = _current_position_by_identity(dict(current_positions), symbol)
+        if position is None or float(position.quantity or 0.0) <= 0:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_CURRENT_POSITION_MISSING"]
+            evidence["symbol"] = symbol
+            return evidence
+        canonical_quantity = float(canonical_authority["sell_exit_quantities"].get(symbol) or 0.0)
+        pending_quantity = float(item.quantity or 0.0)
+        current_quantity = float(position.quantity or 0.0)
+        if canonical_quantity <= 0:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_CANONICAL_SELL_MISSING_FOR_SYMBOL"]
+            evidence["symbol"] = symbol
+            return evidence
+        if abs(pending_quantity - canonical_quantity) >= 1e-9:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_QUANTITY_MISMATCH"]
+            evidence["symbol"] = symbol
+            evidence["pending_quantity"] = pending_quantity
+            evidence["canonical_quantity"] = canonical_quantity
+            return evidence
+        if abs(pending_quantity - current_quantity) >= 1e-9:
+            evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_NOT_FULL_EXIT"]
+            evidence["symbol"] = symbol
+            evidence["pending_quantity"] = pending_quantity
+            evidence["current_position_quantity"] = current_quantity
+            return evidence
+        per_symbol[symbol] = {
+            "canonical_action": "SELL_EXIT",
+            "canonical_quantity": canonical_quantity,
+            "pending_quantity": pending_quantity,
+            "current_position_quantity": current_quantity,
+            "pending_item_id": item.pending_item_id,
+        }
+    pending_symbol_set = sorted(pending_symbols)
+    canonical_symbol_set = sorted(canonical_authority["sell_exit_quantities"])
+    evidence["pending_sell_symbol_set"] = pending_symbol_set
+    if pending_symbol_set != canonical_symbol_set:
+        evidence["reason_codes"] = ["COMPOSITE_PENDING_SELL_SYMBOL_SET_MISMATCH"]
+        evidence["canonical_sell_symbol_set"] = canonical_symbol_set
+        return evidence
+    evidence.update(
+        {
+            "pending_equivalence_status": "EQUIVALENT",
+            "resolution_action": "REUSE_EXISTING_PENDING",
+            "continuation_decision": "PASS",
+            "reason_codes": ["SAME_DAY_CANONICAL_BUY_SELL_COMPOSITE_PENDING_REUSED"],
+            "canonical_sell_symbol_set": canonical_symbol_set,
+            "pending_sell_symbol_set": pending_symbol_set,
+            "per_symbol_canonical_sell": per_symbol,
+            "buy_item_count": len(buy_items),
+            "sell_item_count": len(sell_items),
+            "buy_items_preserved": True,
+            "original_pending_preserved": True,
+            "duplicate_pending_created": False,
+        }
+    )
+    return evidence
+
+
+def _canonical_final_sell_authority(
+    *,
+    runtime_root: Path,
+    business_date: str,
+) -> dict[str, Any]:
+    path = runtime_root / "runtime_state" / "strategy_planning" / business_date / "order_plan.json"
+    evidence: dict[str, Any] = {
+        "status": "MISSING",
+        "source_path": str(path),
+        "producer": "strategy_runtime_planning_order_plan",
+        "sell_exit_quantities": {},
+        "rows": [],
+    }
+    if not path.exists():
+        return evidence
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        evidence["status"] = "INVALID_JSON"
+        return evidence
+    if str(payload.get("business_date") or "") not in {"", business_date}:
+        evidence["status"] = "BUSINESS_DATE_MISMATCH"
+        return evidence
+    sell_exit_quantities: dict[str, float] = {}
+    rows: list[dict[str, Any]] = []
+    for row in payload.get("items") or payload.get("plans") or ():
+        symbol = str(row.get("symbol") or row.get("security_code") or "").strip()
+        intent = str(row.get("planning_intent") or row.get("source_decision_type") or row.get("order_side_intent") or "").upper()
+        quantity = abs(float(row.get("planned_quantity") or row.get("quantity") or 0.0))
+        rows.append(
+            {
+                "symbol": symbol,
+                "planning_intent": intent,
+                "quantity": quantity,
+                "pending_item_id": str(row.get("pending_item_id") or ""),
+                "source_planning_id": str(row.get("planning_id") or row.get("source_planning_id") or ""),
+            }
+        )
+        if intent == "SELL_EXIT" and symbol and quantity > 0:
+            if symbol in sell_exit_quantities:
+                evidence["status"] = "DUPLICATE_SELL_EXIT_SYMBOL"
+                evidence["duplicate_symbol"] = symbol
+                evidence["rows"] = rows
+                return evidence
+            sell_exit_quantities[symbol] = quantity
+    evidence["status"] = "PASS"
+    evidence["sell_exit_quantities"] = sell_exit_quantities
+    evidence["rows"] = rows
+    return evidence
+
+
+def _multi_sell_pending_set_equivalence_evidence(
+    *,
+    evidence: dict[str, Any],
+    approved_sell_items: tuple[PendingOrderItem, ...],
+    approved_ids: set[str],
+    current_positions: Mapping[str, CurrentAssetPosition],
+) -> dict[str, Any]:
+    pending_symbols: list[str] = []
+    authoritative_symbols: list[str] = []
+    per_symbol_equivalence: dict[str, Any] = {}
+    seen_symbols: set[str] = set()
+    for item in approved_sell_items:
+        symbol = str(item.symbol or "").strip()
+        if not symbol:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_SYMBOL_MISSING"]
+            return evidence
+        if symbol in seen_symbols:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_DUPLICATE_SYMBOL"]
+            evidence["duplicate_symbol"] = symbol
+            return evidence
+        seen_symbols.add(symbol)
+        pending_symbols.append(symbol)
+        if item.pending_item_id not in approved_ids or not bool(item.approved):
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ITEM_NOT_APPROVED"]
+            evidence["symbol"] = symbol
+            return evidence
+        if str(item.state or "").upper() not in {"CREATED", "READY", "APPROVED"}:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ITEM_STATE_NOT_REUSABLE"]
+            evidence["symbol"] = symbol
+            evidence["item_state"] = str(item.state or "")
+            return evidence
+        if _pending_item_has_partial_fill_evidence(item):
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_PARTIAL_FILL_REVIEW"]
+            evidence["symbol"] = symbol
+            return evidence
+        intent = _pending_sell_intent_class(item)
+        if intent != "EXIT":
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_ACTION_FAMILY_NOT_EXIT"]
+            evidence["symbol"] = symbol
+            evidence["sell_action_family"] = intent
+            evidence["pending_symbol_set"] = sorted(pending_symbols)
+            evidence["authoritative_sell_exit_symbol_set"] = sorted(authoritative_symbols)
+            return evidence
+        authoritative_symbols.append(symbol)
+        position = _current_position_by_identity(dict(current_positions), symbol)
+        if position is None or float(position.quantity or 0.0) <= 0:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_CURRENT_POSITION_MISSING"]
+            evidence["symbol"] = symbol
+            return evidence
+        pending_quantity = float(item.quantity or 0.0)
+        current_quantity = float(position.quantity or 0.0)
+        authoritative_exit_quantity = _pending_authoritative_exit_quantity(item)
+        if authoritative_exit_quantity <= 0:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_AUTHORITATIVE_EXIT_QUANTITY_MISSING"]
+            evidence["symbol"] = symbol
+            return evidence
+        if abs(pending_quantity - current_quantity) >= 1e-9:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_QUANTITY_NOT_FULL_EXIT"]
+            evidence["symbol"] = symbol
+            evidence["existing_quantity"] = pending_quantity
+            evidence["current_position_quantity"] = current_quantity
+            return evidence
+        if abs(authoritative_exit_quantity - current_quantity) >= 1e-9:
+            evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_AUTHORITATIVE_EXIT_QUANTITY_MISMATCH"]
+            evidence["symbol"] = symbol
+            evidence["authoritative_sell_exit_quantity"] = authoritative_exit_quantity
+            evidence["current_position_quantity"] = current_quantity
+            return evidence
+        per_symbol_equivalence[symbol] = {
+            "pending_item_id": item.pending_item_id,
+            "pending_quantity": pending_quantity,
+            "current_position_quantity": current_quantity,
+            "authoritative_sell_exit_quantity": authoritative_exit_quantity,
+            "sell_action_family": intent,
+        }
+    pending_symbol_set = sorted(pending_symbols)
+    authoritative_symbol_set = sorted(authoritative_symbols)
+    if pending_symbol_set != authoritative_symbol_set:
+        evidence["reason_codes"] = ["EQUIVALENT_SELL_PENDING_SYMBOL_SET_MISMATCH"]
+        evidence["pending_symbol_set"] = pending_symbol_set
+        evidence["authoritative_sell_exit_symbol_set"] = authoritative_symbol_set
+        return evidence
+    evidence.update(
+        {
+            "pending_equivalence_status": "EQUIVALENT",
+            "resolution_action": "REUSE_EXISTING_PENDING",
+            "reason_codes": ["SAME_DAY_EQUIVALENT_MULTI_SELL_PENDING_REUSED"],
+            "pending_item_count": len(approved_sell_items),
+            "approved_sell_item_count": len(approved_sell_items),
+            "pending_symbol_set": pending_symbol_set,
+            "authoritative_sell_exit_symbol_set": authoritative_symbol_set,
+            "per_symbol_equivalence": per_symbol_equivalence,
+            "pending_state_eligibility": "APPROVED_PLAN_WITH_CREATED_READY_OR_APPROVED_ITEMS",
+            "quantity_equivalence": "FULL_EXIT_SET_MATCHES_CURRENT_POSITIONS",
+        }
+    )
+    return evidence
+
+
+def _pending_authoritative_exit_quantity(item: PendingOrderItem) -> float:
+    contract = item.quantity_contract or {}
+    for key in ("selected_quantity", "planned_quantity", "final_quantity", "quantity"):
+        value = contract.get(key)
+        if value is not None:
+            quantity = abs(float(value or 0.0))
+            if quantity > 0:
+                return quantity
+    for key in ("requested_quantity", "requested_sell_quantity"):
+        value = contract.get(key)
+        if value is not None:
+            quantity = abs(float(value or 0.0))
+            if quantity > 0:
+                return quantity
+    if _pending_sell_intent_class(item) == "EXIT":
+        return abs(float(item.quantity or 0.0))
+    return 0.0
+
+
+def _pending_sell_intent_class(item: PendingOrderItem) -> str:
+    contract = item.quantity_contract or {}
+    source = " ".join(
+        str(value or "")
+        for value in (
+            contract.get("source_decision"),
+            contract.get("planning_intent"),
+            contract.get("source_planning_id"),
+            item.source_decision_type,
+            item.planning_authority_source,
+            item.policy_source,
+            item.pending_item_id,
+        )
+    ).upper()
+    if "EXIT" in source:
+        return "EXIT"
+    if "REDUCE" in source or "PARTIAL" in source:
+        return "REDUCE"
+    if "SELL" in source:
+        return "SELL"
+    return ""
+
+
+def _pending_item_has_partial_fill_evidence(item: PendingOrderItem) -> bool:
+    markers = {
+        str(item.state or "").upper(),
+        str(item.batch_submit_status or "").upper(),
+        str(item.feasibility_status or "").upper(),
+    }
+    return any("PARTIAL" in marker or "FILLED" in marker for marker in markers)
 
 
 def _write_add_pending(

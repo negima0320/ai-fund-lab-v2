@@ -41,6 +41,25 @@ SOURCE_AUTHORITY_STATUSES = {"VALID", "MISSING", "STALE", "HASH_MISMATCH", "AUTH
 PRODUCER_RESULT_STATUSES = {"PASS", "REVIEW_REQUIRED", "BLOCK"}
 ARTIFACT_LIFECYCLE_STATUSES = {"DRAFT", "VALIDATED", "REVIEW_REQUIRED", "ACCEPTED", "LEGACY", "REVOKED", "REJECTED"}
 RUNTIME_CONSUMER_ELIGIBILITIES = {"ELIGIBLE", "NOT_ELIGIBLE", "REVIEW_REQUIRED", "BLOCKED"}
+RISK_PACING_INTENTS = {"NORMAL_DEPLOYMENT", "CAUTIOUS_DEPLOYMENT", "GRADUAL_REDEPLOYMENT", "PRESERVE_OPTIONALITY"}
+RISK_PACING_COMPLETENESS = {"COMPLETE", "PARTIAL", "INSUFFICIENT"}
+RISK_PACING_MODES = {"AUTHORITATIVE"}
+CAPITAL_BUDGET_ENVELOPE_SCHEMA_VERSION = "incremental_capital_budget_envelope.v1"
+CAPITAL_BUDGET_ENVELOPE_AUTHORITY_STATUS = "AUTHORITATIVE"
+CAPITAL_BUDGET_CAPACITY_SEMANTICS = {
+    "FULL_DEPLOYMENT_CAPACITY",
+    "ELEVATED_DEPLOYMENT_CAPACITY",
+    "SELECTIVE_DEPLOYMENT_CAPACITY",
+    "DEFENSIVE_DEPLOYMENT_CAPACITY",
+    "PRESERVE_MOST_OPTIONALITY",
+}
+CAPITAL_BUDGET_CASH_STATES = {
+    "EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP",
+    "RESIDUAL_OPTIONALITY_CASH",
+    "NORMAL_INVESTED_PORTFOLIO",
+    "UNRESOLVED_PORTFOLIO_CASH_STATE",
+}
+CAPITAL_BUDGET_EVIDENCE_COMPLETENESS = {"COMPLETE", "PARTIAL", "INSUFFICIENT"}
 FORBIDDEN_CONCRETE_FIELDS = {
     "minimum_positions",
     "target_positions",
@@ -352,6 +371,24 @@ def build_portfolio_policy_payload(
         producer_status = "BLOCK"
     elif internal_policy["status"] == "REVIEW_REQUIRED" and producer_status != "BLOCK":
         producer_status = "REVIEW_REQUIRED"
+    market_payload = _read_json_if_file(market_context_artifact_path)
+    risk_pacing = _risk_pacing_from_policy_context(
+        business_date=business_date,
+        market_payload=market_payload,
+        policy_intent=policy_intent,
+    )
+    capital_budget_envelope = _incremental_capital_budget_envelope(
+        business_date=business_date,
+        as_of=as_of,
+        market_payload=market_payload,
+        risk_pacing=risk_pacing,
+        internal_policy=internal_policy,
+        current_portfolio_summary=current_portfolio_summary,
+        current_cash_summary=current_cash_summary,
+        current_exposure_summary=current_exposure_summary,
+        pending_reservation_summary=pending_reservation_summary or {},
+        producer_status=producer_status,
+    )
     payload = {
         "schema_version": SCHEMA_VERSION,
         "producer_version": PRODUCER_VERSION,
@@ -396,6 +433,14 @@ def build_portfolio_policy_payload(
         "single_name_weight_cap_source": internal_policy["single_name_weight_cap_source"],
         "single_name_weight_cap_authority": internal_policy["single_name_weight_cap_authority"],
         "deployment_posture": internal_policy["deployment_posture"],
+        "risk_pacing_intent": risk_pacing["risk_pacing_intent"],
+        "risk_pacing_reason_codes": risk_pacing["risk_pacing_reason_codes"],
+        "risk_pacing_evidence_completeness": risk_pacing["risk_pacing_evidence_completeness"],
+        "risk_pacing_as_of": risk_pacing["risk_pacing_as_of"],
+        "risk_pacing_authority": risk_pacing["risk_pacing_authority"],
+        "risk_pacing_mode": risk_pacing["risk_pacing_mode"],
+        "risk_pacing_component_evidence": risk_pacing["risk_pacing_component_evidence"],
+        "incremental_capital_budget_envelope": capital_budget_envelope,
         "portfolio_level_decision_owner": "portfolio_policy",
         "dynamic_position_count_merge_status": "KEEP_INTERNAL_REMOVE_RUNTIME_WIRING",
         "dynamic_cash_exposure_merge_status": "KEEP_INTERNAL_REMOVE_RUNTIME_WIRING",
@@ -442,6 +487,10 @@ def build_portfolio_policy_payload(
         "target_gross_exposure_ratio": payload["target_gross_exposure_ratio"],
         "cash_reserve_ratio": payload["cash_reserve_ratio"],
         "single_name_weight_cap": payload["single_name_weight_cap"],
+        "risk_pacing_intent": payload["risk_pacing_intent"],
+        "risk_pacing_evidence_completeness": payload["risk_pacing_evidence_completeness"],
+        "risk_pacing_reason_codes": payload["risk_pacing_reason_codes"],
+        "incremental_capital_budget_envelope": payload["incremental_capital_budget_envelope"],
         "reason_codes": payload["reason_codes"],
     }
     return payload, evidence
@@ -476,6 +525,7 @@ def validate_portfolio_policy_artifact(payload: dict[str, Any]) -> dict[str, Any
         "single_name_weight_cap_source",
         "single_name_weight_cap_authority",
         "deployment_posture",
+        "incremental_capital_budget_envelope",
         "confidence",
         "uncertainty",
         "reason_codes",
@@ -499,6 +549,12 @@ def validate_portfolio_policy_artifact(payload: dict[str, Any]) -> dict[str, Any
     _enum_check(errors, payload, "cash_posture", CASH_POSTURES)
     _enum_check(errors, payload, "exposure_posture", EXPOSURE_POSTURES)
     _enum_check(errors, payload, "position_management_bias", POSITION_MANAGEMENT_BIASES)
+    if "risk_pacing_intent" in payload:
+        _enum_check(errors, payload, "risk_pacing_intent", RISK_PACING_INTENTS)
+    if "risk_pacing_evidence_completeness" in payload:
+        _enum_check(errors, payload, "risk_pacing_evidence_completeness", RISK_PACING_COMPLETENESS)
+    if "risk_pacing_mode" in payload:
+        _enum_check(errors, payload, "risk_pacing_mode", RISK_PACING_MODES)
     if payload.get("artifact_lifecycle_status") != ARTIFACT_LIFECYCLE_STATUS:
         errors.append("phase22_c_artifact_lifecycle_must_be_draft")
     if payload.get("runtime_consumer_eligibility") != RUNTIME_CONSUMER_ELIGIBILITY:
@@ -534,6 +590,13 @@ def validate_portfolio_policy_artifact(payload: dict[str, Any]) -> dict[str, Any
         _validate_rfc3339_timestamp(str(payload.get("as_of") or ""), field="as_of")
     except Exception:
         errors.append("invalid_timestamp_format:as_of")
+    if "risk_pacing_as_of" in payload:
+        try:
+            _validate_iso_date(str(payload.get("risk_pacing_as_of") or ""), field="risk_pacing_as_of")
+        except Exception:
+            errors.append("invalid_date_format:risk_pacing_as_of")
+        if str(payload.get("risk_pacing_as_of") or "9999-99-99") > str(payload.get("business_date") or ""):
+            errors.append("risk_pacing_as_of_after_business_date")
     if str(payload.get("feature_date") or "9999-99-99") > str(payload.get("business_date") or ""):
         errors.append("feature_date_after_business_date")
     confidence = payload.get("confidence")
@@ -541,6 +604,17 @@ def validate_portfolio_policy_artifact(payload: dict[str, Any]) -> dict[str, Any
         errors.append("invalid_confidence_range")
     if not isinstance(payload.get("reason_codes"), list):
         errors.append("reason_codes_not_list")
+    if "risk_pacing_reason_codes" in payload and not isinstance(payload.get("risk_pacing_reason_codes"), list):
+        errors.append("risk_pacing_reason_codes_not_list")
+    if "risk_pacing_authority" in payload and not isinstance(payload.get("risk_pacing_authority"), dict):
+        errors.append("risk_pacing_authority_not_object")
+    if "risk_pacing_component_evidence" in payload and not isinstance(payload.get("risk_pacing_component_evidence"), dict):
+        errors.append("risk_pacing_component_evidence_not_object")
+    envelope = payload.get("incremental_capital_budget_envelope")
+    if not isinstance(envelope, dict):
+        errors.append("incremental_capital_budget_envelope_not_object")
+    else:
+        _validate_incremental_capital_budget_envelope(errors, envelope, business_date=str(payload.get("business_date") or ""))
     if not isinstance(payload.get("upstream_artifacts"), dict):
         errors.append("upstream_artifacts_not_object")
     if not isinstance(payload.get("single_name_weight_cap_authority"), dict):
@@ -825,6 +899,535 @@ def _deployment_posture(target_gross_exposure_ratio: Any, cash_reserve_ratio: An
     if float(target_gross_exposure_ratio) >= 0.75:
         return "DEPLOY"
     return "BALANCED_DEPLOYMENT"
+
+
+def _risk_pacing_from_policy_context(
+    *,
+    business_date: str,
+    market_payload: Mapping[str, Any],
+    policy_intent: Mapping[str, Any],
+) -> dict[str, Any]:
+    market_direction = str(market_payload.get("regime_state") or market_payload.get("trend_regime") or "UNKNOWN")
+    market_quality = str(market_payload.get("market_quality_state") or "")
+    market_quality_completeness = str(market_payload.get("market_quality_evidence_completeness") or "")
+    market_quality_as_of = str(market_payload.get("market_quality_as_of") or market_payload.get("feature_date") or business_date)
+    market_quality_reasons = market_payload.get("market_quality_reason_codes") if isinstance(market_payload.get("market_quality_reason_codes"), list) else []
+    component_evidence = {
+        "schema_version": "risk_pacing_component_evidence.v1",
+        "owner": "PORTFOLIO_POLICY",
+        "authority": "AUTHORITATIVE",
+        "business_date": business_date,
+        "market_direction": market_direction,
+        "market_quality_state": market_quality or None,
+        "market_quality_evidence_completeness": market_quality_completeness or None,
+        "market_quality_reason_codes": list(market_quality_reasons),
+        "policy_intent": dict(policy_intent),
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "evidence_feedback_used": False,
+        "fixed_exposure_target_created": False,
+        "fixed_buy_count_created": False,
+        "fixed_position_count_created": False,
+    }
+    authority = {
+        "owner": "PORTFOLIO_POLICY",
+        "mode": "AUTHORITATIVE",
+        "authoritative_consumer": "PORTFOLIO_CONSTRUCTION",
+        "authoritative_consumer_count": 1,
+        "shadow_path_removed": True,
+    }
+    if not market_quality or not market_quality_completeness:
+        return _risk_pacing_payload(
+            intent="PRESERVE_OPTIONALITY",
+            reasons=["RISK_PACING_INSUFFICIENT_MARKET_QUALITY"],
+            completeness="INSUFFICIENT",
+            as_of=business_date,
+            authority=authority,
+            component_evidence={**component_evidence, "missing_market_quality": True},
+        )
+    if market_quality_as_of > business_date:
+        return _risk_pacing_payload(
+            intent="PRESERVE_OPTIONALITY",
+            reasons=["RISK_PACING_INSUFFICIENT_MARKET_QUALITY", "RISK_PACING_TEMPORAL_AUTHORITY_INVALID"],
+            completeness="INSUFFICIENT",
+            as_of=business_date,
+            authority=authority,
+            component_evidence={**component_evidence, "market_quality_as_of_after_business_date": True},
+        )
+    if market_quality == "INSUFFICIENT_EVIDENCE" or market_quality_completeness == "INSUFFICIENT":
+        return _risk_pacing_payload(
+            intent="PRESERVE_OPTIONALITY",
+            reasons=["RISK_PACING_INSUFFICIENT_MARKET_QUALITY", "RISK_PACING_PRESERVE_OPTIONALITY"],
+            completeness="INSUFFICIENT",
+            as_of=market_quality_as_of,
+            authority=authority,
+            component_evidence=component_evidence,
+        )
+    completeness = "COMPLETE" if market_quality_completeness == "COMPLETE" else "PARTIAL"
+    if market_quality in {"HEALTHY_EXPANSION", "HEALTHY_RECOVERY"} and completeness == "COMPLETE":
+        return _risk_pacing_payload(
+            intent="NORMAL_DEPLOYMENT",
+            reasons=["RISK_PACING_NORMAL"],
+            completeness=completeness,
+            as_of=market_quality_as_of,
+            authority=authority,
+            component_evidence=component_evidence,
+        )
+    if market_quality == "RECOVERY_CONFIRMATION_INCOMPLETE":
+        return _risk_pacing_payload(
+            intent="GRADUAL_REDEPLOYMENT",
+            reasons=["RISK_PACING_GRADUAL_REDEPLOYMENT"],
+            completeness=completeness,
+            as_of=market_quality_as_of,
+            authority=authority,
+            component_evidence=component_evidence,
+        )
+    if market_quality in {"SHORT_TERM_NARROWING_WITH_MEDIUM_STRENGTH", "SHORT_TERM_BREADTH_BREAKDOWN", "CONFLICTED_MARKET_STRUCTURE"}:
+        return _risk_pacing_payload(
+            intent="CAUTIOUS_DEPLOYMENT",
+            reasons=["RISK_PACING_CAUTIOUS"],
+            completeness=completeness,
+            as_of=market_quality_as_of,
+            authority=authority,
+            component_evidence=component_evidence,
+        )
+    return _risk_pacing_payload(
+        intent="PRESERVE_OPTIONALITY",
+        reasons=["RISK_PACING_PRESERVE_OPTIONALITY"],
+        completeness=completeness,
+        as_of=market_quality_as_of,
+        authority=authority,
+        component_evidence=component_evidence,
+    )
+
+
+def _risk_pacing_payload(
+    *,
+    intent: str,
+    reasons: list[str],
+    completeness: str,
+    as_of: str,
+    authority: dict[str, Any],
+    component_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "risk_pacing_intent": intent,
+        "risk_pacing_reason_codes": sorted(set(reasons)),
+        "risk_pacing_evidence_completeness": completeness,
+        "risk_pacing_as_of": as_of,
+        "risk_pacing_authority": authority,
+        "risk_pacing_mode": "AUTHORITATIVE",
+        "risk_pacing_component_evidence": component_evidence,
+    }
+
+
+def _incremental_capital_budget_envelope(
+    *,
+    business_date: str,
+    as_of: str,
+    market_payload: Mapping[str, Any],
+    risk_pacing: Mapping[str, Any],
+    internal_policy: Mapping[str, Any],
+    current_portfolio_summary: Mapping[str, Any],
+    current_cash_summary: Mapping[str, Any],
+    current_exposure_summary: Mapping[str, Any],
+    pending_reservation_summary: Mapping[str, Any],
+    producer_status: str,
+) -> dict[str, Any]:
+    market_quality_state = str(market_payload.get("market_quality_state") or "UNKNOWN")
+    market_quality_as_of = str(market_payload.get("market_quality_as_of") or market_payload.get("feature_date") or business_date)
+    evidence_completeness = _capital_budget_evidence_completeness(
+        business_date=business_date,
+        risk_pacing=risk_pacing,
+        market_quality_state=market_quality_state,
+        market_quality_as_of=market_quality_as_of,
+        producer_status=producer_status,
+        current_portfolio_summary=current_portfolio_summary,
+        current_cash_summary=current_cash_summary,
+        current_exposure_summary=current_exposure_summary,
+    )
+    bootstrap_state = _bootstrap_or_residual_cash_state(
+        current_portfolio_summary=current_portfolio_summary,
+        current_cash_summary=current_cash_summary,
+        current_exposure_summary=current_exposure_summary,
+        pending_reservation_summary=pending_reservation_summary,
+        internal_policy=internal_policy,
+        evidence_completeness=evidence_completeness,
+    )
+    deployment_capacity = _deployment_capacity_semantic(
+        risk_pacing=risk_pacing,
+        market_quality_state=market_quality_state,
+        evidence_completeness=evidence_completeness,
+        bootstrap_or_residual_cash_state=bootstrap_state,
+        internal_policy=internal_policy,
+    )
+    reason_codes = _capital_budget_reason_codes(
+        deployment_capacity=deployment_capacity,
+        evidence_completeness=evidence_completeness,
+        bootstrap_state=bootstrap_state,
+        risk_pacing=risk_pacing,
+        market_quality_state=market_quality_state,
+    )
+    lineage = {
+        "producer": "portfolio_policy.incremental_capital_budget_envelope",
+        "producer_owner": "PORTFOLIO_POLICY",
+        "as_of": as_of,
+        "market_quality_evidence": {
+            "state": market_quality_state,
+            "as_of": market_quality_as_of,
+            "source_hash": stable_payload_hash(dict(market_payload)) if market_payload else "",
+        },
+        "risk_pacing_evidence": {
+            "intent": str(risk_pacing.get("risk_pacing_intent") or ""),
+            "as_of": str(risk_pacing.get("risk_pacing_as_of") or ""),
+            "source_hash": stable_payload_hash(dict(risk_pacing)) if risk_pacing else "",
+        },
+        "portfolio_state_evidence_hash": stable_payload_hash(dict(current_portfolio_summary)),
+        "cash_state_evidence_hash": stable_payload_hash(dict(current_cash_summary)),
+        "exposure_state_evidence_hash": stable_payload_hash(dict(current_exposure_summary)),
+        "pending_reserved_cash_evidence_hash": stable_payload_hash(dict(pending_reservation_summary)),
+        "existing_capital_policy_constraints_hash": stable_payload_hash(
+            {
+                "target_gross_exposure_ratio": internal_policy.get("target_gross_exposure_ratio"),
+                "minimum_gross_exposure_ratio": internal_policy.get("minimum_gross_exposure_ratio"),
+                "maximum_gross_exposure_ratio": internal_policy.get("maximum_gross_exposure_ratio"),
+                "cash_reserve_ratio": internal_policy.get("cash_reserve_ratio"),
+                "minimum_cash_ratio": internal_policy.get("minimum_cash_ratio"),
+                "maximum_cash_ratio": internal_policy.get("maximum_cash_ratio"),
+                "target_position_count": internal_policy.get("target_position_count"),
+                "minimum_position_count": internal_policy.get("minimum_position_count"),
+                "maximum_position_count": internal_policy.get("maximum_position_count"),
+                "single_name_weight_cap": internal_policy.get("single_name_weight_cap"),
+            }
+        ),
+    }
+    envelope = {
+        "schema_version": CAPITAL_BUDGET_ENVELOPE_SCHEMA_VERSION,
+        "owner": "PORTFOLIO_POLICY",
+        "authority_status": CAPITAL_BUDGET_ENVELOPE_AUTHORITY_STATUS,
+        "as_of": as_of,
+        "business_date": business_date,
+        "risk_pacing_intent": str(risk_pacing.get("risk_pacing_intent") or "UNKNOWN"),
+        "market_quality_state": market_quality_state,
+        "market_quality_as_of": market_quality_as_of if market_quality_as_of <= business_date else business_date,
+        "portfolio_state_context": _portfolio_state_context(current_portfolio_summary),
+        "bootstrap_or_residual_cash_state": bootstrap_state,
+        "deployment_capacity_semantic": deployment_capacity,
+        "authorized_incremental_capital_basis": {
+            "basis_type": "SEMANTIC_EXISTING_POLICY_CONSTRAINTS_ONLY",
+            "numeric_budget_authority": "EXISTING_POLICY_CONSTRAINTS_AUTHORITATIVE_NO_NEW_NUMERIC_PACING",
+            "historical_return_derived_percentage_count": 0,
+            "new_numeric_pacing_parameter_count": 0,
+            "target_gross_exposure_ratio": internal_policy.get("target_gross_exposure_ratio"),
+            "gross_exposure_bounds": {
+                "minimum": internal_policy.get("minimum_gross_exposure_ratio"),
+                "maximum": internal_policy.get("maximum_gross_exposure_ratio"),
+            },
+            "cash_reserve_ratio": internal_policy.get("cash_reserve_ratio"),
+            "cash_bounds": {
+                "minimum": internal_policy.get("minimum_cash_ratio"),
+                "maximum": internal_policy.get("maximum_cash_ratio"),
+            },
+        },
+        "existing_exposure_context": _exposure_context(current_exposure_summary, internal_policy=internal_policy),
+        "cash_context": _cash_context(current_cash_summary, pending_reservation_summary=pending_reservation_summary),
+        "position_count_context": {
+            "active_position_count": _active_position_count(current_portfolio_summary),
+            "target_position_count": internal_policy.get("target_position_count"),
+            "minimum_position_count": internal_policy.get("minimum_position_count"),
+            "maximum_position_count": internal_policy.get("maximum_position_count"),
+            "resolved_candidate_capacity": internal_policy.get("resolved_candidate_capacity"),
+            "resolved_opportunity_capacity": internal_policy.get("resolved_opportunity_capacity"),
+        },
+        "concentration_context": {
+            "single_name_weight_cap": internal_policy.get("single_name_weight_cap"),
+            "single_name_weight_cap_source": internal_policy.get("single_name_weight_cap_source"),
+            "single_name_weight_cap_authority_owner": (internal_policy.get("single_name_weight_cap_authority") or {}).get("canonical_owner")
+            if isinstance(internal_policy.get("single_name_weight_cap_authority"), Mapping)
+            else "",
+        },
+        "available_cash_context": {
+            "cash_available": _first_number(current_cash_summary, ("cash_available", "available_cash", "cash", "cash_balance")),
+            "cash_ratio": _first_number(current_cash_summary, ("cash_ratio", "cash_weight")),
+        },
+        "pending_reserved_cash_context": {
+            "pending_reserved_cash": _first_number(
+                pending_reservation_summary,
+                ("pending_reserved_cash", "reserved_cash", "reserved_notional", "pending_reserved_notional"),
+            ),
+            "pending_reserved_cash_ratio": _first_number(
+                pending_reservation_summary,
+                ("pending_reserved_cash_ratio", "reserved_cash_ratio", "reserved_weight"),
+            ),
+        },
+        "reason_codes": reason_codes,
+        "evidence_completeness": evidence_completeness,
+        "lineage": lineage,
+        "profit_engine_preservation_evidence": {
+            "deployment_intensity_is_not_security_admission": True,
+            "market_quality_hard_buy_gate_created": False,
+            "candidate_rank_mutation_count": 0,
+            "candidate_eligibility_mutation_count": 0,
+            "opportunity_quality_mutation_count": 0,
+        },
+        "exploration_participation_semantic": {
+            "reduced_risk_participation_possible": True,
+            "no_buy_created_by_envelope": True,
+            "bootstrap_automatic_full_deployment": False,
+            "bootstrap_automatic_preserve_most_optionality": False,
+        },
+        "planned_authoritative_consumer": "PORTFOLIO_CONSTRUCTION",
+        "planned_authoritative_consumer_count": 1,
+        "authoritative_consumer_count": 0,
+        "trading_consumer_connected": False,
+        "portfolio_construction_decision_change_count": 0,
+        "position_sizing_decision_change_count": 0,
+        "runtime_order_intent_change_count": 0,
+        "buy_sell_independence_preserved": True,
+        "safety_authority_changed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "paper_ledger_input_used": False,
+        "mfe_mae_input_used": False,
+        "test_result_input_used": False,
+        "audit_result_input_used": False,
+        "deterministic": True,
+    }
+    return {**envelope, "envelope_hash": stable_payload_hash(envelope)}
+
+
+def _validate_incremental_capital_budget_envelope(errors: list[str], envelope: Mapping[str, Any], *, business_date: str) -> None:
+    required = {
+        "schema_version",
+        "owner",
+        "authority_status",
+        "as_of",
+        "business_date",
+        "risk_pacing_intent",
+        "market_quality_state",
+        "market_quality_as_of",
+        "portfolio_state_context",
+        "bootstrap_or_residual_cash_state",
+        "deployment_capacity_semantic",
+        "authorized_incremental_capital_basis",
+        "existing_exposure_context",
+        "cash_context",
+        "position_count_context",
+        "concentration_context",
+        "available_cash_context",
+        "pending_reserved_cash_context",
+        "reason_codes",
+        "evidence_completeness",
+        "lineage",
+        "profit_engine_preservation_evidence",
+        "exploration_participation_semantic",
+        "planned_authoritative_consumer",
+        "planned_authoritative_consumer_count",
+        "authoritative_consumer_count",
+        "trading_consumer_connected",
+        "future_information_used",
+        "historical_outcome_used",
+        "paper_ledger_input_used",
+        "mfe_mae_input_used",
+        "test_result_input_used",
+        "audit_result_input_used",
+        "envelope_hash",
+    }
+    errors.extend(f"capital_budget_envelope_required_field_missing:{field}" for field in sorted(required - set(envelope)))
+    if envelope.get("schema_version") != CAPITAL_BUDGET_ENVELOPE_SCHEMA_VERSION:
+        errors.append("capital_budget_envelope_unsupported_schema_version")
+    if envelope.get("owner") != "PORTFOLIO_POLICY":
+        errors.append("capital_budget_envelope_owner_not_portfolio_policy")
+    if envelope.get("authority_status") != CAPITAL_BUDGET_ENVELOPE_AUTHORITY_STATUS:
+        errors.append("capital_budget_envelope_authority_status_not_authoritative")
+    if envelope.get("deployment_capacity_semantic") not in CAPITAL_BUDGET_CAPACITY_SEMANTICS:
+        errors.append("capital_budget_envelope_invalid_deployment_capacity_semantic")
+    if envelope.get("bootstrap_or_residual_cash_state") not in CAPITAL_BUDGET_CASH_STATES:
+        errors.append("capital_budget_envelope_invalid_cash_state")
+    if envelope.get("evidence_completeness") not in CAPITAL_BUDGET_EVIDENCE_COMPLETENESS:
+        errors.append("capital_budget_envelope_invalid_evidence_completeness")
+    if str(envelope.get("market_quality_as_of") or "9999-99-99") > business_date:
+        errors.append("capital_budget_envelope_market_quality_as_of_after_business_date")
+    if int(envelope.get("authoritative_consumer_count") or 0) != 0:
+        errors.append("capital_budget_envelope_authoritative_consumer_count_nonzero")
+    if envelope.get("planned_authoritative_consumer") not in {None, "PORTFOLIO_CONSTRUCTION"}:
+        errors.append("capital_budget_envelope_unexpected_planned_authoritative_consumer")
+    if envelope.get("trading_consumer_connected") is not False:
+        errors.append("capital_budget_envelope_trading_consumer_connected")
+    for field in (
+        "future_information_used",
+        "historical_outcome_used",
+        "paper_ledger_input_used",
+        "mfe_mae_input_used",
+        "test_result_input_used",
+        "audit_result_input_used",
+    ):
+        if envelope.get(field) is not False:
+            errors.append(f"capital_budget_envelope_forbidden_input:{field}")
+    preservation = envelope.get("profit_engine_preservation_evidence")
+    if not isinstance(preservation, Mapping) or preservation.get("deployment_intensity_is_not_security_admission") is not True:
+        errors.append("capital_budget_envelope_profit_engine_preservation_missing")
+    exploration = envelope.get("exploration_participation_semantic")
+    if not isinstance(exploration, Mapping) or exploration.get("reduced_risk_participation_possible") is not True:
+        errors.append("capital_budget_envelope_exploration_semantic_missing")
+    clean = {key: value for key, value in envelope.items() if key != "envelope_hash"}
+    if envelope.get("envelope_hash") != stable_payload_hash(clean):
+        errors.append("capital_budget_envelope_hash_mismatch")
+
+
+def _capital_budget_evidence_completeness(
+    *,
+    business_date: str,
+    risk_pacing: Mapping[str, Any],
+    market_quality_state: str,
+    market_quality_as_of: str,
+    producer_status: str,
+    current_portfolio_summary: Mapping[str, Any],
+    current_cash_summary: Mapping[str, Any],
+    current_exposure_summary: Mapping[str, Any],
+) -> str:
+    if (
+        str(risk_pacing.get("risk_pacing_evidence_completeness") or "").upper() == "INSUFFICIENT"
+        or market_quality_state in {"", "UNKNOWN", "INSUFFICIENT_EVIDENCE"}
+        or market_quality_as_of == ""
+        or market_quality_as_of > business_date
+    ):
+        return "INSUFFICIENT"
+    if producer_status != "PASS":
+        return "PARTIAL"
+    if not current_portfolio_summary or not current_cash_summary or not current_exposure_summary:
+        return "PARTIAL"
+    return "COMPLETE" if str(risk_pacing.get("risk_pacing_evidence_completeness") or "") == "COMPLETE" else "PARTIAL"
+
+
+def _bootstrap_or_residual_cash_state(
+    *,
+    current_portfolio_summary: Mapping[str, Any],
+    current_cash_summary: Mapping[str, Any],
+    current_exposure_summary: Mapping[str, Any],
+    pending_reservation_summary: Mapping[str, Any],
+    internal_policy: Mapping[str, Any],
+    evidence_completeness: str,
+) -> str:
+    if evidence_completeness == "INSUFFICIENT":
+        return "UNRESOLVED_PORTFOLIO_CASH_STATE"
+    active_positions = _active_position_count(current_portfolio_summary)
+    gross_exposure = _gross_exposure_value(current_exposure_summary)
+    cash_available = _first_number(current_cash_summary, ("cash_available", "available_cash", "cash", "cash_balance"))
+    reserved_cash = _first_number(pending_reservation_summary, ("pending_reserved_cash", "reserved_cash", "reserved_notional", "pending_reserved_notional"))
+    if active_positions is None or gross_exposure is None:
+        return "UNRESOLVED_PORTFOLIO_CASH_STATE"
+    has_cash_capacity = cash_available is None or cash_available > (reserved_cash or 0.0)
+    if active_positions == 0 and gross_exposure <= 0 and has_cash_capacity:
+        return "EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP"
+    target_positions = internal_policy.get("target_position_count")
+    if active_positions > 0 and has_cash_capacity and (target_positions is None or active_positions < int(target_positions)):
+        return "RESIDUAL_OPTIONALITY_CASH"
+    return "NORMAL_INVESTED_PORTFOLIO"
+
+
+def _deployment_capacity_semantic(
+    *,
+    risk_pacing: Mapping[str, Any],
+    market_quality_state: str,
+    evidence_completeness: str,
+    bootstrap_or_residual_cash_state: str,
+    internal_policy: Mapping[str, Any],
+) -> str:
+    if evidence_completeness == "INSUFFICIENT":
+        return "PRESERVE_MOST_OPTIONALITY"
+    intent = str(risk_pacing.get("risk_pacing_intent") or "").upper()
+    deployment_posture = str(internal_policy.get("deployment_posture") or "").upper()
+    if intent == "NORMAL_DEPLOYMENT":
+        return "FULL_DEPLOYMENT_CAPACITY" if bootstrap_or_residual_cash_state == "EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP" else "ELEVATED_DEPLOYMENT_CAPACITY"
+    if intent == "GRADUAL_REDEPLOYMENT":
+        return "SELECTIVE_DEPLOYMENT_CAPACITY"
+    if intent == "CAUTIOUS_DEPLOYMENT":
+        if bootstrap_or_residual_cash_state == "EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP":
+            return "SELECTIVE_DEPLOYMENT_CAPACITY"
+        return "DEFENSIVE_DEPLOYMENT_CAPACITY"
+    if deployment_posture == "PAUSE" or market_quality_state in {"UNKNOWN", "INSUFFICIENT_EVIDENCE"}:
+        return "PRESERVE_MOST_OPTIONALITY"
+    return "PRESERVE_MOST_OPTIONALITY"
+
+
+def _capital_budget_reason_codes(
+    *,
+    deployment_capacity: str,
+    evidence_completeness: str,
+    bootstrap_state: str,
+    risk_pacing: Mapping[str, Any],
+    market_quality_state: str,
+) -> list[str]:
+    reasons = [
+        "CAPITAL_BUDGET_ENVELOPE_AUTHORITATIVE_NO_TRADING_CONSUMER",
+        "DEPLOYMENT_INTENSITY_NOT_SECURITY_ADMISSION",
+        "PROFIT_ENGINE_PRESERVATION_CONTEXT",
+        "EXPLORATION_PARTICIPATION_RISK_PRESERVED",
+        f"CAPITAL_BUDGET_STATE_{deployment_capacity}",
+        f"CASH_STATE_{bootstrap_state}",
+        f"MARKET_QUALITY_CONTEXT_{market_quality_state}",
+    ]
+    if evidence_completeness != "COMPLETE":
+        reasons.append(f"CAPITAL_BUDGET_EVIDENCE_{evidence_completeness}")
+    reasons.extend(str(code) for code in risk_pacing.get("risk_pacing_reason_codes", []) or [])
+    return sorted(set(reasons))
+
+
+def _portfolio_state_context(summary: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "active_position_count": _active_position_count(summary),
+        "position_count": _active_position_count(summary),
+        "source_hash": stable_payload_hash(dict(summary)),
+    }
+
+
+def _exposure_context(summary: Mapping[str, Any], *, internal_policy: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "gross_exposure": _gross_exposure_value(summary),
+        "gross_exposure_ratio": _first_number(summary, ("gross_exposure_ratio", "gross_exposure_weight", "exposure_ratio")),
+        "target_gross_exposure_ratio": internal_policy.get("target_gross_exposure_ratio"),
+        "minimum_gross_exposure_ratio": internal_policy.get("minimum_gross_exposure_ratio"),
+        "maximum_gross_exposure_ratio": internal_policy.get("maximum_gross_exposure_ratio"),
+    }
+
+
+def _cash_context(summary: Mapping[str, Any], *, pending_reservation_summary: Mapping[str, Any]) -> dict[str, Any]:
+    cash_available = _first_number(summary, ("cash_available", "available_cash", "cash", "cash_balance"))
+    pending_reserved = _first_number(
+        pending_reservation_summary,
+        ("pending_reserved_cash", "reserved_cash", "reserved_notional", "pending_reserved_notional"),
+    )
+    return {
+        "cash_available": cash_available,
+        "pending_reserved_cash": pending_reserved,
+        "net_available_cash": cash_available - pending_reserved if cash_available is not None and pending_reserved is not None else None,
+        "cash_ratio": _first_number(summary, ("cash_ratio", "cash_weight")),
+    }
+
+
+def _active_position_count(summary: Mapping[str, Any]) -> int | None:
+    value = _first_number(summary, ("active_position_count", "position_count", "positions_count", "holdings_count"))
+    if value is None:
+        positions = summary.get("positions") or summary.get("holdings")
+        if isinstance(positions, list):
+            return len(positions)
+        return None
+    return int(value)
+
+
+def _gross_exposure_value(summary: Mapping[str, Any]) -> float | None:
+    return _first_number(summary, ("gross_exposure", "current_gross_exposure", "exposure", "gross_notional"))
+
+
+def _first_number(summary: Mapping[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = summary.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 def _dpc_source_from_pp(summary: PortfolioPolicyInputSummary) -> dynamic_position_count.DynamicPositionCountSourceSummary:

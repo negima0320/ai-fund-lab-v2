@@ -1271,6 +1271,9 @@ def _materialize_pre_action_position_campaigns(
         current_row = current_by_symbol.get(symbol)
         if current_row and _campaign_is_open(row):
             row = _refresh_campaign_with_current(row, current_row=current_row, business_date=business_date)
+            ledger_row = ledger_campaigns.get(symbol)
+            if ledger_row and str(ledger_row.get("campaign_status") or "").upper() == "OPEN":
+                row = _merge_strict_prior_ledger_history_into_open_campaign(row, ledger_row=ledger_row)
             updated_symbols.add(symbol)
         elif symbol and _campaign_is_open(row) and symbol not in current_by_symbol:
             ledger_row = ledger_campaigns.get(symbol)
@@ -1279,18 +1282,48 @@ def _materialize_pre_action_position_campaigns(
                 closed_symbols.add(symbol)
         materialized.append(row)
     bootstrap_symbols: list[str] = []
-    prior_symbols = {
+    open_materialized_symbols = {
         str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
         for row in materialized
-        if isinstance(row, Mapping)
+        if isinstance(row, Mapping) and _campaign_is_open(row)
     }
-    for symbol in sorted(set(current_by_symbol) - updated_symbols - prior_symbols):
+    for symbol in sorted(set(current_by_symbol) - updated_symbols - open_materialized_symbols):
         ledger_row = ledger_campaigns.get(symbol)
         if not ledger_row or str(ledger_row.get("campaign_status") or "").upper() != "OPEN":
             continue
         materialized.append(_refresh_campaign_with_current(ledger_row, current_row=current_by_symbol[symbol], business_date=business_date))
         updated_symbols.add(symbol)
         bootstrap_symbols.append(symbol)
+    prior_pm_decision_evidence = _strict_prior_pm_sell_decision_evidence_by_campaign(
+        run_dir=run_dir,
+        business_date=business_date,
+    )
+    pm_decision_evidence_count = 0
+    pm_decision_evidence_campaign_count = 0
+    for index, row in enumerate(materialized):
+        campaign_id = str(row.get("position_campaign_id") or "").strip()
+        events = prior_pm_decision_evidence.get(campaign_id, [])
+        if not events:
+            continue
+        patched = dict(row)
+        existing_events = [
+            item
+            for item in patched.get("pm_decision_evidence_events") or []
+            if isinstance(item, Mapping)
+        ]
+        merged = _dedupe_pm_decision_evidence_events([*existing_events, *events])
+        patched["pm_decision_evidence_events"] = merged
+        patched["pm_decision_evidence_contract"] = {
+            "schema_version": "phase31_f1i_pm_decision_evidence_history.v1",
+            "authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+            "semantic": "decision_intent_representability_evidence_not_execution",
+            "source_selection_rule": "daily strategy/position_management artifacts with business_date strictly less than decision business_date",
+            "same_day_self_count_protected": True,
+            "future_information_used": False,
+        }
+        materialized[index] = patched
+        pm_decision_evidence_count += len(merged)
+        pm_decision_evidence_campaign_count += 1
     missing_current_campaign_symbols = sorted(set(current_by_symbol) - updated_symbols)
     payload = {
         "schema_version": "position_campaign_observability.v1",
@@ -1316,11 +1349,19 @@ def _materialize_pre_action_position_campaigns(
                 "hash": _file_hash(ledger_path) if ledger_path is not None else "",
                 "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
             },
+            "strict_prior_pm_decision_evidence": {
+                "authority": "strategy.position_management",
+                "temporal_selection_rule": "pm_decision_business_date_strictly_less_than_decision_business_date",
+                "semantic": "decision_intent_representability_evidence_not_execution",
+                "campaigns_with_evidence": pm_decision_evidence_campaign_count,
+                "evidence_event_count": pm_decision_evidence_count,
+            },
         },
         "temporal_safety": {
             "temporal_stage": "PRE_ACTION_DECISION_SNAPSHOT",
-            "source_selection_rule": "latest prior position_campaigns plus strict-prior ledger executions plus current state available at decision time",
+            "source_selection_rule": "latest prior position_campaigns plus strict-prior ledger executions plus strict-prior PM decision evidence plus current state available at decision time",
             "same_day_eod_campaign_reconstruction_used": False,
+            "same_day_pm_decision_self_count_used": False,
             "same_day_future_execution_used": False,
             "future_mfe_used": False,
             "future_giveback_used": False,
@@ -1339,6 +1380,10 @@ def _materialize_pre_action_position_campaigns(
             "missing_current_campaign_behavior": "EXPLICIT_REVIEW_REQUIRED_IN_STRATEGY_INTELLIGENCE_UNLESS_STRICT_PRIOR_LEDGER_OPEN_CAMPAIGN_PROVES_BOOTSTRAP",
             "bootstrap_authority": "persistent_ledger_executions_strict_prior",
             "duplicate_campaign_authority_created": False,
+            "pm_decision_evidence_authority": "strategy.position_management strict-prior decision evidence",
+            "pm_decision_evidence_event_count": pm_decision_evidence_count,
+            "pm_decision_evidence_campaign_count": pm_decision_evidence_campaign_count,
+            "fake_execution_event_created": False,
         },
     }
     _write_json(output_path, payload)
@@ -1363,10 +1408,124 @@ def _materialize_pre_action_position_campaigns(
             "canonical_authority": "positions/position_campaigns.json",
             "duplicate_campaign_authority_created": False,
             "same_day_eod_campaign_reconstruction_used": False,
+            "same_day_pm_decision_self_count_used": False,
             "same_day_future_execution_used": False,
+            "pm_decision_evidence_authority": "strategy.position_management strict-prior decision evidence",
+            "pm_decision_evidence_event_count": pm_decision_evidence_count,
+            "pm_decision_evidence_campaign_count": pm_decision_evidence_campaign_count,
+            "fake_execution_event_created": False,
             "future_information_used": False,
         },
     }
+
+
+def _strict_prior_pm_sell_decision_evidence_by_campaign(
+    *,
+    run_dir: Path,
+    business_date: str,
+) -> dict[str, list[dict[str, Any]]]:
+    daily_root = run_dir / "daily"
+    if not daily_root.is_dir():
+        return {}
+    by_campaign: dict[str, list[dict[str, Any]]] = {}
+    for child in sorted(item for item in daily_root.iterdir() if item.is_dir()):
+        decision_date = child.name
+        if not decision_date or decision_date >= business_date:
+            continue
+        pm_path = child / "strategy" / "position_management.json"
+        payload = _read_json(pm_path)
+        positions = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+        for row in positions:
+            if not isinstance(row, Mapping):
+                continue
+            event = _pm_sell_decision_evidence_event(row, business_date=decision_date, source_path=pm_path)
+            if not event:
+                continue
+            campaign_id = str(event.get("campaign_id") or "").strip()
+            if not campaign_id:
+                continue
+            by_campaign.setdefault(campaign_id, []).append(event)
+    return {
+        campaign_id: _dedupe_pm_decision_evidence_events(events)
+        for campaign_id, events in by_campaign.items()
+    }
+
+
+def _pm_sell_decision_evidence_event(
+    row: Mapping[str, Any],
+    *,
+    business_date: str,
+    source_path: Path,
+) -> dict[str, Any] | None:
+    evidence = row.get("canonical_sell_semantic_evidence") if isinstance(row.get("canonical_sell_semantic_evidence"), Mapping) else {}
+    original_action = str(evidence.get("original_pm_action") or row.get("action") or "").upper()
+    final_action = str(evidence.get("final_pm_action") or row.get("action") or "").upper()
+    canonical_state = str(evidence.get("canonical_sell_state") or row.get("canonical_sell_state") or "").upper()
+    recovery_state = str(evidence.get("recovery_state") or "").upper()
+    recovery = evidence.get("recovery_dimensions") if isinstance(evidence.get("recovery_dimensions"), Mapping) else {}
+    parameter_status = str(evidence.get("parameter_resolution_status") or "").upper()
+    representability_family = str(evidence.get("representability_family") or "").upper()
+    final_reduce_quantity = _float(evidence.get("final_reduce_quantity"), default=0.0)
+    minimum_notional = bool(evidence.get("minimum_notional_flag"))
+    is_unrepresentable_reduce = bool(
+        original_action == "REDUCE"
+        and representability_family == "DISCRETE_LOT"
+        and abs(final_reduce_quantity) <= 1e-9
+        and not minimum_notional
+    )
+    is_recovery_boundary = bool(
+        original_action in {"HOLD", "ADD"}
+        and final_action in {"HOLD", "ADD"}
+        and canonical_state == "HEALTHY_OR_RECOVERING"
+        and recovery_state == "RECOVERY_PRESENT"
+    )
+    if not is_unrepresentable_reduce and not is_recovery_boundary:
+        return None
+    campaign_id = str(evidence.get("campaign_id") or row.get("position_campaign_id") or row.get("strategy_intelligence_campaign_id") or "").strip()
+    symbol = str(evidence.get("symbol") or row.get("security_code") or row.get("symbol") or "").strip()
+    event_kind = "UNREPRESENTABLE_REDUCE_DECISION" if is_unrepresentable_reduce else "RECOVERY_BOUNDARY"
+    return {
+        "schema_version": "phase31_f1i_pm_decision_evidence_event.v1",
+        "business_date": business_date,
+        "symbol": symbol,
+        "campaign_id": campaign_id,
+        "event_kind": event_kind,
+        "pm_action": original_action,
+        "final_pm_action": final_action,
+        "pm_reason_codes": [str(item) for item in row.get("reason_codes") or evidence.get("original_pm_reasons") or []],
+        "canonical_sell_state": canonical_state,
+        "representability_family": representability_family,
+        "current_quantity": evidence.get("current_quantity"),
+        "trading_unit": evidence.get("trading_unit"),
+        "raw_reduce_quantity": evidence.get("raw_reduce_quantity"),
+        "rounded_reduce_quantity": evidence.get("rounded_reduce_quantity"),
+        "final_reduce_quantity": evidence.get("final_reduce_quantity"),
+        "minimum_notional_flag": minimum_notional,
+        "recovery_state": recovery_state,
+        "recovery_reset_policy": str(recovery.get("reset_policy") or parameter_status or ""),
+        "pit_proof": evidence.get("pit_proof") or {},
+        "source_artifact_path": str(source_path),
+        "source_artifact_hash": _file_hash(source_path),
+        "source_contract_version": str(row.get("canonical_sell_semantic_contract_version") or evidence.get("contract_version") or ""),
+        "decision_evidence_not_execution": True,
+        "fake_execution_event_created": False,
+        "future_information_used": False,
+    }
+
+
+def _dedupe_pm_decision_evidence_events(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for event in events:
+        key = (
+            str(event.get("business_date") or ""),
+            str(event.get("symbol") or ""),
+            str(event.get("campaign_id") or ""),
+            str(event.get("event_kind") or ""),
+        )
+        if not all(key):
+            continue
+        deduped[key] = dict(event)
+    return [deduped[key] for key in sorted(deduped)]
 
 
 def _strict_prior_ledger_campaigns_by_symbol(executions: Iterable[Mapping[str, Any]], *, business_date: str) -> dict[str, dict[str, Any]]:
@@ -1481,6 +1640,11 @@ def _campaign_event_from_execution(row: Mapping[str, Any], *, side: str, busines
         "stage": "BUY" if side == "BUY" else "SELL",
         "quantity": _float(row.get("filled_quantity") or row.get("quantity"), default=0.0),
         "price": _float(row.get("average_price") or row.get("price") or row.get("market_price"), default=0.0),
+        "position_campaign_id": str(row.get("position_campaign_id") or row.get("campaign_id") or ""),
+        "canonical_position_campaign_id": str(row.get("canonical_position_campaign_id") or ""),
+        "open_position_campaign_id": str(row.get("open_position_campaign_id") or ""),
+        "source_position_campaign_id": str(row.get("source_position_campaign_id") or ""),
+        "source_decision_type": str(row.get("source_decision_type") or ""),
         "source_execution_id": str(row.get("execution_id") or ""),
         "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
         "source_execution_dedup_key": str(row.get("dedup_key") or row.get("execution_key") or ""),
@@ -1565,6 +1729,130 @@ def _refresh_campaign_with_current(campaign: Mapping[str, Any], *, current_row: 
         }
     )
     return row
+
+
+def _merge_strict_prior_ledger_history_into_open_campaign(campaign: Mapping[str, Any], *, ledger_row: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(campaign)
+    if not _campaign_is_open(row) or str(ledger_row.get("campaign_status") or "").upper() != "OPEN":
+        return row
+    campaign_symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+    ledger_symbol = str(ledger_row.get("symbol") or ledger_row.get("security_code") or ledger_row.get("code") or "").strip()
+    if campaign_symbol and ledger_symbol and campaign_symbol != ledger_symbol:
+        return row
+
+    existing_events = [dict(item) for item in row.get("events") or [] if isinstance(item, Mapping)]
+    ledger_events = [dict(item) for item in ledger_row.get("events") or [] if isinstance(item, Mapping)]
+    if not ledger_events:
+        return row
+    campaign_id = str(row.get("position_campaign_id") or "").strip()
+    if not _ledger_events_prove_open_campaign_identity(ledger_events, campaign_id=campaign_id):
+        return row
+
+    merged_events = _dedupe_campaign_events_by_execution_identity([*existing_events, *ledger_events])
+    row["events"] = merged_events
+
+    buy_dates = [str(event.get("business_date") or "") for event in merged_events if str(event.get("side") or "").upper() == "BUY"]
+    sell_dates = [str(event.get("business_date") or "") for event in merged_events if str(event.get("side") or "").upper() == "SELL"]
+    if buy_dates:
+        row["buy_history_summary"] = {
+            "count": len(buy_dates),
+            "latest_business_date": max(buy_dates),
+        }
+        if len(buy_dates) > 1:
+            row["add_history_summary"] = {
+                "count": len(buy_dates) - 1,
+                "latest_business_date": max(buy_dates[1:]),
+            }
+            row["latest_add_business_date"] = max(buy_dates[1:])
+        else:
+            row.pop("latest_add_business_date", None)
+            if "add_history_summary" in row:
+                row["add_history_summary"] = {"count": 0, "latest_business_date": ""}
+    if sell_dates and "sell_history_summary" in ledger_row:
+        row["sell_history_summary"] = {
+            "count": len(sell_dates),
+            "latest_business_date": max(sell_dates),
+        }
+    return row
+
+
+def _ledger_events_prove_open_campaign_identity(events: Iterable[Mapping[str, Any]], *, campaign_id: str) -> bool:
+    if not campaign_id:
+        return False
+    explicit_ids: set[str] = set()
+    bridge_ids: set[str] = set()
+    for event in events:
+        for key in ("canonical_position_campaign_id", "open_position_campaign_id", "source_position_campaign_id"):
+            value = str(event.get(key) or "").strip()
+            if value:
+                bridge_ids.add(value)
+        value = str(event.get("position_campaign_id") or event.get("campaign_id") or "").strip()
+        if value:
+            explicit_ids.add(value)
+    if bridge_ids:
+        return campaign_id in bridge_ids
+    if explicit_ids:
+        return explicit_ids == {campaign_id}
+    # Legacy strict-prior ledger events predate campaign identity persistence.
+    # They remain valid only when they carry no conflicting campaign identity at all.
+    return not explicit_ids and not bridge_ids
+
+
+def _campaign_event_identity(event: Mapping[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(event.get("source_execution_dedup_key") or ""),
+        str(event.get("source_execution_id") or ""),
+        str(event.get("source_execution_record_id") or ""),
+        str(event.get("business_date") or ""),
+        str(event.get("side") or ""),
+        str(event.get("quantity") or ""),
+    )
+
+
+def _campaign_event_natural_identity(event: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(event.get("business_date") or ""),
+        str(event.get("side") or ""),
+        str(event.get("quantity") or ""),
+        str(event.get("price") or ""),
+    )
+
+
+def _campaign_event_has_execution_identity(event: Mapping[str, Any]) -> bool:
+    return bool(event.get("source_execution_dedup_key") or event.get("source_execution_id") or event.get("source_execution_record_id"))
+
+
+def _dedupe_campaign_events_by_execution_identity(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    exact_index: dict[tuple[str, str, str, str, str, str], int] = {}
+    natural_index: dict[tuple[str, str, str, str], int] = {}
+    for raw_event in events:
+        event = dict(raw_event)
+        exact = _campaign_event_identity(event)
+        natural = _campaign_event_natural_identity(event)
+        if any(exact) and exact in exact_index:
+            merged[exact_index[exact]] = event
+            continue
+        if any(natural) and natural in natural_index:
+            index = natural_index[natural]
+            existing = merged[index]
+            if _campaign_event_has_execution_identity(event) and not _campaign_event_has_execution_identity(existing):
+                merged[index] = event
+                exact_index[_campaign_event_identity(event)] = index
+            continue
+        index = len(merged)
+        merged.append(event)
+        if any(exact):
+            exact_index[exact] = index
+        if any(natural):
+            natural_index[natural] = index
+    return sorted(merged, key=lambda event: _campaign_event_sort_key(_campaign_event_identity(event)))
+
+
+def _campaign_event_sort_key(key: tuple[str, str, str, str, str, str]) -> tuple[str, str, str, str, str, str]:
+    dedup, execution_id, record_id, business_date, side, quantity = key
+    side_order = "0" if side.upper() == "BUY" else "1" if side.upper() == "SELL" else "2"
+    return (business_date, side_order, dedup, execution_id, record_id, quantity)
 
 
 def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapping[str, Any]], business_date: str) -> dict[str, dict[str, Any]]:
@@ -1894,6 +2182,13 @@ def _produce_lot_aware_final_portfolio_construction(
         lot_feasibility_rows=[dict(row) for row in preflight.get("lot_feasibility_preflight") or []],
         target_gross_exposure=draft.get("target_gross_exposure"),
         single_name_cap=draft.get("single_name_weight_cap"),
+        business_date=business_date,
+        incremental_budget_evidence=draft.get("incremental_budget_reconciliation"),
+        final_capital_competition_risk_pacing_evidence=(
+            draft.get("portfolio_policy_allocation_authority", {}).get("risk_pacing_evidence")
+            if isinstance(draft.get("portfolio_policy_allocation_authority"), Mapping)
+            else {}
+        ),
     )
     final_payload = {
         **draft,

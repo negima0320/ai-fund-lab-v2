@@ -1350,6 +1350,24 @@ Campaign lifecycle semantics remain single-owner:
 - REENTRY after a ledger-proven full EXIT starts a new deterministic campaign
   identity under the same canonical authority.
 
+Phase31-G122 clarifies the ADD event-history materialization contract:
+
+- Initial BUY starts the campaign and is counted in `buy_history_summary`.
+- A later ledger-proven BUY while the same ledger campaign is still OPEN is a
+  BUY_ADD event on the same `position_campaign_id`.
+- BUY_ADD must append a canonical BUY event to `events`, increment
+  `buy_history_summary`, and increment `add_history_summary`.
+- `buy_history_summary` counts all BUY executions in the campaign.
+- `add_history_summary` excludes the initial BUY and counts only additional BUY
+  executions while the campaign is already open.
+- Quantity increase alone must not synthesize ADD; canonical strict-prior
+  execution / ledger evidence is required.
+- Materialization is idempotent: the same execution must not append duplicate
+  events or double-increment summaries.
+- Event ordering is deterministic chronological execution order.
+- A BUY after the symbol was flat following a ledger-proven EXIT remains REENTRY
+  / new campaign identity and must not be merged into the prior closed campaign.
+
 Strategy Intelligence consumes canonical campaign state and exposes campaign
 age, campaign-relative return, observed MFE, observed giveback, and campaign
 history summaries. Missing campaign identity for an open held position is
@@ -1553,3 +1571,62 @@ PHASE30_Z_REENTRY_PRESERVED = YES
 PHASE30_S_HANDOFF_PRESERVED = YES
 EXPECTED_EDGE_STATUS = UNCALIBRATED
 ```
+
+## 35. Phase31-G129 BUY_ADD Actual-Path Contract Amendment
+
+BUY_ADD quantity authority is order-increment scoped at Submit. The canonical
+order-increment field for G115/G119/G129 staged ADD is:
+
+```text
+pc_positive_executable_quantity_authority.final_allocated_quantity
+```
+
+For `semantic_type = BUY_ADD`, Submit validates the pending item quantity
+against that order increment. Position-scope or cumulative fields such as
+`executable_quantity_delta` and `preflight_executable_quantity_delta` may carry
+larger stateful quantities and must not be treated as equivalent to the
+submitted order increment unless their producer explicitly defines them as the
+same authority. True mismatches between item quantity and canonical order
+increment remain `REVIEW_REQUIRED`.
+
+BUY_NEW and REENTRY retain the existing quantity contract. Submit continues to
+fail closed for missing authority, malformed quantity, reserved/dynamic cash
+violation, corporate-action quarantine, lot infeasibility, pending conflict,
+and Safety/Data Readiness violations.
+
+BUY_ADD fill materialization requires an actual BUY fill and canonical campaign
+identity proof. A BUY fill may append to an existing open campaign only when
+Runtime/Pending/PS lineage, the strict-prior ledger, or another canonical
+action provenance field proves the open `position_campaign_id`. Same-symbol
+quantity movement alone is not sufficient. A BUY after a flat / closed campaign
+starts a new or re-entry campaign and must not be merged into the prior closed
+campaign.
+
+Market-Candidate-Cash interaction remains a capital pacing / Cash optionality
+authority, not a blanket ADD evidence eraser. For ADD marginal competition,
+canonical positive/PASS ADD investment evidence and PASS opportunity-cost
+evidence must remain visible to the ADD-vs-Cash frontier. Missing, invalid, or
+conflicting ADD evidence remains fail-closed, and Cash remains a first-class
+allocation destination.
+
+## 36. Phase31-G136 High-Resolution Capital Value Evidence Boundary
+
+The permanent architecture SoT for future high-resolution marginal capital value
+and portfolio-wide rotation is:
+
+```text
+docs/02_architecture/high_resolution_marginal_capital_value_and_portfolio_rotation_architecture.md
+```
+
+Strategy Intelligence, Expected Edge, Entry Quality, PM continuation evidence,
+and ADD investment evidence remain evidence producers unless a later accepted
+SoT explicitly changes their authority mode. They must not independently emit
+BUY_NEW, BUY_ADD, HOLD, REDUCE, EXIT, target weight, target notional, quantity,
+Cash preference, or rotation actions.
+
+Future high-resolution Capital Value may consume these evidence families to
+evaluate the next executable capital increment, but it must preserve raw
+evidence lineage and PIT / anti-leakage metadata. It must not use later return,
+future price, campaign final outcome, MFE/MAE, Paper Ledger result, or
+Historical profitability to select features, weights, thresholds, ranking
+rules, or rotation rules.

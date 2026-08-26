@@ -20,6 +20,7 @@ from ai_fund_lab_v2.strategy.candidate_opportunity_compatibility import (
     validate_market_context_compatibility,
 )
 from ai_fund_lab_v2.strategy import portfolio_policy
+from ai_fund_lab_v2.strategy import sell_semantic_state
 from ai_fund_lab_v2.strategy import strategy_intelligence
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
 
@@ -350,6 +351,11 @@ def build_position_management_payload(
         strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
     )
     reason_codes.extend(si_reasons)
+    positions, sell_semantic_reasons = _apply_canonical_sell_semantics(
+        positions,
+        business_date=business_date,
+    )
+    reason_codes.extend(sell_semantic_reasons)
     if any(item.get("action") == "UNRESOLVED" for item in positions) and producer_status != "BLOCK":
         producer_status = "REVIEW_REQUIRED"
 
@@ -1401,6 +1407,180 @@ def _attach_strategy_intelligence_positions(
     return updated, sorted(set(reasons))
 
 
+def _apply_canonical_sell_semantics(
+    positions: list[dict[str, Any]],
+    *,
+    business_date: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not positions:
+        return positions, []
+    updated: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for position in positions:
+        evidence = sell_semantic_state.evaluate_position_sell_semantic(position, business_date=business_date)
+        evidence = _apply_pm_severity_action_mapping(position, evidence)
+        final_action = str(evidence.get("final_pm_action") or position.get("action") or "").upper()
+        escalation_reason = str(evidence.get("escalation_reason_code") or "")
+        action_mapping_reason = str(evidence.get("pm_severity_action_mapping_reason_code") or "")
+        position_reasons = list(position.get("reason_codes") or [])
+        if final_action == "EXIT" and position.get("action") == "REDUCE" and escalation_reason:
+            position_reasons.append(escalation_reason)
+            reasons.append(escalation_reason)
+        if action_mapping_reason and final_action != str(evidence.get("baseline_final_pm_action") or "").upper():
+            position_reasons.append(action_mapping_reason)
+            reasons.append(action_mapping_reason)
+        patched = {
+            **position,
+            "action": final_action if final_action in PM_ACTIONS else position.get("action"),
+            "intensity": evidence.get("final_pm_intensity") or ("NONE" if final_action == "EXIT" else position.get("intensity")),
+            "canonical_sell_semantic_evidence": evidence,
+            "canonical_sell_state": evidence.get("canonical_sell_state"),
+            "canonical_sell_semantic_contract_version": sell_semantic_state.CONTRACT_VERSION,
+            "pm_severity": evidence.get("pm_severity"),
+            "pm_severity_reasons": evidence.get("pm_severity_reasons"),
+            "pm_severity_evidence": evidence.get("pm_severity_evidence"),
+            "persistence_state": evidence.get("persistence_state"),
+            "pm_severity_contract_version": sell_semantic_state.PM_SEVERITY_CONTRACT_VERSION,
+            "reason_codes": sorted(set(position_reasons)),
+        }
+        updated.append(patched)
+    return updated, sorted(set(reasons))
+
+
+PM_SEVERITY_ACTION_MAPPING_CONTRACT_VERSION = "phase31_g8_pm_severity_action_mapping_v1"
+PM_SEVERITY_HOLD_TO_REDUCE_REASON_CODE = "pm_severity_defensive_hold_to_reduce"
+PM_SEVERITY_REDUCE_TO_EXIT_REASON_CODE = "pm_severity_persistent_failure_reduce_to_exit"
+
+
+def _apply_pm_severity_action_mapping(position: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+    baseline_action = str(evidence.get("final_pm_action") or evidence.get("original_pm_action") or position.get("action") or "").upper()
+    original_action = str(evidence.get("original_pm_action") or position.get("action") or "").upper()
+    final_action = baseline_action
+    reason_code = ""
+    mapping_decision = "PRESERVE_BASELINE"
+    intensity = "NONE" if baseline_action == "EXIT" else position.get("intensity")
+
+    if _defensive_hold_to_reduce_allowed(evidence, baseline_action=baseline_action, original_action=original_action):
+        final_action = "REDUCE"
+        reason_code = PM_SEVERITY_HOLD_TO_REDUCE_REASON_CODE
+        mapping_decision = "PM_SEVERITY_HOLD_TO_REDUCE"
+        intensity = position.get("intensity") if str(position.get("intensity") or "").upper() not in {"", "NONE"} else "LIGHT"
+    elif _persistent_reduce_to_exit_allowed(evidence, baseline_action=baseline_action, original_action=original_action):
+        final_action = "EXIT"
+        reason_code = PM_SEVERITY_REDUCE_TO_EXIT_REASON_CODE
+        mapping_decision = "PM_SEVERITY_REDUCE_TO_EXIT"
+        intensity = "NONE"
+
+    mapped = dict(evidence)
+    mapped["baseline_final_pm_action"] = baseline_action
+    mapped["final_pm_action"] = final_action
+    mapped["final_pm_intensity"] = intensity
+    mapped["pm_severity_action_mapping_contract_version"] = PM_SEVERITY_ACTION_MAPPING_CONTRACT_VERSION
+    mapped["pm_severity_action_mapping_connected"] = True
+    mapped["pm_severity_action_mapping_decision"] = mapping_decision
+    mapped["pm_severity_action_mapping_reason_code"] = reason_code
+    mapped["pm_severity_action_mapping_evidence"] = {
+        "contract_version": PM_SEVERITY_ACTION_MAPPING_CONTRACT_VERSION,
+        "owner": "POSITION_MANAGEMENT_PM",
+        "baseline_final_pm_action": baseline_action,
+        "final_pm_action": final_action,
+        "original_pm_action": original_action,
+        "pm_severity": evidence.get("pm_severity"),
+        "persistence_state": evidence.get("persistence_state"),
+        "canonical_sell_state": evidence.get("canonical_sell_state"),
+        "campaign_economics": (evidence.get("pm_severity_evidence") or {}).get("campaign_economics") or {},
+        "recovery_evidence": {
+            "recovery_state": evidence.get("recovery_state"),
+            "recovery_dimensions": evidence.get("recovery_dimensions") or {},
+            "recovery_deescalation_evidence": (evidence.get("pm_severity_evidence") or {}).get("recovery_deescalation_evidence") or {},
+        },
+        "regime_modifier": (evidence.get("pm_severity_evidence") or {}).get("regime_modifier") or {},
+        "pit_proof": evidence.get("pit_proof") or {},
+        "campaign_identity_valid": bool(evidence.get("campaign_identity_valid")),
+        "conflicting_recovery_deterioration_evidence": bool(evidence.get("conflicting_recovery_deterioration_evidence")),
+        "reason_code": reason_code,
+        "normal_action_delta_count_in_unit_cases": 0 if evidence.get("pm_severity") == sell_semantic_state.PM_SEVERITY_NORMAL and final_action == baseline_action else None,
+        "canonical_sell_state_owner_changed": False,
+        "second_sell_classifier_created": False,
+        "ps_runtime_action_invention": False,
+        "negative_return_direct_exit": False,
+        "regime_direct_exit_rule": False,
+        "reduce_count_direct_exit_rule": False,
+        "missing_evidence_auto_exit": False,
+        "future_information_used": False,
+        "outcome_used_for_parameter_selection": False,
+    }
+    return mapped
+
+
+def _defensive_hold_to_reduce_allowed(
+    evidence: Mapping[str, Any],
+    *,
+    baseline_action: str,
+    original_action: str,
+) -> bool:
+    if baseline_action != "HOLD" or original_action != "HOLD":
+        return False
+    if evidence.get("pm_severity") != sell_semantic_state.PM_SEVERITY_DEFENSIVE:
+        return False
+    if evidence.get("canonical_sell_state") not in {
+        sell_semantic_state.WEAKENING_BUT_INTACT,
+        sell_semantic_state.PERSISTENT_DETERIORATION,
+        sell_semantic_state.EXIT_GRADE,
+    }:
+        return False
+    return _severity_action_common_gate(evidence) and _campaign_return_side(evidence) == "FAILING"
+
+
+def _persistent_reduce_to_exit_allowed(
+    evidence: Mapping[str, Any],
+    *,
+    baseline_action: str,
+    original_action: str,
+) -> bool:
+    if baseline_action != "REDUCE" or original_action != "REDUCE":
+        return False
+    if evidence.get("pm_severity") not in {
+        sell_semantic_state.PM_SEVERITY_DEFENSIVE,
+        sell_semantic_state.PM_SEVERITY_EXIT_CANDIDATE,
+    }:
+        return False
+    if evidence.get("persistence_state") not in {sell_semantic_state.PERSISTENT, sell_semantic_state.WORSENING}:
+        return False
+    if evidence.get("canonical_sell_state") not in {sell_semantic_state.PERSISTENT_DETERIORATION, sell_semantic_state.EXIT_GRADE}:
+        return False
+    canonical_gate_authorized = bool(
+        evidence.get("canonical_sell_state") == sell_semantic_state.EXIT_GRADE
+        or evidence.get("escalation_decision") == "PM_EXIT"
+    )
+    return canonical_gate_authorized and _severity_action_common_gate(evidence) and _campaign_return_side(evidence) == "FAILING"
+
+
+def _severity_action_common_gate(evidence: Mapping[str, Any]) -> bool:
+    if evidence.get("canonical_sell_state") == sell_semantic_state.UNRESOLVED:
+        return False
+    if evidence.get("pm_severity") == sell_semantic_state.PM_SEVERITY_UNRESOLVED:
+        return False
+    if not evidence.get("campaign_identity_valid"):
+        return False
+    if bool(evidence.get("conflicting_recovery_deterioration_evidence")):
+        return False
+    if evidence.get("recovery_state") == "RECOVERY_PRESENT":
+        return False
+    if (evidence.get("recovery_dimensions") or {}).get("recovery_present"):
+        return False
+    if ((evidence.get("pm_severity_evidence") or {}).get("recovery_deescalation_evidence") or {}).get("deescalated"):
+        return False
+    if (evidence.get("pit_proof") or {}).get("pit_validation_state") != "PASS":
+        return False
+    return True
+
+
+def _campaign_return_side(evidence: Mapping[str, Any]) -> str:
+    economics = (evidence.get("pm_severity_evidence") or {}).get("campaign_economics") or {}
+    return str(economics.get("campaign_return_side") or "UNKNOWN").upper()
+
+
 def _structured_hold_worthiness_evidence(
     *,
     lifecycle: Mapping[str, Any],
@@ -1429,6 +1609,8 @@ def _structured_hold_worthiness_evidence(
         "observed_giveback": lifecycle.get("observed_giveback"),
         "add_history_summary": lifecycle.get("add_history_summary") or {},
         "reduce_history_summary": lifecycle.get("reduce_history_summary") or {},
+        "prior_unrepresentable_reduce_summary": lifecycle.get("prior_unrepresentable_reduce_summary") or {},
+        "pm_decision_history_summary": lifecycle.get("pm_decision_history_summary") or {},
         "continuation_quality_status": cq_status,
         "downside_risk_status": risk_status,
         "profit_protection_status": str(profit.get("status") or ""),
@@ -1473,6 +1655,8 @@ def _structured_add_worthiness_evidence(
         "observed_giveback": lifecycle.get("observed_giveback"),
         "add_history_summary": add_history,
         "reduce_history_summary": reduce_history,
+        "prior_unrepresentable_reduce_summary": lifecycle.get("prior_unrepresentable_reduce_summary") or {},
+        "pm_decision_history_summary": lifecycle.get("pm_decision_history_summary") or {},
         "continuation_quality_status": cq_status,
         "downside_risk_status": risk_status,
         "profit_protection_status": str(profit.get("status") or ""),

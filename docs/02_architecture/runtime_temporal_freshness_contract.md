@@ -381,6 +381,14 @@ EXIT removes the position as usual. `current_price` may be retained only as
 basis/provenance evidence; same-day Current valuation must still select the
 valuation price from same-day market evidence under the BJ basis contract.
 
+Runtime-owned fill projection must use explicit applied execution identities as
+the authoritative idempotency boundary. A Current `as_of` date may suppress
+earlier ledger executions only when that Current date is not after the target
+projection business date. A target-date projection must not treat a future-dated
+empty/bootstrap Current timestamp as proof that older target-period executions
+were already applied; doing so would drop execution-derived basis and recreate
+open cost basis from valuation snapshots.
+
 Fallback basis inference is a fail-closed safety check for legacy or malformed
 metadata, not the normal authority path. If persisted basis and execution/fill
 basis conflict, or if basis is unknown after all authoritative evidence is

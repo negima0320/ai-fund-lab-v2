@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ai_fund_lab_v2.strategy.status_contract import numeric_resolution, status_contract_fields
 from ai_fund_lab_v2.strategy.target_weight_precision import (
@@ -21,6 +21,9 @@ SCHEMA_VERSION = "position_sizing.v1"
 CONFIG_SCHEMA_VERSION = "position_sizing_config.v1"
 PRODUCER_VERSION = "phase22_j_position_sizing_producer.v1"
 LOT_FEASIBILITY_SCHEMA_VERSION = "ps_lot_feasibility_preflight.v1"
+CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION = "position_sizing.canonical_lot_residual_evidence.v1"
+G61_COMPATIBILITY_CONSUMPTION_SCHEMA_VERSION = "position_sizing.g61_lot_aware_compatibility_consumption.v1"
+G61_COMPATIBILITY_SCHEMA_VERSION = "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "NOT_ELIGIBLE"
 PRODUCTION_ARTIFACT_LIFECYCLE_STATUS = "ACCEPTED"
@@ -37,6 +40,16 @@ REFERENCE_PRICE_AUTHORITY = "REFERENCE_PRICE_AUTHORITY"
 REDUCE_EXECUTABLE_SEMANTIC = "REDUCE_EXECUTABLE"
 REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
 REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL = "REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL"
+CANONICAL_SIZING_EVIDENCE_CLASSES = {
+    "EXECUTABLE",
+    "LOT_INFEASIBLE",
+    "STRATEGY_CAP_BOUND",
+    "SAFETY_CAP_BOUND",
+    "INSUFFICIENT_CASH",
+    "NO_POSITIVE_QUANTITY_DELTA",
+    "INVALID_INPUT",
+    "UNAVAILABLE_AUTHORITY",
+}
 
 SOURCE_STATUSES_BLOCK = {"BLOCK", "MISSING", "HASH_MISMATCH", "AUTHORITY_CONFLICT"}
 SIZING_STATUSES = {
@@ -389,8 +402,21 @@ def build_position_sizing_payload(
         status = "BLOCK"
         reasons.append("configured_max_position_weight_above_safety_cap")
     effective_cap = min(config.strategy_maximum_position_weight, safety_cap) if config and safety_cap is not None else None
+    g61_compatibility_consumption = _g61_lot_aware_compatibility_consumption_summary(
+        business_date=business_date,
+        portfolio_construction_summary=portfolio_construction_summary.summary or {},
+    )
+    if g61_compatibility_consumption["status"] == "BLOCK":
+        status = "BLOCK"
+        source_status = "AUTHORITY_CONFLICT"
+        reasons.extend(g61_compatibility_consumption["reason_codes"])
 
-    sizing_rows = _rows_with_price_volatility(portfolio_construction_summary.rows, price_volatility_summary)
+    sizing_rows = _apply_canonical_deployment_set_to_sizing_rows(
+        portfolio_construction_summary.rows,
+        portfolio_construction_summary.summary,
+    )
+    sizing_rows = _apply_g61_compatibility_to_sizing_rows(sizing_rows, g61_compatibility_consumption)
+    sizing_rows = _rows_with_price_volatility(sizing_rows, price_volatility_summary)
     positions: list[dict[str, Any]] = []
     if config is None or status != "PASS":
         positions = [_unresolved_position(row, config=config, safety_cap=effective_cap) for row in sizing_rows]
@@ -481,6 +507,8 @@ def build_position_sizing_payload(
         "minimum_meaningful_notional_policy": dict(config.minimum_meaningful_notional) if config else {},
         "lot_feasibility_preflight_schema_version": LOT_FEASIBILITY_SCHEMA_VERSION,
         "lot_feasibility_preflight": lot_feasibility_preflight,
+        "canonical_sizing_evidence_schema_version": CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION,
+        "canonical_sizing_evidence": _canonical_sizing_evidence_summary(positions, lot_feasibility_preflight),
         "strategy_maximum_position_weight": config.strategy_maximum_position_weight if config else None,
         "strategy_maximum_position_weight_source": f"{config.config_source}#strategy_maximum_position_weight" if config else "",
         "safety_maximum_position_weight": safety_cap,
@@ -498,6 +526,8 @@ def build_position_sizing_payload(
         "aggregate_exposure_cap": None if target_exposure is None else round(target_exposure, 6),
         "aggregate_exposure_cap_resolution": numeric_resolution(target_exposure, unresolved=target_exposure is None),
         "passive_convergence_authority": passive_convergence_authority,
+        "canonical_deployment_set_consumption": _canonical_deployment_set_consumption_summary(positions, portfolio_construction_summary.summary),
+        "g61_lot_aware_compatibility_consumption": g61_compatibility_consumption,
         "safety_authority_resolution": safety_authority,
         "positions": positions,
         "positions_sized": sum(1 for item in positions if item["sizing_status"] in {"SIZED", "CAPPED"}),
@@ -542,7 +572,7 @@ def build_position_sizing_payload(
 
 
 def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]:
-    required = {"schema_version","business_date","as_of","feature_date","artifact_lifecycle_status","source_authority_status","producer_result_status","runtime_consumer_eligibility","target_gross_exposure_ratio","positions","total_target_weight","residual_cash_ratio","concrete_target_weight_decided","target_notional_decided","share_quantity_decided","lot_rounding_decided","source_artifacts","source_hashes","temporal_safety","strategy_maximum_position_weight","strategy_maximum_position_weight_source","safety_maximum_position_weight","safety_maximum_position_weight_source","safety_authority_status","effective_maximum_position_weight","effective_maximum_position_weight_derivation","explicit_zero_cap","emergency_brake_active","market_context_risk_state","dynamic_cash_exposure","aggregate_exposure_cap"}
+    required = {"schema_version","business_date","as_of","feature_date","artifact_lifecycle_status","source_authority_status","producer_result_status","runtime_consumer_eligibility","target_gross_exposure_ratio","positions","total_target_weight","residual_cash_ratio","concrete_target_weight_decided","target_notional_decided","share_quantity_decided","lot_rounding_decided","source_artifacts","source_hashes","temporal_safety","strategy_maximum_position_weight","strategy_maximum_position_weight_source","safety_maximum_position_weight","safety_maximum_position_weight_source","safety_authority_status","effective_maximum_position_weight","effective_maximum_position_weight_derivation","explicit_zero_cap","emergency_brake_active","market_context_risk_state","dynamic_cash_exposure","aggregate_exposure_cap","canonical_sizing_evidence_schema_version","canonical_sizing_evidence"}
     errors = [f"required_field_missing:{f}" for f in sorted(required - set(payload))]
     if payload.get("schema_version") != SCHEMA_VERSION: errors.append("unsupported_schema_version")
     if payload.get("artifact_lifecycle_status") not in ARTIFACT_LIFECYCLE_STATUSES:
@@ -591,6 +621,11 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
     else:
         for index, position in enumerate(positions):
             errors.extend(_validate_position(position, index=index, safety_cap=safety_cap))
+    if payload.get("canonical_sizing_evidence_schema_version") != CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION:
+        errors.append("invalid_canonical_sizing_evidence_schema_version")
+    if not isinstance(payload.get("canonical_sizing_evidence"), dict):
+        errors.append("canonical_sizing_evidence_not_object")
+    errors.extend(_validate_g61_compatibility_consumption(payload.get("g61_lot_aware_compatibility_consumption")))
     for field in sorted(FORBIDDEN_FIELDS & set(payload)):
         errors.append(f"quantity_or_runtime_field_forbidden:{field}")
     production_ready = (
@@ -623,6 +658,32 @@ def validate_position_sizing_artifact(payload: dict[str, Any]) -> dict[str, Any]
     if errors:
         raise PositionSizingSchemaError(";".join(errors))
     return {"status": "PASS", "errors": []}
+
+
+def _validate_g61_compatibility_consumption(consumption: Any) -> list[str]:
+    if consumption is None:
+        return []
+    if not isinstance(consumption, dict):
+        return ["g61_compatibility_consumption_not_object"]
+    errors: list[str] = []
+    if consumption.get("schema_version") != G61_COMPATIBILITY_CONSUMPTION_SCHEMA_VERSION:
+        errors.append("invalid_g61_compatibility_consumption_schema")
+    status = str(consumption.get("status") or "")
+    if status not in {"PASS", "BLOCK", "NOT_AVAILABLE_LEGACY_COMPATIBILITY"}:
+        errors.append("invalid_g61_compatibility_consumption_status")
+    if status == "NOT_AVAILABLE_LEGACY_COMPATIBILITY":
+        return errors
+    if consumption.get("pc_discrete_quantity_authority") is not False:
+        errors.append("g61_pc_discrete_quantity_authority_forbidden")
+    if consumption.get("position_sizing_quantity_owner") not in {"POSITION_SIZING", None}:
+        errors.append("invalid_g61_position_sizing_quantity_owner")
+    if consumption.get("lower_priority_implicit_promotion") is not False:
+        errors.append("g61_lower_priority_implicit_promotion_forbidden")
+    if consumption.get("position_sizing_recomputes_capital_priority") is not False:
+        errors.append("g61_ps_capital_priority_redecision_forbidden")
+    if consumption.get("ordinary_lot_feasibility_priority_redecision_allowed") is not False:
+        errors.append("g61_ordinary_lot_priority_redecision_forbidden")
+    return errors
 
 
 def verify_source_hashes(payload: dict[str, Any]) -> dict[str, Any]:
@@ -708,6 +769,545 @@ def _size_positions(*, config: PositionSizingConfig, rows: tuple[Mapping[str, An
             item = {**item, "target_weight": target_weight, "weight_delta": round(target_weight - float(item["current_weight"]), 6), "target_notional": target_notional, "current_notional": current_notional, "incremental_target_notional": incremental, "incremental_buy_notional": round(max(incremental, 0.0), 2)}
         positions.append(item)
     return positions, reasons
+
+
+def _apply_canonical_deployment_set_to_sizing_rows(
+    rows: Sequence[Mapping[str, Any]],
+    portfolio_construction_summary: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    deployment_set = _canonical_deployment_set_from_pc_summary(portfolio_construction_summary)
+    multi_selected = _multi_allocation_sizing_selection_by_key(portfolio_construction_summary)
+    if not deployment_set and not multi_selected:
+        return tuple(rows)
+    if not deployment_set:
+        deployment_set = {}
+    selected = {
+        (str(item.get("competitor_type") or ""), str(item.get("symbol") or ""))
+        for item in deployment_set.get("selected_deployments") or []
+        if isinstance(item, Mapping)
+    }
+    final_winner_type = str(deployment_set.get("final_winner_type") or "")
+    cash_winner = bool(deployment_set.get("cash_winner")) or final_winner_type == "CASH_OPTIONALITY"
+    no_deployable = bool(deployment_set.get("no_deployable_opportunity"))
+    deployment_hash = str(deployment_set.get("deployment_set_hash") or "")
+    adjusted: list[Mapping[str, Any]] = []
+    for row in rows:
+        competitor_type = _deployment_competitor_type(row)
+        symbol = str(row.get("security_code") or row.get("symbol") or "")
+        if competitor_type not in {"NEW_BUY", "ADD"}:
+            adjusted.append(
+                {
+                    **dict(row),
+                    "canonical_deployment_set_sizing_eligibility": "NOT_INCREMENTAL_DEPLOYMENT_COMPETITOR",
+                    "canonical_deployment_set_hash": deployment_hash,
+                    "final_capital_winner_type": final_winner_type,
+                    "final_capital_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+                }
+            )
+            continue
+        multi_selection = multi_selected.get((competitor_type, symbol), {})
+        if multi_selection:
+            target_weight = _ratio(multi_selection.get("authorized_allocation_weight"), None)
+            next_row = dict(row)
+            if target_weight is not None:
+                current_weight = _ratio(next_row.get("current_weight"), 0.0) if competitor_type == "ADD" else 0.0
+                next_row["target_weight"] = round(current_weight + target_weight, TARGET_WEIGHT_DECIMALS)
+                if competitor_type == "ADD":
+                    next_row["accepted_incremental_weight"] = target_weight
+                    next_row["lot_aware_accepted_incremental_weight"] = target_weight
+                else:
+                    next_row["accepted_buy_new_weight"] = target_weight
+                    next_row["lot_aware_accepted_buy_new_weight"] = target_weight
+            reason_codes = list(next_row.get("reason_codes") or [])
+            reason_codes.append("multi_allocation_g61_executable_selected_for_sizing")
+            g102_lot_resolution = _g102_item_scoped_pc_lot_resolution_from_selection(multi_selection)
+            if g102_lot_resolution:
+                next_row["phase29_l19_lot_resolution"] = g102_lot_resolution
+                next_row["semantic_buy_type"] = str(g102_lot_resolution.get("semantic_type") or next_row.get("semantic_buy_type") or "")
+                next_row["target_weight_resolution"] = {
+                    **dict(next_row.get("target_weight_resolution") or {}),
+                    "status": "PASS",
+                    "reason": "g102_item_scoped_pc_discrete_quantity_authority",
+                    "resolved_weight": _ratio(g102_lot_resolution.get("final_target_weight"), next_row.get("target_weight")),
+                    "lot_aware_final_reallocation": {
+                        "authority_type": "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION",
+                        "accepted_lot_increment_weight": target_weight,
+                        "post_lot_target_weight": g102_lot_resolution.get("final_target_weight"),
+                        "pre_lot_target_weight": target_weight,
+                        "final_allocated_quantity": g102_lot_resolution.get("final_allocated_quantity"),
+                        "pc_positive_executable_quantity_authority": dict(
+                            g102_lot_resolution.get("pc_positive_executable_quantity_authority") or {}
+                        ),
+                        "phase29_l19_lot_resolution": g102_lot_resolution,
+                    },
+                }
+                reason_codes.append("G102_ITEM_SCOPED_PC_DISCRETE_QUANTITY_AUTHORITY_CONSUMED_BY_PS")
+            adjusted.append(
+                {
+                    **next_row,
+                    "canonical_deployment_set_sizing_eligibility": "SELECTED_BY_CANONICAL_MULTI_ALLOCATION",
+                    "canonical_deployment_set_hash": deployment_hash,
+                    "final_capital_winner_type": "MULTI_ALLOCATION",
+                    "final_capital_winner_symbol": "",
+                    "final_capital_winner_binds_before_discrete_sizing": True,
+                    "multi_allocation_set_hash": str(multi_selection.get("multi_allocation_set_hash") or ""),
+                    "multi_allocation_authorized_weight": target_weight,
+                    "reason_codes": sorted(set(reason_codes)),
+                }
+            )
+            continue
+        pc_final_authority = _pc_final_discrete_authority_for_sizing(row)
+        if pc_final_authority and competitor_type in {"NEW_BUY", "REENTRY"}:
+            adjusted.append(
+                _pc_final_discrete_authority_deployment_row(
+                    row,
+                    competitor_type=competitor_type,
+                    deployment_set=deployment_set,
+                    authority=pc_final_authority,
+                )
+            )
+            continue
+        selected_for_deployment = (competitor_type, symbol) in selected and not cash_winner and not no_deployable
+        if selected_for_deployment:
+            adjusted.append(
+                {
+                    **dict(row),
+                    "canonical_deployment_set_sizing_eligibility": "SELECTED_FOR_DEPLOYMENT",
+                    "canonical_deployment_set_hash": deployment_hash,
+                    "final_capital_winner_type": final_winner_type,
+                    "final_capital_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+                    "final_capital_winner_binds_before_discrete_sizing": True,
+                }
+            )
+            continue
+        adjusted.append(
+            _zero_incremental_deployment_row(
+                row,
+                competitor_type=competitor_type,
+                deployment_set=deployment_set,
+                reason="cash_winner_defeated_security"
+                if cash_winner
+                else "canonical_capital_competition_defeated_security",
+            )
+        )
+    return tuple(adjusted)
+
+
+def _pc_final_discrete_authority_for_sizing(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    lot_resolution = _lot_aware_strategy_cap_lot_resolution(row)
+    authority = (
+        lot_resolution.get("pc_positive_executable_quantity_authority")
+        if isinstance(lot_resolution.get("pc_positive_executable_quantity_authority"), Mapping)
+        else {}
+    )
+    if str(authority.get("authority_type") or "") not in {
+        "",
+        "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+    }:
+        return {}
+    if str(authority.get("status") or "") != "PASS":
+        return {}
+    if authority.get("ps_must_consume_canonical_quantity") is not True:
+        return {}
+    if _positive_int(authority.get("final_allocated_quantity"), 0) <= 0:
+        return {}
+    if _positive_int(lot_resolution.get("final_allocated_quantity"), 0) <= 0:
+        return {}
+    return authority
+
+
+def _pc_final_discrete_authority_deployment_row(
+    row: Mapping[str, Any],
+    *,
+    competitor_type: str,
+    deployment_set: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    next_row = dict(row)
+    resolution = dict(next_row.get("target_weight_resolution") or {})
+    target_authority = dict(next_row.get("target_weight_authority") or {})
+    reason_codes = list(next_row.get("reason_codes") or [])
+    reason_codes.append("pc_final_discrete_authority_selected_for_sizing")
+    if bool(deployment_set.get("cash_winner")) or str(deployment_set.get("final_winner_type") or "") == "CASH_OPTIONALITY":
+        reason_codes.append("stale_deployment_set_cash_winner_not_reapplied_after_pc_final_selection")
+    binding = {
+        "schema_version": str(deployment_set.get("schema_version") or ""),
+        "owner": "PORTFOLIO_CONSTRUCTION",
+        "cardinality_contract": str(deployment_set.get("cardinality_contract") or ""),
+        "final_winner_type": "PC_FINAL_DISCRETE_AUTHORITY",
+        "final_winner_symbol": str(next_row.get("security_code") or next_row.get("symbol") or ""),
+        "cash_winner": False,
+        "selected_symbol_set": [str(next_row.get("security_code") or next_row.get("symbol") or "")],
+        "deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "pc_final_discrete_authority_precedence": True,
+        "pc_positive_executable_quantity_authority": dict(authority),
+    }
+    return {
+        **next_row,
+        "target_weight_authority": {
+            **target_authority,
+            "canonical_deployment_set_owner": "PORTFOLIO_CONSTRUCTION",
+            "canonical_deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+            "capital_winner_authority_owner": "PORTFOLIO_CONSTRUCTION",
+            "pc_final_discrete_authority_is_final_strategy_capital_authority": True,
+            "position_sizing_remains_discrete_quantity_owner": True,
+            "position_sizing_capital_winner_authority": False,
+        },
+        "target_weight_resolution": {
+            **resolution,
+            "status": "PASS",
+            "reason": "pc_final_discrete_authority_selected_for_sizing",
+            "canonical_deployment_set_binding": binding,
+        },
+        "canonical_deployment_set_sizing_eligibility": "SELECTED_BY_PC_FINAL_DISCRETE_AUTHORITY",
+        "canonical_deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+        "final_capital_winner_type": "PC_FINAL_DISCRETE_AUTHORITY",
+        "final_capital_winner_symbol": str(next_row.get("security_code") or next_row.get("symbol") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "deployment_competitor_type": competitor_type,
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def _g102_item_scoped_pc_lot_resolution_from_selection(selection: Mapping[str, Any]) -> dict[str, Any]:
+    resolution = selection.get("phase29_l19_lot_resolution") if isinstance(selection.get("phase29_l19_lot_resolution"), Mapping) else {}
+    authority = (
+        resolution.get("pc_positive_executable_quantity_authority")
+        if isinstance(resolution.get("pc_positive_executable_quantity_authority"), Mapping)
+        else {}
+    )
+    if str(authority.get("authority_type") or "") != "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY":
+        return {}
+    if str(authority.get("status") or "") != "PASS":
+        return {}
+    if authority.get("ps_must_consume_canonical_quantity") is not True:
+        return {}
+    if _positive_int(authority.get("final_allocated_quantity"), 0) <= 0:
+        return {}
+    return dict(resolution)
+
+
+def _multi_allocation_sizing_selection_by_key(
+    portfolio_construction_summary: Mapping[str, Any],
+) -> dict[tuple[str, str], Mapping[str, Any]]:
+    multi_set = _canonical_multi_allocation_set_from_pc_summary(portfolio_construction_summary)
+    if not multi_set:
+        return {}
+    compatibility = (
+        multi_set.get("lot_aware_allocation_to_sizing_compatibility")
+        if isinstance(multi_set.get("lot_aware_allocation_to_sizing_compatibility"), Mapping)
+        else {}
+    )
+    rows = compatibility.get("compatibility_rows") if isinstance(compatibility.get("compatibility_rows"), list) else []
+    executable_keys = {
+        (str(item.get("competitor_type") or ""), str(item.get("symbol") or ""))
+        for item in rows
+        if isinstance(item, Mapping)
+        and str(item.get("compatibility_state") or "") == "LOT_EXECUTABLE_COMPATIBLE"
+        and item.get("implicit_priority_promotion_allowed") is False
+        and item.get("position_sizing_quantity_authority_preserved") is True
+        and item.get("pc_quantity_authority") is False
+    }
+    if not executable_keys:
+        return {}
+    result: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for allocation in multi_set.get("security_allocations") or []:
+        if not isinstance(allocation, Mapping):
+            continue
+        key = (str(allocation.get("competitor_type") or ""), str(allocation.get("symbol") or ""))
+        if key in executable_keys:
+            result[key] = {
+                **dict(allocation),
+                "multi_allocation_set_hash": str(multi_set.get("multi_allocation_set_hash") or ""),
+            }
+    return result
+
+
+def _canonical_deployment_set_from_pc_summary(summary: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = summary.get("canonical_deployment_set")
+    if isinstance(direct, Mapping):
+        return direct
+    competition = summary.get("capital_competition") if isinstance(summary.get("capital_competition"), Mapping) else {}
+    nested = competition.get("canonical_deployment_set") if isinstance(competition.get("canonical_deployment_set"), Mapping) else {}
+    return nested
+
+
+def _canonical_multi_allocation_set_from_pc_summary(summary: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = summary.get("canonical_multi_allocation_deployment_set")
+    if isinstance(direct, Mapping):
+        return direct
+    competition = summary.get("capital_competition") if isinstance(summary.get("capital_competition"), Mapping) else {}
+    nested = (
+        competition.get("canonical_multi_allocation_deployment_set")
+        if isinstance(competition.get("canonical_multi_allocation_deployment_set"), Mapping)
+        else {}
+    )
+    return nested
+
+
+def _g61_lot_aware_compatibility_consumption_summary(
+    *,
+    business_date: str,
+    portfolio_construction_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    multi_set = _canonical_multi_allocation_set_from_pc_summary(portfolio_construction_summary)
+    base = {
+        "schema_version": G61_COMPATIBILITY_CONSUMPTION_SCHEMA_VERSION,
+        "owner": "POSITION_SIZING",
+        "business_date": business_date,
+        "pc_authority_owner": "PORTFOLIO_CONSTRUCTION",
+        "position_sizing_quantity_owner": "POSITION_SIZING",
+        "pc_discrete_quantity_authority": False,
+        "position_sizing_recomputes_capital_priority": False,
+        "ordinary_lot_feasibility_priority_redecision_allowed": False,
+        "candidate_rank_authority_mutation": False,
+        "candidate_eligibility_authority_mutation": False,
+        "market_quality_semantics_changed": False,
+        "risk_pacing_semantics_changed": False,
+        "runtime_order_behavior_change_count": 0,
+        "future_input_count": 0,
+        "historical_outcome_strategy_input_count": 0,
+    }
+    if not multi_set:
+        return {
+            **base,
+            "status": "NOT_AVAILABLE_LEGACY_COMPATIBILITY",
+            "g61_compatibility_consumed_by_ps": False,
+            "reason_codes": ["G61_COMPATIBILITY_NOT_AVAILABLE_LEGACY_COMPATIBILITY"],
+        }
+    compatibility = (
+        multi_set.get("lot_aware_allocation_to_sizing_compatibility")
+        if isinstance(multi_set.get("lot_aware_allocation_to_sizing_compatibility"), Mapping)
+        else {}
+    )
+    errors: list[str] = []
+    if not compatibility:
+        errors.append("G61_COMPATIBILITY_MISSING")
+    elif str(compatibility.get("schema_version") or "") != G61_COMPATIBILITY_SCHEMA_VERSION:
+        errors.append("G61_COMPATIBILITY_SCHEMA_INVALID")
+    if compatibility and str(compatibility.get("business_date") or "") != business_date:
+        errors.append("G61_COMPATIBILITY_DATE_MISMATCH")
+    if compatibility and str(compatibility.get("authority_status") or "") != "SHADOW_NON_AUTHORITATIVE":
+        errors.append("G61_COMPATIBILITY_AUTHORITY_STATUS_INVALID")
+    rows = compatibility.get("compatibility_rows") if isinstance(compatibility.get("compatibility_rows"), list) else []
+    if compatibility and not isinstance(compatibility.get("compatibility_rows"), list):
+        errors.append("G61_COMPATIBILITY_ROWS_MALFORMED")
+    if compatibility and compatibility.get("lower_priority_implicit_promotion_allowed") is not False:
+        errors.append("LOWER_PRIORITY_IMPLICIT_PROMOTION_NOT_PROHIBITED")
+    if compatibility and compatibility.get("priority_inversion_after_compatibility") is not False:
+        errors.append("G61_PRIORITY_INVERSION_AFTER_COMPATIBILITY")
+    if compatibility and compatibility.get("residual_capital_explicit") is not True:
+        errors.append("G61_RESIDUAL_CAPITAL_NOT_EXPLICIT")
+    malformed_rows = [
+        str(item.get("symbol") or "")
+        for item in rows
+        if not isinstance(item, Mapping)
+        or str(item.get("schema_version") or "") != G61_COMPATIBILITY_SCHEMA_VERSION
+        or str(item.get("business_date") or "") != business_date
+        or item.get("implicit_priority_promotion_allowed") is not False
+        or item.get("position_sizing_quantity_authority_preserved") is not True
+        or item.get("pc_quantity_authority") is not False
+    ]
+    if malformed_rows:
+        errors.append("G61_COMPATIBILITY_ROW_MALFORMED")
+    status = "BLOCK" if errors else "PASS"
+    return {
+        **base,
+        "status": status,
+        "g61_compatibility_consumed_by_ps": status == "PASS",
+        "canonical_multi_allocation_set_hash": str(multi_set.get("multi_allocation_set_hash") or ""),
+        "compatibility_hash": str(compatibility.get("compatibility_hash") or ""),
+        "allocation_count": len(rows),
+        "lot_executable_count": int(compatibility.get("lot_executable_count") or 0) if compatibility else 0,
+        "executable_multi_security": bool(compatibility.get("executable_multi_security")) if compatibility else False,
+        "add_compatibility": str(compatibility.get("add_compatibility") or "") if compatibility else "",
+        "capital_conservation": dict(compatibility.get("capital_conservation") or {}) if compatibility else {},
+        "lower_priority_implicit_promotion": bool(compatibility.get("lower_priority_implicit_promotion_allowed"))
+        if compatibility
+        else False,
+        "priority_semantics_preserved_through_ps": status == "PASS",
+        "residual_capital_explicit_through_ps": bool(compatibility.get("residual_capital_explicit")) if compatibility else False,
+        "residual_capital_weight": _ratio(compatibility.get("residual_capital_weight"), 0.0) if compatibility else 0.0,
+        "unresolved_higher_priority_allocation_count": sum(
+            1
+            for item in rows
+            if isinstance(item, Mapping)
+            and str(item.get("compatibility_state") or "") in {"LOT_INFEASIBLE_RESIDUAL_REQUIRED", "CAP_HEADROOM_INSUFFICIENT"}
+        ),
+        "lower_priority_rows_requiring_explicit_residual_resolution": sum(
+            1
+            for item in rows
+            if isinstance(item, Mapping)
+            and item.get("lower_priority_execution_requires_explicit_residual_resolution") is True
+        ),
+        "compatibility_rows_by_symbol": {
+            str(item.get("symbol") or ""): {
+                "allocation_rank": item.get("allocation_rank"),
+                "compatibility_state": str(item.get("compatibility_state") or ""),
+                "lower_priority_execution_requires_explicit_residual_resolution": bool(
+                    item.get("lower_priority_execution_requires_explicit_residual_resolution")
+                ),
+                "implicit_priority_promotion_allowed": False,
+                "residual_capital_weight": _ratio(item.get("residual_capital_weight"), 0.0),
+            }
+            for item in rows
+            if isinstance(item, Mapping) and str(item.get("symbol") or "")
+        },
+        "reason_codes": sorted(set(errors or ["G61_COMPATIBILITY_CONSUMED_BY_PS", "LOWER_PRIORITY_IMPLICIT_PROMOTION_PROHIBITED"])),
+    }
+
+
+def _apply_g61_compatibility_to_sizing_rows(
+    rows: Sequence[Mapping[str, Any]],
+    consumption: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    by_symbol = (
+        consumption.get("compatibility_rows_by_symbol")
+        if isinstance(consumption.get("compatibility_rows_by_symbol"), Mapping)
+        else {}
+    )
+    if not by_symbol:
+        return tuple(rows)
+    enriched: list[Mapping[str, Any]] = []
+    for row in rows:
+        symbol = str(row.get("security_code") or row.get("symbol") or "")
+        compatibility = by_symbol.get(symbol) if isinstance(by_symbol.get(symbol), Mapping) else {}
+        if not compatibility:
+            enriched.append(row)
+            continue
+        reason_codes = list(row.get("reason_codes") or [])
+        reason_codes.append("G61_COMPATIBILITY_CONSUMED_BY_PS")
+        if compatibility.get("lower_priority_execution_requires_explicit_residual_resolution") is True:
+            reason_codes.append("LOWER_PRIORITY_EXECUTION_REQUIRES_EXPLICIT_RESIDUAL_RESOLUTION")
+        enriched.append(
+            {
+                **dict(row),
+                "g61_lot_aware_compatibility_consumed_by_ps": True,
+                "g61_lot_aware_compatibility": dict(compatibility),
+                "lower_priority_implicit_promotion_allowed": False,
+                "position_sizing_recomputes_capital_priority": False,
+                "ordinary_lot_feasibility_priority_redecision_allowed": False,
+                "reason_codes": sorted(set(reason_codes)),
+            }
+        )
+    return tuple(enriched)
+
+
+def _deployment_competitor_type(row: Mapping[str, Any]) -> str:
+    if bool(row.get("current_position")) and str(row.get("pm_action") or "").upper() == "ADD":
+        return "ADD"
+    if not bool(row.get("current_position")) and str(row.get("membership_intent") or "").upper() == "ADD_CANDIDATE":
+        return "NEW_BUY"
+    return ""
+
+
+def _zero_incremental_deployment_row(
+    row: Mapping[str, Any],
+    *,
+    competitor_type: str,
+    deployment_set: Mapping[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    current_weight = _ratio(row.get("current_weight"), 0.0) if competitor_type == "ADD" else 0.0
+    resolution = dict(row.get("target_weight_resolution") or {})
+    target_authority = dict(row.get("target_weight_authority") or {})
+    reason_codes = list(row.get("reason_codes") or [])
+    reason_codes.extend([reason, "final_capital_winner_binds_before_discrete_sizing"])
+    return {
+        **dict(row),
+        "target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "accepted_incremental_weight": 0.0,
+        "lot_aware_accepted_incremental_weight": 0.0,
+        "accepted_buy_new_weight": 0.0,
+        "lot_aware_accepted_buy_new_weight": 0.0,
+        "target_weight_authority": {
+            **target_authority,
+            "canonical_deployment_set_owner": "PORTFOLIO_CONSTRUCTION",
+            "canonical_deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+            "capital_winner_authority_owner": "PORTFOLIO_CONSTRUCTION",
+            "position_sizing_remains_discrete_quantity_owner": True,
+            "position_sizing_capital_winner_authority": False,
+        },
+        "target_weight_resolution": {
+            **resolution,
+            "status": "PASS",
+            "reason": reason,
+            "resolved_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+            "zero_weight_reason": reason if current_weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE else "",
+            "review_reason": "",
+            "canonical_deployment_set_binding": {
+                "schema_version": str(deployment_set.get("schema_version") or ""),
+                "owner": "PORTFOLIO_CONSTRUCTION",
+                "cardinality_contract": str(deployment_set.get("cardinality_contract") or ""),
+                "final_winner_type": str(deployment_set.get("final_winner_type") or ""),
+                "final_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+                "cash_winner": bool(deployment_set.get("cash_winner")),
+                "selected_symbol_set": list(deployment_set.get("selected_symbol_set") or []),
+                "deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+                "final_capital_winner_binds_before_discrete_sizing": True,
+            },
+        },
+        "canonical_deployment_set_sizing_eligibility": "DEFEATED_BY_CANONICAL_CAPITAL_COMPETITION",
+        "canonical_deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+        "final_capital_winner_type": str(deployment_set.get("final_winner_type") or ""),
+        "final_capital_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "deployment_competitor_type": competitor_type,
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def _canonical_deployment_set_consumption_summary(
+    positions: Sequence[Mapping[str, Any]],
+    portfolio_construction_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    deployment_set = _canonical_deployment_set_from_pc_summary(portfolio_construction_summary)
+    if not deployment_set:
+        return {
+            "schema_version": "position_sizing.canonical_deployment_set_consumption.v1",
+            "status": "NOT_AVAILABLE_LEGACY_COMPATIBILITY",
+            "owner": "POSITION_SIZING",
+            "capital_winner_authority": "PORTFOLIO_CONSTRUCTION",
+            "position_sizing_capital_winner_authority": False,
+        }
+    defeated = [
+        item
+        for item in positions
+        if str(item.get("canonical_deployment_set_sizing_eligibility") or "")
+        == "DEFEATED_BY_CANONICAL_CAPITAL_COMPETITION"
+    ]
+    defeated_with_positive_increment = [
+        item
+        for item in defeated
+        if int(item.get("quantity_delta_candidate") or 0) > 0
+        or float(item.get("incremental_buy_notional") or 0.0) > 0.0
+    ]
+    return {
+        "schema_version": "position_sizing.canonical_deployment_set_consumption.v1",
+        "status": "PASS" if not defeated_with_positive_increment else "BLOCK",
+        "owner": "POSITION_SIZING",
+        "capital_winner_authority": "PORTFOLIO_CONSTRUCTION",
+        "canonical_deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+        "cardinality_contract": str(deployment_set.get("cardinality_contract") or ""),
+        "final_winner_type": str(deployment_set.get("final_winner_type") or ""),
+        "final_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+        "selected_symbol_set": list(deployment_set.get("selected_symbol_set") or []),
+        "defeated_security_evidence_row_count": len(defeated),
+        "defeated_security_sizing_input_count": len(defeated_with_positive_increment),
+        "defeated_security_positive_increment_count": len(defeated_with_positive_increment),
+        "cash_winner_security_sizing_input_count": 0
+        if str(deployment_set.get("final_winner_type") or "") == "CASH_OPTIONALITY"
+        else len(list(deployment_set.get("selected_deployments") or [])),
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "position_sizing_remains_discrete_quantity_owner": True,
+        "position_sizing_capital_winner_authority": False,
+        "downstream_cash_redecision_count": 0,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "paper_ledger_input_used": False,
+        "audit_result_input_used": False,
+    }
 
 
 def _zero_allocation_position(row: Mapping[str, Any], *, config: PositionSizingConfig, safety_cap: float, reason: str) -> dict[str, Any]:
@@ -1058,6 +1658,28 @@ def _raw_position(
         max_weight=max_weight,
         portfolio_value=portfolio_value,
     )
+    canonical_sizing_evidence = _canonical_position_sizing_evidence(
+        row=row,
+        symbol=code,
+        pm_action=pm_action,
+        membership=membership,
+        target_weight=target,
+        current_weight=current_weight,
+        target_notional=target_notional,
+        transaction_target_notional=transaction_target_notional,
+        transaction_quantity_candidate=int(transaction_quantity_candidate),
+        quantity_delta_candidate=int(quantity_delta_candidate),
+        quantity_status=quantity_status,
+        sizing_status=status,
+        price=price,
+        trading_unit=trading_unit,
+        max_weight=max_weight,
+        safety_cap=safety_cap,
+        portfolio_value=portfolio_value,
+        min_notional=min_notional,
+        zero_delta_taxonomy=zero_delta_taxonomy,
+        reason_codes=reasons,
+    )
     return {
         "security_code": code,
         "position_reference": str(row.get("position_reference") or row.get("member_id") or code),
@@ -1152,6 +1774,23 @@ def _raw_position(
         "quantity_delta_candidate": quantity_delta_candidate,
         "quantity_status": quantity_status,
         "pc_ps_zero_delta_taxonomy": zero_delta_taxonomy,
+        "canonical_sizing_evidence": canonical_sizing_evidence,
+        "canonical_sizing_evidence_class": canonical_sizing_evidence["evidence_class"],
+        "sizing_outcome_terminality": canonical_sizing_evidence["terminality"],
+        "residual_capital_classification": canonical_sizing_evidence["residual_capital_classification"],
+        "canonical_deployment_set_sizing_eligibility": str(row.get("canonical_deployment_set_sizing_eligibility") or ""),
+        "canonical_deployment_set_hash": str(row.get("canonical_deployment_set_hash") or ""),
+        "g61_lot_aware_compatibility_consumed_by_ps": bool(row.get("g61_lot_aware_compatibility_consumed_by_ps")),
+        "g61_lot_aware_compatibility": dict(row.get("g61_lot_aware_compatibility") or {}),
+        "lower_priority_implicit_promotion_allowed": bool(row.get("lower_priority_implicit_promotion_allowed")),
+        "position_sizing_recomputes_capital_priority": bool(row.get("position_sizing_recomputes_capital_priority")),
+        "ordinary_lot_feasibility_priority_redecision_allowed": bool(
+            row.get("ordinary_lot_feasibility_priority_redecision_allowed")
+        ),
+        "final_capital_winner_type": str(row.get("final_capital_winner_type") or ""),
+        "final_capital_winner_symbol": str(row.get("final_capital_winner_symbol") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": bool(row.get("final_capital_winner_binds_before_discrete_sizing")),
+        "deployment_competitor_type": str(row.get("deployment_competitor_type") or _deployment_competitor_type(row)),
         "reference_price": price if reference_price_resolution["status"] == "PASS" else None,
         "reference_price_authority": dict(row.get("reference_price_authority") or {}),
         "reference_price_resolution": reference_price_resolution,
@@ -1280,6 +1919,158 @@ def _pc_ps_zero_delta_taxonomy(
     }
 
 
+def _canonical_position_sizing_evidence(
+    *,
+    row: Mapping[str, Any],
+    symbol: str,
+    pm_action: str,
+    membership: str,
+    target_weight: float,
+    current_weight: float,
+    target_notional: float,
+    transaction_target_notional: float,
+    transaction_quantity_candidate: int,
+    quantity_delta_candidate: int,
+    quantity_status: str,
+    sizing_status: str,
+    price: float,
+    trading_unit: float,
+    max_weight: float,
+    safety_cap: float | None,
+    portfolio_value: float,
+    min_notional: float,
+    zero_delta_taxonomy: Mapping[str, Any],
+    reason_codes: Sequence[str],
+) -> dict[str, Any]:
+    executable_quantity = abs(int(transaction_quantity_candidate or quantity_delta_candidate or 0))
+    executable_notional = round(executable_quantity * price, 2) if price > 0 else 0.0
+    requested_notional = round(max(transaction_target_notional, target_notional if not bool(row.get("current_position")) else 0.0, 0.0), 2)
+    residual_notional = round(max(requested_notional - executable_notional, 0.0), 2)
+    classification = str(zero_delta_taxonomy.get("classification") or "")
+    evidence_class = "EXECUTABLE"
+    terminality = "EXECUTABLE"
+    constraint_reason_codes: list[str] = []
+    if sizing_status in {"TARGET_WEIGHT_UNAVAILABLE", "QUALITY_UNAVAILABLE", "VOLATILITY_UNAVAILABLE", "UPSTREAM_REVIEW_REQUIRED"} or quantity_status == "PRICE_UNAVAILABLE":
+        evidence_class = "UNAVAILABLE_AUTHORITY"
+        terminality = "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+        constraint_reason_codes.append("UNAVAILABLE_AUTHORITY")
+    elif quantity_delta_candidate == 0 and quantity_status == "RESOLVED_ZERO_DELTA":
+        if classification == "GENUINE_LOT_INFEASIBILITY":
+            evidence_class = "LOT_INFEASIBLE"
+            terminality = "RECONSIDERABLE"
+            constraint_reason_codes.append("LOT_INFEASIBLE")
+        elif classification == "CONCENTRATION_HEADROOM_LIMIT":
+            evidence_class = "STRATEGY_CAP_BOUND"
+            terminality = "RECONSIDERABLE"
+            constraint_reason_codes.append("STRATEGY_CAP_BOUND")
+        elif classification in {"ZERO_INCREMENTAL_TARGET", "QUALITY_DEFERRED_TO_CASH"}:
+            evidence_class = "NO_POSITIVE_QUANTITY_DELTA"
+            terminality = "RECONSIDERABLE" if pm_action == "ADD" else "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+            constraint_reason_codes.append("NO_POSITIVE_QUANTITY_DELTA")
+        elif classification in {"RESIDUAL_CAPITAL_TOO_SMALL", "MINIMUM_MEANINGFUL_NOTIONAL"}:
+            evidence_class = "INSUFFICIENT_CASH"
+            terminality = "RECONSIDERABLE"
+            constraint_reason_codes.append("INSUFFICIENT_CASH")
+        else:
+            evidence_class = "INVALID_INPUT"
+            terminality = "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+            constraint_reason_codes.append("UNEXPLAINED_ZERO_QUANTITY")
+    if safety_cap is not None and target_weight > safety_cap + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        evidence_class = "SAFETY_CAP_BOUND"
+        terminality = "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+        constraint_reason_codes.append("SAFETY_CAP_BOUND")
+    elif target_weight > max_weight + TARGET_WEIGHT_ABSOLUTE_TOLERANCE and evidence_class != "SAFETY_CAP_BOUND":
+        evidence_class = "STRATEGY_CAP_BOUND"
+        terminality = "RECONSIDERABLE"
+        constraint_reason_codes.append("STRATEGY_CAP_BOUND")
+    residual_class = _canonical_residual_capital_classification(
+        evidence_class=evidence_class,
+        terminality=terminality,
+        residual_notional=residual_notional,
+        requested_notional=requested_notional,
+    )
+    return {
+        "schema_version": CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION,
+        "symbol": symbol,
+        "intent_type": _canonical_sizing_intent_type(row=row, pm_action=pm_action, membership=membership),
+        "evidence_class": evidence_class,
+        "terminality": terminality,
+        "requested_notional": requested_notional,
+        "requested_weight": round(target_weight if not bool(row.get("current_position")) else max(target_weight - current_weight, 0.0), TARGET_WEIGHT_DECIMALS),
+        "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "target_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
+        "executable_quantity": executable_quantity,
+        "executable_notional": executable_notional,
+        "quantity_delta": int(quantity_delta_candidate),
+        "lot_size": int(trading_unit),
+        "lot_size_authority": "POSITION_SIZING_CONFIG",
+        "residual_capital": residual_notional,
+        "residual_capital_weight": round(residual_notional / portfolio_value, TARGET_WEIGHT_DECIMALS) if portfolio_value > 0 else 0.0,
+        "residual_capital_classification": residual_class,
+        "minimum_meaningful_notional": round(min_notional, 2),
+        "constraint_reason_codes": sorted(set(constraint_reason_codes or reason_codes)),
+        "quantity_authority_owner": "POSITION_SIZING",
+        "pc_reconsideration_owner": "PORTFOLIO_CONSTRUCTION",
+        "raw_zero_quantity_reinterpreted": False,
+        "zero_quantity_reason_required": quantity_delta_candidate == 0,
+        "unexplained_zero_quantity_fail_closed": evidence_class == "INVALID_INPUT",
+        "future_information_used": False,
+    }
+
+
+def _canonical_residual_capital_classification(
+    *,
+    evidence_class: str,
+    terminality: str,
+    residual_notional: float,
+    requested_notional: float,
+) -> str:
+    if evidence_class == "EXECUTABLE" and residual_notional <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        return "VALID_POLICY_RESERVE"
+    if evidence_class == "LOT_INFEASIBLE":
+        return "REALLOCATABLE_RESIDUAL" if requested_notional > 0 else "UNAVOIDABLE_LOT_RESIDUAL"
+    if evidence_class == "INSUFFICIENT_CASH":
+        return "UNAVOIDABLE_LOT_RESIDUAL"
+    if evidence_class == "SAFETY_CAP_BOUND":
+        return "VALID_SAFETY_RESERVE"
+    if terminality == "RECONSIDERABLE":
+        return "REALLOCATABLE_RESIDUAL"
+    if evidence_class in {"UNAVAILABLE_AUTHORITY", "INVALID_INPUT"}:
+        return "NO_VALID_COMPETITOR"
+    return "VALID_POLICY_RESERVE"
+
+
+def _canonical_sizing_intent_type(*, row: Mapping[str, Any], pm_action: str, membership: str) -> str:
+    if bool(row.get("current_position")) and pm_action == "ADD":
+        return "ADD"
+    if not bool(row.get("current_position")) and membership == "ADD_CANDIDATE":
+        return "NEW_BUY"
+    if pm_action in {"REDUCE", "EXIT"}:
+        return pm_action
+    return "NO_ACTION"
+
+
+def _canonical_sizing_evidence_summary(
+    positions: Sequence[Mapping[str, Any]],
+    lot_feasibility_preflight: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    evidence = [dict(item.get("canonical_sizing_evidence") or {}) for item in positions if isinstance(item, Mapping)]
+    evidence = [item for item in evidence if item]
+    classes = sorted(set(str(item.get("evidence_class") or "") for item in evidence if item.get("evidence_class")))
+    return {
+        "schema_version": CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION,
+        "authority_owner": "POSITION_SIZING",
+        "pc_reconsideration_owner": "PORTFOLIO_CONSTRUCTION",
+        "evidence_classes": classes,
+        "position_evidence_count": len(evidence),
+        "lot_preflight_evidence_count": len(lot_feasibility_preflight),
+        "raw_zero_quantity_reinterpretation": False,
+        "zero_quantity_reason_required": True,
+        "unexplained_zero_quantity_fail_closed": True,
+        "position_sizing_decides_reconsideration": False,
+    }
+
+
 def _lot_preflight_required(row: Mapping[str, Any]) -> bool:
     membership = str(row.get("membership_intent") or "").upper()
     pm_action = str(row.get("pm_action") or "").upper()
@@ -1400,6 +2191,21 @@ def _lot_feasibility_row(
         feasibility_classification = "EXECUTABLE_IF_RECYCLED"
     else:
         feasibility_classification = "CAPITAL_BLOCKED"
+    canonical_preflight_evidence = _canonical_lot_preflight_sizing_evidence(
+        symbol=symbol,
+        intent_type=intent_type,
+        boundary_classification=boundary_classification,
+        feasibility_classification=feasibility_classification,
+        target_basis_notional=target_basis_notional,
+        executable_quantity_delta=executable_quantity_delta,
+        one_lot_notional=one_lot_notional,
+        trading_unit=trading_unit,
+        current_weight=current_weight,
+        target_weight=target_weight,
+        one_lot_weight=one_lot_weight,
+        portfolio_value=portfolio_value,
+        reason_codes=reason_codes,
+    )
     return {
         "schema_version": LOT_FEASIBILITY_SCHEMA_VERSION,
         "symbol": symbol,
@@ -1467,6 +2273,10 @@ def _lot_feasibility_row(
         "concentration_headroom_weight": round(concentration_headroom, TARGET_WEIGHT_DECIMALS),
         "one_lot_post_trade_weight": one_lot_post_trade_weight,
         "lot_first_feasibility_classification": feasibility_classification,
+        "canonical_sizing_evidence": canonical_preflight_evidence,
+        "canonical_sizing_evidence_class": canonical_preflight_evidence["evidence_class"],
+        "sizing_outcome_terminality": canonical_preflight_evidence["terminality"],
+        "residual_capital_classification": canonical_preflight_evidence["residual_capital_classification"],
         "broker_eligible": broker_eligible,
         "producer_result_status": "PASS" if lot_feasible else "REVIEW_REQUIRED",
         "reason_codes": sorted(set(reason_codes)),
@@ -1478,9 +2288,109 @@ def _lot_feasibility_row(
     }
 
 
+def _canonical_lot_preflight_sizing_evidence(
+    *,
+    symbol: str,
+    intent_type: str,
+    boundary_classification: str,
+    feasibility_classification: str,
+    target_basis_notional: float,
+    executable_quantity_delta: int,
+    one_lot_notional: float,
+    trading_unit: float,
+    current_weight: float,
+    target_weight: float,
+    one_lot_weight: float,
+    portfolio_value: float,
+    reason_codes: Sequence[str],
+) -> dict[str, Any]:
+    evidence_class = "EXECUTABLE"
+    terminality = "EXECUTABLE"
+    constraint_reasons: list[str] = []
+    if boundary_classification == "MINIMUM_EXECUTABLE_LOT_EXCEEDS_SAFETY_HARD_MAX" or feasibility_classification == "SAFETY_HARD_BLOCKED":
+        evidence_class = "SAFETY_CAP_BOUND"
+        terminality = "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+        constraint_reasons.append("SAFETY_CAP_BOUND")
+    elif boundary_classification == "DISCRETE_LOT_EXCEEDS_STRATEGY_CAP_WITHIN_SAFETY_HARD_MAX" or feasibility_classification == "CONCENTRATION_BLOCKED":
+        evidence_class = "STRATEGY_CAP_BOUND"
+        terminality = "RECONSIDERABLE"
+        constraint_reasons.append("STRATEGY_CAP_BOUND")
+    elif boundary_classification == "NO_POSITIVE_INVESTMENT_INTENT":
+        evidence_class = "NO_POSITIVE_QUANTITY_DELTA"
+        terminality = "RECONSIDERABLE"
+        constraint_reasons.append("NO_POSITIVE_QUANTITY_DELTA")
+    elif boundary_classification in {"REQUEST_BELOW_MINIMUM_EXECUTABLE_NOTIONAL", "NO_EXECUTABLE_LOT"}:
+        evidence_class = "LOT_INFEASIBLE"
+        terminality = "RECONSIDERABLE"
+        constraint_reasons.append("LOT_INFEASIBLE")
+    elif executable_quantity_delta <= 0:
+        evidence_class = "INSUFFICIENT_CASH"
+        terminality = "RECONSIDERABLE"
+        constraint_reasons.append("INSUFFICIENT_CASH")
+    executable_notional = round(max(executable_quantity_delta, 0) / max(trading_unit, 1.0) * one_lot_notional, 2)
+    residual = round(max(target_basis_notional - executable_notional, 0.0), 2)
+    return {
+        "schema_version": CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION,
+        "symbol": symbol,
+        "intent_type": "ADD" if intent_type == "BUY_ADD" else "NEW_BUY",
+        "evidence_class": evidence_class,
+        "terminality": terminality,
+        "requested_notional": round(target_basis_notional, 2),
+        "requested_weight": round(max(target_weight - current_weight, target_weight if intent_type == "BUY_NEW" else 0.0), TARGET_WEIGHT_DECIMALS),
+        "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "target_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
+        "executable_quantity": int(max(executable_quantity_delta, 0)),
+        "executable_notional": executable_notional,
+        "quantity_delta": int(max(executable_quantity_delta, 0)),
+        "lot_size": int(trading_unit),
+        "lot_size_authority": "POSITION_SIZING_CONFIG",
+        "residual_capital": residual,
+        "residual_capital_weight": round(residual / portfolio_value, TARGET_WEIGHT_DECIMALS) if portfolio_value > 0 else 0.0,
+        "residual_capital_classification": _canonical_residual_capital_classification(
+            evidence_class=evidence_class,
+            terminality=terminality,
+            residual_notional=residual,
+            requested_notional=target_basis_notional,
+        ),
+        "constraint_reason_codes": sorted(set(constraint_reasons or reason_codes)),
+        "quantity_authority_owner": "POSITION_SIZING",
+        "pc_reconsideration_owner": "PORTFOLIO_CONSTRUCTION",
+        "raw_zero_quantity_reinterpreted": False,
+        "zero_quantity_reason_required": executable_quantity_delta <= 0,
+        "unexplained_zero_quantity_fail_closed": evidence_class == "INVALID_INPUT",
+        "future_information_used": False,
+    }
+
+
 def _unresolved_position(row: Mapping[str, Any], *, config: PositionSizingConfig | None, safety_cap: float | None) -> dict[str, Any]:
     max_weight = min(config.strategy_maximum_position_weight, safety_cap) if config and safety_cap is not None else safety_cap or 0.0
     current_weight = _ratio(row.get("current_weight"), 0.0)
+    canonical_sizing_evidence = {
+        "schema_version": CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION,
+        "symbol": str(row.get("security_code") or row.get("symbol") or ""),
+        "intent_type": "UNRESOLVED",
+        "evidence_class": "UNAVAILABLE_AUTHORITY",
+        "terminality": "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY",
+        "requested_notional": 0.0,
+        "requested_weight": 0.0,
+        "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "target_weight": 0.0,
+        "executable_quantity": 0,
+        "executable_notional": 0.0,
+        "quantity_delta": 0,
+        "lot_size": 0,
+        "lot_size_authority": "",
+        "residual_capital": 0.0,
+        "residual_capital_weight": 0.0,
+        "residual_capital_classification": "NO_VALID_COMPETITOR",
+        "constraint_reason_codes": ["UNAVAILABLE_AUTHORITY"],
+        "quantity_authority_owner": "POSITION_SIZING",
+        "pc_reconsideration_owner": "PORTFOLIO_CONSTRUCTION",
+        "raw_zero_quantity_reinterpreted": False,
+        "zero_quantity_reason_required": True,
+        "unexplained_zero_quantity_fail_closed": False,
+        "future_information_used": False,
+    }
     return {
         "security_code": str(row.get("security_code") or row.get("symbol") or ""),
         "position_reference": str(row.get("position_reference") or row.get("member_id") or row.get("security_code") or ""),
@@ -1503,6 +2413,10 @@ def _unresolved_position(row: Mapping[str, Any], *, config: PositionSizingConfig
         "maximum_position_weight": round(max_weight, 6),
         "sizing_priority": _positive_int(row.get("allocation_priority") or row.get("construction_priority"), 999),
         "sizing_status": "UPSTREAM_REVIEW_REQUIRED",
+        "canonical_sizing_evidence": canonical_sizing_evidence,
+        "canonical_sizing_evidence_class": canonical_sizing_evidence["evidence_class"],
+        "sizing_outcome_terminality": canonical_sizing_evidence["terminality"],
+        "residual_capital_classification": canonical_sizing_evidence["residual_capital_classification"],
         "confidence": 0.0,
         "uncertainty": "UPSTREAM_REVIEW_REQUIRED",
         "reason_codes": ["upstream_review_required"],
@@ -2483,6 +3397,27 @@ def _validate_position(position: Any, *, index: int, safety_cap: float | None) -
         errors.append(f"invalid_notional:{index}:incremental_target_notional")
     for field in sorted(FORBIDDEN_FIELDS & set(position)):
         errors.append(f"quantity_or_runtime_field_forbidden:{index}:{field}")
+    canonical = position.get("canonical_sizing_evidence")
+    if not isinstance(canonical, dict):
+        errors.append(f"canonical_sizing_evidence_missing:{index}")
+    else:
+        if canonical.get("schema_version") != CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION:
+            errors.append(f"invalid_canonical_sizing_evidence_schema:{index}")
+        if canonical.get("evidence_class") not in CANONICAL_SIZING_EVIDENCE_CLASSES:
+            errors.append(f"invalid_canonical_sizing_evidence_class:{index}")
+        if canonical.get("terminality") not in {"EXECUTABLE", "RECONSIDERABLE", "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"}:
+            errors.append(f"invalid_sizing_outcome_terminality:{index}")
+        if canonical.get("quantity_authority_owner") != "POSITION_SIZING":
+            errors.append(f"invalid_quantity_authority_owner:{index}")
+        if canonical.get("pc_reconsideration_owner") != "PORTFOLIO_CONSTRUCTION":
+            errors.append(f"invalid_pc_reconsideration_owner:{index}")
+        if canonical.get("raw_zero_quantity_reinterpreted") is not False:
+            errors.append(f"raw_zero_quantity_reinterpretation_forbidden:{index}")
+        quantity_delta = position.get("quantity_delta_candidate", position.get("final_quantity_delta", canonical.get("quantity_delta")))
+        if quantity_delta == 0 and canonical.get("evidence_class") == "EXECUTABLE":
+            errors.append(f"zero_quantity_requires_canonical_reason:{index}")
+        if quantity_delta == 0 and not canonical.get("constraint_reason_codes"):
+            errors.append(f"zero_quantity_constraint_reason_required:{index}")
     if not isinstance(position.get("reason_codes"), list):
         errors.append(f"reason_codes_not_list:{index}")
     return errors

@@ -321,6 +321,14 @@ Phase30-N clarifies Current and Campaign ownership:
 - If canonical campaign identity is absent or conflicting, lifecycle context
   must report explicit missingness or `CAMPAIGN_AUTHORITY_CONFLICT`; it must
   not silently fall back to a heuristic identity.
+- Runtime-owned BUY fills that have already materialized into decision-time
+  Current and an exactly matching canonical OPEN row in
+  `positions/position_campaigns.json` must propagate that row's
+  `position_campaign_id`, opened business date, and `campaign_status` into
+  Strategy Intelligence lifecycle context. Missing, ambiguous, CLOSED-only,
+  symbol-mismatched, or quantity-conflicting campaign evidence remains
+  fail-closed; Strategy Intelligence must not synthesize campaign identity from
+  symbol/date heuristics.
 
 ## 12. Phase30-P Production Interpretation Boundary
 

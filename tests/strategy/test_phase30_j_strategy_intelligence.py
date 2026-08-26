@@ -27,7 +27,7 @@ def test_phase30_j_strategy_intelligence_shadow_artifact_contract(tmp_path: Path
     )
 
     payload = json.loads(Path(result.artifact_path).read_text(encoding="utf-8"))
-    assert result.status == "PASS"
+    assert result.status == "REVIEW_REQUIRED"
     assert validate_strategy_intelligence_artifact(payload)["status"] == "PASS"
     assert payload["schema_version"] == "strategy_intelligence.v1"
     assert payload["semantic_version"] == "1.4.0"
@@ -62,13 +62,16 @@ def test_phase30_j_strategy_intelligence_shadow_artifact_contract(tmp_path: Path
     assert row["entry_admission"]["schema_version"] == "entry_admission.v1"
     assert row["entry_admission"]["future_information_used"] is False
     assert row["selection_quality_comparator"]["schema_version"] == "selection_quality_comparator.v1"
-    assert row["selection_quality_comparator"]["tier"] == "CAUTION_CONTINUATION"
+    assert row["selection_quality_comparator"]["tier"] == "REJECT"
     assert row["selection_quality_comparator"]["rank_score_role"] == "SUPPORTING_NOT_HARD_REJECTION_AUTHORITY"
     assert row["selection_quality_comparator"]["expected_edge_role"] == "UNCALIBRATED_SUPPORTING"
-    assert payload["selection_quality_comparator_summary"]["candidate_quality_tier_distribution"]["CAUTION_CONTINUATION"] == 1
+    assert payload["selection_quality_comparator_summary"]["candidate_quality_tier_distribution"]["REJECT"] == 1
     assert row["continuation_quality"]["relative_strength"]["state"] == "INSUFFICIENT_AUTHORITY"
     assert "explicit_relative_strength_authority" in row["continuation_quality"]["known_data_gaps"]
     assert row["downside_risk"]["event_uncertainty"]["state"] == "EVENT_COVERAGE_INCOMPLETE"
+    assert row["eligibility"]["status"] == "REVIEW_REQUIRED"
+    assert row["eligibility"]["special_risk_coverage_state"] == "UNKNOWN"
+    assert row["eligibility"]["special_risk_eligibility"] == "REVIEW_REQUIRED"
     assert row["eligibility"]["probabilistic_risk_not_automatic_reject"] is True
     assert row["current_decision"]["pm_action"] == "BUY_NEW"
     assert row["lifecycle_context"]["semantic_entry_type"] == "REENTRY"
@@ -132,7 +135,7 @@ def test_phase30_j_strategy_intelligence_multi_day_lifecycle_shadow_only(tmp_pat
         )
 
         row = payload["symbol_intelligence"]["11110"]
-        assert payload["producer_result_status"] == "PASS"
+        assert payload["producer_result_status"] == "REVIEW_REQUIRED"
         assert payload["shadow_only"] is True
         assert payload["shadow_output_connected_to_production_action_authority"] is False
         assert row["current_decision"]["runtime_planning_action"] == action

@@ -794,7 +794,7 @@ def _business_date_pending_events(
             continue
         if _execution_key(event) in applied:
             continue
-        if current_as_of and event_date < current_as_of:
+        if current_as_of and current_as_of <= business_date and event_date < current_as_of:
             continue
         if event_date == current_as_of and current_projection_without_identity:
             continue

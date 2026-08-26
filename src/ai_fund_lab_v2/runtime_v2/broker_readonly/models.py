@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,8 @@ class BrokerOrderSnapshot(BrokerSnapshotBase):
     remaining_quantity: float
     accepted_at: str
     updated_at: str
+    strategy_authority_lineage: dict[str, Any] | None = None
+    strategy_authority_lineage_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,4 +76,3 @@ class BrokerReadOnlyBundle:
     as_of: str
     review_required: bool
     production_equivalent: bool
-

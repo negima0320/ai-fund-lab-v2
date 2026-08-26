@@ -1198,3 +1198,26 @@ EXIT   -> full negative delta or EXIT_NOT_SIZED
 Position Sizing Plan must not rewrite PM intent. A row that starts as PM ADD must not become HOLD/zero delta; a row that starts as PM REDUCE must not become HOLD/zero delta. If evidence is insufficient, the row keeps PM intent and emits the matching `*_NOT_SIZED` status.
 
 `position_sizing_plan.v1` is a quantity delta candidate artifact only. Runtime Planning intent, Pending item, Approval, Submit, Execution, Fill Projection, and Ledger fields are forbidden until a later integration phase explicitly connects them.
+
+## 30. Phase31-G136 Portfolio Rotation Boundary Reference
+
+The permanent architecture SoT for future high-resolution marginal capital value
+and portfolio-wide capital rotation is:
+
+```text
+docs/02_architecture/high_resolution_marginal_capital_value_and_portfolio_rotation_architecture.md
+```
+
+Future portfolio-wide rotation must preserve the momentum-follow lifecycle:
+
+- HOLD remains an active continuation decision.
+- REDUCE remains a PM-owned partial shrink action.
+- EXIT remains a PM-owned full close action.
+- Profit alone is not REDUCE or EXIT authority.
+- Rotation evidence may support PM reasoning, but must not directly sell,
+  synthesize Runtime rotation, or replace a HOLD merely because another score is
+  slightly higher.
+
+Portfolio Rotation must depend on high-resolution marginal capital value and
+must preserve campaign identity, anti-churn semantics, Safety, lot granularity,
+re-entry correctness, and PIT-only evidence use.

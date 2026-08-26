@@ -360,6 +360,15 @@ def pending_allows_daily_neutral_safety(
         readiness_scope=readiness_scope,
     ):
         return True
+    if (
+        readiness_scope == "current_valuation"
+        and pending_scope_current_valuation_adapter_ready(
+            pending_payload=pending_payload,
+            business_date=business_date,
+            mode="historical",
+        )
+    ):
+        return True
     if same_day_failed_attempt_pending_retry_ineligible(
         pending_payload=pending_payload,
         business_date=business_date,

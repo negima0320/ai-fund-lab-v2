@@ -12,6 +12,9 @@ from tests.runtime_v2.test_phase15ar_pending_lifecycle_stale_handling import (
     _runtime_root,
     _write_broker_snapshot,
     _write_partial_submitted_buy_review_pending,
+    _write_phase31_a2_mixed_buy_review_sell_continuation_pending,
+    _write_phase31_a2_sell_continuation_execution_manifest,
+    _write_phase31_a2_sell_continuation_submit_manifest,
 )
 
 
@@ -64,6 +67,32 @@ def test_phase30_ak9r12_real_cli_data_readiness_fails_closed_for_invalid_residua
     assert manifest["transition_reason"] == "stale_residual_buy_review_expiration_checks_failed"
     assert pending["state"] == "REVIEW_REQUIRED"
     assert pending["active_pending"] is True
+
+
+def test_phase31_a2_real_cli_data_readiness_terminalizes_mixed_sell_continuation_before_gate(tmp_path: Path) -> None:
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase31_a2_mixed_buy_review_sell_continuation_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+    )
+    _write_phase31_a2_sell_continuation_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_phase31_a2_sell_continuation_execution_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_broker_snapshot(runtime_root)
+
+    exit_code = main(_data_readiness_args(tmp_path, runtime_root))
+
+    manifest = _latest_manifest(runtime_root, BUSINESS_DATE)
+    pending = _load_json(pending_path)
+    stage_names = [stage["name"] for stage in manifest["stages"]]
+
+    assert exit_code == 0
+    assert stage_names.index("pre_data_readiness_pending_lifecycle") < stage_names.index("runtime_data_readiness_gate")
+    assert manifest["pre_data_readiness_pending_lifecycle_invoked"] is True
+    assert manifest["pending_lifecycle_status"] == "EXPIRED"
+    assert manifest["transition_reason"] == "MIXED_BUY_REVIEW_SELL_CONTINUATION_RESIDUAL_BUY_REVIEW_EXPIRED"
+    assert manifest["data_readiness_status"] == "READY"
+    assert pending["state"] == "EMPTY"
+    assert pending["active_pending"] is False
 
 
 def _data_readiness_args(tmp_path: Path, runtime_root: Path) -> list[str]:

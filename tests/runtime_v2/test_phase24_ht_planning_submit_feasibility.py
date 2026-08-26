@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
@@ -490,6 +491,118 @@ def test_phase30_ak9r1b_blocks_pc_ps_quantity_mismatch(tmp_path: Path) -> None:
     assert item_evidence["reason"] == "pc_discrete_quantity_authority_quantity_mismatch"
 
 
+def test_phase31_g129_buy_add_submit_uses_order_increment_not_position_scope_delta(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("94340", 200, 150.0)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="94340",
+        selected_position_amount=15_000.0,
+        executable_quantity=100,
+        executable_notional=15_000.0,
+        intent="BUY_ADD",
+    )
+    authority["current_quantity"] = 200
+    authority["discrete_authorized_quantity"] = 100
+    authority["phase29_l19_lot_resolution"].update(
+        {
+            "current_quantity": 200,
+            "current_weight": 0.03,
+            "final_allocated_quantity": 100,
+            "executable_quantity_delta": 200,
+            "preflight_executable_quantity_delta": 200,
+            "semantic_type": "BUY_ADD",
+        }
+    )
+    authority["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"][
+        "final_allocated_quantity"
+    ] = 100
+    pending = _pending(
+        (
+            _item(
+                "buy-add-g129",
+                amount=15_000.0,
+                symbol="94340",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="94340", amount=15_000.0)
+                | {
+                    "selected_notional": 15_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_ADD",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.APPROVED
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["quantity_scope"] == "ORDER_INCREMENT"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["authorized_quantity"] == 100
+
+
+def test_phase31_g129_buy_add_true_order_increment_mismatch_still_reviews(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("94320", 200, 150.0)])
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="94320",
+        selected_position_amount=15_000.0,
+        executable_quantity=100,
+        executable_notional=15_000.0,
+        intent="BUY_ADD",
+    )
+    authority["discrete_authorized_quantity"] = 100
+    authority["phase29_l19_lot_resolution"]["semantic_type"] = "BUY_ADD"
+    authority["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"][
+        "final_allocated_quantity"
+    ] = 100
+    pending = _pending(
+        (
+            _item(
+                "buy-add-g129-mismatch",
+                amount=30_000.0,
+                symbol="94320",
+                quantity=200,
+                quantity_contract=_quantity_contract(symbol="94320", amount=30_000.0)
+                | {
+                    "selected_notional": 30_000.0,
+                    "selected_quantity": 200,
+                    "planned_quantity": 200,
+                    "planning_intent": "BUY_ADD",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["reason"] == "pc_discrete_quantity_authority_quantity_mismatch"
+
+
 def test_phase30_ak9r1b_blocks_pc_discrete_strategy_or_safety_breach(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
@@ -764,6 +877,151 @@ def test_phase30_ak9r21_rejects_malformed_second_lot_promotion(tmp_path: Path) -
     assert linked.state == PendingPlanState.REVIEW_REQUIRED
     assert item_evidence["violated_policy"] == "position_sizing"
     assert item_evidence["reason"] == "pc_discrete_quantity_authority_lot_overshoot_unresolved"
+
+
+def test_phase31_g104_accepts_g102_item_scoped_pc_discrete_authority(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    authority = _g104_g102_pc_discrete_position_sizing_authority()
+    pending = _pending(
+        (
+            _item(
+                "buy-g104-94320",
+                amount=41_940.0,
+                symbol="94320",
+                quantity=200,
+                quantity_contract=_quantity_contract(symbol="94320", amount=41_940.0)
+                | {
+                    "selected_notional": 41_940.0,
+                    "selected_quantity": 200,
+                    "planned_quantity": 200,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_buy_item_ids == ("buy-g104-94320",)
+    assert item_evidence["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "PASS"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["authorized_quantity"] == 200
+    assert item_evidence["canonical_discrete_quantity_precedence_applied"] is True
+
+
+@pytest.mark.parametrize(
+    ("case_name", "mutate", "quantity"),
+    (
+        (
+            "authority_not_pass",
+            lambda authority: authority["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"].update({"status": "REVIEW_REQUIRED"}),
+            200,
+        ),
+        ("item_quantity_mismatch", lambda authority: None, 100),
+        (
+            "ps_quantity_mismatch",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"ps_final_quantity": 100}),
+            200,
+        ),
+        (
+            "future_information_used",
+            lambda authority: authority["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"].update({"future_information_used": True}),
+            200,
+        ),
+        (
+            "ps_must_consume_false",
+            lambda authority: authority["phase29_l19_lot_resolution"]["pc_positive_executable_quantity_authority"].update({"ps_must_consume_canonical_quantity": False}),
+            200,
+        ),
+        (
+            "invalid_semantic",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"semantic_type": "SELL_EXIT"}),
+            200,
+        ),
+        (
+            "strategy_cap_not_preserved",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"strategy_cap_preserved": False}),
+            200,
+        ),
+        (
+            "safety_hard_cap_not_preserved",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"safety_hard_cap_preserved": False}),
+            200,
+        ),
+        (
+            "one_lot_not_pass",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"one_lot_feasibility_status": "FAIL"}),
+            200,
+        ),
+        (
+            "arbitrary_unknown_reason",
+            lambda authority: authority["phase29_l19_lot_resolution"].update({"lot_overshoot_reason": "ARBITRARY_UNKNOWN_REASON"}),
+            200,
+        ),
+        (
+            "lot_infeasible_compatibility",
+            lambda authority: authority["phase29_l19_lot_resolution"]["lot_aware_allocation_to_sizing_compatibility"].update(
+                {"compatibility_state": "LOT_INFEASIBLE_RESIDUAL_REQUIRED"}
+            ),
+            200,
+        ),
+    ),
+)
+def test_phase31_g104_g102_item_scoped_authority_fail_closed(
+    tmp_path: Path,
+    case_name: str,
+    mutate,
+    quantity: int,
+) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    authority = _g104_g102_pc_discrete_position_sizing_authority()
+    mutate(authority)
+    pending = _pending(
+        (
+            _item(
+                f"buy-g104-negative-{case_name}",
+                amount=41_940.0,
+                symbol="94320",
+                quantity=quantity,
+                quantity_contract=_quantity_contract(symbol="94320", amount=41_940.0)
+                | {
+                    "selected_notional": 41_940.0,
+                    "selected_quantity": quantity,
+                    "planned_quantity": quantity,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": authority,
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert item_evidence["violated_policy"] == "position_sizing"
+    assert item_evidence["canonical_discrete_quantity_submit_authority"]["status"] == "REVIEW_REQUIRED"
 
 
 def test_phase24_id_planning_aggregate_cash_reservation_blocks_later_buy(tmp_path: Path) -> None:
@@ -1633,3 +1891,61 @@ def _pc_discrete_position_sizing_authority(
             "symbol": symbol,
         },
     }
+
+
+def _g104_g102_pc_discrete_position_sizing_authority() -> dict:
+    authority = _pc_discrete_position_sizing_authority(
+        symbol="94320",
+        selected_position_amount=41_940.0,
+        executable_quantity=200,
+        executable_notional=41_940.0,
+        intent="BUY_NEW",
+    )
+    authority.update(
+        {
+            "lot_adjusted_quantity": 200,
+            "discrete_authorized_quantity": 200,
+        }
+    )
+    lot_resolution = authority["phase29_l19_lot_resolution"]
+    lot_resolution.update(
+        {
+            "lot_overshoot_reason": "G102_G97_G99_ITEM_SCOPED_PC_DISCRETE_QUANTITY_AUTHORITY",
+            "lot_aware_allocation_to_sizing_compatibility": {
+                "allocation_rank": 5,
+                "authority_status": "SHADOW_NON_AUTHORITATIVE",
+                "authorized_allocation_weight": 0.030303,
+                "business_date": "2023-03-22",
+                "cap_headroom_weight": 0.25,
+                "cap_weight": 0.25,
+                "compatibility_state": "LOT_EXECUTABLE_COMPATIBLE",
+                "competitor_type": "NEW_BUY",
+                "current_weight": 0.0,
+                "executable_before_residual_reallocation": True,
+                "future_information_used": False,
+                "historical_outcome_used": False,
+                "implicit_priority_promotion_allowed": False,
+                "lot_rounding_residual_weight": 0.006671,
+                "lower_priority_execution_requires_explicit_residual_resolution": False,
+                "minimum_executable_weight": 0.011816,
+                "opportunity_type": "NEW_BUY",
+                "owner": "PORTFOLIO_CONSTRUCTION",
+                "pc_quantity_authority": False,
+                "portfolio_value": 1_369_320.0,
+                "position_sizing_quantity_authority_preserved": True,
+                "projected_quantity_delta_evidence_only": 200,
+                "reason_codes": [
+                    "PS_QUANTITY_AUTHORITY_PRESERVED",
+                    "LOWER_PRIORITY_IMPLICIT_PROMOTION_PROHIBITED",
+                    "LOT_EXECUTABLE_COMPATIBLE",
+                ],
+                "reference_price": 161.8,
+                "residual_capital_weight": 0.0,
+                "schema_version": "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1",
+                "symbol": "94320",
+                "trading_unit": 100,
+                "within_class_allocation_rank": None,
+            },
+        }
+    )
+    return authority

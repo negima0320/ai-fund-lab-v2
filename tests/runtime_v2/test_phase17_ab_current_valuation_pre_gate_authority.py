@@ -11,6 +11,15 @@ from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
     _write_current_valuation_manifest_evidence,
 )
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
+from ai_fund_lab_v2.runtime_v2.historical_support.safety_temporal_authority import (
+    evaluate_historical_daily_neutral_safety_authority,
+    pending_scope_current_valuation_adapter_ready,
+)
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    GENERIC_TERMINAL_ITEM_STATES,
+    NOT_EXECUTABLE_TERMINAL_EVIDENCE_INVALID,
+    build_pending_review_scope_authority,
+)
 
 
 BUSINESS_DATE = "2026-07-06"
@@ -111,6 +120,113 @@ def test_phase30_ak9r6_post_submit_residual_buy_review_allows_current_valuation_
     assert safety["post_submit_residual_buy_review_current_valuation_ready"] is True
     assert "pending_review_required" not in result.payload["review_reasons"]
     assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase31_f1z6_not_executable_terminal_pending_allows_current_valuation_readiness(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    authority = build_pending_review_scope_authority(pending_payload, slot_status="REVIEW_REQUIRED", active_pending=True)
+
+    assert result.status == "READY"
+    assert result.payload["components"]["pending"]["post_submit_residual_buy_review_current_valuation_ready"] is True
+    assert result.payload["components"]["pending"]["historical_pending_safety_authority"]["status"] == "READY"
+    assert result.payload["components"]["pending"]["historical_pending_safety_authority"]["pending_scope_compatible"] is True
+    assert "pending_review_required" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+    assert "NOT_EXECUTABLE" in GENERIC_TERMINAL_ITEM_STATES
+    assert set(authority.terminal_item_ids) == {"terminal-75590", "terminal-34940", "terminal-56100"}
+    assert authority.non_terminal_item_ids == ()
+    assert authority.reviewed_item_ids == ()
+    assert authority.executable_item_ids == ()
+    assert pending_scope_current_valuation_adapter_ready(
+        pending_payload={"payload": pending_payload, "slot_status": "REVIEW_REQUIRED", "active_pending": True},
+        business_date=BUSINESS_DATE,
+        mode="historical",
+    )
+
+
+def test_phase31_f1z6_not_executable_terminal_pending_resolves_historical_neutral_safety(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+
+    result = evaluate_historical_daily_neutral_safety_authority(
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        broker_environment="historical_simulated",
+        current_payload={},
+        pending_payload={"payload": pending_payload, "slot_status": "REVIEW_REQUIRED", "active_pending": True},
+        readiness_scope="current_valuation",
+        runtime_test_run_id=RUN_ID,
+        runtime_test_profile_id=PROFILE_ID,
+        runtime_test_evidence_root=str(_evidence_root(tmp_path)),
+        broker_write=False,
+        external_delivery=False,
+        previous_empty_pending_present=False,
+    )
+
+    assert result["status"] == "READY"
+    assert result["pending_scope_compatible"] is True
+    assert result["mismatched_fields"] == []
+
+
+def test_phase31_f1z6_malformed_not_executable_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path, not_executable_overrides={"feasibility_status": ""})
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    authority = build_pending_review_scope_authority(pending_payload, slot_status="REVIEW_REQUIRED", active_pending=True)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert authority.structural_validity == "REVIEW_REQUIRED"
+    assert any(reason.startswith(NOT_EXECUTABLE_TERMINAL_EVIDENCE_INVALID) for reason in authority.malformed_reasons)
+    assert "terminal-34940" not in authority.terminal_item_ids
+
+
+def test_phase31_f1z6_not_executable_unknown_side_effect_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path, not_executable_overrides={"ledger_order_record_id": "unknown-ledger"})
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    authority = build_pending_review_scope_authority(pending_payload, slot_status="REVIEW_REQUIRED", active_pending=True)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert any(reason.startswith(NOT_EXECUTABLE_TERMINAL_EVIDENCE_INVALID) for reason in authority.malformed_reasons)
+
+
+def test_phase31_f1z6_reviewed_sell_still_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path, include_review_sell=True)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+
+
+def test_phase31_f1z6_retryable_approved_item_still_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_terminal_not_executable_pending(runtime_root, tmp_path, include_approved_retryable=True)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    authority = build_pending_review_scope_authority(pending_payload, slot_status="REVIEW_REQUIRED", active_pending=True)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert authority.non_terminal_item_ids == ("retryable-72030",)
 
 
 def test_phase30_ak9r6_isolated_cli_reaches_current_valuation_producer_with_residual_buy_review(tmp_path):
@@ -521,6 +637,69 @@ def _write_post_submit_residual_buy_review_pending(
             "planning_submit_feasibility": {
                 "status": "REVIEW_REQUIRED",
                 "items": feasibility_items,
+            },
+            "items": items,
+        },
+    )
+
+
+def _write_terminal_not_executable_pending(
+    runtime_root: Path,
+    tmp_path: Path,
+    *,
+    not_executable_overrides: dict | None = None,
+    include_review_sell: bool = False,
+    include_approved_retryable: bool = False,
+) -> None:
+    safety_context = _historical_safety_context(tmp_path)
+    approved_buy_ids = ["terminal-75590"]
+    approved_sell_ids = ["terminal-56100"]
+    review_sell_ids: list[str] = []
+    items = [
+        _pending_item("terminal-75590", "75590", "BUY", "CONSUMED", True, "PASS_ITEM_SUBMITTABLE", safety_context),
+        {
+            **_pending_item("terminal-34940", "34940", "SELL", "NOT_EXECUTABLE", False, "NOT_EXECUTABLE", safety_context),
+            "feasibility_status": "NOT_EXECUTABLE_EXECUTION_AUTHORITY_UNAVAILABLE",
+            "item_review_reason": "EXECUTION_AUTHORITY_UNAVAILABLE",
+            "retry_eligible_same_day": False,
+            "next_day_re_evaluation_required": True,
+            **(not_executable_overrides or {}),
+        },
+        _pending_item("terminal-56100", "56100", "SELL", "CONSUMED", True, "PASS_ITEM_SUBMITTABLE", safety_context),
+    ]
+    if include_review_sell:
+        review_sell_ids.append("review-sell-81050")
+        items.append(_pending_item("review-sell-81050", "81050", "SELL", "REVIEW_REQUIRED", False, "ITEM_REVIEW_REQUIRED", safety_context))
+    if include_approved_retryable:
+        approved_buy_ids.append("retryable-72030")
+        items.append(_pending_item("retryable-72030", "72030", "BUY", "APPROVED", True, "PASS_ITEM_SUBMITTABLE", safety_context))
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "phase31_f1z6_fixture_v1",
+            "pending_plan_id": "pending-phase31-f1z6",
+            "state": "REVIEW_REQUIRED",
+            "environment": "historical",
+            "target_session_date": BUSINESS_DATE,
+            "review_reason": "pending_review_required",
+            "review_scope": "",
+            "sell_continuation_allowed": False,
+            "plan_overall_status": "REVIEW_REQUIRED_WITH_TERMINAL_RESIDUALS",
+            "approved_item_ids": approved_buy_ids + approved_sell_ids,
+            "approved_buy_item_ids": approved_buy_ids,
+            "approved_sell_item_ids": approved_sell_ids,
+            "review_required_buy_item_ids": [],
+            "review_required_sell_item_ids": review_sell_ids,
+            "approval": {"approval_status": "REVIEW_REQUIRED_WITH_TERMINAL_RESIDUALS", "pending_policy_hash": "policy-hash"},
+            "consume": {"consumed": False, "submitted_order_ids": ["order-75590", "order-56100"], "ledger_order_record_ids": ["ledger-75590", "ledger-56100"]},
+            "safety_policy_version": "historical_replay_neutral_safety_v1",
+            "safety_context": safety_context,
+            "planning_submit_feasibility": {
+                "status": "REVIEW_REQUIRED",
+                "items": [
+                    {"pending_item_id": "terminal-75590", "symbol": "75590", "side": "BUY", "status": "PASS"},
+                    {"pending_item_id": "terminal-56100", "symbol": "56100", "side": "SELL", "status": "PASS"},
+                ],
             },
             "items": items,
         },

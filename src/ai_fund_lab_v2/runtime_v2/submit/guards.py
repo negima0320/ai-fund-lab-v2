@@ -109,6 +109,12 @@ def build_runtime_v2_submit_command(
         live_order_allowed=live_order_allowed,
         source_current_path=source_current_path,
         listed_info=item.listed_info,
+        strategy_authority_lineage=(
+            dict(item.strategy_authority_lineage)
+            if isinstance(item.strategy_authority_lineage, dict)
+            else None
+        ),
+        strategy_authority_lineage_hash=str(item.strategy_authority_lineage_hash or ""),
     )
 
 

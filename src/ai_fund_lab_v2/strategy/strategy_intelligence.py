@@ -224,6 +224,16 @@ def build_strategy_intelligence_payload(
         "semantic_version": SEMANTIC_VERSION,
         "producer_version": PRODUCER_VERSION,
         "producer": PRODUCER,
+        "producer_identity": {
+            "module": __name__,
+            "module_file": __file__,
+            "artifact_function": "produce_strategy_intelligence_artifact",
+            "payload_builder_function": "build_strategy_intelligence_payload",
+            "campaign_identity_function": "_lifecycle_context",
+            "campaign_join_function": "_current_or_same_day_closed_campaign_by_symbol",
+            "producer_version": PRODUCER_VERSION,
+            "semantic_version": SEMANTIC_VERSION,
+        },
         "business_date": business_date,
         "as_of_business_date": business_date,
         "generated_at": as_of,
@@ -489,6 +499,7 @@ def _symbol_rows(
         plan = plan_by_symbol.get(symbol, {})
         eligibility = _eligibility_for_symbol(
             symbol=symbol,
+            business_date=business_date,
             candidate=candidate_by_symbol.get(symbol, {}),
             opportunity=opportunity,
             current=current,
@@ -965,21 +976,174 @@ def _regime_risk(market_context: Mapping[str, Any], *, business_date: str) -> di
     return {**item, "state": state, "semantic_meaning": "regime stress is evidence for interpretation, not a Phase30-J threshold"}
 
 
+SPECIAL_RISK_EVENT_TYPES = {
+    "DELISTING_PENDING",
+    "LISTING_STATUS",
+    "SUPERVISION_STATUS",
+    "SPECIAL_SUPERVISION_STATUS",
+    "ALERT_STATUS",
+    "SPECIAL_CAUTION_STATUS",
+    "GOVERNANCE_RISK_STATUS",
+    "LISTING_REVIEW_STATUS",
+}
+
+KNOWN_SYMBOL_EVENT_COVERAGE_VALUES = {
+    "AVAILABLE",
+    "KNOWN",
+    "KNOWN_SAFE",
+    "KNOWN_NO_EVENT",
+    "NO_EVENT_CONFIRMED",
+    "EVENT_PRESENT",
+}
+
+UNKNOWN_SYMBOL_EVENT_COVERAGE_VALUES = {
+    "",
+    "UNKNOWN",
+    "MISSING",
+    "NOT_IMPLEMENTED",
+    "PARTIAL",
+    "UNAVAILABLE",
+    "SOURCE_UNAVAILABLE",
+    "RAW_EXISTS_NOT_CONNECTED",
+}
+
+
 def _event_uncertainty(*, corporate_event: Mapping[str, Any], event_status: Mapping[str, Any], business_date: str) -> dict[str, Any]:
-    coverage = str(corporate_event.get("coverage_status") or corporate_event.get("overall_coverage_status") or "")
-    symbol_coverage = str(event_status.get("coverage_status") or event_status.get("source_coverage_status") or "")
-    state = "MANAGEABLE" if coverage == "AVAILABLE" and symbol_coverage not in {"MISSING", "NOT_IMPLEMENTED"} else "EVENT_COVERAGE_INCOMPLETE"
+    coverage = str(corporate_event.get("coverage_status") or corporate_event.get("overall_coverage_status") or "").upper()
+    symbol_coverage = str(event_status.get("coverage_status") or event_status.get("source_coverage_status") or "").upper()
+    event_state = str(event_status.get("event_status") or event_status.get("status") or "").upper()
+    source_business_date = str(corporate_event.get("business_date") or "")
+    event_facts = [dict(item) for item in event_status.get("event_facts") or [] if isinstance(item, Mapping)]
+    special_risk_facts = _special_risk_facts(event_status=event_status, event_facts=event_facts)
+    coverage_state = _special_risk_coverage_state_from_event(
+        source_coverage=coverage,
+        symbol_coverage=symbol_coverage,
+        event_state=event_state,
+        event_facts=event_facts,
+        source_business_date=source_business_date,
+        business_date=business_date,
+    )
+    if _event_source_conflict(corporate_event=corporate_event, event_status=event_status):
+        coverage_state = "CONFLICT"
+    if special_risk_facts:
+        state = "SPECIAL_RISK_PRESENT"
+        risk_state = "REVIEW_REQUIRED"
+        eligibility_implication = "REVIEW_REQUIRED"
+    elif coverage_state == "KNOWN":
+        state = "MANAGEABLE"
+        risk_state = "NORMAL"
+        eligibility_implication = "BUY_ALLOWED"
+    else:
+        state = "EVENT_COVERAGE_INCOMPLETE"
+        risk_state = "UNKNOWN"
+        eligibility_implication = "REVIEW_REQUIRED"
     return {
         "state": state,
         "semantic_meaning": "missing event evidence is materialized as uncertainty, not SAFE",
+        "authority_type": "SPECIAL_RISK_ELIGIBILITY_AUTHORITY",
+        "canonical_producer": "ai_fund_lab_v2.strategy.corporate_event.build_symbol_event_coverage",
+        "canonical_artifact": "corporate_event.symbol_event_facts",
+        "canonical_field": "symbol_event_facts.<symbol>.coverage_status",
+        "temporal_binding": "corporate_event.business_date <= strategy_intelligence.business_date; no future event facts consumed",
+        "coverage_state": coverage_state,
+        "universe_coverage_state": _universe_coverage_state(corporate_event=corporate_event, coverage_state=coverage_state),
+        "negative_evidence_safe_to_use": coverage_state == "KNOWN" and event_state == "KNOWN_NO_EVENT",
+        "risk_state": risk_state,
+        "eligibility_implication": eligibility_implication,
         "evidence_sufficiency": "PARTIAL" if state == "EVENT_COVERAGE_INCOMPLETE" else "SUFFICIENT",
-        "missing_inputs": [] if state == "MANAGEABLE" else ["complete_event_coverage_authority"],
+        "missing_inputs": [] if state in {"MANAGEABLE", "SPECIAL_RISK_PRESENT"} else [_missing_event_authority_reason(coverage_state)],
         "source_references": [_source_ref(corporate_event)] if corporate_event else [],
-        "as_of_date": str(corporate_event.get("business_date") or business_date),
+        "as_of_date": source_business_date or business_date,
         "coverage_status": coverage or "MISSING",
         "symbol_coverage_status": symbol_coverage or "UNKNOWN",
-        "event_facts": event_status.get("event_facts") or [],
+        "event_status": event_state,
+        "event_facts": event_facts,
+        "special_risk_event_facts": special_risk_facts,
+        "future_information_used": False,
     }
+
+
+def _special_risk_coverage_state_from_event(
+    *,
+    source_coverage: str,
+    symbol_coverage: str,
+    event_state: str,
+    event_facts: list[dict[str, Any]],
+    source_business_date: str,
+    business_date: str,
+) -> str:
+    if source_business_date and business_date and source_business_date[:10] != business_date[:10]:
+        return "STALE"
+    if source_coverage != "AVAILABLE":
+        return "UNKNOWN"
+    if event_facts:
+        return "KNOWN"
+    if event_state in {"KNOWN_NO_EVENT", "NO_EVENT_CONFIRMED"}:
+        return "KNOWN"
+    if symbol_coverage in UNKNOWN_SYMBOL_EVENT_COVERAGE_VALUES:
+        return "UNKNOWN"
+    if symbol_coverage in KNOWN_SYMBOL_EVENT_COVERAGE_VALUES:
+        return "KNOWN"
+    return "UNKNOWN"
+
+
+def _universe_coverage_state(*, corporate_event: Mapping[str, Any], coverage_state: str) -> str:
+    if coverage_state == "STALE":
+        return "STALE"
+    contract = corporate_event.get("coverage_contract") if isinstance(corporate_event.get("coverage_contract"), Mapping) else {}
+    event_absence_authorized = bool(contract.get("event_absence_authorized"))
+    coverage = str(corporate_event.get("coverage_status") or corporate_event.get("overall_coverage_status") or "").upper()
+    if coverage == "AVAILABLE" and event_absence_authorized:
+        return "KNOWN_COMPLETE"
+    if coverage == "AVAILABLE":
+        return "KNOWN_PARTIAL"
+    if coverage in {"PARTIAL"}:
+        return "KNOWN_PARTIAL"
+    return "UNKNOWN"
+
+
+def _missing_event_authority_reason(coverage_state: str) -> str:
+    if coverage_state == "CONFLICT":
+        return "conflicting_event_coverage_authority"
+    if coverage_state == "STALE":
+        return "stale_event_coverage_authority"
+    return "complete_event_coverage_authority"
+
+
+def _event_source_conflict(*, corporate_event: Mapping[str, Any], event_status: Mapping[str, Any]) -> bool:
+    values = [
+        corporate_event.get("source_authority_status"),
+        corporate_event.get("producer_result_status"),
+        *(corporate_event.get("reason_codes") or []),
+        *(event_status.get("reason_codes") or []),
+    ]
+    return any("CONFLICT" in str(value or "").upper() for value in values)
+
+
+def _special_risk_facts(*, event_status: Mapping[str, Any], event_facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    special = [fact for fact in event_facts if _event_fact_type(fact) in SPECIAL_RISK_EVENT_TYPES]
+    for event_type in event_status.get("event_types") or ():
+        normalized = str(event_type or "").upper()
+        if normalized in SPECIAL_RISK_EVENT_TYPES:
+            special.append(
+                {
+                    "event_type": normalized,
+                    "event_status": event_status.get("event_status") or "KNOWN_EVENT",
+                    "event_dates": list(event_status.get("event_dates") or []),
+                    "source_ref": event_status.get("source_ref") or "corporate_event.symbol_event_facts",
+                }
+            )
+    return special
+
+
+def _event_fact_type(fact: Mapping[str, Any]) -> str:
+    return str(
+        fact.get("event_type")
+        or fact.get("fact_type")
+        or fact.get("type")
+        or fact.get("category")
+        or ""
+    ).upper()
 
 
 def _dimension(name: str, state: str, row: Mapping[str, Any], values: Mapping[str, Any]) -> dict[str, Any]:
@@ -1009,6 +1173,7 @@ def _dimension_missing(name: str, row: Mapping[str, Any], missing: list[str]) ->
 def _eligibility_for_symbol(
     *,
     symbol: str,
+    business_date: str,
     candidate: Mapping[str, Any],
     opportunity: Mapping[str, Any],
     current: Mapping[str, Any],
@@ -1022,14 +1187,12 @@ def _eligibility_for_symbol(
         reason = str(row.get("rejection_reason") or row.get("buy_ineligible_reason") or "")
         if reason:
             review.append({"fact_type": "UPSTREAM_ELIGIBILITY_REVIEW", "reason": reason, "source": _source_ref(row)})
-    event_uncertainty = _event_uncertainty(corporate_event=corporate_event, event_status=event_status, business_date=str(corporate_event.get("business_date") or ""))
+    event_uncertainty = _event_uncertainty(corporate_event=corporate_event, event_status=event_status, business_date=business_date)
     if event_uncertainty["state"] == "EVENT_COVERAGE_INCOMPLETE":
         review.append({"fact_type": "EVENT_COVERAGE_INCOMPLETE", "reason": "missing_event_data_not_safe", "source": _source_ref(corporate_event)})
-    blocking_review = [
-        item
-        for item in review
-        if str(item.get("fact_type") or "") != "EVENT_COVERAGE_INCOMPLETE"
-    ]
+    elif event_uncertainty["state"] == "SPECIAL_RISK_PRESENT":
+        review.append({"fact_type": "SPECIAL_RISK_PRESENT", "reason": "special_risk_event_requires_review", "source": _source_ref(corporate_event)})
+    blocking_review = list(review)
     status = "PASS" if not facts and not blocking_review else "REVIEW_REQUIRED"
     return {
         "status": status,
@@ -1041,7 +1204,25 @@ def _eligibility_for_symbol(
         else [],
         "probabilistic_risk_not_automatic_reject": True,
         "event_coverage_status": event_uncertainty.get("coverage_status"),
-        "missing_required_authorities": [],
+        "special_risk_authority": {
+            "authority_type": event_uncertainty.get("authority_type"),
+            "canonical_producer": event_uncertainty.get("canonical_producer"),
+            "canonical_artifact": event_uncertainty.get("canonical_artifact"),
+            "canonical_field": event_uncertainty.get("canonical_field"),
+            "coverage_state": event_uncertainty.get("coverage_state"),
+            "universe_coverage_state": event_uncertainty.get("universe_coverage_state"),
+            "negative_evidence_safe_to_use": event_uncertainty.get("negative_evidence_safe_to_use"),
+            "risk_state": event_uncertainty.get("risk_state"),
+            "eligibility_implication": event_uncertainty.get("eligibility_implication"),
+            "temporal_binding": event_uncertainty.get("temporal_binding"),
+            "future_information_used": False,
+        },
+        "special_risk_coverage_state": event_uncertainty.get("coverage_state"),
+        "special_risk_state": event_uncertainty.get("risk_state"),
+        "special_risk_eligibility": event_uncertainty.get("eligibility_implication"),
+        "missing_required_authorities": ["complete_event_coverage_authority"]
+        if event_uncertainty["state"] == "EVENT_COVERAGE_INCOMPLETE"
+        else [],
         "future_information_used": False,
     }
 
@@ -1103,7 +1284,9 @@ def _lifecycle_context(
     campaign_id = str(campaign.get("position_campaign_id") or "").strip()
     opened_date = str(campaign.get("opened_business_date") or campaign.get("campaign_opened_date") or "").strip()
     campaign_status = str(campaign.get("campaign_status") or "").strip()
+    campaign_status_upper = campaign_status.upper()
     closed_date = str(campaign.get("closed_business_date") or campaign.get("campaign_closed_date") or "").strip()
+    campaign_quantity = _optional_float(campaign.get("current_quantity"))
     quantity_basis = current.get("quantity_basis")
     valuation_price_basis = current.get("valuation_price_basis")
     missing_current = [
@@ -1125,6 +1308,10 @@ def _lifecycle_context(
             missing_campaign.append("campaign_opened_date")
         if not campaign_status:
             missing_campaign.append("campaign_status")
+        elif campaign_status_upper != "OPEN":
+            missing_campaign.append("campaign_status_not_open")
+        if campaign_quantity is not None and quantity is not None and abs(campaign_quantity - quantity) > 1e-9:
+            missing_campaign.append("campaign_current_quantity_mismatch")
     if not held:
         authority_status = "NOT_APPLICABLE"
     elif not canonical_campaign_available:
@@ -1143,11 +1330,7 @@ def _lifecycle_context(
         "campaign_closed_date": closed_date or None,
         "campaign_status": campaign_status or None,
         "current_position_authority_status": authority_status,
-        "campaign_identity_authority_status": "COMPLETE"
-        if campaign_id and opened_date and campaign_status
-        else "MISSING"
-        if held
-        else "NOT_APPLICABLE",
+        "campaign_identity_authority_status": "COMPLETE" if held and campaign_id and opened_date and campaign_status and not missing_campaign else "MISSING" if held else "NOT_APPLICABLE",
         "current_authority_owner": "Runtime Current / PM current position adapter",
         "campaign_authority_owner": "positions/position_campaigns.json",
         "campaign_join_key": "symbol + active/open campaign state",
@@ -1169,6 +1352,8 @@ def _lifecycle_context(
         "reduce_history_summary": history["reduce_history_summary"],
         "sell_history_summary": history["sell_history_summary"],
         "buy_history_summary": history["buy_history_summary"],
+        "prior_unrepresentable_reduce_summary": history["prior_unrepresentable_reduce_summary"],
+        "pm_decision_history_summary": history["pm_decision_history_summary"],
         "campaign_source_reference": _source_ref(campaign_artifact) if campaign_artifact else {},
         "semantic_entry_type": portfolio_construction.get("semantic_entry_type")
         or portfolio_construction.get("semantic_buy_type")
@@ -1563,9 +1748,7 @@ def _strategy_intelligence_interpretation(
     current_action = _current_action_context(current_decision=current_decision, lifecycle_context=lifecycle_context)
     held = lifecycle_context.get("current_position_state") == "HELD"
     cq_status = str(continuation_quality.get("status") or "")
-    if eligibility.get("status") != "PASS":
-        state = "REVIEW_REQUIRED_SHADOW"
-    elif current_action in {"REDUCE", "SELL_REDUCE"}:
+    if current_action in {"REDUCE", "SELL_REDUCE"}:
         state = "PM_REDUCE_EVIDENCE_OBSERVED_SHADOW"
     elif current_action in {"EXIT", "SELL_EXIT"}:
         state = "PM_EXIT_EVIDENCE_OBSERVED_SHADOW"
@@ -1573,6 +1756,8 @@ def _strategy_intelligence_interpretation(
         state = "ADD_WORTHINESS_EVIDENCE_SHADOW" if cq_status == "PASS" else "ADD_WORTHINESS_REVIEW_SHADOW"
     elif current_action == "BUY_WAIT":
         state = "BUY_WAIT_CONTEXT_SHADOW"
+    elif eligibility.get("status") != "PASS":
+        state = "REVIEW_REQUIRED_SHADOW"
     elif str(lifecycle_context.get("semantic_entry_type") or "").upper() == "REENTRY" and current_action in {"BUY_NEW", "REENTRY"}:
         state = "REENTRY_EVIDENCE_SHADOW"
     elif held and cq_status == "PASS":
@@ -1743,6 +1928,12 @@ def _event_status_by_symbol(corporate_event: Mapping[str, Any]) -> dict[str, Map
     facts = corporate_event.get("symbol_event_facts")
     if isinstance(facts, Mapping):
         return {str(symbol): item for symbol, item in facts.items() if isinstance(item, Mapping)}
+    if isinstance(facts, list):
+        return {
+            _symbol(item): item
+            for item in facts
+            if isinstance(item, Mapping) and _symbol(item)
+        }
     coverage = corporate_event.get("source_coverage")
     if isinstance(coverage, Mapping):
         return {str(symbol): item for symbol, item in coverage.items() if isinstance(item, Mapping)}
@@ -1820,11 +2011,74 @@ def _campaign_history_summary(campaign: Mapping[str, Any]) -> dict[str, Any]:
             last_reduce = date or last_reduce
         if key == "SELL":
             last_sell = date or last_sell
+    decision_history = _pm_decision_history_summary(campaign)
     return {
         "buy_history_summary": {"event_count": counts.get("BUY", 0), "first_buy_date": first_buy or None},
         "add_history_summary": {"event_count": max(counts.get("BUY", 0) - 1, 0), "last_add_date": last_add or None},
         "reduce_history_summary": {"event_count": counts.get("REDUCE", 0), "last_reduce_date": last_reduce or None},
         "sell_history_summary": {"event_count": counts.get("SELL", 0), "last_sell_date": last_sell or None},
+        "prior_unrepresentable_reduce_summary": decision_history["prior_unrepresentable_reduce_summary"],
+        "pm_decision_history_summary": decision_history["pm_decision_history_summary"],
+    }
+
+
+def _pm_decision_history_summary(campaign: Mapping[str, Any]) -> dict[str, Any]:
+    events = campaign.get("pm_decision_evidence_events") if isinstance(campaign.get("pm_decision_evidence_events"), list) else []
+    ordered = sorted(
+        (event for event in events if isinstance(event, Mapping)),
+        key=lambda event: (
+            str(event.get("business_date") or ""),
+            str(event.get("event_kind") or ""),
+            str(event.get("symbol") or ""),
+        ),
+    )
+    active_reduce_dates: list[str] = []
+    last_reduce = ""
+    last_recovery_reset = ""
+    for event in ordered:
+        event_date = str(event.get("business_date") or "")
+        kind = str(event.get("event_kind") or "").upper()
+        recovery_policy = str(event.get("recovery_reset_policy") or "").upper()
+        if kind == "RECOVERY_BOUNDARY" and recovery_policy in {"RESET", "DECAY"}:
+            active_reduce_dates = []
+            last_recovery_reset = event_date or last_recovery_reset
+            continue
+        if kind != "UNREPRESENTABLE_REDUCE_DECISION":
+            continue
+        if str(event.get("representability_family") or "").upper() != "DISCRETE_LOT":
+            continue
+        if bool(event.get("minimum_notional_flag")):
+            continue
+        try:
+            final_reduce = float(event.get("final_reduce_quantity") or 0.0)
+        except (TypeError, ValueError):
+            final_reduce = 0.0
+        if abs(final_reduce) > 1e-9:
+            continue
+        if event_date:
+            active_reduce_dates.append(event_date)
+            last_reduce = event_date
+    return {
+        "prior_unrepresentable_reduce_summary": {
+            "schema_version": "phase31_f1i_prior_unrepresentable_reduce_summary.v1",
+            "event_count": len(active_reduce_dates),
+            "last_reduce_date": last_reduce or None,
+            "prior_unrepresentable_reduce_dates": active_reduce_dates,
+            "last_recovery_reset_date": last_recovery_reset or None,
+            "minimum_notional_excluded": True,
+            "decision_evidence_not_execution": True,
+            "same_day_self_count_protected": True,
+            "future_information_used": False,
+        },
+        "pm_decision_history_summary": {
+            "schema_version": "phase31_f1i_pm_decision_history_summary.v1",
+            "event_count": len(ordered),
+            "unrepresentable_reduce_count_since_last_recovery": len(active_reduce_dates),
+            "source_event_count": len(events),
+            "decision_evidence_not_execution": True,
+            "fake_execution_event_created": False,
+            "future_information_used": False,
+        },
     }
 
 

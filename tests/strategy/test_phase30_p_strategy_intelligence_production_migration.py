@@ -84,9 +84,9 @@ def test_phase30_p_portfolio_construction_uses_si_cq_for_buy_wait(tmp_path: Path
     member = payload["portfolio_members"][0]
     assert member["strategy_intelligence_consumer_status"] == "CONNECTED"
     assert member["legacy_buy_quality_action"] == "FULL_ALLOCATION_ELIGIBLE"
-    assert member["quality_action"] == "BUY_WAIT"
-    assert member["membership_intent"] == "EXCLUDE"
-    assert "strategy_intelligence_buy_wait" in member["reason_codes"]
+    assert member["quality_action"] == "BUY_REVIEW_REQUIRED"
+    assert member["membership_intent"] == "UNRESOLVED"
+    assert "strategy_intelligence_eligibility_not_pass" in member["reason_codes"]
     assert payload["upstream_artifacts"]["strategy_intelligence"]["production_evidence_allowed"] is True
 
 
@@ -154,6 +154,41 @@ def test_phase30_ae1_pm_exposes_canonical_position_campaign_id_from_si(tmp_path:
     assert position["position_campaign_id"] == "pc-11110-0001"
     assert position["strategy_intelligence_campaign_id"] == "pc-11110-0001"
     assert position["position_campaign_id"] != "runtime-current-11110"
+
+
+def test_phase31_g108_pm_hold_not_unresolved_when_runtime_fill_campaign_identity_complete(tmp_path: Path) -> None:
+    si_path = _write_strategy_intelligence_with_campaign(tmp_path, action="HOLD")
+
+    payload, _ = build_position_management_payload(
+        business_date=BUSINESS_DATE,
+        market_context_artifact_path=_write_pm_market_context(tmp_path),
+        corporate_event_artifact_path=_write_pm_corporate_event(tmp_path),
+        portfolio_policy_artifact_path=_write_pm_portfolio_policy(tmp_path),
+        existing_pm_decisions=[
+            {
+                "security_code": "11110",
+                "action": "HOLD",
+                "intensity": "NONE",
+                "confidence": 0.8,
+                "lifecycle_reference": "runtime-current-11110",
+                "reason_codes": ["trend_continuation"],
+            }
+        ],
+        runtime_current_positions=[{"security_code": "11110", "quantity": 100, "position_id": "pos-11110"}],
+        position_lifecycle_summary=_pm_summary(tmp_path, "lifecycle"),
+        technical_feature_summary=_pm_summary(tmp_path, "features"),
+        opportunity_summary=_pm_summary(tmp_path, "opportunity"),
+        accepted_generation_reference=_generation(tmp_path),
+        strategy_intelligence_artifact_path=si_path,
+    )
+
+    position = payload["positions"][0]
+    assert position["strategy_intelligence_consumer_status"] == "CONNECTED"
+    assert position["action"] == "HOLD"
+    assert position["position_campaign_id"] == "pc-11110-0001"
+    assert "structured_hold_worthiness_review_required" not in position["reason_codes"]
+    assert position["strategy_intelligence_hold_worthiness_evidence"]["campaign_identity_authority_status"] == "COMPLETE"
+    assert "canonical_campaign_identity_missing" not in position["strategy_intelligence_hold_worthiness_evidence"]["reason_codes"]
 
 
 def _write_strategy_intelligence(tmp_path: Path, *, cq_complete: bool, held: bool = False) -> Path:
@@ -229,19 +264,25 @@ def _write_strategy_intelligence(tmp_path: Path, *, cq_complete: bool, held: boo
     return Path(result.artifact_path)
 
 
-def _write_strategy_intelligence_with_campaign(tmp_path: Path) -> Path:
+def _write_strategy_intelligence_with_campaign(tmp_path: Path, *, action: str = "ADD") -> Path:
     path = _write_strategy_intelligence(tmp_path, cq_complete=True, held=True)
     payload = json.loads(path.read_text(encoding="utf-8"))
     row = payload["symbol_intelligence"]["11110"]
+    row["current_decision"]["pm_action"] = action
     row["lifecycle_context"].update(
         {
             "position_campaign_id": "pc-11110-0001",
+            "campaign_opened_date": "2026-07-12",
+            "campaign_status": "OPEN",
             "campaign_identity_authority_status": "COMPLETE",
             "campaign_age_business_days": 3,
+            "missing_campaign_authority_fields": [],
             "add_history_summary": {"event_count": 0},
             "reduce_history_summary": {"event_count": 0},
         }
     )
+    row["continuation_quality"]["status"] = "PASS"
+    row["downside_risk"]["status"] = "PASS"
     _write_json(path, payload)
     return path
 

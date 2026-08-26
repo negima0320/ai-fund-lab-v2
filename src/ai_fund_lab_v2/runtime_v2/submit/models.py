@@ -42,6 +42,8 @@ class RuntimeV2SubmitCommand:
     live_order_allowed: bool
     source_current_path: str = "pending_order_plan/pending_order_plan.json"
     listed_info: dict[str, Any] | None = None
+    strategy_authority_lineage: dict[str, Any] | None = None
+    strategy_authority_lineage_hash: str = ""
 
 
 @dataclass(frozen=True)

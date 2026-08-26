@@ -126,6 +126,12 @@ def _normalize_order(
         remaining_quantity=float(payload.get("remaining_quantity", 0)),
         accepted_at=str(payload.get("accepted_at", "")),
         updated_at=str(payload.get("updated_at", as_of)),
+        strategy_authority_lineage=(
+            dict(payload["strategy_authority_lineage"])
+            if isinstance(payload.get("strategy_authority_lineage"), Mapping)
+            else None
+        ),
+        strategy_authority_lineage_hash=str(payload.get("strategy_authority_lineage_hash") or ""),
     )
 
 

@@ -1088,7 +1088,18 @@ def _sell_intent_class(item: PendingOrderItem | None) -> str:
     if item is None:
         return ""
     contract = item.quantity_contract or {}
-    source = str(contract.get("source_decision") or item.source_decision_type or item.pending_item_id or "").upper()
+    source = " ".join(
+        str(value or "")
+        for value in (
+            contract.get("source_decision"),
+            contract.get("planning_intent"),
+            contract.get("source_planning_id"),
+            item.source_decision_type,
+            item.planning_authority_source,
+            item.policy_source,
+            item.pending_item_id,
+        )
+    ).upper()
     if "EXIT" in source:
         return "EXIT"
     if "REDUCE" in source or "PARTIAL" in source:

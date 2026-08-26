@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ai_fund_lab_v2.runtime_v2.guard_taxonomy import (
+    normalize_review_result,
+    taxonomy_consumer_summary,
+)
 from ai_fund_lab_v2.runtime_v2.pending.lifecycle import PENDING_STATE_CONTRACT
 from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
     build_pending_review_scope_authority,
@@ -89,6 +93,62 @@ def run_pending_lifecycle_review(
             },
         )
     submit_evidence = _submit_attempt_evidence(root=root, pending_plan_id=pending_plan_id)
+    terminal_only_cross_day = _terminal_only_cross_day_closure_authority(
+        payload=payload,
+        business_date=business_date,
+        submit_evidence=submit_evidence,
+    )
+    submit_evidence = {
+        **submit_evidence,
+        "terminal_only_cross_day_closure": terminal_only_cross_day,
+    }
+    if terminal_only_cross_day["status"] == "PASS":
+        return _transition_terminal(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            new_state="EXPIRED",
+            reason="GENERIC_TERMINAL_ONLY_PRIOR_DAY_PENDING_EXPIRED",
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "unknown_submit_risk": False,
+            },
+            empty_slot=True,
+        )
+    mixed_sell_continuation_terminal = _mixed_buy_review_sell_continuation_terminalization_authority(
+        root=root,
+        business_date=business_date,
+        payload=payload,
+        submit_evidence=submit_evidence,
+    )
+    if mixed_sell_continuation_terminal["status"] == "PASS":
+        return _transition_terminal(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            new_state="EXPIRED",
+            reason="MIXED_BUY_REVIEW_SELL_CONTINUATION_RESIDUAL_BUY_REVIEW_EXPIRED",
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "unknown_submit_risk": False,
+                "mixed_buy_review_sell_continuation_terminalization": mixed_sell_continuation_terminal,
+            },
+            empty_slot=True,
+        )
+    if mixed_sell_continuation_terminal["status"] == "REVIEW_REQUIRED":
+        return _transition_to_review_required(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            reason=mixed_sell_continuation_terminal["reason"],
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "mixed_buy_review_sell_continuation_terminalization": mixed_sell_continuation_terminal,
+            },
+        )
     stale_residual_buy_review = _stale_partial_submitted_buy_review_expiration_authority(
         payload=payload,
         business_date=business_date,
@@ -314,6 +374,15 @@ def _transition_to_review_required(
     transitioned_at: str,
     submit_evidence: dict[str, Any],
 ) -> PendingLifecycleResult:
+    if not submit_evidence.get("review_guard_results"):
+        guard = _pending_lifecycle_review_guard(reason=reason, payload=payload)
+        submit_evidence = {
+            **submit_evidence,
+            "review_guard_results": [guard],
+            "review_guard_summary": taxonomy_consumer_summary([guard]),
+            "review_guard_classes": [str(guard.get("guard_class") or "")],
+            "review_guard_codes": [str(guard.get("guard_code") or "")],
+        }
     history_path = _write_history(
         root=root,
         pending_path=pending_path,
@@ -402,6 +471,18 @@ def _write_history(
             "stale_residual_buy_review_expiration",
             {"status": "NOT_APPLICABLE"},
         ),
+        "mixed_buy_review_sell_continuation_terminalization": submit_evidence.get(
+            "mixed_buy_review_sell_continuation_terminalization",
+            {"status": "NOT_APPLICABLE"},
+        ),
+        "terminal_only_cross_day_closure": submit_evidence.get(
+            "terminal_only_cross_day_closure",
+            {"status": "NOT_APPLICABLE"},
+        ),
+        "review_guard_results": submit_evidence.get("review_guard_results", []),
+        "review_guard_summary": submit_evidence.get("review_guard_summary", taxonomy_consumer_summary([])),
+        "review_guard_classes": submit_evidence.get("review_guard_classes", []),
+        "review_guard_codes": submit_evidence.get("review_guard_codes", []),
         "pending_payload": payload,
     }
     _write_json(history_path, history)
@@ -454,6 +535,18 @@ def _manifest_transition_fields(
             "stale_residual_buy_review_expiration",
             {"status": "NOT_APPLICABLE"},
         ),
+        "mixed_buy_review_sell_continuation_terminalization": submit_evidence.get(
+            "mixed_buy_review_sell_continuation_terminalization",
+            {"status": "NOT_APPLICABLE"},
+        ),
+        "terminal_only_cross_day_closure": submit_evidence.get(
+            "terminal_only_cross_day_closure",
+            {"status": "NOT_APPLICABLE"},
+        ),
+        "review_guard_results": submit_evidence.get("review_guard_results", []),
+        "review_guard_summary": submit_evidence.get("review_guard_summary", taxonomy_consumer_summary([])),
+        "review_guard_classes": submit_evidence.get("review_guard_classes", []),
+        "review_guard_codes": submit_evidence.get("review_guard_codes", []),
         "pending_lifecycle_terminal_status": new_state if new_state in TERMINAL_STATES else "",
         "pending_lifecycle_terminal_reason": reason if new_state in TERMINAL_STATES else "",
         "broker_write_performed": bool(submit_evidence.get("broker_write_performed", False)),
@@ -462,11 +555,85 @@ def _manifest_transition_fields(
     }
 
 
+def _pending_lifecycle_review_guard(*, reason: str, payload: dict[str, Any]) -> dict[str, Any]:
+    authority = build_pending_review_scope_authority(payload)
+    guard_reason = f"pending_lifecycle_authority_handoff_unresolved:{reason}"
+    return normalize_review_result(
+        producer="runtime_v2.pending.lifecycle_runner",
+        reason=guard_reason,
+        source_payload={
+            "pending_review_scope_contract_id": authority.contract_id,
+            "review_scope": authority.review_scope,
+            "reviewed_buy_item_ids": list(authority.reviewed_buy_item_ids),
+            "reviewed_sell_item_ids": list(authority.reviewed_sell_item_ids),
+            "executable_item_ids": list(authority.executable_item_ids),
+            "executable_sell_item_ids": list(authority.executable_sell_item_ids),
+            "structural_validity": authority.structural_validity,
+        },
+        affected_item_ids=list(authority.reviewed_item_ids + authority.executable_item_ids),
+    )
+
+
+def _terminal_only_cross_day_closure_authority(
+    *,
+    payload: dict[str, Any],
+    business_date: str,
+    submit_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    authority = build_pending_review_scope_authority(payload, slot_status=_state(payload), active_pending=True)
+    target_session_date = str(payload.get("target_session_date") or "")
+    prior_day_pending = bool(target_session_date and target_session_date < business_date)
+    checks = {
+        "prior_day_pending": prior_day_pending,
+        "review_required_container": _state(payload) == "REVIEW_REQUIRED",
+        "structural_validity_pass": authority.structural_validity == "PASS",
+        "terminal_items_present": bool(authority.terminal_item_ids),
+        "non_terminal_item_ids_empty": not authority.non_terminal_item_ids,
+        "reviewed_item_ids_empty": not authority.reviewed_item_ids,
+        "executable_item_ids_empty": not authority.executable_item_ids,
+        "batch_not_blocked": not authority.batch_blocked,
+        "post_send_unknown_absent": not bool(submit_evidence.get("post_send_unknown_detected")),
+    }
+    status = "PASS" if all(checks.values()) else "NOT_APPLICABLE"
+    return {
+        "status": status,
+        "reason": (
+            "generic_terminal_only_prior_day_pending_closure_ready"
+            if status == "PASS"
+            else "generic_terminal_only_prior_day_pending_closure_not_applicable"
+        ),
+        "authority": "PendingReviewScopeAuthority",
+        "pending_review_scope_contract_id": authority.contract_id,
+        "pending_review_scope_contract_version": authority.contract_version,
+        "pending_plan_id": str(payload.get("pending_plan_id") or ""),
+        "original_target_session_date": target_session_date,
+        "closure_business_date": business_date,
+        "closure_state": "EXPIRED",
+        "terminal_item_ids": list(authority.terminal_item_ids),
+        "non_terminal_item_ids": list(authority.non_terminal_item_ids),
+        "reviewed_item_ids": list(authority.reviewed_item_ids),
+        "executable_item_ids": list(authority.executable_item_ids),
+        "batch_blocked": authority.batch_blocked,
+        "batch_block_reason": authority.batch_block_reason,
+        "malformed_reasons": list(authority.malformed_reasons),
+        "terminal_item_count": len(authority.terminal_item_ids),
+        "non_terminal_item_count": len(authority.non_terminal_item_ids),
+        "true_review_count": len(authority.reviewed_item_ids),
+        "retryable_count": len(authority.executable_item_ids),
+        "unknown_submit_risk": bool(submit_evidence.get("unknown_submit_risk")),
+        "post_send_unknown_detected": bool(submit_evidence.get("post_send_unknown_detected")),
+        "checks": checks,
+        "stale_intent_carry_forward": False if status == "PASS" else None,
+        "next_day_fresh_decision_required": True if status == "PASS" else None,
+    }
+
+
 def _submit_attempt_evidence(*, root: Path, pending_plan_id: str) -> dict[str, Any]:
     manifest_root = root / "runtime_state" / "run_manifest"
     submit_paths: list[str] = []
     attempt = False
     unknown = False
+    post_send_unknown = False
     if manifest_root.exists():
         for path in sorted(manifest_root.glob("*/*.json")):
             try:
@@ -485,11 +652,154 @@ def _submit_attempt_evidence(*, root: Path, pending_plan_id: str) -> dict[str, A
             stage_text = json.dumps(stages, ensure_ascii=False)
             request_attempted = "request_attempted" in stage_text or "broker_request" in stage_text
             attempt = attempt or submitted_count > 0 or bool(prohibited.get("demo_submit_executed")) or request_attempted
-            unknown = unknown or "POST_SEND_UNKNOWN" in text or "unknown" in str(payload.get("final_state") or "").lower()
+            manifest_unknown = "POST_SEND_UNKNOWN" in text or "unknown" in str(payload.get("final_state") or "").lower()
+            unknown = unknown or manifest_unknown
+            post_send_unknown = post_send_unknown or manifest_unknown
     return {
         "submit_attempt_detected": attempt,
         "unknown_submit_risk": attempt or unknown,
+        "post_send_unknown_detected": post_send_unknown,
         "submit_manifest_paths": submit_paths,
+    }
+
+
+def _mixed_buy_review_sell_continuation_terminalization_authority(
+    *,
+    root: Path,
+    business_date: str,
+    payload: dict[str, Any],
+    submit_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    authority = build_pending_review_scope_authority(payload)
+    target_session_date = authority.target_session_date
+    reviewed_buy_items = _items_by_ids(payload, authority.reviewed_buy_item_ids)
+    executable_sell_items = _items_by_ids(payload, authority.executable_sell_item_ids)
+    applicable = (
+        authority.lifecycle_state == "REVIEW_REQUIRED"
+        and authority.review_scope == "BUY_ITEM_SCOPED_REVIEW"
+        and bool(target_session_date)
+        and target_session_date < business_date
+        and authority.structural_validity == "PASS"
+        and authority.sell_continuation_allowed
+        and bool(authority.reviewed_buy_item_ids)
+        and bool(authority.executable_sell_item_ids)
+        and not authority.executable_buy_item_ids
+        and not authority.reviewed_sell_item_ids
+    )
+    base = {
+        "contract_id": "mixed_buy_review_sell_continuation_terminalization_authority",
+        "contract_version": "phase31_a2_v1",
+        "producer": "runtime_v2.pending.lifecycle_runner",
+        "pending_plan_id": str(payload.get("pending_plan_id") or ""),
+        "business_date": business_date,
+        "original_target_session_date": target_session_date,
+        "pending_review_scope_authority": authority.to_dict(),
+        "reviewed_buy_item_ids": list(authority.reviewed_buy_item_ids),
+        "executable_sell_item_ids": list(authority.executable_sell_item_ids),
+        "reviewed_buy_auto_approved": False,
+        "reviewed_buy_submitted": False,
+        "reviewed_buy_filled": False,
+        "valid_sell_continuation_preserved": True,
+        "new_day_buy_requires_fresh_authority": True,
+    }
+    if not applicable:
+        return {
+            **base,
+            "status": "NOT_APPLICABLE",
+            "reason": "not_mixed_buy_review_sell_continuation_residual",
+        }
+
+    submit = _latest_job_manifest(root=root, business_date=target_session_date, job="submit")
+    execution = _latest_job_manifest(root=root, business_date=target_session_date, job="execution")
+    submit_path: Path | None = None
+    execution_path: Path | None = None
+    submit_payload: dict[str, Any] = {}
+    execution_payload: dict[str, Any] = {}
+    submit_details: dict[str, Any] = {}
+    execution_details: dict[str, Any] = {}
+    if submit is not None:
+        submit_path, submit_payload = submit
+        submit_details = _manifest_stage_details(submit_payload, "runtime_v2_submit_pipeline")
+    if execution is not None:
+        execution_path, execution_payload = execution
+        execution_details = _manifest_stage_details(execution_payload, "runtime_v2_execution_readonly_pipeline")
+
+    sell_count = len(authority.executable_sell_item_ids)
+    submit_submitted_count = _max_int_from_sources(
+        submit_payload,
+        submit_details,
+        ("submitted_count", "submitted_order_count", "final_submitted_order_count"),
+    )
+    execution_submitted_count = _max_int_from_sources(
+        execution_payload,
+        execution_details,
+        ("submitted_order_count", "submitted_count", "orders_count"),
+    )
+    fill_count = _max_int_from_sources(execution_payload, execution_details, ("fill_count", "fills_count", "executions_count"))
+    execution_terminal = _execution_terminal_reconciled(execution_payload=execution_payload, execution_details=execution_details)
+    checks = {
+        "pending_review_scope_structural_valid": authority.structural_validity == "PASS",
+        "review_scope_buy_item_scoped": authority.review_scope == "BUY_ITEM_SCOPED_REVIEW",
+        "target_session_date_elapsed": bool(target_session_date) and target_session_date < business_date,
+        "reviewed_sell_items_absent": not authority.reviewed_sell_item_ids,
+        "reviewed_buy_items_present": bool(authority.reviewed_buy_item_ids),
+        "reviewed_buy_items_known": all(bool(item) for item in reviewed_buy_items),
+        "reviewed_buy_remain_review_required": all(
+            str(item.get("side") or "").upper() == "BUY"
+            and str(item.get("state") or "").upper() == "REVIEW_REQUIRED"
+            and item.get("approved") is not True
+            for item in reviewed_buy_items
+        ),
+        "reviewed_buy_not_submitted_or_filled": all(not _pending_item_has_submit_or_fill_evidence(item) for item in reviewed_buy_items),
+        "executable_buy_items_absent": not authority.executable_buy_item_ids,
+        "executable_sell_items_present": bool(authority.executable_sell_item_ids),
+        "executable_sell_items_known": all(bool(item) for item in executable_sell_items),
+        "executable_sell_items_allowed": authority.sell_continuation_allowed,
+        "submit_manifest_present": submit is not None,
+        "submit_exit_code_zero": _int_value(submit_payload.get("exit_code"), 0) == 0,
+        "submit_not_post_send_unknown": str(submit_payload.get("final_state") or "").upper() != "POST_SEND_UNKNOWN",
+        "submit_stage_pass": str(submit_details.get("status") or submit_payload.get("final_state") or "") in {"PASS", "CURRENT_STATE_LOADED"},
+        "submit_pending_plan_matches": str(submit_details.get("pending_plan_id") or submit_payload.get("pending_plan_id") or "") == str(payload.get("pending_plan_id") or ""),
+        "submit_submitted_sell_count_sufficient": submit_submitted_count >= sell_count,
+        "execution_manifest_present": execution is not None,
+        "execution_exit_code_zero": _int_value(execution_payload.get("exit_code"), 0) == 0,
+        "execution_final_state_loaded": str(execution_payload.get("final_state") or "") == "CURRENT_STATE_LOADED",
+        "execution_stage_pass": str(execution_details.get("status") or "") == "PASS",
+        "execution_submitted_sell_count_sufficient": execution_submitted_count >= sell_count,
+        "execution_fill_count_sufficient": fill_count >= sell_count,
+        "execution_terminal_reconciled": execution_terminal,
+        "no_broker_write_uncertainty": not _broker_write_performed(submit_payload) and not _broker_write_performed(execution_payload),
+        "no_unknown_submit_risk_after_execution_terminal": execution_terminal
+        and str(submit_payload.get("final_state") or "").upper() != "POST_SEND_UNKNOWN",
+        "no_unresolved_execution_ambiguity": execution_terminal,
+        "pending_not_whole_plan_consumed": not _consumed(payload),
+    }
+    status = "PASS" if all(checks.values()) else "REVIEW_REQUIRED"
+    reason = (
+        "mixed_buy_review_sell_continuation_residual_buy_review_expired"
+        if status == "PASS"
+        else "mixed_buy_review_sell_continuation_terminalization_checks_failed"
+    )
+    return {
+        **base,
+        "status": status,
+        "reason": reason,
+        "checks": checks,
+        "submit_manifest_path": str(submit_path or ""),
+        "execution_manifest_path": str(execution_path or ""),
+        "submit_submitted_count": submit_submitted_count,
+        "execution_submitted_count": execution_submitted_count,
+        "execution_fill_count": fill_count,
+        "pending_lifecycle_terminal_status": "EXPIRED" if status == "PASS" else "",
+        "pending_lifecycle_terminal_reason": "MIXED_BUY_REVIEW_SELL_CONTINUATION_RESIDUAL_BUY_REVIEW_EXPIRED"
+        if status == "PASS"
+        else "",
+        "residual_review_lifecycle_invariant": (
+            "When canonical Pending review scope is BUY_ITEM_SCOPED_REVIEW, reviewed SELL is absent, "
+            "reviewed BUY remains unsubmitted/unfilled, and executable SELL continuation reached terminal "
+            "execution and reconciliation, the stale residual reviewed BUY authority expires without "
+            "auto-approval before the next session."
+        ),
     }
 
 
@@ -632,6 +942,45 @@ def _stale_partial_submitted_buy_review_expiration_authority(
         if status == "PASS"
         else "",
     }
+
+
+def _items_by_ids(payload: dict[str, Any], item_ids: tuple[str, ...]) -> list[dict[str, Any]]:
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    by_id = {
+        str(item.get("pending_item_id") or ""): item
+        for item in items
+        if isinstance(item, dict) and str(item.get("pending_item_id") or "")
+    }
+    return [by_id.get(str(item_id), {}) for item_id in item_ids]
+
+
+def _max_int_from_sources(
+    payload: dict[str, Any],
+    details: dict[str, Any],
+    fields: tuple[str, ...],
+) -> int:
+    values = [_int_value(payload.get(field), -1) for field in fields]
+    values.extend(_int_value(details.get(field), -1) for field in fields)
+    return max(values) if values else -1
+
+
+def _execution_terminal_reconciled(*, execution_payload: dict[str, Any], execution_details: dict[str, Any]) -> bool:
+    if not execution_payload:
+        return False
+    terminal_status_fields = (
+        execution_details.get("execution_acceptance_status"),
+        execution_details.get("reconcile_status"),
+        execution_details.get("transaction_consistency_status"),
+        execution_details.get("ledger_commit_status"),
+        execution_details.get("current_apply_status"),
+    )
+    explicit_pass = any(str(value or "").upper() in {"PASS", "APPLIED"} for value in terminal_status_fields)
+    return bool(
+        _int_value(execution_payload.get("exit_code"), 0) == 0
+        and str(execution_payload.get("final_state") or "") == "CURRENT_STATE_LOADED"
+        and str(execution_details.get("status") or "") == "PASS"
+        and explicit_pass
+    )
 
 
 def _pending_item_has_submit_or_fill_evidence(item: dict[str, Any]) -> bool:

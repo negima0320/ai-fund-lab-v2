@@ -19182,6 +19182,151 @@ Recommended next task:
 Phase31-A - User-Operated Fresh 100BD Validation
 ```
 
+## Phase31 Final Closure - Phase32 Entry
+
+Phase31 is formally closed by `Phase31-G139`.
+
+Primary closure judgment:
+
+```text
+G139_PHASE31_CLOSED_PERFORMANCE_IMPROVEMENT_COMPLETE_PHASE32_DEMO_PRODUCTION_READINESS_HANDOFF_READY
+PHASE31_OBJECTIVE_COMPLETED = YES
+PERFORMANCE_IMPROVEMENT_TRACK_STATUS = COMPLETED_FOR_CURRENT_RELEASE_BASELINE
+CURRENT_STRATEGY_BASELINE_ACCEPTED = YES
+UNRESOLVED_MANDATORY_PERFORMANCE_DEFECT = NO
+PHASE31_CLOSED = YES
+PHASE32_ENTRY_APPROVED = YES
+PHASE32_IMPLEMENTATION_STARTED = NO
+```
+
+Phase31 objective was:
+
+```text
+LONG_HORIZON_STRATEGY_PERFORMANCE_CHARACTERIZATION_AND_IMPROVEMENT
+```
+
+Phase31 completed the current-release Performance Improvement baseline by
+restoring long-horizon runtime continuity, validating measurement integrity,
+refining Market Quality / Risk Pacing / capital competition, repairing BUY_ADD
+actual-path behavior, characterizing BULL / regime behavior, documenting
+future high-resolution capital value and portfolio rotation architecture, and
+validating March-April profit formation as real, explainable, and materially
+Strategy-causal.
+
+Current Phase31 performance authority:
+
+```text
+run_id = runtime-test-historical-extended-smoke-20260825T235520054579Z
+run_state_at_G139 = RUNNING
+completed_artifacts_at_G139 = 2022-10-03 through 2023-07-27
+G138_primary_causality_window = 2023-03-01 through 2023-04-28
+CONTINUING_HISTORICAL_RUN_BLOCKS_CLOSURE = NO
+```
+
+Preserved G138 conclusions:
+
+```text
+PROFIT_MEASUREMENT_INTEGRITY = PASS
+ARTIFICIAL_PNL_MATERIAL_TO_MARCH_APRIL_GAIN = NO
+SECURITY_LEVEL_PNL_ATTRIBUTION = COMPLETE
+PROFIT_FORMATION_CONCENTRATION = FEW_WINNER_DOMINATED
+MAJOR_WINNERS_HAD_CONTEMPORANEOUS_SELECTION_EVIDENCE = YES
+PROFIT_WAS_PRIMARILY_SECURITY_SELECTION_DRIVEN = YES
+PROFIT_WAS_PRIMARILY_WINNER_RETENTION_DRIVEN = YES
+PROFIT_FORMATION_MATCHES_INVESTMENT_PHILOSOPHY = YES
+CURRENT_SYSTEM_CAPTURED_MAJOR_WINNERS_DESPITE_RESOLUTION_LIMIT = YES
+CURRENT_STRONG_PERFORMANCE_IS_EXPLAINABLE = YES
+CURRENT_STRONG_PERFORMANCE_IS_STRATEGY_CAUSAL = YES
+UNRESOLVED_MANDATORY_PERFORMANCE_DEFECT = NO
+```
+
+G138's `GOOD_PERFORMANCE_FOR_RIGHT_REASONS = PARTIAL` is not a Phase31 closure
+blocker. It reflects the documented high-resolution capital-value capability
+limitation, not a proven mandatory implementation defect. Major winners were
+actually captured, and future High-Resolution Value / Portfolio Rotation work
+has been preserved as optional future architecture.
+
+Deferred optional capabilities:
+
+```text
+canonical_high_resolution_marginal_capital_value.v1 = SHADOW_RESEARCH_CANDIDATE / FUTURE_OPTIONAL
+canonical_portfolio_rotation_opportunity_cost.v1 = FUTURE_OPTIONAL
+HIGH_RESOLUTION_VALUE_STATUS = DEFERRED_OPTIONAL
+PORTFOLIO_ROTATION_STATUS = DEFERRED_OPTIONAL
+```
+
+Phase31 closure does not authorize restoring deprecated Strategy fallback,
+legacy Capital Allocation, historical-only tuning, canonical authority bypass,
+Runtime Strategy redecision, BUY/SELL coupling, or future-data-based
+optimization.
+
+Phase32 title:
+
+```text
+Phase32 - Demo / Production Readiness
+```
+
+Phase32 objective:
+
+```text
+PHASE32_DEMO_AND_PRODUCTION_READINESS
+```
+
+Phase32 entry contract:
+
+```text
+Phase31 Strategy/performance baseline is accepted.
+No performance tuning is a default Phase32 objective.
+Strategy modifications require evidence of a real defect or explicit
+user-approved new performance initiative.
+Demo / Production readiness is the primary authority.
+Long Historical execution remains user-operated.
+No production activation without explicit user approval.
+No real order submission without explicit operational gate and approval.
+Canonical Runtime / Strategy / Safety authorities must be preserved.
+STRATEGY_ACCEPTANCE != PRODUCTION_OPERATIONAL_ACCEPTANCE.
+```
+
+Phase32 readiness targets:
+
+- Demo environment correctness;
+- Production-equivalent Runtime path;
+- broker connectivity / API contract;
+- market data readiness;
+- account / cash / position authority;
+- order planning;
+- submit / cancel / fill lifecycle;
+- reconciliation;
+- corporate actions;
+- restart / resume / idempotency;
+- pending-order safety;
+- operational safety;
+- observability;
+- daily operating workflow;
+- alerts / incident handling;
+- fail-closed behavior;
+- manual intervention boundaries;
+- production configuration separation;
+- secrets / credential handling;
+- audit trail;
+- rollback / recovery;
+- paper/demo-to-production migration gates.
+
+Deliverables:
+
+```text
+docs/phase_reports/phase31_final_summary_and_phase32_handoff.md
+docs/phase_reports/phase31_g139_phase31_final_closure_performance_improvement_completion.md
+docs/phase_reports/phase31_to_phase32_chatgpt_handoff.md
+docs/01_requirements/phase_roadmap.md
+```
+
+Recommended next task:
+
+```text
+Phase32-A - Demo / Production Readiness Scope and Operational Gate Inventory
+```
+
 ## Phase30-AK9R30 - Canonical Quantity / Cash Authority Consumer Contract Audit and Cleanup
 
 Phase30-AK9R30 completed the read-only-first consumer contract audit for

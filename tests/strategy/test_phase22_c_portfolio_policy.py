@@ -204,6 +204,99 @@ def test_phase22_c_artifact_hash_is_stable_and_detects_mismatch(tmp_path: Path) 
     assert payload["artifact_hash"] != portfolio_policy_hash(payload)
 
 
+def test_phase31_g28_risk_pacing_authoritative_maps_market_quality(tmp_path: Path) -> None:
+    cases = [
+        ("HEALTHY_EXPANSION", "COMPLETE", "NORMAL_DEPLOYMENT", ["RISK_PACING_NORMAL"]),
+        ("RECOVERY_CONFIRMATION_INCOMPLETE", "COMPLETE", "GRADUAL_REDEPLOYMENT", ["RISK_PACING_GRADUAL_REDEPLOYMENT"]),
+        ("SHORT_TERM_NARROWING_WITH_MEDIUM_STRENGTH", "COMPLETE", "CAUTIOUS_DEPLOYMENT", ["RISK_PACING_CAUTIOUS"]),
+        ("CONFLICTED_MARKET_STRUCTURE", "PARTIAL", "CAUTIOUS_DEPLOYMENT", ["RISK_PACING_CAUTIOUS"]),
+        ("INSUFFICIENT_EVIDENCE", "INSUFFICIENT", "PRESERVE_OPTIONALITY", ["RISK_PACING_INSUFFICIENT_MARKET_QUALITY", "RISK_PACING_PRESERVE_OPTIONALITY"]),
+    ]
+    for quality, completeness, expected_intent, expected_reasons in cases:
+        payload, _ = build_portfolio_policy_payload(
+            business_date="2026-07-15",
+            market_context_artifact_path=_write_market_context(
+                tmp_path / quality,
+                accepted=True,
+                market_quality_state=quality,
+                market_quality_evidence_completeness=completeness,
+            ),
+            corporate_event_artifact_path=_write_corporate_event(tmp_path / quality, accepted=True),
+            candidate_summary=_summary(tmp_path / quality, "candidate"),
+            opportunity_summary=_summary(tmp_path / quality, "opportunity"),
+            current_portfolio_summary={"position_count": 0},
+            current_cash_summary={"cash_available": 1000000},
+            current_exposure_summary={"gross_exposure": 0},
+            policy_config=_config(tmp_path / quality),
+        )
+        assert payload["risk_pacing_intent"] == expected_intent
+        assert payload["risk_pacing_reason_codes"] == expected_reasons
+        assert payload["risk_pacing_authority"]["owner"] == "PORTFOLIO_POLICY"
+        assert payload["risk_pacing_authority"]["authoritative_consumer"] == "PORTFOLIO_CONSTRUCTION"
+        assert payload["risk_pacing_authority"]["authoritative_consumer_count"] == 1
+        assert payload["risk_pacing_authority"]["shadow_path_removed"] is True
+        assert payload["risk_pacing_mode"] == "AUTHORITATIVE"
+        assert payload["risk_pacing_as_of"] == "2026-07-15"
+        assert payload["risk_pacing_component_evidence"]["future_information_used"] is False
+        assert payload["risk_pacing_component_evidence"]["historical_outcome_used"] is False
+        assert payload["risk_pacing_component_evidence"]["evidence_feedback_used"] is False
+        assert "target_exposure_ratio" not in payload
+        assert "target_positions" not in payload
+        assert validate_portfolio_policy_artifact(payload)["status"] == "PASS"
+
+
+def test_phase31_g23_risk_pacing_missing_quality_fails_closed_and_is_deterministic(tmp_path: Path) -> None:
+    kwargs = dict(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path, accepted=True),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path, accepted=True),
+        candidate_summary=_summary(tmp_path, "candidate"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        policy_config=_config(tmp_path),
+    )
+    first, _ = build_portfolio_policy_payload(**kwargs)
+    second, _ = build_portfolio_policy_payload(**kwargs)
+
+    assert first["risk_pacing_intent"] == "PRESERVE_OPTIONALITY"
+    assert first["risk_pacing_reason_codes"] == ["RISK_PACING_INSUFFICIENT_MARKET_QUALITY"]
+    assert first["risk_pacing_evidence_completeness"] == "INSUFFICIENT"
+    assert first["risk_pacing_intent"] == second["risk_pacing_intent"]
+    assert first["risk_pacing_reason_codes"] == second["risk_pacing_reason_codes"]
+    assert first["risk_posture"] == second["risk_posture"] == "BALANCED"
+    assert first["entry_posture"] == second["entry_posture"] == "MAINTAIN"
+    assert first["target_position_count"] == second["target_position_count"]
+    assert first["target_gross_exposure_ratio"] == second["target_gross_exposure_ratio"]
+    assert first["risk_pacing_mode"] == "AUTHORITATIVE"
+    assert first["risk_pacing_authority"]["authoritative_consumer_count"] == 1
+
+
+def test_phase31_g23_risk_pacing_temporal_invalid_quality_is_not_normal(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(
+            tmp_path,
+            accepted=True,
+            market_quality_state="HEALTHY_EXPANSION",
+            market_quality_evidence_completeness="COMPLETE",
+            market_quality_as_of="2026-07-16",
+        ),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path, accepted=True),
+        candidate_summary=_summary(tmp_path, "candidate"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        policy_config=_config(tmp_path),
+    )
+
+    assert payload["risk_pacing_intent"] == "PRESERVE_OPTIONALITY"
+    assert "RISK_PACING_TEMPORAL_AUTHORITY_INVALID" in payload["risk_pacing_reason_codes"]
+    assert payload["risk_pacing_as_of"] == "2026-07-15"
+
+
 def test_phase29_j1_portfolio_policy_routes_dpc_capacity_to_dce_without_low_capacity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pp, "validate_market_context_compatibility", lambda *args, **kwargs: _compatible_result("market_context"))
     monkeypatch.setattr(pp, "validate_corporate_event_compatibility", lambda *args, **kwargs: _compatible_result("corporate_event"))
@@ -232,6 +325,203 @@ def test_phase29_j1_portfolio_policy_routes_dpc_capacity_to_dce_without_low_capa
     assert "internal_dynamic_cash_exposure:low_opportunity_capacity" not in payload["reason_codes"]
     assert dce_internal["target_gross_exposure_ratio"] == 1.0
     assert dce_internal["target_gross_exposure_ratio"] > 0.90
+
+
+def test_phase31_g56_capital_budget_envelope_schema_is_authoritative_without_trading_consumer(tmp_path: Path) -> None:
+    payload, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(
+            tmp_path,
+            accepted=True,
+            market_quality_state="SHORT_TERM_BREADTH_BREAKDOWN",
+            market_quality_evidence_completeness="COMPLETE",
+        ),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path, accepted=True),
+        candidate_summary=_summary(tmp_path, "candidate"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        pending_reservation_summary={"pending_reserved_cash": 0},
+        policy_config=_config(tmp_path),
+    )
+
+    envelope = payload["incremental_capital_budget_envelope"]
+
+    assert envelope["schema_version"] == "incremental_capital_budget_envelope.v1"
+    assert envelope["owner"] == "PORTFOLIO_POLICY"
+    assert envelope["authority_status"] == "AUTHORITATIVE"
+    assert envelope["planned_authoritative_consumer"] == "PORTFOLIO_CONSTRUCTION"
+    assert envelope["planned_authoritative_consumer_count"] == 1
+    assert envelope["authoritative_consumer_count"] == 0
+    assert envelope["trading_consumer_connected"] is False
+    assert envelope["portfolio_construction_decision_change_count"] == 0
+    assert envelope["position_sizing_decision_change_count"] == 0
+    assert envelope["runtime_order_intent_change_count"] == 0
+    assert envelope["profit_engine_preservation_evidence"]["deployment_intensity_is_not_security_admission"] is True
+    assert envelope["profit_engine_preservation_evidence"]["market_quality_hard_buy_gate_created"] is False
+    assert envelope["exploration_participation_semantic"]["reduced_risk_participation_possible"] is True
+    assert envelope["exploration_participation_semantic"]["no_buy_created_by_envelope"] is True
+    assert envelope["historical_outcome_used"] is False
+    assert envelope["paper_ledger_input_used"] is False
+    assert envelope["mfe_mae_input_used"] is False
+    assert envelope["test_result_input_used"] is False
+    assert envelope["audit_result_input_used"] is False
+    assert validate_portfolio_policy_artifact(payload)["status"] == "PASS"
+
+
+def test_phase31_g56_capital_budget_semantic_states_are_reachable(tmp_path: Path) -> None:
+    cases = [
+        ("healthy_bootstrap", "HEALTHY_EXPANSION", "COMPLETE", {"position_count": 0}, {"gross_exposure": 0}, "FULL_DEPLOYMENT_CAPACITY"),
+        ("healthy_invested", "HEALTHY_EXPANSION", "COMPLETE", {"position_count": 3}, {"gross_exposure": 500000}, "ELEVATED_DEPLOYMENT_CAPACITY"),
+        ("gradual", "RECOVERY_CONFIRMATION_INCOMPLETE", "COMPLETE", {"position_count": 2}, {"gross_exposure": 300000}, "SELECTIVE_DEPLOYMENT_CAPACITY"),
+        ("cautious_invested", "CONFLICTED_MARKET_STRUCTURE", "COMPLETE", {"position_count": 2}, {"gross_exposure": 300000}, "DEFENSIVE_DEPLOYMENT_CAPACITY"),
+        ("missing_quality", None, None, {"position_count": 0}, {"gross_exposure": 0}, "PRESERVE_MOST_OPTIONALITY"),
+    ]
+    observed = set()
+    for name, quality, completeness, portfolio, exposure, expected in cases:
+        case_dir = tmp_path / name
+        payload, _ = build_portfolio_policy_payload(
+            business_date="2026-07-15",
+            market_context_artifact_path=_write_market_context(
+                case_dir,
+                accepted=True,
+                market_quality_state=quality,
+                market_quality_evidence_completeness=completeness,
+            ),
+            corporate_event_artifact_path=_write_corporate_event(case_dir, accepted=True),
+            candidate_summary=_summary(case_dir, "candidate"),
+            opportunity_summary=_summary(case_dir, "opportunity"),
+            current_portfolio_summary=portfolio,
+            current_cash_summary={"cash_available": 1000000},
+            current_exposure_summary=exposure,
+            pending_reservation_summary={"pending_reserved_cash": 0},
+            policy_config=_config(case_dir),
+        )
+        capacity = payload["incremental_capital_budget_envelope"]["deployment_capacity_semantic"]
+        observed.add(capacity)
+        assert capacity == expected
+
+    assert observed == {
+        "FULL_DEPLOYMENT_CAPACITY",
+        "ELEVATED_DEPLOYMENT_CAPACITY",
+        "SELECTIVE_DEPLOYMENT_CAPACITY",
+        "DEFENSIVE_DEPLOYMENT_CAPACITY",
+        "PRESERVE_MOST_OPTIONALITY",
+    }
+
+
+def test_phase31_g56_bootstrap_residual_and_missing_evidence_semantics(tmp_path: Path) -> None:
+    bootstrap, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(
+            tmp_path / "bootstrap",
+            accepted=True,
+            market_quality_state="SHORT_TERM_BREADTH_BREAKDOWN",
+            market_quality_evidence_completeness="COMPLETE",
+        ),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path / "bootstrap", accepted=True),
+        candidate_summary=_summary(tmp_path / "bootstrap", "candidate"),
+        opportunity_summary=_summary(tmp_path / "bootstrap", "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        pending_reservation_summary={"pending_reserved_cash": 0},
+        policy_config=_config(tmp_path / "bootstrap"),
+    )
+    residual, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(
+            tmp_path / "residual",
+            accepted=True,
+            market_quality_state="SHORT_TERM_BREADTH_BREAKDOWN",
+            market_quality_evidence_completeness="COMPLETE",
+        ),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path / "residual", accepted=True),
+        candidate_summary=_summary(tmp_path / "residual", "candidate"),
+        opportunity_summary=_summary(tmp_path / "residual", "opportunity"),
+        current_portfolio_summary={"position_count": 1},
+        current_cash_summary={"cash_available": 250000},
+        current_exposure_summary={"gross_exposure": 750000},
+        pending_reservation_summary={"pending_reserved_cash": 0},
+        policy_config=_config(tmp_path / "residual"),
+    )
+    missing, _ = build_portfolio_policy_payload(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(tmp_path / "missing", accepted=True),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path / "missing", accepted=True),
+        candidate_summary=_summary(tmp_path / "missing", "candidate"),
+        opportunity_summary=_summary(tmp_path / "missing", "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        pending_reservation_summary={"pending_reserved_cash": 0},
+        policy_config=_config(tmp_path / "missing"),
+    )
+
+    bootstrap_envelope = bootstrap["incremental_capital_budget_envelope"]
+    residual_envelope = residual["incremental_capital_budget_envelope"]
+    missing_envelope = missing["incremental_capital_budget_envelope"]
+
+    assert bootstrap_envelope["bootstrap_or_residual_cash_state"] == "EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP"
+    assert residual_envelope["bootstrap_or_residual_cash_state"] == "RESIDUAL_OPTIONALITY_CASH"
+    assert bootstrap_envelope["deployment_capacity_semantic"] == "SELECTIVE_DEPLOYMENT_CAPACITY"
+    assert bootstrap_envelope["exploration_participation_semantic"]["bootstrap_automatic_full_deployment"] is False
+    assert bootstrap_envelope["exploration_participation_semantic"]["bootstrap_automatic_preserve_most_optionality"] is False
+    assert missing_envelope["evidence_completeness"] == "INSUFFICIENT"
+    assert missing_envelope["deployment_capacity_semantic"] == "PRESERVE_MOST_OPTIONALITY"
+    assert missing_envelope["deployment_capacity_semantic"] != "FULL_DEPLOYMENT_CAPACITY"
+
+
+def test_phase31_g56_envelope_is_deterministic_and_behavior_additive(tmp_path: Path) -> None:
+    kwargs = dict(
+        business_date="2026-07-15",
+        market_context_artifact_path=_write_market_context(
+            tmp_path,
+            accepted=True,
+            market_quality_state="HEALTHY_EXPANSION",
+            market_quality_evidence_completeness="COMPLETE",
+        ),
+        corporate_event_artifact_path=_write_corporate_event(tmp_path, accepted=True),
+        candidate_summary=_summary(tmp_path, "candidate"),
+        opportunity_summary=_summary(tmp_path, "opportunity"),
+        current_portfolio_summary={"position_count": 0},
+        current_cash_summary={"cash_available": 1000000},
+        current_exposure_summary={"gross_exposure": 0},
+        pending_reservation_summary={"pending_reserved_cash": 0},
+        policy_config=_config(tmp_path),
+    )
+    first, _ = build_portfolio_policy_payload(**kwargs)
+    second, _ = build_portfolio_policy_payload(**kwargs)
+    first_without_envelope = {key: value for key, value in first.items() if key != "incremental_capital_budget_envelope"}
+    second_without_envelope = {key: value for key, value in second.items() if key != "incremental_capital_budget_envelope"}
+
+    assert first["incremental_capital_budget_envelope"] == second["incremental_capital_budget_envelope"]
+    assert first_without_envelope == second_without_envelope
+    assert first["risk_pacing_intent"] == "NORMAL_DEPLOYMENT"
+    assert first["target_gross_exposure_ratio"] == second["target_gross_exposure_ratio"]
+    assert first["target_position_count"] == second["target_position_count"]
+    assert first["incremental_capital_budget_envelope"]["authoritative_consumer_count"] == 0
+
+
+def test_phase31_g56_missing_stale_and_malformed_envelope_fail_closed(tmp_path: Path) -> None:
+    payload = _produce(tmp_path).payload
+
+    missing = dict(payload)
+    missing.pop("incremental_capital_budget_envelope")
+    with pytest.raises(PortfolioPolicySchemaError):
+        validate_portfolio_policy_artifact(missing)
+
+    malformed = json.loads(json.dumps(payload))
+    malformed["incremental_capital_budget_envelope"]["authority_status"] = "EVIDENCE_ONLY_NON_AUTHORITATIVE"
+    with pytest.raises(PortfolioPolicySchemaError):
+        validate_portfolio_policy_artifact(malformed)
+
+    stale = json.loads(json.dumps(payload))
+    stale["incremental_capital_budget_envelope"]["market_quality_as_of"] = "2026-07-16"
+    stale["incremental_capital_budget_envelope"]["envelope_hash"] = portfolio_policy_hash({})
+    with pytest.raises(PortfolioPolicySchemaError):
+        validate_portfolio_policy_artifact(stale)
 
 
 def _produce(tmp_path: Path):
@@ -302,7 +592,11 @@ def _write_market_context(
     business_date: str = "2026-07-15",
     feature_date: str = "2026-07-15",
     accepted: bool = False,
+    market_quality_state: str | None = None,
+    market_quality_evidence_completeness: str | None = None,
+    market_quality_as_of: str | None = None,
 ) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "market_source.parquet"
     source.write_text("market-source", encoding="utf-8")
     payload = {
@@ -333,6 +627,21 @@ def _write_market_context(
         "metrics": {},
         "threshold_policy": {"status": "CONFIG_REQUIRED", "source": "", "values": None},
     }
+    if market_quality_state:
+        payload.update(
+            {
+                "market_quality_state": market_quality_state,
+                "market_quality_reason_codes": ["MARKET_QUALITY_HEALTHY"] if market_quality_state.startswith("HEALTHY") else [f"TEST_{market_quality_state}"],
+                "market_quality_evidence_completeness": market_quality_evidence_completeness or "COMPLETE",
+                "market_quality_component_evidence": {
+                    "schema_version": "market_quality_component_evidence.v1",
+                    "future_information_used": False,
+                    "historical_outcome_used": False,
+                    "evidence_feedback_used": False,
+                },
+                "market_quality_as_of": market_quality_as_of or feature_date,
+            }
+        )
     payload["artifact_hash"] = market_context.market_context_hash(payload)
     path = tmp_path / f"market_context_{business_date}_{feature_date}_{schema_version}.json"
     _write_json(path, payload)

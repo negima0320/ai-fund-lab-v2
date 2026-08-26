@@ -46,6 +46,8 @@ class LedgerOrderRecord(LedgerRecordBase):
     add_candidate_signal: bool = False
     capital_allocation_status: str = ""
     capital_allocation_reason: str = ""
+    strategy_authority_lineage: dict[str, Any] = field(default_factory=dict)
+    strategy_authority_lineage_hash: str = ""
 
 
 @dataclass(frozen=True)

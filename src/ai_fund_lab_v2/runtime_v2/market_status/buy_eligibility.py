@@ -33,6 +33,11 @@ REVIEW_STATUS_VALUES = {
     "HALTED",
     "SUSPENDED",
     "CORPORATE_ACTION_PENDING",
+    "ALERT",
+    "SPECIAL_CAUTION",
+    "SECURITY_ON_ALERT",
+    "LISTING_REVIEW",
+    "GOVERNANCE_RISK",
 }
 
 STATUS_FIELD_NAMES = (
@@ -45,7 +50,32 @@ STATUS_FIELD_NAMES = (
     "delisting_status",
     "lifecycle_status",
     "security_lifecycle_status",
+    "special_risk_status",
+    "alert_status",
+    "special_caution_status",
+    "governance_risk_status",
+    "listing_review_status",
 )
+
+UNKNOWN_SPECIAL_RISK_COVERAGE_VALUES = {
+    "UNKNOWN",
+    "MISSING",
+    "NOT_IMPLEMENTED",
+    "PARTIAL",
+    "UNAVAILABLE",
+    "SOURCE_UNAVAILABLE",
+    "RAW_EXISTS_NOT_CONNECTED",
+}
+
+NORMAL_SPECIAL_RISK_VALUES = {
+    "",
+    "NORMAL",
+    "NONE",
+    "NO_EVENT",
+    "KNOWN_NO_EVENT",
+    "NO_SPECIAL_RISK",
+    "BUY_ALLOWED",
+}
 
 DELISTING_DATE_FIELD_NAMES = (
     "delisting_date",
@@ -72,6 +102,9 @@ class BuyEligibilityResult:
     market_status: str = ""
     listing_status: str = ""
     special_supervision_status: str = ""
+    special_risk_coverage_state: str = ""
+    special_risk_state: str = ""
+    special_risk_eligibility: str = ""
     delisting_date: str = ""
     point_in_time: bool = True
     future_authority_used: bool = False
@@ -173,6 +206,22 @@ def evaluate_buy_eligibility(
             missing_authority=True,
         )
 
+    if _date_after(authority_as_of, business_date):
+        return _result_from_info(
+            info,
+            status="REVIEW_REQUIRED",
+            eligibility="REVIEW_REQUIRED",
+            reason_code="market_status_future_authority_rejected",
+            reason="BUY eligibility authority is dated after the business date",
+            symbol=normalized_symbol,
+            business_date=business_date,
+            authority_source=source,
+            authority_path=authority_path,
+            authority_hash=authority_hash,
+            authority_as_of=authority_as_of,
+            authority_type=authority_type,
+        )
+
     code = _normalize_symbol(info.get("code") or info.get("Code") or info.get("issue_code") or normalized_symbol)
     if code != normalized_symbol:
         return _result(
@@ -256,6 +305,23 @@ def evaluate_buy_eligibility(
                 authority_as_of=authority_as_of,
                 authority_type=authority_type,
             )
+
+    special_risk_review = _special_risk_review(info)
+    if special_risk_review:
+        return _result_from_info(
+            info,
+            status="REVIEW_REQUIRED",
+            eligibility="REVIEW_REQUIRED",
+            reason_code=special_risk_review,
+            reason="special-risk eligibility authority does not permit automatic new BUY",
+            symbol=normalized_symbol,
+            business_date=business_date,
+            authority_source=source,
+            authority_path=authority_path,
+            authority_hash=authority_hash,
+            authority_as_of=authority_as_of,
+            authority_type=authority_type,
+        )
 
     for field in DELISTING_DATE_FIELD_NAMES:
         delisting_date = _text(info.get(field))
@@ -355,6 +421,9 @@ def _result_from_info(
         market_status=_text(info.get("market_status") or info.get("MktNm") or info.get("market")),
         listing_status=_text(info.get("listing_status") or info.get("listed_status")),
         special_supervision_status=_text(info.get("special_supervision_status") or info.get("supervision_status")),
+        special_risk_coverage_state=_special_risk_coverage_state(info),
+        special_risk_state=_special_risk_state(info),
+        special_risk_eligibility=_special_risk_eligibility(info),
         delisting_date=_text(
             info.get("delisting_date")
             or info.get("scheduled_delisting_date")
@@ -380,6 +449,9 @@ def _result(
     market_status: str = "",
     listing_status: str = "",
     special_supervision_status: str = "",
+    special_risk_coverage_state: str = "",
+    special_risk_state: str = "",
+    special_risk_eligibility: str = "",
     delisting_date: str = "",
     missing_authority: bool = False,
     stale_authority: bool = False,
@@ -401,6 +473,9 @@ def _result(
         market_status=market_status,
         listing_status=listing_status,
         special_supervision_status=special_supervision_status,
+        special_risk_coverage_state=special_risk_coverage_state,
+        special_risk_state=special_risk_state,
+        special_risk_eligibility=special_risk_eligibility,
         delisting_date=delisting_date,
         missing_authority=missing_authority,
         stale_authority=stale_authority,
@@ -427,6 +502,49 @@ def _bool_false(value: Any) -> bool:
     if isinstance(value, bool):
         return value is False
     return str(value).strip().lower() in {"false", "0", "no", "n"}
+
+
+def _special_risk_review(info: Mapping[str, Any]) -> str:
+    coverage_state = _special_risk_coverage_state(info)
+    if coverage_state in UNKNOWN_SPECIAL_RISK_COVERAGE_VALUES:
+        return f"special_risk_coverage_review_required:{coverage_state}"
+    risk_state = _special_risk_state(info)
+    if risk_state and risk_state not in NORMAL_SPECIAL_RISK_VALUES:
+        return f"special_risk_review_required:{risk_state}"
+    eligibility = _special_risk_eligibility(info)
+    if eligibility and eligibility not in {"BUY_ALLOWED", "ELIGIBLE", "PASS"}:
+        return f"special_risk_eligibility_review_required:{eligibility}"
+    return ""
+
+
+def _special_risk_coverage_state(info: Mapping[str, Any]) -> str:
+    return _status_value(
+        info.get("special_risk_coverage_state")
+        or info.get("special_risk_source_coverage_state")
+        or info.get("special_risk_source_status")
+        or info.get("event_coverage_status")
+    )
+
+
+def _special_risk_state(info: Mapping[str, Any]) -> str:
+    return _status_value(
+        info.get("special_risk_state")
+        or info.get("special_risk_status")
+        or info.get("alert_status")
+        or info.get("special_caution_status")
+        or info.get("governance_risk_status")
+        or info.get("listing_review_status")
+    )
+
+
+def _special_risk_eligibility(info: Mapping[str, Any]) -> str:
+    return _status_value(info.get("special_risk_eligibility") or info.get("special_risk_buy_eligibility"))
+
+
+def _date_after(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return left[:10] > right[:10]
 
 
 def _status_value(value: Any) -> str:

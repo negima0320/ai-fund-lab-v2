@@ -341,6 +341,12 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                     if isinstance(item.get("quantity_contract"), Mapping)
                     else None
                 ),
+                strategy_authority_lineage=(
+                    dict(item["strategy_authority_lineage"])
+                    if isinstance(item.get("strategy_authority_lineage"), Mapping)
+                    else None
+                ),
+                strategy_authority_lineage_hash=str(item.get("strategy_authority_lineage_hash") or ""),
                 source_decision_type=str(item.get("source_decision_type") or ""),
                 source_pm_decision_id=str(item.get("source_pm_decision_id") or ""),
                 source_pm_business_date=str(item.get("source_pm_business_date") or ""),
@@ -376,6 +382,12 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
         policy_source=str(payload.get("policy_source") or ""),
         pending_policy_hash=str(payload.get("pending_policy_hash") or ""),
         planning_lineage_context=dict(payload["planning_lineage_context"]) if payload.get("planning_lineage_context") else None,
+        strategy_authority_lineage=(
+            dict(payload["strategy_authority_lineage"])
+            if isinstance(payload.get("strategy_authority_lineage"), Mapping)
+            else None
+        ),
+        strategy_authority_lineage_hash=str(payload.get("strategy_authority_lineage_hash") or ""),
         planning_authority_version=str(payload.get("planning_authority_version") or ""),
         planning_authority_source=str(payload.get("planning_authority_source") or ""),
         planning_authority_hash=str(payload.get("planning_authority_hash") or ""),

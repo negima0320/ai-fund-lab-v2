@@ -239,6 +239,361 @@ reason_codes
 
 Position Sizing must not reinterpret `runtime_opportunity_score` to decide membership or target weight.
 
+## 6. Canonical ADD Marginal Capital Competition Shadow Contract
+
+Phase31-G113 adds `canonical_add_marginal_capital_competition.v1` as a
+Portfolio Construction owned SHADOW / NON-AUTHORITATIVE evidence contract.
+
+This contract answers a narrower question than PM ADD eligibility:
+
+```text
+Is the next executable ADD increment the best current use of marginal capital
+relative to NEW_BUY, other ADD, Cash, and residual optionality?
+```
+
+Authority boundaries:
+
+| Responsibility | Owner |
+|---|---|
+| PM ADD intent and ADD eligibility inputs | POSITION_MANAGEMENT |
+| ADD investment evidence inputs | existing canonical ADD evidence |
+| marginal ADD capital competition | PORTFOLIO_CONSTRUCTION |
+| discrete quantity authority | POSITION_SIZING |
+| executable order consumption | Runtime |
+
+G113 status:
+
+```text
+schema_version = canonical_add_marginal_capital_competition.v1
+authority = SHADOW
+authority_status = SHADOW_NON_AUTHORITATIVE
+authoritative_allocation_changed = false
+feeds_position_sizing = false
+feeds_runtime_planning = false
+feeds_submit = false
+feeds_execution = false
+```
+
+The shadow frontier must include:
+
+- eligible NEW_BUY candidates from the final PC security frontier;
+- eligible ADD candidates;
+- Cash as a first-class competitor;
+- residual optionality as an explicit non-security capital state.
+
+ADD candidates are represented as executable marginal increments rather than as
+one indivisible requested block. Each increment must preserve hypothetical
+position-size state:
+
+```text
+pre_increment_quantity
+post_increment_quantity
+pre_increment_weight
+post_increment_weight
+remaining_strategy_headroom
+remaining_safety_headroom
+```
+
+The shadow output may classify increments as:
+
+```text
+ADD_MARGINAL_PREFERRED
+COMPARABLE_MARGINAL
+CASH_MARGINAL_PREFERRED
+SAFETY_TERMINAL
+LOT_INFEASIBLE
+INSUFFICIENT_EVIDENCE
+```
+
+`CASH_PREFERRED_PARTICIPATION_VALID` is not equivalent to
+`ADD_MARGINAL_CAPITAL_BEATS_CASH`. It means reduced security participation is
+allowed under the Cash-preferred participation contract; it does not prove that
+the next ADD increment strictly dominates Cash.
+
+No G113 shadow field may use future return, later campaign outcome, Historical
+PnL, Paper Ledger performance, MFE/MAE, or selected/bought outcome as a scoring
+input. G113 introduces no production threshold, weight, performance-fitted
+penalty, or tuned allocation parameter.
+
+Phase31-G50 binding clarification:
+
+Portfolio Construction owns the canonical final capital winner and selected
+deployment set. Position Sizing owns only discrete notional / quantity
+conversion for rows admitted by that selected deployment set. Pre-binding
+`target_weight`, old portfolio members, rank, or candidate membership may not
+create an incremental BUY/ADD/re-entry quantity after the canonical capital
+competition has selected Cash or another security.
+
+If the canonical deployment set has `CASH_OPTIONALITY` as final winner, the
+incremental security sizing input set is empty. Position Sizing may still
+preserve existing HOLD baselines and size PM-owned SELL/REDUCE/EXIT paths, but
+it must emit zero positive BUY/ADD quantity for defeated securities. If the
+canonical deployment set selects a security, only selected set members may
+produce positive incremental quantity. Runtime Planning then maps the already
+bound Position Sizing output; it must not regenerate BUYs from pre-binding
+targets.
+
+```text
+PC_FINAL_CAPITAL_WINNER_OWNER = PORTFOLIO_CONSTRUCTION
+CANONICAL_DEPLOYMENT_SET_OWNER = PORTFOLIO_CONSTRUCTION
+POSITION_SIZING_CAPITAL_WINNER_AUTHORITY = NO
+PRE_BINDING_TARGET_CAN_CREATE_INCREMENTAL_QUANTITY = NO
+RUNTIME_PLANNING_REINTRODUCES_DEFEATED_SECURITY = NO
+LINEAGE_PERSISTENCE_IS_NOT_DECISION_BINDING = YES
+```
+
+Phase31-G53 multi-allocation refinement:
+
+The G50 executable-binding principle remains permanent, but `SINGLE` is no
+longer the general capital-allocation semantic. Portfolio Construction must
+bind Position Sizing through a canonical executable allocation object; however,
+that object may authorize multiple securities plus Cash in the same business
+date.
+
+Portfolio Policy owns the `incremental_capital_budget_envelope`. Portfolio
+Construction owns allocation of that envelope across `NEW_BUY`, `ADD`,
+eligible re-entry-as-`NEW_BUY`, and Cash. Position Sizing receives the
+authorized allocation rows and converts them to lot-aware quantities. Position
+Sizing must not choose economic winners, reinterpret candidate rank, override
+Cash allocation, or re-open defeated allocations.
+
+The migrated canonical object is a multi-allocation deployment set:
+
+```text
+canonical_multi_allocation_deployment_set.v1
+```
+
+Required semantic contents:
+
+```text
+business_date
+owner = PORTFOLIO_CONSTRUCTION
+budget_envelope_owner = PORTFOLIO_POLICY
+allocation_cardinality = MULTI_ALLOCATION
+authorized_security_allocations[]
+authorized_cash_allocation
+candidate_local_allocation_evidence[]
+bootstrap_cash_state
+lot_reconsideration_policy
+residual_cash_policy
+future_information_used = false
+historical_outcome_used = false
+```
+
+`authorized_security_allocations[]` may include multiple `NEW_BUY`, `ADD`, and
+eligible re-entry rows. `authorized_cash_allocation` may coexist with those
+security allocations. Cash may also receive all authorized marginal capital
+when no deployment is justified.
+
+Phase31-G81 opportunity-aware security/Cash partition:
+
+`market_candidate_cash_interaction.interaction_result = CASH_PREFERRED` is
+binding interaction evidence, but it is not by itself the final allocation
+action after Phase31-G86. Portfolio Construction must run a PC-owned
+participation-vs-deferral resolution before final publication:
+
+```text
+CASH_PREFERRED
+-> PC participation-vs-deferral resolution
+-> CASH_PREFERRED_PARTICIPATION_VALID or CASH_PREFERRED_DEFER
+```
+
+Rows resolved to `CASH_PREFERRED_DEFER` must not be published as positive
+security allocations. Their requested security increment remains visible as
+`cash_preferred_security_deferrals[]` with zero authorized security weight, and
+the deferred budget remains available to `authorized_cash_allocation` /
+explicit Cash. Rows resolved to `CASH_PREFERRED_PARTICIPATION_VALID` may
+preserve reduced security allocation with explicit reason lineage and Cash
+coexistence. This preserves optional Cash as an economic competitor instead of
+treating Cash as a residual after weak security rows have already consumed the
+budget.
+
+This does not create a blanket `COMPARABLE_MARGINAL` exclusion. Under
+deployment contexts where the canonical interaction is `DEPLOY_ELIGIBLE` or
+`SELECTIVE_COMPETITION`, marginal/high/strong security rows may still receive
+positive allocation. The partition is driven only by the canonical
+decision-time interaction result.
+
+Phase31-G90 refines the aggregate resolver contract: same-quality-class
+frontier is a priority signal, not an exclusive admission gate. Portfolio
+Construction must not resolve `NOT_ON_FRONTIER` to weak-tail deferral by
+itself. Multiple participation-valid `CASH_PREFERRED` rows may coexist when
+same-date PIT row evidence and aggregate capital competition support reduced
+participation. Aggregate control must still keep optional Cash as a first-class
+destination and may defer weaker or contextually dominated rows without adding
+fixed rank, confidence, score, exposure, position-count, or aggregate-weight
+thresholds.
+
+Phase31-G97 residual reconsideration authoritative binding:
+
+`REALLOCATABLE_RESIDUAL_PENDING_RECONSIDERATION` is non-terminal residual
+capital evidence. It must re-enter PC-owned canonical capital competition, but
+reconsideration is candidate re-entry only and is not positive security
+authorization. Reconsidered rows remain subject to the existing G90
+participation-vs-deferral resolver, stronger-security competition, ADD
+competition, optional Cash, capital budget, lot feasibility,
+concentration/caps, and Safety terminal boundaries.
+
+Portfolio Construction owns this reconsideration binding. Position Sizing
+continues to own discrete quantity and must not reinterpret rank, score,
+target notional, residual Cash, or reconsideration lineage as a new capital
+priority decision. Runtime Planning remains a mapper and must not redecide
+capital priority.
+
+Phase31-G99 makes the G97 -> G61 lot-context boundary explicit. A G97
+authoritative residual-reconsideration row that enters
+`canonical_multi_allocation_deployment_set.security_allocations[]` must carry
+the same canonical lot-sizing context used by ordinary canonical security
+allocation rows: decision-time reference price, trading/lot unit,
+portfolio-value basis, current position basis, and cap/concentration context
+where available from existing authorities. Portfolio Construction may only
+propagate existing authoritative context; it must not synthesize lot data,
+invent quantity, or hardcode a lot assumption when canonical context is
+available. If that context remains genuinely missing, G61 remains fail-closed.
+
+```text
+REALLOCATABLE_RESIDUAL_PENDING_RECONSIDERATION_TERMINAL = NO
+RESIDUAL_RECONSIDERATION_OWNER = PORTFOLIO_CONSTRUCTION
+RESIDUAL_RECONSIDERATION_IS_AUTHORIZATION = NO
+RESIDUAL_RECONSIDERATION_G90_BYPASS = NO
+RESIDUAL_RECONSIDERATION_LOT_CONTEXT_PROPAGATION_OWNER = PORTFOLIO_CONSTRUCTION
+RESIDUAL_RECONSIDERATION_SYNTHETIC_LOT_CONTEXT = NO
+POSITION_SIZING_RECONSIDERATION_AUTHORITY = NO
+RUNTIME_RECONSIDERATION_AUTHORITY = NO
+```
+
+Phase31-G83 bootstrap-aware Cash preference partition:
+
+`CASH_PREFERRED` must be interpreted together with the canonical Cash state.
+In `RESIDUAL_OPTIONALITY_CASH` / already-deployed contexts, G81/G86 weak-tail
+protection remains binding: a Cash-preferred weak-tail increment receives zero
+authorized security weight and its requested increment returns to optional
+Cash. Non-bootstrap `CASH_PREFERRED` rows are not automatically weak-tail;
+they require PC-owned participation-vs-deferral resolution using existing
+row-level, opportunity-set, aggregate, Cash, and budget evidence.
+
+In `EMPTY_OR_NEAR_EMPTY_PORTFOLIO_BOOTSTRAP`, Cash preference is not
+automatically a zero-security decision when the authoritative budget envelope
+also carries `EXPLORATION_PARTICIPATION_RISK_PRESERVED`,
+`PROFIT_ENGINE_PRESERVATION_CONTEXT`, complete PIT evidence, and selected
+valid opportunities. In that bootstrap context, Portfolio Construction may
+materialize the existing reduced accepted security increment while preserving
+Cash as the preferred destination for unallocated budget. This creates no
+fixed BUY count, fixed exposure target, rank cutoff, confidence cutoff, share
+price cutoff, new score, or Historical-return-tuned parameter.
+
+```text
+BOOTSTRAP_CASH_PREFERRED_CAN_PRESERVE_REDUCED_PARTICIPATION = YES
+CASH_PREFERRED_INTERACTION_ACTION_SEPARATED = YES
+PC_PARTICIPATION_DEFERRAL_AUTHORITY = YES
+RESIDUAL_CASH_PREFERRED_WEAK_TAIL_SECURITY_WEIGHT = 0 after CASH_PREFERRED_DEFER
+CAPITAL_BUDGET_REMAINS_MAXIMUM = YES
+FORCED_BOOTSTRAP_BUY = NO
+FIXED_BOOTSTRAP_EXPOSURE = NO
+```
+
+Lot infeasibility is row-scoped before it is day-scoped. If one authorized
+allocation cannot be materialized into a valid lot, residual capital may be
+reconsidered by Portfolio Construction across remaining valid allocations and
+Cash. Lot failure must not automatically collapse the entire day's allocation
+unless the residual/reconsideration contract proves no valid executable
+allocation remains.
+
+```text
+GENERAL_CAPITAL_WINNER_CARDINALITY = MULTI_ALLOCATION
+CAPITAL_ALLOCATION_PROBLEM_TYPE = HYBRID_MULTI_SECURITY_CAPITAL_BUDGET_ALLOCATION
+CAPITAL_BUDGET_ENVELOPE_OWNER = PORTFOLIO_POLICY
+MULTI_ASSET_CAPITAL_ALLOCATION_OWNER = PORTFOLIO_CONSTRUCTION
+POSITION_SIZING_REMAINS_QUANTITY_OWNER = YES
+POSITION_SIZING_SELECTS_ECONOMIC_WINNERS = NO
+CANONICAL_MULTI_ALLOCATION_SEQUENCE_DEFINED = YES
+MULTI_ALLOCATION_LOT_RECONSIDERATION_DEFINED = YES
+CASH_PARTIAL_ALLOCATION_SUPPORTED = YES
+CASH_WINNER_TAKES_ALL_REQUIRED = NO
+SINGLE_DEPLOYMENT_SET_MIGRATION_CLASS = MIGRATE
+G50_EXECUTABLE_BINDING_PRINCIPLE_PRESERVED = YES
+LINEAGE_BINDING_DISTINCTION_PRESERVED = YES
+DOWNSTREAM_CAPITAL_REDECISION_ALLOWED = NO
+```
+
+## 5.1 Marginal Capital Value Authority
+
+Phase31-B10 promotes Alternative C into the Production-common Strategy contract:
+
+```text
+MARGINAL_CAPITAL_VALUE_AUTHORITY
+```
+
+Owner:
+
+```text
+Portfolio Construction
+```
+
+Scope:
+
+```text
+already-eligible BUY_NEW
+already-positive-increment BUY_ADD
+```
+
+This authority defines canonical marginal-capital priority across BUY_NEW and
+BUY_ADD incremental capital competitors.  It is an ordering authority only.  It
+does not change PM ADD semantics, Expected Edge thresholds, Incremental
+Investment Value thresholds, Opportunity Cost thresholds, Market Context logic,
+normal Strategy cap, Safety hard cap, winner headroom, SELL logic, Submit, or
+Execution.
+
+Allowed PIT evidence is limited to existing Production-visible Strategy fields,
+including Expected Edge, same-campaign trajectory, Incremental Investment Value,
+Opportunity Cost, opportunity rank, ADD-worthiness / entry admission evidence,
+Market Context, current campaign/position state, current/target weight,
+concentration/headroom, accepted increment, and lot feasibility.
+
+Forbidden inputs:
+
+```text
+future price
+future return
+future PnL
+fill outcome
+Historical outcome
+later market movement
+post-hoc regime or campaign labels
+```
+
+Semantic classes:
+
+```text
+BLOCKED_OR_NOT_ELIGIBLE
+ELIGIBLE_WEAK
+ELIGIBLE_COMPARABLE
+ELIGIBLE_STRONG
+REVIEW_REQUIRED
+COMPARISON_INSUFFICIENT
+```
+
+Rules:
+
+- BUY_ADD label alone must not increase priority.
+- BUY_NEW label alone must not increase priority.
+- Strong NEW may outrank weak ADD.
+- Strong ADD may outrank weaker or comparable NEW when PIT lifecycle evidence supports it.
+- If comparison evidence remains insufficient, Portfolio Construction preserves the existing deterministic stable order and emits explicit insufficiency evidence instead of inventing a score.
+- Equal priority candidates preserve deterministic stable order.
+
+Evidence must expose:
+
+```text
+canonical_marginal_capital_priority_index
+marginal_capital_value_class
+marginal_capital_value_authority
+comparison_reason_codes
+source_evidence
+future_information_used=false
+legacy_priority_fallback_active=false
+```
+
 ## 6. Existing Position Boundary
 
 Portfolio Construction owns:
@@ -599,3 +954,157 @@ This amendment does not create forced investment, a fixed exposure target, a
 new BUY filter, a new ADD filter, or a Historical-only Strategy path. Cash may
 remain undeployed when no eligible, lot-feasible, Safety-valid, authority-clean
 opportunity exists.
+
+## 17. Phase31-G102 Residual Reconsideration Item-Scoped Quantity Authority
+
+Phase31-G102 extends the Phase30 discrete executable quantity boundary to
+G97/G99 residual reconsideration rows.
+
+When a G97/G99 positive reconsideration row has passed canonical G61 lot-aware
+compatibility as `LOT_EXECUTABLE_COMPATIBLE`, Portfolio Construction must
+materialize the same item-scoped discrete executable quantity authority that
+ordinary BUY_NEW / BUY_ADD rows carry:
+
+```text
+phase29_l19_lot_resolution.pc_positive_executable_quantity_authority
+  .authority_type = PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY
+  .status = PASS
+  .final_allocated_quantity = canonical G61 executable quantity
+  .ps_must_consume_canonical_quantity = true
+  .future_information_used = false
+```
+
+Position Sizing must consume that authority without re-deciding capital
+priority, Runtime Planning must preserve the quantity lineage, Pending must
+embed it in `quantity_contract.position_sizing_authority`, and Submit must
+validate it through the existing item-scoped
+`canonical_discrete_quantity_submit_authority`.
+
+This does not weaken Submit. Submit must not infer discrete quantity authority
+from PS quantity, Runtime planned quantity, G97 provenance, or aggregate PC
+allocation alone. Missing, malformed, date-mismatched, quantity-mismatched,
+lot-infeasible, Cash-deferred, or Safety-terminal reconsideration evidence
+remains fail-closed and must not produce a PASS authority.
+
+Phase31-G104 clarifies the Submit consumer contract for the G102 item-scoped
+authority.  Submit may treat:
+
+```text
+lot_overshoot_reason =
+G102_G97_G99_ITEM_SCOPED_PC_DISCRETE_QUANTITY_AUTHORITY
+```
+
+as a resolved discrete-quantity reason only when the complete item-scoped
+authority invariants are valid: `pc_positive_executable_quantity_authority`
+has `status=PASS`, the expected PC authority type, `future_information_used=false`,
+`ps_must_consume_canonical_quantity=true`, a positive `final_allocated_quantity`,
+and the Pending item quantity, PS final quantity, `final_allocated_quantity`,
+`executable_quantity_delta`, and `preflight_executable_quantity_delta` all match.
+The semantic type must be `BUY_NEW`, `REENTRY`, or `BUY_ADD`; Strategy cap and
+Safety hard cap preservation must both be proven true; one-lot feasibility must
+be `PASS`; and the embedded G61 lot-aware compatibility context must be
+canonical, PC-owned, `LOT_EXECUTABLE_COMPATIBLE`, non-synthetic, and free of
+future or Historical outcome inputs.  The reason string alone is never
+sufficient.  Any missing or contradictory invariant remains `REVIEW_REQUIRED`.
+
+G102 does not change Market Quality, Risk Pacing, Candidate ranking, ADD
+semantics, Safety, PS quantity ownership, Runtime priority, thresholds, scores,
+or exposure targets.
+
+## 18. Phase31-G115 ADD Marginal Capital Competition Authority
+
+Phase31-G115 promotes the G113 ADD marginal competition evidence into a staged
+Portfolio Construction authority:
+
+```text
+canonical_add_marginal_capital_competition_authority.v1
+```
+
+Portfolio Construction owns ADD marginal frontier comparison, Cash/residual
+participation semantics, and staged ADD increment authorization. Position
+Management remains the ADD intent and ADD eligibility owner. Position Sizing
+remains the discrete quantity owner. Runtime Planning, Pending, Submit, and
+Execution consume the PS-bound quantity and must not re-decide ADD capital
+priority.
+
+The G115 binding is staged. A PM `ADD` plus canonical positive ADD investment
+evidence may authorize one executable ADD increment at a time. A requested ADD
+block must not be treated as a single all-or-nothing capital winner. Each ADD
+increment carries its own classification, lot context, pre/post quantity and
+weight, budget before/after, Cash/residual semantics, and future/Historical
+input flags. `ADD_MARGINAL_PREFERRED` authorizes one executable increment and
+then requires recomputation before another increment may be authorized.
+`COMPARABLE_MARGINAL` may receive residual/shoulder participation through the
+same staged one-increment boundary, but never a full requested block solely
+because PM requested ADD. `INSUFFICIENT_EVIDENCE`, `LOT_INFEASIBLE`,
+`SAFETY_TERMINAL`, and `CASH_MARGINAL_PREFERRED` remain fail-closed for the ADD
+increment while the existing HOLD position is preserved.
+
+NEW_BUY remains in the marginal frontier as a normalized competitor for
+comparison, but G115 does not mutate Candidate ranking, NEW_BUY eligibility,
+Market Quality, Risk Pacing, Safety, thresholds, weights, or Runtime priority.
+Submit remains a feasibility and equality validator only.
+
+## 19. Phase31-G119 PC Final Discrete Authority / PS Consistency
+
+After Portfolio Construction completes final lot-aware allocation, its positive
+discrete executable quantity authority is the final Strategy capital allocation
+authority consumed by Position Sizing.
+
+When a final PC row carries all of the following:
+
+```text
+phase29_l19_lot_resolution.final_allocated_quantity > 0
+phase29_l19_lot_resolution.pc_positive_executable_quantity_authority.status = PASS
+phase29_l19_lot_resolution.pc_positive_executable_quantity_authority.ps_must_consume_canonical_quantity = true
+```
+
+Position Sizing must consume that final PC quantity authority and must not
+revive an earlier or stale `cash_winner=true` /
+`DEFEATED_BY_CANONICAL_CAPITAL_COMPETITION` deployment-set state to zero the
+row. Earlier Market Candidate Cash / deployment-set evidence remains input and
+diagnostic context once PC final allocation has selected the security.
+
+The final PC selected row must remain internally coherent:
+
+- positive final target weight and final allocated quantity
+- `pc_positive_executable_quantity_authority.status = PASS`
+- `ps_must_consume_canonical_quantity = true`
+- deployment-set sizing eligibility selected by final PC authority, not
+  defeated by capital competition
+- no contradictory Cash-winner binding for the selected row
+
+This precedence does not override Safety, valid hard-cap failure, malformed or
+missing authority, genuine lot infeasibility, Submit feasibility, or execution
+availability. Rows that finish PC final allocation with zero quantity, invalid
+authority, Cash-deferred state, or legitimate infeasibility remain zero and
+fail-closed.
+
+G119 does not change the G115 staged ADD marginal authority. ADD increments
+still require the staged marginal contract, one-increment authorization,
+recompute semantics, and existing fail-closed handling.
+
+## 20. Phase31-G136 High-Resolution Capital Value SoT Reference
+
+The permanent SoT for future high-resolution marginal capital value and
+portfolio-wide rotation is:
+
+```text
+docs/02_architecture/high_resolution_marginal_capital_value_and_portfolio_rotation_architecture.md
+```
+
+This is an architecture contract only. It does not implement
+`canonical_high_resolution_marginal_capital_value.v1` or
+`canonical_portfolio_rotation_opportunity_cost.v1`.
+
+Current Portfolio Construction already owns NEW_BUY / BUY_ADD / Cash capital
+competition. G136 does not redefine that as new behavior. It records the future
+capability extension that Portfolio Construction-owned Capital Value Authority
+may later evaluate the next executable increment with higher semantic
+resolution, while preserving Candidate AI, PM, Market Quality, Risk Pacing,
+Safety, Position Sizing, and Runtime ownership boundaries.
+
+Existing HOLD capital is not merged into the current NEW_BUY / BUY_ADD / Cash
+execution frontier by this reference. Portfolio-wide rotation must remain a
+future staged capability that depends on high-resolution marginal capital value
+and PM-owned REDUCE / EXIT action authority.

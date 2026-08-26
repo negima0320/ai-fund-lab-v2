@@ -56,6 +56,53 @@ Phase27-D3 freezes the PM performance philosophy for this Strategy SoT:
 - Cashは結果であって目的ではない。100万円の資金は期待値最大化資金であり、固定フルデプロイ義務ではない。
 - Performance改善でBUY/HOLD/SELL Action Authorityを増やさない。
 
+Phase31-G53 freezes the profit-engine preservation boundary for market-aware
+capital allocation:
+
+- Defensive / market-aware Strategy improvements must preserve the ability to
+  capture valid symbol-level opportunities.
+- Risk reduction is not independently successful if it destroys the expected
+  profit engine required by the long-term capital-growth objective.
+- Cash is a valid allocation and may receive all capital when PIT evidence
+  justifies no deployment, but Cash is not the optimization target.
+- Market Quality and Risk Pacing are capital pacing context; they must not
+  independently become blanket BUY gates for otherwise valid symbol-level
+  opportunities unless explicit Safety, invalidity, missing-evidence, or
+  fail-closed authority exists.
+- `AVOIDABLE_LOW_QUALITY_RISK` and
+  `LEGITIMATE_EXPLORATION_OR_PARTICIPATION_RISK` are distinct. The system may
+  accept legitimate small losses when PIT evidence supports participation in a
+  potentially asymmetric opportunity; this does not weaken fast loss control.
+- Empty or near-empty portfolio bootstrap cash is semantically different from
+  residual optionality cash in an already-deployed portfolio. Bootstrap state
+  may justify reduced-risk initial participation when valid opportunities
+  exist, without creating forced investment, fixed BUY counts, fixed holding
+  periods, fixed exposure targets, or Historical-return-tuned percentages.
+- `CASH_PREFERRED` is security-vs-Cash interaction evidence, not a complete
+  final allocation action by itself. Portfolio Construction owns the final
+  participation-vs-deferral resolution that separates reduced-risk
+  participation from weak-tail Cash deferral using same-date PIT row-level,
+  opportunity-set, aggregate, Cash, and budget evidence. This must not become a
+  rank cutoff, confidence cutoff, score cutoff, fixed Cash target, fixed BUY
+  count, fixed exposure target, or Historical-return-tuned rule.
+- Same-quality-class frontier is a priority signal inside the
+  `CASH_PREFERRED` aggregate resolver, not an exclusive admission gate.
+  Portfolio Construction may preserve multiple participation-valid
+  `CASH_PREFERRED` rows when same-date PIT evidence and aggregate capital
+  competition support reduced participation, while still returning weaker or
+  contextually dominated tail rows to optional Cash.
+
+```text
+PROFIT_ENGINE_PRESERVATION_PRINCIPLE_DEFINED = YES
+EXPLORATION_RISK_PRINCIPLE_DEFINED = YES
+MARKET_QUALITY_HARD_BUY_GATE = NO
+RISK_PACING_BINARY_SECURITY_ADMISSION_OWNER = NO
+BOOTSTRAP_AND_RESIDUAL_CASH_DISTINGUISHED = YES
+LEGITIMATE_100_PERCENT_CASH_SUPPORTED = YES
+CASH_PREFERRED_INTERACTION_ACTION_SEPARATED = YES
+PC_PARTICIPATION_DEFERRAL_AUTHORITY = YES
+```
+
 PM is the Strategy Action Authority for existing-position directional actions. Opportunity, BUY Quality, Market Context, Momentum Evidence, and Incremental Eligibility are Evidence Producers unless a later common SoT explicitly changes their authority mode. They must not independently emit BUY_NEW / ADD / HOLD / REDUCE / EXIT actions.
 
 Phase27-D4 freezes the Expected Edge decision contract for this Strategy SoT.
@@ -429,6 +476,15 @@ sum(target_weight) <= target_gross_exposure
 ```
 
 余剰はcashとして保持できる。保有数やBUY件数を満たすためにweightを強制配分してはならない。eligible candidateであっても `target_weight=0`、Portfolio全体でBUY 0件、既存保有の維持または縮小は正常なStrategy outcomeであり得る。
+
+Phase31-G97以降、`REALLOCATABLE_RESIDUAL_PENDING_RECONSIDERATION` は
+Portfolio Construction内の非terminal residual evidenceとして扱う。これは
+PC-owned canonical capital competitionへ再投入されるが、それ自体はBUY/ADD
+authorizationではない。再考慮rowは既存のG90 participation-vs-deferral、
+stronger-security competition、ADD competition、optional Cash、capital
+budget、lot feasibility、concentration/cap、Safety terminal boundaryの全てを
+通過して初めてtarget allocationへmaterializeされる。Position Sizingと
+Runtime Planningはこの再考慮をcapital priorityとして再判断しない。
 
 `target_weight_authority` には最低限以下を保持する。
 
@@ -1600,3 +1656,27 @@ Portfolio Construction, Position Sizing, Runtime Planning, Pending, Submit, and
 Execution must consume/copy the BUY Quality trajectory fields and must not
 recompute trajectory classification. BUY_ADD, REENTRY, HOLD, REDUCE, and EXIT
 authority remain unchanged.
+
+## 31. Phase31-G136 High-Resolution Capital Value / Rotation SoT Reference
+
+The permanent architecture contract for future high-resolution marginal capital
+value and portfolio-wide capital rotation is:
+
+```text
+docs/02_architecture/high_resolution_marginal_capital_value_and_portfolio_rotation_architecture.md
+```
+
+Strategy Architecture preserves the following authority split:
+
+- Candidate AI answers whether a security opportunity is valid / attractive.
+- Position Management owns existing-position `HOLD`, `ADD`, `REDUCE`, and
+  `EXIT` actions.
+- Portfolio Construction-owned Capital Value Authority may later answer how
+  valuable the next executable capital increment is relative to alternatives.
+- Portfolio-wide rotation may later provide PM with external opportunity-cost
+  evidence, but it must not directly sell securities or bypass PM action
+  authority.
+
+G136 is documentation only. It does not implement new artifacts, change BUY_NEW
+or BUY_ADD semantics, change Market Quality / Risk Pacing, create rotation
+orders, or advance Phase31.

@@ -18,6 +18,30 @@ BUY_ITEM_SCOPED_REVIEW = "BUY_ITEM_SCOPED_REVIEW"
 TRUE_BATCH_CASH_FAILURE = "TRUE_BATCH_CASH_FAILURE"
 REVIEWED_SELL_PRESENT = "REVIEWED_SELL_PRESENT"
 MALFORMED_PENDING_SCOPE = "MALFORMED_PENDING_SCOPE"
+NOT_EXECUTABLE_TERMINAL_EVIDENCE_INVALID = "not_executable_terminal_evidence_invalid"
+NOT_EXECUTABLE_ITEM_STATE = "NOT_EXECUTABLE"
+GENERIC_TERMINAL_ITEM_STATES = frozenset({"CONSUMED", "EXPIRED", "CANCELLED", "SUPERSEDED", NOT_EXECUTABLE_ITEM_STATE})
+_BASIC_TERMINAL_ITEM_STATES = GENERIC_TERMINAL_ITEM_STATES - {NOT_EXECUTABLE_ITEM_STATE}
+_NOT_EXECUTABLE_SIDE_EFFECT_ID_FIELDS = (
+    "order_id",
+    "submitted_order_id",
+    "accepted_order_id",
+    "ledger_order_id",
+    "ledger_order_record_id",
+    "execution_id",
+    "fill_id",
+)
+_NOT_EXECUTABLE_SIDE_EFFECT_BOOL_FIELDS = (
+    "submitted",
+    "accepted",
+    "filled",
+    "order_materialized",
+    "adapter_submit_called",
+    "position_mutated",
+    "cash_mutated",
+    "broker_side_effect_created",
+    "ledger_order_created",
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +63,7 @@ class PendingReviewScopeAuthority:
     reviewed_buy_item_ids: tuple[str, ...]
     reviewed_sell_item_ids: tuple[str, ...]
     terminal_item_ids: tuple[str, ...]
+    non_terminal_item_ids: tuple[str, ...]
     expired_item_ids: tuple[str, ...]
     approved_review_sets_disjoint: bool
     batch_blocked: bool
@@ -67,6 +92,7 @@ class PendingReviewScopeAuthority:
             "reviewed_buy_item_ids": list(self.reviewed_buy_item_ids),
             "reviewed_sell_item_ids": list(self.reviewed_sell_item_ids),
             "terminal_item_ids": list(self.terminal_item_ids),
+            "non_terminal_item_ids": list(self.non_terminal_item_ids),
             "expired_item_ids": list(self.expired_item_ids),
             "approved_review_sets_disjoint": self.approved_review_sets_disjoint,
             "batch_blocked": self.batch_blocked,
@@ -137,6 +163,9 @@ def build_pending_review_scope_authority(
         batch_block_reason = REVIEWED_SELL_PRESENT
     else:
         batch_block_reason = _batch_block_reason(payload)
+    for item_id, item in by_id.items():
+        if str(item.get("state") or "").upper() == NOT_EXECUTABLE_ITEM_STATE and not _not_executable_terminal_item_safe(item):
+            malformed.append(f"{NOT_EXECUTABLE_TERMINAL_EVIDENCE_INVALID}:{item_id}")
     feasibility_by_id = _feasibility_by_id(payload.get("planning_submit_feasibility"))
     executable_ids: list[str] = []
     if state == PendingPlanState.APPROVED.value:
@@ -156,7 +185,7 @@ def build_pending_review_scope_authority(
     terminal_ids = tuple(
         item_id
         for item_id, item in by_id.items()
-        if str(item.get("state") or "").upper() in {"CONSUMED", "EXPIRED", "CANCELLED", "SUPERSEDED"}
+        if _item_is_terminal(item)
     )
     expired_ids = tuple(
         item_id for item_id, item in by_id.items() if str(item.get("state") or "").upper() == "EXPIRED"
@@ -164,6 +193,11 @@ def build_pending_review_scope_authority(
     executable_ids = _stable_unique(tuple(executable_ids))
     executable_buy_ids = tuple(item_id for item_id in executable_ids if str(by_id.get(item_id, {}).get("side") or "").upper() == "BUY")
     executable_sell_ids = tuple(item_id for item_id in executable_ids if str(by_id.get(item_id, {}).get("side") or "").upper() == "SELL")
+    non_terminal_ids = tuple(
+        item_id
+        for item_id in item_ids
+        if item_id not in set(terminal_ids) | set(reviewed_ids) | set(executable_ids)
+    )
     structural_validity = "PASS" if not malformed else "REVIEW_REQUIRED"
     partial_submit_allowed = bool(
         structural_validity == "PASS"
@@ -208,6 +242,7 @@ def build_pending_review_scope_authority(
         reviewed_buy_item_ids=reviewed_buy_ids,
         reviewed_sell_item_ids=reviewed_sell_ids,
         terminal_item_ids=terminal_ids,
+        non_terminal_item_ids=non_terminal_ids,
         expired_item_ids=expired_ids,
         approved_review_sets_disjoint=approved_review_disjoint,
         batch_blocked=batch_blocked,
@@ -254,14 +289,25 @@ def pending_scope_allows_current_valuation_residual(
 ) -> bool:
     if mode and environment and environment != mode:
         return False
-    return bool(
+    if not (
         authority.lifecycle_state == PendingPlanState.REVIEW_REQUIRED.value
-        and authority.review_scope == BUY_ITEM_SCOPED_REVIEW
         and authority.target_session_date == business_date
+        and authority.structural_validity == "PASS"
+        and not authority.batch_blocked
+    ):
+        return False
+    terminal_only_residual = bool(
+        authority.terminal_item_ids
+        and not authority.non_terminal_item_ids
+        and not authority.executable_item_ids
+        and not authority.reviewed_item_ids
+    )
+    buy_item_scoped_review_residual = bool(
+        authority.review_scope == BUY_ITEM_SCOPED_REVIEW
         and authority.reviewed_buy_item_ids
         and not authority.reviewed_sell_item_ids
-        and not authority.batch_blocked
     )
+    return bool(terminal_only_residual or buy_item_scoped_review_residual)
 
 
 def pending_scope_no_submission_terminal_authority(authority: PendingReviewScopeAuthority) -> bool:
@@ -299,7 +345,9 @@ def _payload_from_pending(pending: PendingOrderPlan | Mapping[str, Any]) -> dict
                     "side": item.side,
                     "state": item.state,
                     "approved": item.approved,
+                    "feasibility_status": item.feasibility_status,
                     "batch_submit_status": item.batch_submit_status,
+                    "item_review_reason": item.item_review_reason,
                 }
                 for item in pending.items
             ],
@@ -335,6 +383,46 @@ def _feasibility_by_id(feasibility: Any) -> dict[str, Mapping[str, Any]]:
 def _feasibility_pass_or_absent(feasibility_by_id: dict[str, Mapping[str, Any]], item_id: str) -> bool:
     item = feasibility_by_id.get(item_id)
     return item is None or str(item.get("status") or "") == "PASS"
+
+
+def _item_is_terminal(item: Mapping[str, Any]) -> bool:
+    state = str(item.get("state") or "").upper()
+    if state in _BASIC_TERMINAL_ITEM_STATES:
+        return True
+    return bool(state == NOT_EXECUTABLE_ITEM_STATE and _not_executable_terminal_item_safe(item))
+
+
+def _not_executable_terminal_item_safe(item: Mapping[str, Any]) -> bool:
+    if str(item.get("state") or "").upper() != NOT_EXECUTABLE_ITEM_STATE:
+        return False
+    if item.get("approved") is not False:
+        return False
+    if not str(item.get("feasibility_status") or "").strip():
+        return False
+    if "retry_eligible_same_day" in item and _truthy(item.get("retry_eligible_same_day")):
+        return False
+    submit_status = str(item.get("submit_status") or "").upper()
+    if submit_status and submit_status not in {"NOT_SUBMITTED", NOT_EXECUTABLE_ITEM_STATE}:
+        return False
+    for field in _NOT_EXECUTABLE_SIDE_EFFECT_ID_FIELDS:
+        if str(item.get(field) or "").strip():
+            return False
+    for field in _NOT_EXECUTABLE_SIDE_EFFECT_BOOL_FIELDS:
+        if _truthy(item.get(field)):
+            return False
+    return True
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 def _batch_block_reason(payload: Mapping[str, Any]) -> str:

@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
@@ -247,6 +249,119 @@ def test_phase17_bg_active_pending_with_missing_orderlist_stays_review_required(
 
     assert result.status == "REVIEW_REQUIRED"
     assert result.reason == "orderlist evidence missing"
+    assert result.orderlist_required is True
+    assert result.orderlist_status == "MISSING"
+
+
+def test_phase31_g88_valid_terminal_only_pending_consumes_submit_aggregate_noop(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_payload = _terminal_not_executable_pending_payload(BUSINESS_DATE)
+    _write_json(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending_payload)
+    _write_aggregate_terminal_noop_submit_manifest(runtime_root, business_date=BUSINESS_DATE)
+    before = _ledger_contents(runtime_root)
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("terminal no-op needs no orderlist")),
+    )
+
+    assert result.status == "PASS"
+    assert result.reason == "no_submitted_orders"
+    assert result.execution_action == "NO_ACTION"
+    assert result.orderlist_required is False
+    assert result.orderlist_status == "NOT_REQUIRED"
+    assert result.submitted_order_count == 0
+    assert result.fill_count == 0
+    assert result.ledger_orders_appended == 0
+    assert result.ledger_executions_appended == 0
+    assert result.ledger_positions_appended == 0
+    assert result.ledger_cash_appended == 0
+    assert result.current_apply_status == "NOT_REQUIRED"
+    assert result.runtime_owned_projection_status == "NOT_REQUIRED"
+    assert result.pending_terminalization_status == "PENDING_LIFECYCLE_REQUIRED"
+    assert result.pending_consumed is False
+    assert result.pending_mutated is False
+    assert result.pending_classification == "VALID"
+    assert result.pending_item_count == 1
+    assert result.submit_authority_status == "PASS"
+    assert result.submit_action == "NO_SUBMIT_ATTEMPTED"
+    assert result.submit_authority_reason == "submit_no_action_authority_ready"
+    assert _ledger_contents(runtime_root) == before
+    assert json.loads((runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text()) == pending_payload
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_reason"),
+    [
+        (
+            lambda aggregate, manifest: aggregate["counts"].__setitem__("unknown_or_ambiguous", 1),
+            "submit NO_ACTION authority inconsistent",
+        ),
+        (
+            lambda aggregate, manifest: aggregate["counts"].__setitem__("retryable_executable", 1),
+            "submit NO_ACTION authority inconsistent",
+        ),
+        (
+            lambda aggregate, manifest: aggregate.__setitem__("status", "REVIEW_REQUIRED"),
+            "submit NO_ACTION authority inconsistent",
+        ),
+        (
+            lambda aggregate, manifest: manifest.__setitem__("submitted_count", 1),
+            "submit NO_ACTION authority inconsistent",
+        ),
+    ],
+)
+def test_phase31_g88_terminal_noop_authority_malformed_cases_fail_closed(
+    tmp_path,
+    mutator,
+    expected_reason,
+):
+    runtime_root = _runtime_root(tmp_path)
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _terminal_not_executable_pending_payload(BUSINESS_DATE),
+    )
+    _write_aggregate_terminal_noop_submit_manifest(
+        runtime_root,
+        business_date=BUSINESS_DATE,
+        mutator=mutator,
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=lambda **_: (_ for _ in ()).throw(AssertionError("malformed terminal authority fails before snapshot")),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == expected_reason
+    assert result.execution_action == "NOT_EXECUTED"
+    assert result.orderlist_required is True
+    assert result.fill_count == 0
+    assert result.ledger_orders_appended == 0
+    assert result.current_apply_status == "NOT_EXECUTED"
+
+
+def test_phase31_g88_terminal_pending_without_submit_aggregate_keeps_normal_execution_review(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        _terminal_not_executable_pending_payload(BUSINESS_DATE),
+    )
+
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        snapshot_provider=_empty_orderlist_snapshot,
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "orderlist evidence missing"
+    assert result.execution_action == "EXECUTE"
     assert result.orderlist_required is True
     assert result.orderlist_status == "MISSING"
 
@@ -691,6 +806,23 @@ def _approved_pending_payload(
     return payload
 
 
+def _terminal_not_executable_pending_payload(business_date: str) -> dict:
+    payload = _approved_pending_payload(business_date, symbol="41020", side="SELL", quantity=100)
+    payload["pending_plan_id"] = f"pending-terminal-noop-{business_date}"
+    payload["items"][0].update(
+        {
+            "pending_item_id": "item-terminal-sell",
+            "feasibility_status": "NOT_EXECUTABLE_EXECUTION_AUTHORITY_UNAVAILABLE",
+            "batch_submit_status": "NOT_EXECUTABLE",
+            "item_review_reason": "EXECUTION_AUTHORITY_UNAVAILABLE",
+            "price_confidence": "PIT",
+        }
+    )
+    payload["approved_item_ids"] = ["item-terminal-sell"]
+    payload["approval"]["approved_item_ids"] = ["item-terminal-sell"]
+    return payload
+
+
 def _mixed_pending_payload(business_date: str) -> dict:
     payload = _approved_pending_payload(business_date, symbol="76920", side="BUY", quantity=1400)
     payload["state"] = "REVIEW_REQUIRED"
@@ -853,6 +985,91 @@ def _write_quarantine_submit_authority(
             "production_applicability": "NEVER",
             "reason": "historical_symbol_scoped_corporate_action_quarantine_continuation",
         },
+    )
+
+
+def _write_aggregate_terminal_noop_submit_manifest(
+    runtime_root: Path,
+    *,
+    business_date: str,
+    mutator=None,
+) -> None:
+    aggregate = {
+        "accepted_count": 0,
+        "authority_type": "SUBMIT_AGGREGATE_TERMINAL_NOOP_CONTINUATION",
+        "checks": {
+            "all_items_have_known_dispositions": True,
+            "blocked_absent": True,
+            "item_scoped_reviews_deferred_by_authority": True,
+            "items_present": True,
+            "pending_review_scope_no_executable_items_after_terminalization": True,
+            "pending_review_scope_no_non_terminal_items_after_terminalization": True,
+            "pending_review_scope_not_batch_blocked": True,
+            "pending_review_scope_structural_valid": True,
+            "rejected_absent": True,
+            "retryable_executable_absent": True,
+            "reviewed_sell_absent": True,
+            "terminal_not_executable_items_safety_qualified": True,
+            "unknown_or_ambiguous_absent": True,
+        },
+        "classification_authority": "SubmitItemResult + PendingReviewScopeAuthority",
+        "counts": {
+            "blocked": 0,
+            "deferred_item_scoped_review": 0,
+            "rejected": 0,
+            "retryable_executable": 0,
+            "submitted_or_reconciled": 0,
+            "terminal_not_executable": 1,
+            "unknown_or_ambiguous": 0,
+        },
+        "fake_cash_mutation": False,
+        "fake_execution_created": False,
+        "fake_position_mutation": False,
+        "fake_submission_created": False,
+        "item_classes": {"item-terminal-sell": "TERMINAL_NOT_EXECUTABLE"},
+        "known_safe_terminal_or_deferred_count": 1,
+        "pending_plan_id": f"pending-terminal-noop-{business_date}",
+        "pending_review_scope_authority": {
+            "batch_blocked": False,
+            "executable_item_ids": [],
+            "non_terminal_item_ids": [],
+            "reviewed_sell_item_ids": [],
+            "reviewed_item_ids": [],
+            "structural_validity": "PASS",
+            "target_session_date": business_date,
+            "terminal_item_ids": ["item-terminal-sell"],
+        },
+        "reason": "zero_submission_terminal_noop_continuation",
+        "same_day_retry_prevented_for_terminal_items": True,
+        "status": "PASS",
+        "submitted_count": 0,
+        "zero_submission_safe_terminal_pass_supported": True,
+    }
+    manifest = {
+        "run_id": "runtime-v2-submit-g88",
+        "job": "submit",
+        "business_date": business_date,
+        "exit_code": 0,
+        "final_state": "CURRENT_STATE_LOADED",
+        "pending_read_valid": True,
+        "pending_classification": "VALID",
+        "pending_active": True,
+        "pending_plan_present": True,
+        "pending_item_count": 1,
+        "no_order_authority_status": "",
+        "no_order_authority_evidence": {"submit_aggregate_terminal_noop_authority": aggregate},
+        "submit_action": "NO_SUBMIT_ATTEMPTED",
+        "submitted_count": 0,
+        "blocked_count": 0,
+        "review_required": False,
+        "halt_required": False,
+        "prohibited_actions": {"demo_submit_executed": False, "production_order_executed": False},
+    }
+    if mutator is not None:
+        mutator(aggregate, manifest)
+    _write_json(
+        runtime_root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-submit-g88.json",
+        manifest,
     )
 
 

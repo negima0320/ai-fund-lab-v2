@@ -1940,6 +1940,66 @@ def test_phase30_ai_pc_ps_zero_delta_taxonomy_materializes_lot_infeasibility(tmp
     assert item["pc_ps_zero_delta_taxonomy"]["selection_quality_tier"] == "HIGH_QUALITY_CONTINUATION"
 
 
+def test_phase31_g25_canonical_sizing_evidence_materializes_executable_new_buy(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "g25_executable_new_buy", rows=[_row("11110", price=600.0)], target_count=1, exposure=0.16).payload
+    item = payload["positions"][0]
+    evidence = item["canonical_sizing_evidence"]
+
+    assert evidence["schema_version"] == ps.CANONICAL_SIZING_EVIDENCE_SCHEMA_VERSION
+    assert evidence["intent_type"] == "NEW_BUY"
+    assert evidence["evidence_class"] == "EXECUTABLE"
+    assert evidence["terminality"] == "EXECUTABLE"
+    assert evidence["executable_quantity"] > 0
+    assert evidence["quantity_authority_owner"] == "POSITION_SIZING"
+    assert evidence["pc_reconsideration_owner"] == "PORTFOLIO_CONSTRUCTION"
+    assert payload["canonical_sizing_evidence"]["authority_owner"] == "POSITION_SIZING"
+    assert payload["canonical_sizing_evidence"]["position_sizing_decides_reconsideration"] is False
+
+
+def test_phase31_g25_canonical_sizing_evidence_materializes_lot_infeasible_zero_delta(tmp_path: Path) -> None:
+    row = _row("6098", price=1500.0, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    row["target_weight"] = 0.12
+    row["target_weight_resolution"]["resolved_weight"] = 0.12
+
+    payload = _produce(tmp_path / "g25_lot_infeasible_zero_delta", rows=[row], target_count=1, exposure=0.12).payload
+    evidence = payload["positions"][0]["canonical_sizing_evidence"]
+
+    assert payload["positions"][0]["quantity_delta_candidate"] == 0
+    assert evidence["evidence_class"] == "LOT_INFEASIBLE"
+    assert evidence["terminality"] == "RECONSIDERABLE"
+    assert evidence["residual_capital_classification"] == "REALLOCATABLE_RESIDUAL"
+    assert "LOT_INFEASIBLE" in evidence["constraint_reason_codes"]
+    assert evidence["raw_zero_quantity_reinterpreted"] is False
+
+
+def test_phase31_g25_preflight_preserves_strategy_safety_bound_separation(tmp_path: Path) -> None:
+    strategy_row = _row("94320", price=151.3, membership="RETAIN", pm_action="ADD", current_weight=0.136879)
+    strategy_row.update({"current_position": True, "current_quantity": 900, "target_weight": 0.18, "requested_incremental_weight": 0.043121})
+    strategy_row["target_weight_resolution"]["resolved_weight"] = 0.18
+    safety_row = _row("78780", price=2872.5, membership="ADD_CANDIDATE", pm_action="NEW", current_weight=0.0)
+    safety_row.update({"target_weight": 0.18, "requested_buy_new_weight": 0.18})
+    safety_row["target_weight_resolution"]["resolved_weight"] = 0.18
+
+    payload = _produce(tmp_path / "g25_bound_separation", rows=[strategy_row, safety_row], target_count=2, exposure=1.0).payload
+    by_symbol = {item["symbol"]: item["canonical_sizing_evidence"] for item in payload["lot_feasibility_preflight"]}
+
+    assert by_symbol["94320"]["evidence_class"] == "EXECUTABLE"
+    assert "SAFETY_CAP_BOUND" not in by_symbol["94320"]["constraint_reason_codes"]
+    assert "STRATEGY_CAP_BOUND" not in by_symbol["94320"]["constraint_reason_codes"]
+    assert by_symbol["78780"]["evidence_class"] == "SAFETY_CAP_BOUND"
+    assert by_symbol["78780"]["terminality"] == "TERMINAL_FOR_CURRENT_CAPITAL_AUTHORITY"
+    assert "SAFETY_CAP_BOUND" in by_symbol["78780"]["constraint_reason_codes"]
+
+
+def test_phase31_g25_raw_zero_quantity_without_reason_fails_closed(tmp_path: Path) -> None:
+    payload = _produce(tmp_path / "g25_raw_zero_fail_closed", rows=[_row("11110", price=600.0)], target_count=1, exposure=0.16).payload
+    payload["positions"][0]["quantity_delta_candidate"] = 0
+    payload["positions"][0]["canonical_sizing_evidence"]["evidence_class"] = "EXECUTABLE"
+
+    with pytest.raises(PositionSizingSchemaError, match="zero_quantity_requires_canonical_reason:0"):
+        validate_position_sizing_artifact(payload)
+
+
 def test_phase22_pw_valid_configuration_has_no_cap_violation_reason(tmp_path: Path) -> None:
     payload = _produce(tmp_path / "valid_contract").payload
 

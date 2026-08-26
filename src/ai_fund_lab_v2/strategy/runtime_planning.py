@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ai_fund_lab_v2.runtime_v2.buy_ai.opportunity_eligibility import opportunity_no_buy_reason_blocks_buy
 from ai_fund_lab_v2.strategy import capital_deployment, portfolio_construction
@@ -23,6 +23,8 @@ from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_pa
 
 SCHEMA_VERSION = "runtime_planning.v1"
 PRODUCER_VERSION = "phase22_g_runtime_planning_producer.v1"
+REFINED_CAPITAL_LINEAGE_SCHEMA_VERSION = "refined_capital_decision_lineage.v1"
+G63_RUNTIME_BINDING_SCHEMA_VERSION = "runtime_planning.g63_pc_ps_executable_binding.v1"
 ARTIFACT_LIFECYCLE_STATUS = "DRAFT"
 RUNTIME_CONSUMER_ELIGIBILITY = "ELIGIBLE"
 QUANTITY_AUTHORITY = "PHASE22_J_POSITION_SIZING"
@@ -259,6 +261,7 @@ def build_runtime_planning_payload(
 
     pc_payload = _load_json_if_valid(portfolio_construction_artifact_path)
     cd_payload = _load_json_if_valid(capital_deployment_artifact_path)
+    policy_payload = _load_json_if_valid(portfolio_policy_artifact_path)
     pm_payload = _load_json_if_valid(position_management_artifact_path)
     ps_payload = _load_json_if_valid(position_sizing_artifact_path)
     canonical_ps_payload = _load_json_if_valid(position_sizing_plan_artifact_path)
@@ -280,6 +283,11 @@ def build_runtime_planning_payload(
         canonical_ps_payload=canonical_ps_payload,
         canonical_path=position_sizing_plan_artifact_path,
     )
+    g63_binding_precheck = _g63_runtime_binding_precheck(selected_ps_payload, business_date=business_date)
+    if g63_binding_precheck["status"] == "BLOCK":
+        producer_status = "BLOCK"
+        source_status = "AUTHORITY_CONFLICT"
+        reason_codes.extend(g63_binding_precheck["reason_codes"])
     plans, mapping_reasons = _build_plans(
         business_date=business_date,
         pc_payload=pc_payload,
@@ -373,6 +381,28 @@ def build_runtime_planning_payload(
     if not source_hashes or any(not item["sha256"] for item in source_hashes):
         producer_status = "BLOCK"
         reason_codes.append("source_lineage_hash_required")
+    strategy_authority_lineage = _strategy_authority_lineage_envelope(
+        business_date=business_date,
+        as_of=as_of,
+        pc_payload=pc_payload,
+        policy_payload=policy_payload,
+        pm_payload=pm_payload,
+        ps_payload=selected_ps_payload,
+        source_artifacts=source_artifacts,
+        source_hashes=source_hashes,
+        plans=plans,
+    )
+    plans = _attach_strategy_authority_lineage(plans, strategy_authority_lineage)
+    g63_runtime_binding = _g63_runtime_executable_binding_summary(
+        business_date=business_date,
+        ps_payload=selected_ps_payload,
+        plans=plans,
+        precheck=g63_binding_precheck,
+    )
+    if g63_runtime_binding["status"] == "BLOCK":
+        producer_status = "BLOCK"
+        source_status = "AUTHORITY_CONFLICT"
+        reason_codes.extend(g63_runtime_binding["reason_codes"])
 
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -410,6 +440,8 @@ def build_runtime_planning_payload(
         },
         "source_artifacts": source_artifacts,
         "source_hashes": source_hashes,
+        "strategy_authority_lineage": strategy_authority_lineage,
+        "g63_pc_ps_runtime_executable_binding": g63_runtime_binding,
         "temporal_safety": {
             "point_in_time": not future_leakage_used,
             "future_leakage_used": future_leakage_used,
@@ -819,6 +851,20 @@ def _build_plans(
             quantity_delta = _int_or_none(sizing.get("quantity_delta_candidate")) if sizing else None
             no_order_reason = "opportunity_no_buy_reason_present"
             plan_reasons.append(f"opportunity_no_buy_reason_present:{opportunity_no_buy_reason}")
+        g63_binding = _g63_plan_binding_guard(
+            code=code,
+            intent=intent,
+            sizing=sizing,
+            planned_quantity=planned_quantity,
+            quantity_delta=quantity_delta,
+        )
+        if g63_binding["runtime_blocked_implicit_promotion"]:
+            intent = "NO_ORDER"
+            quantity_status = "RESOLVED_ZERO_DELTA"
+            planned_quantity = 0
+            quantity_delta = 0
+            no_order_reason = "G61_EXPLICIT_RESIDUAL_RESOLUTION_REQUIRED"
+            plan_reasons.extend(g63_binding["reason_codes"])
         canonical_zero_no_action = (
             quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN"
             and quantity_status == "RESOLVED_ZERO_DELTA"
@@ -856,6 +902,9 @@ def _build_plans(
             "order_side_intent": side,
             "position_reference": str(pm_position.get("position_id") or ""),
             "portfolio_construction_reference": str(pc_member.get("member_id") or ""),
+            "canonical_marginal_capital_priority_index": _int_or_none(pc_member.get("canonical_marginal_capital_priority_index")),
+            "marginal_capital_value_class": str(pc_member.get("marginal_capital_value_class") or ""),
+            "marginal_capital_value_authority": dict(pc_member.get("marginal_capital_value_authority") or {}),
             "capital_deployment_reference": str(cd_member.get("membership_reference") or ""),
             "position_management_reference": str(pm_position.get("position_id") or pc_member.get("position_management_reference") or ""),
             "quantity_required": quantity_required,
@@ -867,6 +916,12 @@ def _build_plans(
             "quantity_reference": str(sizing.get("position_reference") or "") if quantity_required else "",
             "canonical_quantity_source": quantity_source_mode,
             "canonical_quantity_delta_priority": quantity_source_mode == "CANONICAL_POSITION_SIZING_PLAN",
+            "g63_runtime_binding": g63_binding,
+            "g61_lot_aware_compatibility_consumed_by_runtime": g63_binding["g61_compatibility_consumed_by_runtime"],
+            "runtime_capital_priority_redecision": False,
+            "lower_priority_implicit_promotion_runtime": g63_binding["lower_priority_implicit_promotion_runtime"],
+            "cash_winner_redecision_runtime": False,
+            "ps_authorized_quantity_reoptimized_by_runtime": False,
             "source_pm_action": liquidation_authority["source_pm_action"],
             "source_pm_decision_id": liquidation_authority["source_pm_decision_id"],
             "source_pm_reason_codes": liquidation_authority["source_pm_reason_codes"],
@@ -941,7 +996,602 @@ def _build_plans(
             reasons.append(f"planning_conflict_block:buy_sell:{code}")
         if {"SELL_REDUCE", "SELL_EXIT"} <= intents:
             reasons.append(f"planning_conflict_block:reduce_exit:{code}")
-    return plans, sorted(set(reasons))
+    return _sort_plans_by_canonical_marginal_priority(plans), sorted(set(reasons))
+
+
+def _strategy_authority_lineage_envelope(
+    *,
+    business_date: str,
+    as_of: str,
+    pc_payload: Mapping[str, Any],
+    policy_payload: Mapping[str, Any],
+    pm_payload: Mapping[str, Any],
+    ps_payload: Mapping[str, Any],
+    source_artifacts: Sequence[Mapping[str, Any]],
+    source_hashes: Sequence[Mapping[str, Any]],
+    plans: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    pc_members = {str(item.get("security_code") or ""): item for item in pc_payload.get("portfolio_members") or [] if isinstance(item, Mapping)}
+    ps_members = {str(item.get("security_code") or item.get("symbol") or ""): item for item in ps_payload.get("positions") or [] if isinstance(item, Mapping)}
+    pm_members = {str(item.get("security_code") or item.get("symbol") or ""): item for item in pm_payload.get("positions") or [] if isinstance(item, Mapping)}
+    refined_capital_lineage = _refined_capital_decision_lineage(
+        business_date=business_date,
+        pc_payload=pc_payload,
+        policy_payload=policy_payload,
+        ps_payload=ps_payload,
+        plans=plans,
+    )
+    refined_by_symbol = {
+        str(item.get("symbol") or ""): item
+        for item in refined_capital_lineage.get("items") or []
+        if isinstance(item, Mapping) and str(item.get("symbol") or "")
+    }
+    compact_items = []
+    for plan in plans:
+        symbol = str(plan.get("security_code") or "")
+        if not symbol:
+            continue
+        pc_member = pc_members.get(symbol, {})
+        ps_member = ps_members.get(symbol, {})
+        pm_member = pm_members.get(symbol, {})
+        compact_items.append(
+            {
+                "symbol": symbol,
+                "runtime_planning_id": str(plan.get("planning_id") or ""),
+                "planning_intent": str(plan.get("planning_intent") or ""),
+                "order_side_intent": str(plan.get("order_side_intent") or ""),
+                "pc_member_id": str(pc_member.get("member_id") or plan.get("portfolio_construction_reference") or ""),
+                "pc_membership_intent": str(pc_member.get("membership_intent") or ""),
+                "pc_weight_intent": str(pc_member.get("weight_intent") or ""),
+                "target_weight": _float_or_none(pc_member.get("target_weight")),
+                "canonical_marginal_capital_priority_index": _int_or_none(plan.get("canonical_marginal_capital_priority_index")),
+                "marginal_capital_value_class": str(plan.get("marginal_capital_value_class") or ""),
+                "pm_action": str(pm_member.get("action") or plan.get("source_pm_action") or ""),
+                "pm_decision_id": str(pm_member.get("position_id") or plan.get("source_pm_decision_id") or ""),
+                "reentry_semantic_eligibility": _compact_reentry_summary(pc_member),
+                "canonical_add_competitor": _compact_add_competitor_summary(pc_payload, symbol=symbol),
+                "position_sizing_decision": _compact_sizing_summary(ps_member, plan),
+                "refined_capital_decision_lineage": dict(refined_by_symbol.get(symbol) or {}),
+            }
+        )
+    envelope = {
+        "schema_version": "runtime_authority_lineage.v1",
+        "authority_type": "STRATEGY_AUTHORITY_LINEAGE",
+        "business_date": business_date,
+        "as_of": as_of,
+        "field_classification": {
+            "market_quality_state": "BUSINESS_DECISION_INPUT",
+            "market_quality_reason_codes": "BUSINESS_DECISION_INPUT",
+            "market_quality_as_of": "BUSINESS_DECISION_INPUT",
+            "risk_pacing_intent": "AUTHORITATIVE_DECISION_RESULT",
+            "risk_pacing_reason_codes": "AUTHORITATIVE_DECISION_RESULT",
+            "risk_pacing_as_of": "AUTHORITATIVE_DECISION_RESULT",
+            "capital_competition": "AUTHORITATIVE_DECISION_RESULT",
+            "canonical_add_competitor": "AUTHORITATIVE_DECISION_RESULT",
+            "reentry_semantic_eligibility": "AUTHORITATIVE_DECISION_RESULT",
+            "final_no_deployable_opportunity": "AUTHORITATIVE_DECISION_RESULT",
+            "canonical_sizing_evidence": "AUTHORITATIVE_DECISION_RESULT",
+            "refined_capital_decision_lineage": "AUTHORITATIVE_DECISION_RESULT",
+        },
+        "source_artifacts": _compact_source_artifacts(source_artifacts),
+        "source_hashes": _compact_source_hashes(source_hashes),
+        "market_quality": _compact_market_quality_summary(policy_payload),
+        "risk_pacing": _compact_risk_pacing_summary(policy_payload),
+        "portfolio_construction": _compact_pc_summary(pc_payload),
+        "position_sizing": _compact_position_sizing_payload_summary(ps_payload),
+        "refined_capital_decision_lineage": refined_capital_lineage,
+        "items": compact_items,
+        "downstream_strategy_redecision_allowed": False,
+        "full_upstream_artifact_duplicated": False,
+        "same_business_decision_owner_count": 1,
+        "downstream_risk_pacing_recomputation_count": 0,
+        "downstream_opportunity_quality_recomputation_count": 0,
+        "downstream_cash_competition_recomputation_count": 0,
+        "downstream_capital_winner_recomputation_count": 0,
+        "downstream_capital_reclassification_count": 0,
+        "cash_winner_downstream_security_substitution_count": 0,
+        "historical_outcome_lineage_input_count": 0,
+        "paper_ledger_decision_input_count": 0,
+        "audit_result_decision_input_count": 0,
+    }
+    envelope["lineage_hash"] = _lineage_hash(envelope)
+    return envelope
+
+
+def _attach_strategy_authority_lineage(plans: Sequence[Mapping[str, Any]], envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
+    items = {
+        str(item.get("symbol") or ""): item
+        for item in envelope.get("items") or []
+        if isinstance(item, Mapping) and str(item.get("symbol") or "")
+    }
+    lineage_hash = str(envelope.get("lineage_hash") or "")
+    attached = []
+    for plan in plans:
+        symbol = str(plan.get("security_code") or "")
+        item_summary = dict(items.get(symbol) or {})
+        refined_item = dict(item_summary.get("refined_capital_decision_lineage") or {})
+        item_lineage = {
+            "schema_version": "runtime_authority_lineage.item.v1",
+            "lineage_hash": lineage_hash,
+            "lineage_ref": "runtime_planning.strategy_authority_lineage",
+            "business_date": str(envelope.get("business_date") or ""),
+            "as_of": str(envelope.get("as_of") or ""),
+            "symbol": symbol,
+            "field_classification": dict(envelope.get("field_classification") or {}),
+            "market_quality": dict(envelope.get("market_quality") or {}),
+            "risk_pacing": dict(envelope.get("risk_pacing") or {}),
+            "portfolio_construction": dict(envelope.get("portfolio_construction") or {}),
+            "position_sizing": dict(envelope.get("position_sizing") or {}),
+            "refined_capital_decision_lineage": refined_item,
+            "item": item_summary,
+            "source_hashes": list(envelope.get("source_hashes") or []),
+            "downstream_strategy_redecision_allowed": False,
+            "downstream_capital_reclassification_count": 0,
+        }
+        attached.append({**dict(plan), "strategy_authority_lineage": item_lineage})
+    return attached
+
+
+def _refined_capital_decision_lineage(
+    *,
+    business_date: str,
+    pc_payload: Mapping[str, Any],
+    policy_payload: Mapping[str, Any],
+    ps_payload: Mapping[str, Any],
+    plans: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    competition = pc_payload.get("capital_competition") if isinstance(pc_payload.get("capital_competition"), Mapping) else {}
+    interaction = (
+        competition.get("market_candidate_cash_interaction")
+        if isinstance(competition.get("market_candidate_cash_interaction"), Mapping)
+        else {}
+    )
+    cash_evidence = (
+        competition.get("canonical_cash_competitor_evidence")
+        if isinstance(competition.get("canonical_cash_competitor_evidence"), Mapping)
+        else {}
+    )
+    refined_available = bool(interaction) or bool(cash_evidence)
+    items = [
+        _refined_capital_item_lineage(
+            plan=plan,
+            pc_payload=pc_payload,
+            ps_payload=ps_payload,
+            interaction=interaction,
+            refined_available=refined_available,
+            business_date=business_date,
+        )
+        for plan in plans
+        if isinstance(plan, Mapping) and str(plan.get("security_code") or "")
+    ]
+    payload = {
+        "schema_version": REFINED_CAPITAL_LINEAGE_SCHEMA_VERSION,
+        "authority_type": "REFINED_CAPITAL_DECISION_LINEAGE",
+        "producer": "strategy.runtime_planning._strategy_authority_lineage_envelope",
+        "business_date": business_date,
+        "market_quality_state": str(cash_evidence.get("market_quality_state") or policy_payload.get("market_quality_state") or ""),
+        "market_quality_as_of": str(
+            cash_evidence.get("market_quality_as_of")
+            or policy_payload.get("market_quality_as_of")
+            or policy_payload.get("as_of")
+            or ""
+        ),
+        "market_quality_authority_hash": str(cash_evidence.get("market_quality_authority_hash") or ""),
+        "risk_pacing_intent": str(cash_evidence.get("risk_pacing_intent") or policy_payload.get("risk_pacing_intent") or ""),
+        "risk_pacing_as_of": str(
+            cash_evidence.get("risk_pacing_as_of")
+            or policy_payload.get("risk_pacing_as_of")
+            or policy_payload.get("as_of")
+            or ""
+        ),
+        "risk_pacing_authority_hash": str(
+            cash_evidence.get("risk_pacing_authority_hash")
+            or interaction.get("risk_pacing_authority_hash")
+            or ""
+        ),
+        "cash_preference_semantic": str(cash_evidence.get("cash_preference_semantic") or ""),
+        "cash_competitor_reason_codes": list(
+            cash_evidence.get("reason_codes")
+            or competition.get("cash_reason_codes")
+            or []
+        ),
+        "cash_competitor_evidence_hash": str(
+            cash_evidence.get("cash_competitor_evidence_hash")
+            or interaction.get("cash_competitor_evidence_hash")
+            or ""
+        ),
+        "market_candidate_cash_interaction_schema": str(interaction.get("schema_version") or ""),
+        "capital_competition_winner_type": str(
+            competition.get("capital_competition_winner_type")
+            or interaction.get("capital_competition_winner_type")
+            or ""
+        ),
+        "capital_competition_winner_symbol": str(
+            competition.get("capital_competition_winner_symbol")
+            or interaction.get("capital_competition_winner_symbol")
+            or ""
+        ),
+        "capital_competition_winner_reason_codes": list(
+            competition.get("capital_competition_winner_reason_codes")
+            or interaction.get("winner_reason_codes")
+            or []
+        ),
+        "canonical_deployment_set": _compact_canonical_deployment_set(competition),
+        "position_sizing_consumed_canonical_deployment_set": _compact_deployment_set_consumption(ps_payload),
+        "defeated_competitor_summary": _compact_defeated_competitors(
+            competition.get("defeated_competitor_summary")
+            or interaction.get("defeated_competitor_summary")
+            or []
+        ),
+        "final_no_deployable_identity": dict(competition.get("final_no_deployable_opportunity_authority") or {}),
+        "lineage_status": "AVAILABLE" if refined_available else "UNAVAILABLE_LEGACY_RECORD",
+        "missing_refined_lineage_not_reconstructed_from_later_state": not refined_available,
+        "same_business_decision_owner_count": 1,
+        "strategy_business_decision_owner": "PORTFOLIO_CONSTRUCTION",
+        "runtime_decision_owner_count": 0,
+        "downstream_redecision_allowed": False,
+        "downstream_risk_pacing_recomputation_count": 0,
+        "downstream_opportunity_quality_recomputation_count": 0,
+        "downstream_cash_competition_recomputation_count": 0,
+        "downstream_capital_winner_recomputation_count": 0,
+        "downstream_capital_reclassification_count": 0,
+        "cash_winner_downstream_security_substitution_count": 0,
+        "security_winner_quantity_source": "POSITION_SIZING",
+        "lineage_persistence_is_decision_binding": False,
+        "final_capital_winner_binds_before_discrete_sizing": bool(
+            (_compact_canonical_deployment_set(competition)).get("final_capital_winner_binds_before_discrete_sizing")
+        ),
+        "future_input_count": 0,
+        "historical_outcome_lineage_input_count": 0,
+        "paper_ledger_decision_input_count": 0,
+        "audit_result_decision_input_count": 0,
+        "items": items,
+    }
+    payload["lineage_hash"] = _lineage_hash(payload)
+    return payload
+
+
+def _refined_capital_item_lineage(
+    *,
+    plan: Mapping[str, Any],
+    pc_payload: Mapping[str, Any],
+    ps_payload: Mapping[str, Any],
+    interaction: Mapping[str, Any],
+    refined_available: bool,
+    business_date: str,
+) -> dict[str, Any]:
+    symbol = str(plan.get("security_code") or "")
+    pc_member = _pc_member(pc_payload, symbol=symbol)
+    ps_member = _ps_member(ps_payload, symbol=symbol)
+    result = _interaction_result(interaction, symbol=symbol)
+    competitor = _capital_competitor(pc_payload, symbol=symbol)
+    opportunity_evidence = (
+        competitor.get("opportunity_quality_evidence")
+        if isinstance(competitor.get("opportunity_quality_evidence"), Mapping)
+        else {}
+    )
+    sizing = _compact_sizing_summary(ps_member, plan)
+    add = competitor.get("canonical_add_competitor") if isinstance(competitor.get("canonical_add_competitor"), Mapping) else {}
+    payload = {
+        "schema_version": REFINED_CAPITAL_LINEAGE_SCHEMA_VERSION,
+        "lineage_scope": "ITEM",
+        "business_date": business_date,
+        "symbol": symbol,
+        "planning_intent": str(plan.get("planning_intent") or ""),
+        "order_side_intent": str(plan.get("order_side_intent") or ""),
+        "lineage_status": "AVAILABLE" if refined_available else "UNAVAILABLE_LEGACY_RECORD",
+        "missing_refined_lineage_not_reconstructed_from_later_state": not refined_available,
+        "canonical_opportunity_quality_class": str(
+            result.get("canonical_opportunity_quality_class")
+            or competitor.get("canonical_opportunity_quality_class")
+            or opportunity_evidence.get("canonical_opportunity_quality_class")
+            or ""
+        ),
+        "opportunity_quality_reason_codes": list(
+            result.get("reason_codes")
+            or opportunity_evidence.get("opportunity_quality_reason_codes")
+            or opportunity_evidence.get("reason_codes")
+            or []
+        ),
+        "opportunity_quality_authority": str(opportunity_evidence.get("authority_type") or "OPPORTUNITY_QUALITY"),
+        "opportunity_quality_evidence_hash": str(
+            result.get("opportunity_quality_evidence_hash")
+            or opportunity_evidence.get("opportunity_quality_hash")
+            or ""
+        ),
+        "interaction_result": str(result.get("interaction_result") or ""),
+        "binding_reason_codes": list(result.get("binding_reason_codes") or result.get("reason_codes") or []),
+        "capital_competition_winner_type": str(interaction.get("capital_competition_winner_type") or ""),
+        "capital_competition_winner_symbol": str(interaction.get("capital_competition_winner_symbol") or ""),
+        "winner_loser": str(result.get("winner_loser") or ""),
+        "defeated_competitor_summary": _compact_defeated_competitors(interaction.get("defeated_competitor_summary") or []),
+        "add_binding": dict(add) if add else {"status": "NOT_APPLICABLE"},
+        "reentry_binding": _compact_reentry_summary(pc_member),
+        "lot_reconsideration_binding": _compact_lot_reconsideration(pc_payload, symbol=symbol),
+        "sizing_evidence_identity": sizing,
+        "canonical_deployment_set_sizing_eligibility": str(ps_member.get("canonical_deployment_set_sizing_eligibility") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": bool(ps_member.get("final_capital_winner_binds_before_discrete_sizing")),
+        "security_winner_quantity_source": "POSITION_SIZING",
+        "runtime_recomputed_capital_decision": False,
+        "downstream_capital_reclassification_count": 0,
+        "future_input_count": 0,
+        "historical_outcome_lineage_input_count": 0,
+        "paper_ledger_decision_input_count": 0,
+        "audit_result_decision_input_count": 0,
+    }
+    payload["lineage_hash"] = _lineage_hash(payload)
+    return payload
+
+
+def _pc_member(pc_payload: Mapping[str, Any], *, symbol: str) -> Mapping[str, Any]:
+    for item in pc_payload.get("portfolio_members") or []:
+        if isinstance(item, Mapping) and str(item.get("security_code") or item.get("symbol") or "") == symbol:
+            return item
+    return {}
+
+
+def _ps_member(ps_payload: Mapping[str, Any], *, symbol: str) -> Mapping[str, Any]:
+    for item in ps_payload.get("positions") or []:
+        if isinstance(item, Mapping) and str(item.get("security_code") or item.get("symbol") or "") == symbol:
+            return item
+    return {}
+
+
+def _capital_competitor(pc_payload: Mapping[str, Any], *, symbol: str) -> Mapping[str, Any]:
+    competition = pc_payload.get("capital_competition") if isinstance(pc_payload.get("capital_competition"), Mapping) else {}
+    for item in competition.get("competitors") or []:
+        if isinstance(item, Mapping) and str(item.get("symbol") or "") == symbol:
+            return item
+    return {}
+
+
+def _interaction_result(interaction: Mapping[str, Any], *, symbol: str) -> Mapping[str, Any]:
+    for item in interaction.get("interaction_results") or []:
+        if isinstance(item, Mapping) and str(item.get("symbol") or "") == symbol:
+            return item
+    return {}
+
+
+def _compact_defeated_competitors(items: Sequence[Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        compact.append(
+            {
+                "competitor_type": str(item.get("competitor_type") or ""),
+                "symbol": str(item.get("symbol") or ""),
+                "interaction_result": str(item.get("interaction_result") or ""),
+                "reason_codes": list(item.get("reason_codes") or []),
+            }
+        )
+    return compact
+
+
+def _compact_lot_reconsideration(pc_payload: Mapping[str, Any], *, symbol: str) -> dict[str, Any]:
+    evidence = pc_payload.get("lot_aware_reallocation_evidence") if isinstance(pc_payload.get("lot_aware_reallocation_evidence"), Mapping) else {}
+    if not evidence:
+        evidence = pc_payload.get("evidence") if isinstance(pc_payload.get("evidence"), Mapping) else {}
+    binding = (
+        evidence.get("lot_reconsideration_binding_integration")
+        if isinstance(evidence.get("lot_reconsideration_binding_integration"), Mapping)
+        else {}
+    )
+    skipped = next(
+        (
+            item
+            for item in evidence.get("skipped") or []
+            if isinstance(item, Mapping) and str(item.get("symbol") or "") == symbol
+        ),
+        {},
+    )
+    if not binding and not skipped:
+        return {"status": "NOT_APPLICABLE"}
+    competition = pc_payload.get("capital_competition") if isinstance(pc_payload.get("capital_competition"), Mapping) else {}
+    return {
+        "schema_version": str(binding.get("schema_version") or "portfolio_construction.lot_reconsideration_binding.v1"),
+        "status": "AVAILABLE",
+        "original_winner_symbol": symbol if skipped else "",
+        "sizing_infeasibility_reason": str(skipped.get("reason") or skipped.get("blocked_reason") or ""),
+        "final_winner_symbol": str(competition.get("capital_competition_winner_symbol") or ""),
+        "final_winner_type": str(competition.get("capital_competition_winner_type") or ""),
+        "position_sizing_quantity_owner": "POSITION_SIZING",
+        "second_reconsideration_authority_count": int(binding.get("second_reconsideration_authority_count") or 0),
+    }
+
+
+def _compact_canonical_deployment_set(competition: Mapping[str, Any]) -> dict[str, Any]:
+    deployment_set = competition.get("canonical_deployment_set") if isinstance(competition.get("canonical_deployment_set"), Mapping) else {}
+    if not deployment_set:
+        return {"status": "NOT_AVAILABLE"}
+    return {
+        "schema_version": str(deployment_set.get("schema_version") or ""),
+        "owner": str(deployment_set.get("owner") or ""),
+        "cardinality_contract": str(deployment_set.get("cardinality_contract") or ""),
+        "final_winner_type": str(deployment_set.get("final_winner_type") or ""),
+        "final_winner_symbol": str(deployment_set.get("final_winner_symbol") or ""),
+        "selected_symbol_set": list(deployment_set.get("selected_symbol_set") or []),
+        "deployment_security_count": int(deployment_set.get("deployment_security_count") or 0),
+        "defeated_security_count": int(deployment_set.get("defeated_security_count") or 0),
+        "deployment_set_hash": str(deployment_set.get("deployment_set_hash") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": bool(
+            deployment_set.get("final_capital_winner_binds_before_discrete_sizing")
+        ),
+        "position_sizing_capital_winner_authority": bool(deployment_set.get("position_sizing_capital_winner_authority")),
+        "runtime_planning_redecision_allowed": bool(deployment_set.get("runtime_planning_redecision_allowed")),
+    }
+
+
+def _compact_deployment_set_consumption(ps_payload: Mapping[str, Any]) -> dict[str, Any]:
+    consumption = ps_payload.get("canonical_deployment_set_consumption")
+    if not isinstance(consumption, Mapping):
+        return {"status": "NOT_AVAILABLE"}
+    return {
+        "schema_version": str(consumption.get("schema_version") or ""),
+        "status": str(consumption.get("status") or ""),
+        "canonical_deployment_set_hash": str(consumption.get("canonical_deployment_set_hash") or ""),
+        "selected_symbol_set": list(consumption.get("selected_symbol_set") or []),
+        "defeated_security_evidence_row_count": int(consumption.get("defeated_security_evidence_row_count") or 0),
+        "defeated_security_sizing_input_count": int(consumption.get("defeated_security_sizing_input_count") or 0),
+        "defeated_security_positive_increment_count": int(consumption.get("defeated_security_positive_increment_count") or 0),
+        "position_sizing_capital_winner_authority": bool(consumption.get("position_sizing_capital_winner_authority")),
+        "downstream_cash_redecision_count": int(consumption.get("downstream_cash_redecision_count") or 0),
+    }
+
+
+def _compact_source_artifacts(source_artifacts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    compact = []
+    for item in source_artifacts:
+        compact.append(
+            {
+                "role": str(item.get("role") or ""),
+                "path": str(item.get("path") or ""),
+                "status": str(item.get("status") or ""),
+                "required": bool(item.get("required")),
+            }
+        )
+    return compact
+
+
+def _compact_source_hashes(source_hashes: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": str(item.get("role") or ""),
+            "path": str(item.get("path") or ""),
+            "sha256": str(item.get("sha256") or ""),
+        }
+        for item in source_hashes
+    ]
+
+
+def _compact_market_quality_summary(policy_payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "authority": "MARKET_CONTEXT",
+        "state": str(policy_payload.get("market_quality_state") or ""),
+        "reason_codes": list(policy_payload.get("market_quality_reason_codes") or []),
+        "as_of": str(policy_payload.get("market_quality_as_of") or policy_payload.get("as_of") or ""),
+        "business_date": str(policy_payload.get("business_date") or ""),
+    }
+
+
+def _compact_risk_pacing_summary(policy_payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "authority": "PORTFOLIO_POLICY",
+        "intent": str(policy_payload.get("risk_pacing_intent") or ""),
+        "reason_codes": list(policy_payload.get("risk_pacing_reason_codes") or []),
+        "as_of": str(policy_payload.get("risk_pacing_as_of") or policy_payload.get("as_of") or ""),
+        "mode": str(policy_payload.get("risk_pacing_mode") or ""),
+        "evidence_completeness": str(policy_payload.get("risk_pacing_evidence_completeness") or ""),
+    }
+
+
+def _compact_pc_summary(pc_payload: Mapping[str, Any]) -> dict[str, Any]:
+    competition = pc_payload.get("capital_competition") if isinstance(pc_payload.get("capital_competition"), Mapping) else {}
+    no_deployable = pc_payload.get("final_no_deployable_opportunity_authority")
+    if not isinstance(no_deployable, Mapping):
+        no_deployable = competition.get("final_no_deployable_opportunity_authority") if isinstance(competition.get("final_no_deployable_opportunity_authority"), Mapping) else {}
+    return {
+        "authority": "PORTFOLIO_CONSTRUCTION",
+        "business_date": str(pc_payload.get("business_date") or ""),
+        "as_of": str(pc_payload.get("as_of") or ""),
+        "artifact_hash": str(pc_payload.get("artifact_hash") or ""),
+        "capital_competition": {
+            "authority": dict(competition.get("authority") or {}),
+            "competitor_types": list(competition.get("competitor_types") or []),
+            "final_no_deployable_opportunity": bool(competition.get("final_no_deployable_opportunity")),
+            "final_no_deployable_opportunity_authority": dict(no_deployable),
+        },
+    }
+
+
+def _compact_position_sizing_payload_summary(ps_payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "authority": "POSITION_SIZING",
+        "schema_version": str(ps_payload.get("schema_version") or ""),
+        "business_date": str(ps_payload.get("business_date") or ""),
+        "artifact_hash": str(ps_payload.get("artifact_hash") or ""),
+    }
+
+
+def _compact_reentry_summary(pc_member: Mapping[str, Any]) -> dict[str, Any]:
+    keys = (
+        "reentry_semantic_eligibility",
+        "reentry_semantic_state",
+        "reentry_reason_codes",
+        "entry_admission",
+        "entry_admission_action",
+    )
+    summary = {key: pc_member.get(key) for key in keys if key in pc_member}
+    return summary if summary else {"status": "NOT_APPLICABLE"}
+
+
+def _compact_add_competitor_summary(pc_payload: Mapping[str, Any], *, symbol: str) -> dict[str, Any]:
+    competition = pc_payload.get("capital_competition") if isinstance(pc_payload.get("capital_competition"), Mapping) else {}
+    for competitor in competition.get("competitors") or []:
+        if not isinstance(competitor, Mapping):
+            continue
+        if str(competitor.get("symbol") or "") != symbol:
+            continue
+        add = competitor.get("canonical_add_competitor")
+        if isinstance(add, Mapping):
+            return {
+                "status": str(add.get("eligibility_state") or add.get("status") or ""),
+                "reason_codes": list(add.get("reason_codes") or []),
+                "competitor_type": str(competitor.get("competitor_type") or ""),
+                "selected": bool(competitor.get("selected")),
+            }
+    return {"status": "NOT_APPLICABLE"}
+
+
+def _compact_sizing_summary(ps_member: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = ps_member.get("canonical_sizing_evidence")
+    if not isinstance(canonical, Mapping):
+        canonical = ps_member.get("phase29_l19_lot_resolution") if isinstance(ps_member.get("phase29_l19_lot_resolution"), Mapping) else {}
+    return {
+        "authority": str(plan.get("quantity_authority") or "POSITION_SIZING"),
+        "position_reference": str(ps_member.get("position_reference") or plan.get("quantity_reference") or ""),
+        "target_quantity_candidate": _int_or_none(plan.get("target_quantity_candidate")),
+        "quantity_delta_candidate": _int_or_none(plan.get("quantity_delta_candidate")),
+        "planned_quantity": _int_or_none(plan.get("planned_quantity")),
+        "quantity_status": str(plan.get("quantity_status") or ""),
+        "canonical_sizing_evidence": {
+            "evidence_class": str(canonical.get("evidence_class") or canonical.get("boundary_classification") or ""),
+            "reason": str(canonical.get("reason") or canonical.get("blocked_reason") or canonical.get("lot_overshoot_reason") or ""),
+            "lot_feasibility_status": str(canonical.get("lot_feasibility_status") or canonical.get("one_lot_feasibility_status") or ""),
+            "final_allocated_quantity": canonical.get("final_allocated_quantity"),
+            "executable_quantity_delta": canonical.get("executable_quantity_delta"),
+        },
+    }
+
+
+def _lineage_hash(payload: Mapping[str, Any]) -> str:
+    clean = {key: value for key, value in payload.items() if key != "lineage_hash"}
+    return "sha256:" + hashlib.sha256(json.dumps(clean, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _sort_plans_by_canonical_marginal_priority(plans: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    indexed = [(index, dict(plan)) for index, plan in enumerate(plans)]
+
+    def key(item: tuple[int, dict[str, Any]]) -> tuple[Any, ...]:
+        index, plan = item
+        side = str(plan.get("order_side_intent") or "").upper()
+        intent = str(plan.get("planning_intent") or "").upper()
+        priority = _int_or_none(plan.get("canonical_marginal_capital_priority_index"))
+        if side == "BUY" and intent in {"BUY_NEW", "BUY_ADD"}:
+            return (0, priority if priority is not None else 999999, index)
+        return (1, index)
+
+    sorted_items = sorted(indexed, key=key)
+    ordered: list[dict[str, Any]] = []
+    for order_index, (_, plan) in enumerate(sorted_items, start=1):
+        plan["canonical_strategy_order_index"] = order_index
+        plan["canonical_strategy_order_source"] = (
+            "MARGINAL_CAPITAL_VALUE_AUTHORITY"
+            if str(plan.get("order_side_intent") or "").upper() == "BUY" and plan.get("canonical_marginal_capital_priority_index") is not None
+            else "STABLE_NON_BUY_OR_NO_PRIORITY_ORDER"
+        )
+        ordered.append(plan)
+    return ordered
 
 
 def _price_authority_fields(sizing: Mapping[str, Any]) -> dict[str, Any]:
@@ -1242,6 +1892,163 @@ def _resolve_quantity_status(
     if upstream_blocked and sizing_status == "UPSTREAM_REVIEW_REQUIRED":
         return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", ["quantity_not_produced_due_to_upstream_block"]
     return "REVIEW_REQUIRED_AUTHORITY_UNRESOLVED", 0, quantity_delta, "", [f"position_sizing_status_unresolved:{quantity_status or sizing_status or 'missing'}"]
+
+
+def _g63_runtime_binding_precheck(ps_payload: Mapping[str, Any], *, business_date: str) -> dict[str, Any]:
+    consumption = (
+        ps_payload.get("g61_lot_aware_compatibility_consumption")
+        if isinstance(ps_payload.get("g61_lot_aware_compatibility_consumption"), Mapping)
+        else {}
+    )
+    base = {
+        "schema_version": G63_RUNTIME_BINDING_SCHEMA_VERSION,
+        "business_date": business_date,
+        "owner": "RUNTIME_PLANNING",
+        "position_sizing_quantity_owner": "POSITION_SIZING",
+        "runtime_capital_priority_redecision": False,
+        "cash_winner_redecision_runtime": False,
+        "ps_authorized_quantity_reoptimized_by_runtime": False,
+    }
+    if not consumption:
+        return {
+            **base,
+            "status": "NOT_AVAILABLE_LEGACY_COMPATIBILITY",
+            "g61_compatibility_consumed_by_runtime": False,
+            "reason_codes": ["G61_COMPATIBILITY_NOT_AVAILABLE_LEGACY_COMPATIBILITY"],
+        }
+    errors: list[str] = []
+    if str(consumption.get("schema_version") or "") != "position_sizing.g61_lot_aware_compatibility_consumption.v1":
+        errors.append("G61_PS_CONSUMPTION_SCHEMA_INVALID")
+    status = str(consumption.get("status") or "")
+    if status == "BLOCK":
+        errors.append("G61_PS_CONSUMPTION_BLOCK")
+    elif status not in {"PASS", "NOT_AVAILABLE_LEGACY_COMPATIBILITY"}:
+        errors.append("G61_PS_CONSUMPTION_STATUS_INVALID")
+    if str(consumption.get("business_date") or "") not in {"", business_date}:
+        errors.append("G61_PS_CONSUMPTION_DATE_MISMATCH")
+    if status == "PASS":
+        if consumption.get("g61_compatibility_consumed_by_ps") is not True:
+            errors.append("G61_COMPATIBILITY_NOT_CONSUMED_BY_PS")
+        if consumption.get("lower_priority_implicit_promotion") is not False:
+            errors.append("G61_LOWER_PRIORITY_IMPLICIT_PROMOTION_NOT_PROHIBITED")
+        if consumption.get("pc_discrete_quantity_authority") is not False:
+            errors.append("G61_PC_DISCRETE_QUANTITY_AUTHORITY_FORBIDDEN")
+        if consumption.get("position_sizing_quantity_owner") != "POSITION_SIZING":
+            errors.append("G61_POSITION_SIZING_QUANTITY_OWNER_INVALID")
+        if consumption.get("position_sizing_recomputes_capital_priority") is not False:
+            errors.append("G61_PS_CAPITAL_PRIORITY_REDECISION_FORBIDDEN")
+    return {
+        **base,
+        "status": "BLOCK" if errors else ("PASS" if status == "PASS" else "NOT_AVAILABLE_LEGACY_COMPATIBILITY"),
+        "g61_compatibility_consumed_by_runtime": not errors and status == "PASS",
+        "g61_compatibility_consumption_status": status,
+        "compatibility_hash": str(consumption.get("compatibility_hash") or ""),
+        "allocation_count": int(consumption.get("allocation_count") or 0),
+        "residual_capital_weight": _float_or_none(consumption.get("residual_capital_weight")) or 0.0,
+        "lower_priority_rows_requiring_explicit_residual_resolution": int(
+            consumption.get("lower_priority_rows_requiring_explicit_residual_resolution") or 0
+        ),
+        "reason_codes": sorted(set(errors or ["G61_PS_CONSUMPTION_ACCEPTED_BY_RUNTIME"])),
+    }
+
+
+def _g63_plan_binding_guard(
+    *,
+    code: str,
+    intent: str,
+    sizing: Mapping[str, Any],
+    planned_quantity: int,
+    quantity_delta: int | None,
+) -> dict[str, Any]:
+    compatibility = (
+        sizing.get("g61_lot_aware_compatibility")
+        if isinstance(sizing.get("g61_lot_aware_compatibility"), Mapping)
+        else {}
+    )
+    consumed = bool(sizing.get("g61_lot_aware_compatibility_consumed_by_ps")) and bool(compatibility)
+    lower_requires_resolution = bool(compatibility.get("lower_priority_execution_requires_explicit_residual_resolution"))
+    buy_side = intent in {"BUY_NEW", "BUY_ADD"}
+    positive_runtime_quantity = planned_quantity > 0 or (quantity_delta is not None and quantity_delta > 0)
+    block = consumed and buy_side and positive_runtime_quantity and lower_requires_resolution
+    return {
+        "schema_version": G63_RUNTIME_BINDING_SCHEMA_VERSION,
+        "symbol": code,
+        "g61_compatibility_consumed_by_runtime": consumed,
+        "g61_compatibility_state": str(compatibility.get("compatibility_state") or ""),
+        "lower_priority_execution_requires_explicit_residual_resolution": lower_requires_resolution,
+        "runtime_blocked_implicit_promotion": block,
+        "lower_priority_implicit_promotion_runtime": False,
+        "runtime_capital_priority_redecision": False,
+        "cash_winner_redecision_runtime": False,
+        "ps_authorized_quantity_reoptimized_by_runtime": False,
+        "reason_codes": ["G61_EXPLICIT_RESIDUAL_RESOLUTION_REQUIRED"]
+        if block
+        else (["G61_COMPATIBILITY_BINDING_ACCEPTED_BY_RUNTIME"] if consumed else []),
+    }
+
+
+def _g63_runtime_executable_binding_summary(
+    *,
+    business_date: str,
+    ps_payload: Mapping[str, Any],
+    plans: Sequence[Mapping[str, Any]],
+    precheck: Mapping[str, Any],
+) -> dict[str, Any]:
+    buy_plans = [
+        plan
+        for plan in plans
+        if str(plan.get("planning_intent") or "") in {"BUY_NEW", "BUY_ADD"}
+        and int(plan.get("planned_quantity") or 0) > 0
+    ]
+    add_plans = [plan for plan in buy_plans if str(plan.get("planning_intent") or "") == "BUY_ADD"]
+    g61_plans = [plan for plan in plans if bool(plan.get("g61_lot_aware_compatibility_consumed_by_runtime"))]
+    blocked_promotions = [
+        plan
+        for plan in plans
+        if isinstance(plan.get("g63_runtime_binding"), Mapping)
+        and (plan.get("g63_runtime_binding") or {}).get("runtime_blocked_implicit_promotion") is True
+    ]
+    errors: list[str] = []
+    if precheck.get("status") == "BLOCK":
+        errors.extend(str(item) for item in precheck.get("reason_codes") or [])
+    if any(plan.get("runtime_capital_priority_redecision") is not False for plan in plans):
+        errors.append("RUNTIME_CAPITAL_PRIORITY_REDECISION_DETECTED")
+    if any(plan.get("lower_priority_implicit_promotion_runtime") is not False for plan in plans):
+        errors.append("LOWER_PRIORITY_IMPLICIT_PROMOTION_RUNTIME_DETECTED")
+    if any(plan.get("cash_winner_redecision_runtime") is not False for plan in plans):
+        errors.append("CASH_WINNER_REDECISION_RUNTIME_DETECTED")
+    if any(plan.get("ps_authorized_quantity_reoptimized_by_runtime") is not False for plan in plans):
+        errors.append("PS_AUTHORIZED_QUANTITY_REOPTIMIZED_BY_RUNTIME")
+    consumption = (
+        ps_payload.get("g61_lot_aware_compatibility_consumption")
+        if isinstance(ps_payload.get("g61_lot_aware_compatibility_consumption"), Mapping)
+        else {}
+    )
+    return {
+        "schema_version": G63_RUNTIME_BINDING_SCHEMA_VERSION,
+        "business_date": business_date,
+        "owner": "RUNTIME_PLANNING",
+        "status": "BLOCK" if errors else "PASS",
+        "pc_ps_runtime_executable_binding": "PASS" if not errors else "BLOCK",
+        "ps_quantity_binds_runtime": True,
+        "runtime_capital_priority_redecision": False,
+        "lower_priority_implicit_promotion_runtime": False,
+        "cash_winner_redecision_runtime": False,
+        "ps_authorized_quantity_reoptimized_by_runtime": False,
+        "g61_compatibility_consumed_by_runtime": precheck.get("g61_compatibility_consumed_by_runtime") is True,
+        "runtime_buy_plan_count": len(buy_plans),
+        "runtime_add_plan_count": len(add_plans),
+        "multi_security_runtime_planning": len({str(plan.get("security_code") or "") for plan in buy_plans}) > 1,
+        "add_runtime_binding": "PASS" if all(str(plan.get("planning_intent") or "") == "BUY_ADD" for plan in add_plans) else "FAIL",
+        "implicit_promotion_blocked_plan_count": len(blocked_promotions),
+        "residual_capital_explicit_through_runtime": bool(consumption.get("residual_capital_explicit_through_ps"))
+        if consumption
+        else False,
+        "capital_conservation": dict(consumption.get("capital_conservation") or {}) if consumption else {},
+        "future_input_count": 0,
+        "historical_outcome_strategy_input_count": 0,
+        "reason_codes": sorted(set(errors or ["PC_PS_RUNTIME_EXECUTABLE_BINDING_ACCEPTED"])),
+    }
 
 
 def _resolve_intent(

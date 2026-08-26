@@ -20,6 +20,9 @@ from ai_fund_lab_v2.runtime_v2.position_sizing_authority import (
     PositionSizingAuthority,
     position_sizing_authority_from_context,
 )
+from ai_fund_lab_v2.runtime_v2.executable_membership_guard import (
+    evaluate_precomputable_executable_membership_guard,
+)
 from ai_fund_lab_v2.runtime_v2.symbol_identity import contains_symbol_identity
 
 
@@ -285,6 +288,8 @@ def evaluate_planning_submit_feasibility(
                     authority_source=authority_source,
                     sequence_index=index,
                     cash_exposure_authority=cash_exposure_authority,
+                    business_date=business_date,
+                    runtime_mode=runtime_mode,
                 )
             )
     blocked = [item for item in item_evidence if item["status"] != "PASS"]
@@ -555,6 +560,15 @@ def evaluate_buy_item_submit_feasibility(
     if reservation["status"] != "PASS":
         violations.append(("reservation_price_authority", reservation["reason"], reservation["authority_source"]))
     if not violations:
+        membership_guard = evaluate_precomputable_executable_membership_guard(
+            item=item,
+            business_date=business_date,
+            runtime_mode=runtime_mode,
+            runtime_root=current.current_position_source,
+        )
+        if membership_guard.get("precomputable_executable_membership_guard_status") != "PASS":
+            evidence.update(membership_guard)
+            return evidence
         return evidence
     policy_name, reason, source = violations[0]
     evidence.update(
@@ -576,6 +590,8 @@ def _sell_item_evidence(
     authority_source: str,
     sequence_index: int | None = None,
     cash_exposure_authority: CashExposureAuthority | None = None,
+    business_date: str = "",
+    runtime_mode: str = "",
 ) -> dict[str, Any]:
     resolved_cash_exposure_authority = (
         cash_exposure_authority.with_runtime_state(
@@ -588,7 +604,7 @@ def _sell_item_evidence(
         else None
     )
     cash_exposure_fields = resolved_cash_exposure_authority.to_dict() if resolved_cash_exposure_authority is not None else {}
-    return {
+    evidence = {
         "pending_item_id": str(getattr(item, "pending_item_id", "")),
         "symbol": str(getattr(item, "symbol", "")),
         "side": "SELL",
@@ -637,6 +653,15 @@ def _sell_item_evidence(
         "violated_policy": "",
         "violated_policy_source": "",
     }
+    membership_guard = evaluate_precomputable_executable_membership_guard(
+        item=item,
+        business_date=business_date,
+        runtime_mode=runtime_mode,
+        runtime_root=current.current_position_source,
+    )
+    if membership_guard.get("precomputable_executable_membership_guard_status") != "PASS":
+        evidence.update(membership_guard)
+    return evidence
 
 
 def _reserved_notional(item: Any) -> float:
@@ -723,6 +748,8 @@ _PC_DISCRETE_STRATEGY_SOFT_CAP_OVERSHOOT_REASONS = {
     "SECOND_LOT_PLUS_RESIDUAL_CAPITAL_AWARE_PROMOTION",
     "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
 }
+_G102_ITEM_SCOPED_PC_DISCRETE_QUANTITY_REASON = "G102_G97_G99_ITEM_SCOPED_PC_DISCRETE_QUANTITY_AUTHORITY"
+_G61_LOT_COMPATIBILITY_SCHEMA_VERSION = "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1"
 
 
 def _pc_discrete_strategy_soft_cap_overshoot_authorized(lot_resolution: Mapping[str, Any]) -> bool:
@@ -748,6 +775,73 @@ def _pc_discrete_strategy_soft_cap_overshoot_authorized(lot_resolution: Mapping[
             decision = str(authority.get("decision") or authority.get("admission_decision") or "")
             if decision and decision not in {"ADMIT", "PASS"}:
                 return False
+    return True
+
+
+def _g102_item_scoped_pc_discrete_quantity_authorized(
+    *,
+    lot_resolution: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    authorized_quantity: float,
+    item_quantity: float,
+    ps_final_quantity: float,
+) -> bool:
+    if str(lot_resolution.get("lot_overshoot_reason") or "") != _G102_ITEM_SCOPED_PC_DISCRETE_QUANTITY_REASON:
+        return False
+    if str(authority.get("authority_type") or "") != "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY":
+        return False
+    if str(authority.get("status") or "") != "PASS":
+        return False
+    if authority.get("future_information_used") is not False:
+        return False
+    if authority.get("ps_must_consume_canonical_quantity") is not True:
+        return False
+    semantic = str(lot_resolution.get("semantic_type") or "").upper()
+    if semantic not in {"BUY_NEW", "REENTRY", "BUY_ADD"}:
+        return False
+    if lot_resolution.get("strategy_cap_preserved") is not True:
+        return False
+    if lot_resolution.get("safety_hard_cap_preserved") is not True:
+        return False
+    if str(lot_resolution.get("one_lot_feasibility_status") or "") != "PASS":
+        return False
+    if authorized_quantity <= 0:
+        return False
+    for quantity in (item_quantity, ps_final_quantity):
+        if abs(quantity - authorized_quantity) > 0.000001:
+            return False
+    for key in ("final_allocated_quantity", "executable_quantity_delta", "preflight_executable_quantity_delta"):
+        quantity = _optional_float(lot_resolution.get(key))
+        if quantity is None or abs(quantity - authorized_quantity) > 0.000001:
+            return False
+    compatibility = lot_resolution.get("lot_aware_allocation_to_sizing_compatibility")
+    if not isinstance(compatibility, Mapping):
+        return False
+    if str(compatibility.get("schema_version") or "") != _G61_LOT_COMPATIBILITY_SCHEMA_VERSION:
+        return False
+    if str(compatibility.get("owner") or "") != "PORTFOLIO_CONSTRUCTION":
+        return False
+    if str(compatibility.get("compatibility_state") or "") != "LOT_EXECUTABLE_COMPATIBLE":
+        return False
+    if compatibility.get("future_information_used") is not False:
+        return False
+    if compatibility.get("historical_outcome_used") is not False:
+        return False
+    if compatibility.get("position_sizing_quantity_authority_preserved") is not True:
+        return False
+    if compatibility.get("pc_quantity_authority") is not False:
+        return False
+    if _optional_float(compatibility.get("projected_quantity_delta_evidence_only")) != authorized_quantity:
+        return False
+    trading_unit = _optional_float(compatibility.get("trading_unit"))
+    reference_price = _optional_float(compatibility.get("reference_price"))
+    portfolio_value = _optional_float(compatibility.get("portfolio_value"))
+    if trading_unit is None or trading_unit <= 0:
+        return False
+    if reference_price is None or reference_price <= 0:
+        return False
+    if portfolio_value is None or portfolio_value <= 0:
+        return False
     return True
 
 
@@ -783,14 +877,38 @@ def _canonical_discrete_quantity_submit_authority(
     semantic = str(lot_resolution.get("semantic_type") or "").upper()
     if semantic not in {"BUY_NEW", "REENTRY", "BUY_ADD"}:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_semantic_missing_or_invalid"}
-    authorized_quantity = _float(authority.get("final_allocated_quantity"))
+    authorized_quantity = _buy_add_order_increment_authority_quantity(
+        lot_resolution=lot_resolution,
+        authority=authority,
+        position_sizing_authority=position_sizing_authority,
+    ) if semantic == "BUY_ADD" else _float(authority.get("final_allocated_quantity"))
     payload["authorized_quantity"] = authorized_quantity
+    payload["quantity_scope"] = "ORDER_INCREMENT" if semantic == "BUY_ADD" else "TARGET_POSITION_OR_ORDER_QUANTITY"
+    payload["buy_add_order_increment_authority"] = (
+        "pc_positive_executable_quantity_authority.final_allocated_quantity"
+        if semantic == "BUY_ADD"
+        else ""
+    )
     if authorized_quantity <= 0:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_quantity_missing"}
     item_quantity = payload["item_quantity"]
+    ps_quantity = _optional_float(lot_resolution.get("ps_final_quantity"))
+    if ps_quantity is None or ps_quantity <= 0:
+        ps_quantity = _optional_float(getattr(position_sizing_authority, "lot_adjusted_quantity", None))
+    if ps_quantity is None or ps_quantity <= 0:
+        ps_quantity = _optional_float(getattr(position_sizing_authority, "discrete_authorized_quantity", None))
+    if ps_quantity is not None and ps_quantity > 0:
+        payload["ps_final_quantity"] = ps_quantity
     if abs(item_quantity - authorized_quantity) > 0.000001:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_quantity_mismatch"}
-    for key in ("final_allocated_quantity", "executable_quantity_delta", "preflight_executable_quantity_delta"):
+    if abs(payload["ps_final_quantity"] - authorized_quantity) > 0.000001:
+        return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_quantity_mismatch"}
+    quantity_keys = ("final_allocated_quantity",) if semantic == "BUY_ADD" else (
+        "final_allocated_quantity",
+        "executable_quantity_delta",
+        "preflight_executable_quantity_delta",
+    )
+    for key in quantity_keys:
         quantity = _optional_float(lot_resolution.get(key))
         if quantity is not None and abs(quantity - authorized_quantity) > 0.000001:
             return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_quantity_mismatch"}
@@ -803,7 +921,15 @@ def _canonical_discrete_quantity_submit_authority(
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_strategy_cap_not_preserved"}
     if lot_resolution.get("safety_hard_cap_preserved") is False:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_safety_hard_cap_not_preserved"}
-    strategy_soft_cap_overshoot_authorized = _pc_discrete_strategy_soft_cap_overshoot_authorized(lot_resolution)
+    strategy_soft_cap_overshoot_authorized = _pc_discrete_strategy_soft_cap_overshoot_authorized(
+        lot_resolution
+    ) or _g102_item_scoped_pc_discrete_quantity_authorized(
+        lot_resolution=lot_resolution,
+        authority=authority,
+        authorized_quantity=authorized_quantity,
+        item_quantity=item_quantity,
+        ps_final_quantity=payload["ps_final_quantity"],
+    )
     executable_lots = _optional_float(lot_resolution.get("executable_lots"))
     max_strategy_lots = _optional_float(lot_resolution.get("maximum_strategy_feasible_lots"))
     max_safety_lots = _optional_float(lot_resolution.get("maximum_safety_feasible_lots"))
@@ -819,6 +945,27 @@ def _canonical_discrete_quantity_submit_authority(
     if str(lot_resolution.get("lot_overshoot_reason") or "") and not strategy_soft_cap_overshoot_authorized:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "pc_discrete_quantity_authority_lot_overshoot_unresolved"}
     return {**payload, "status": "PASS", "reason": payload["reason"]}
+
+
+def _buy_add_order_increment_authority_quantity(
+    *,
+    lot_resolution: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    position_sizing_authority: PositionSizingAuthority,
+) -> float:
+    candidates = (
+        authority.get("order_increment_quantity"),
+        authority.get("authorized_order_increment_quantity"),
+        authority.get("final_allocated_quantity"),
+        authority.get("discrete_authorized_quantity"),
+        getattr(position_sizing_authority, "discrete_authorized_quantity", None),
+        getattr(position_sizing_authority, "lot_adjusted_quantity", None),
+    )
+    for value in candidates:
+        quantity = _optional_float(value)
+        if quantity is not None and quantity > 0:
+            return quantity
+    return _float(lot_resolution.get("final_allocated_quantity"))
 
 
 def _buy_reservation_authority(item: Any) -> dict[str, Any]:

@@ -137,6 +137,8 @@ class PendingOrderItem:
     runtime_test_profile_id: str = ""
     runtime_test_evidence_root: str = ""
     quantity_contract: dict[str, Any] | None = None
+    strategy_authority_lineage: dict[str, Any] | None = None
+    strategy_authority_lineage_hash: str = ""
     source_decision_type: str = ""
     source_pm_decision_id: str = ""
     source_pm_business_date: str = ""
@@ -144,6 +146,11 @@ class PendingOrderItem:
     add_candidate_signal: bool = False
     capital_allocation_status: str = ""
     capital_allocation_reason: str = ""
+    canonical_marginal_capital_priority_index: int | None = None
+    marginal_capital_value_class: str = ""
+    marginal_capital_value_authority: dict[str, Any] | None = None
+    canonical_strategy_order_index: int | None = None
+    canonical_strategy_order_source: str = ""
     requested_add_notional: float | None = None
     approved_add_notional: float | None = None
     rejected_reason: str = ""
@@ -175,6 +182,8 @@ class PendingOrderPlan:
     policy_source: str = ""
     pending_policy_hash: str = ""
     planning_lineage_context: dict[str, Any] | None = None
+    strategy_authority_lineage: dict[str, Any] | None = None
+    strategy_authority_lineage_hash: str = ""
     planning_authority_version: str = ""
     planning_authority_source: str = ""
     planning_authority_hash: str = ""
