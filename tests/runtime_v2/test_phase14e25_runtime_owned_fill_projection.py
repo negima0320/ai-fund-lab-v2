@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,6 +77,60 @@ def test_phase14e25_projects_only_runtime_owned_fills_to_current(tmp_path):
     assert state["runtime_owned_projection"]["broker_cash_copied"] is False
     assert state["runtime_owned_projection"]["unrelated_demo_positions_copied"] is False
     assert state["source"] == "runtime_v2_runtime_owned_fill_projection"
+
+
+def test_phase32_ad_current_preserves_canonical_campaign_from_runtime_owned_fills(tmp_path):
+    runtime_root = tmp_path / ".runtime"
+    _write_json(
+        runtime_root / "persistent_ledger" / "state.json",
+        {
+            "schema_version": "1",
+            "asset_state_id": "asset-initial",
+            "environment": "historical",
+            "source": "runtime_v2_runtime_owned_fill_projection",
+            "as_of": "2026-07-01",
+            "positions": [],
+            "cash": 1_000_000,
+            "buying_power": 1_000_000,
+            "market_value": 0,
+            "total_equity": 1_000_000,
+            "runtime_evaluation_capital": 1_000_000,
+        },
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "orders.jsonl",
+        [
+            {**_accepted_order("83060", "83060"), "business_date": "2026-07-02"},
+            {**_accepted_order("89180", "89180"), "business_date": "2026-07-02"},
+        ],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [
+            _position("83060", quantity=100, average_price=641.5, market_value=64800, as_of="2026-07-02"),
+            _position("89180", quantity=100, average_price=1000, market_value=101000, as_of="2026-07-02"),
+        ],
+    )
+    buy_83060 = _execution("83060", "BUY", quantity=100, price=641.5, cash_effect=-64150, business_date="2026-07-02")
+    buy_89180 = {
+        **_execution("89180", "BUY", quantity=100, price=1000, cash_effect=-100000, business_date="2026-07-02"),
+        "position_campaign_id": "pc-canonical-89180-0001",
+    }
+    _write_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl", [buy_83060, buy_89180])
+
+    result = project_runtime_owned_fills_to_current(
+        runtime_root=runtime_root,
+        business_date="2026-07-02",
+        mode="historical",
+    )
+
+    state = json.loads((runtime_root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    by_symbol = {row["symbol"]: row for row in state["positions"]}
+    expected_83060 = "pc-" + hashlib.sha256("83060|1|exec-83060-BUY-2026-07-02".encode("utf-8")).hexdigest()[:16] + "-83060-0001"
+    assert result.status == "PASS"
+    assert by_symbol["83060"]["position_campaign_id"] == expected_83060
+    assert by_symbol["89180"]["position_campaign_id"] == "pc-canonical-89180-0001"
+    assert "runtime-test-phase20l-fixture" not in by_symbol["83060"]["position_campaign_id"]
 
 
 def test_phase24_id_negative_projected_cash_is_review_required(tmp_path):

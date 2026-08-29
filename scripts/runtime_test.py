@@ -9466,7 +9466,11 @@ def _derive_position_campaign_state(
         if side == "BUY":
             if state["quantity"] <= POSITION_QUANTITY_EPSILON:
                 state["campaign_index"] += 1
-                state["campaign_id"] = _position_campaign_id(run_id=run_id, symbol=symbol, sequence=int(state["campaign_index"]))
+                state["campaign_id"] = _canonical_position_campaign_id_from_execution(
+                    row=row,
+                    symbol=symbol,
+                    sequence=int(state["campaign_index"]),
+                )
                 campaigns[state["campaign_id"]] = _new_campaign(row=row, run_id=run_id, business_date=business_date, symbol=symbol, campaign_id=state["campaign_id"], plans=plans)
             campaign = campaigns[state["campaign_id"]]
             old_quantity = _float(state["quantity"])
@@ -9547,8 +9551,12 @@ def _derive_position_campaign_state(
     }
 
 
-def _position_campaign_id(*, run_id: str, symbol: str, sequence: int) -> str:
-    return f"pc-{_short_hash(run_id)}-{symbol}-{sequence:04d}"
+def _canonical_position_campaign_id_from_execution(*, row: dict[str, Any], symbol: str, sequence: int) -> str:
+    existing = str(row.get("position_campaign_id") or row.get("canonical_position_campaign_id") or row.get("open_position_campaign_id") or "").strip()
+    if existing and not existing.startswith("ledger-derived-"):
+        return existing
+    execution_ref = _execution_key(row)
+    return f"pc-{_short_hash(f'{symbol}|{sequence}|{execution_ref}')}-{symbol}-{sequence:04d}"
 
 
 def _short_hash(text: str) -> str:

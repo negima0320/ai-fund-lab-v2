@@ -1772,10 +1772,104 @@ def _reentry_current_candidate_status(
 
 
 def _reentry_safety_status(*, row: Mapping[str, Any], liquidity_status: str, reason_text: str) -> str:
-    text = " ".join([reason_text, " ".join(str(item) for item in row.get("reason_codes") or [])]).lower()
-    if any(token in text for token in ("safety", "broker", "cash", "buying_power", "corporate_action_blocking")):
+    safety_status_fields = (
+        "broker_eligibility_status",
+        "broker_product_category_status",
+        "product_category_status",
+        "buying_power_status",
+        "cash_buying_power_status",
+        "safety_status",
+        "safety_hard_cap_status",
+        "safety_hard_cap_preservation_status",
+        "execution_safety_status",
+        "corporate_action_blocking_status",
+        "corporate_event_blocking_status",
+    )
+    blocking_statuses = {
+        "FAIL",
+        "FAILED",
+        "FAIL_CLOSED",
+        "BLOCK",
+        "BLOCKED",
+        "REJECT",
+        "REJECTED",
+        "UNSUPPORTED",
+        "VIOLATION",
+        "PROHIBITED",
+    }
+    review_statuses = {"UNKNOWN", "MISSING", "REVIEW_REQUIRED"}
+    pass_statuses = {
+        "PASS",
+        "ELIGIBLE",
+        "SUPPORTED",
+        "NORMAL",
+        "AVAILABLE",
+        "SUFFICIENT",
+        "ALLOWED",
+        "PRESERVED",
+        "NON_BLOCKING",
+        "NO_EVENT",
+        "CURRENT",
+        "OK",
+        "RESOLVED",
+        "NO_BLOCKING_EVENT",
+        "NOT_APPLICABLE",
+    }
+    normalized_statuses = {
+        field: str(row.get(field) or "").strip().upper()
+        for field in safety_status_fields
+        if str(row.get(field) or "").strip()
+    }
+    if any(status in blocking_statuses for status in normalized_statuses.values()):
         return "FAIL_CLOSED"
-    if liquidity_status == "UNKNOWN":
+    for field in ("broker_eligible", "broker_product_category_supported", "tradable", "safety_hard_cap_preserved"):
+        if row.get(field) is False:
+            return "FAIL_CLOSED"
+    explicit_blocking_codes = {
+        "broker_product_category_unsupported",
+        "broker_product_unsupported",
+        "broker_security_unsupported",
+        "broker_unsupported",
+        "broker_blocked",
+        "listed_info_not_current",
+        "listed_info_code_mismatch",
+        "buying_power_blocked",
+        "insufficient_cash",
+        "insufficient_buying_power",
+        "buying_power_after_cash_buffer",
+        "liquidity_block",
+        "safety_cap_bound",
+        "safety_hard_cap_violation",
+        "minimum_lot_exceeds_safety_hard_cap",
+        "corporate_action_block",
+        "corporate_action_blocking",
+        "corporate_event_block",
+        "corporate_event_blocking",
+        "reentry_corporate_action_blocking",
+        "execution_safety_block",
+        "execution_safety_blocked",
+        "explicit_safety_prohibition",
+        "safety_block",
+        "safety_blocked",
+    }
+    explicit_review_codes = {
+        "broker_product_category_unknown",
+        "listed_info_missing",
+        "product_category_missing",
+        "security_type_missing",
+        "market_not_mapped",
+    }
+    reason_codes = {str(item).strip().lower() for item in row.get("reason_codes") or [] if str(item).strip()}
+    reason_tokens = {token for token in str(reason_text or "").lower().replace(":", " ").replace(";", " ").replace(",", " ").split() if token}
+    if explicit_blocking_codes.intersection(reason_codes | reason_tokens):
+        return "FAIL_CLOSED"
+    if explicit_review_codes.intersection(reason_codes | reason_tokens):
+        return "REVIEW_REQUIRED"
+    if any(status in review_statuses for status in normalized_statuses.values()):
+        return "REVIEW_REQUIRED"
+    if any(status not in pass_statuses for status in normalized_statuses.values()):
+        return "REVIEW_REQUIRED"
+    if liquidity_status in {"UNKNOWN", "MISSING", "REVIEW_REQUIRED"}:
         return "REVIEW_REQUIRED"
     return "PASS"
 
@@ -2052,35 +2146,59 @@ def _resolve_target_weight_contract(
         review_reason = ""
         reason = "target_weight_resolved"
         weight = round(base_weight, TARGET_WEIGHT_DECIMALS) if selected else 0.0
+        pre_quality_base_target_weight = weight
+        quality_authorized_target_weight = weight
+        quality_target_upper_bound_enforced = False
         target_membership_override: bool | None = None
         reduce_member_fields: dict[str, Any] = {}
         reduce_authority_fields: dict[str, Any] = {}
         reduce_adjustments: list[dict[str, Any]] = []
         quality_adjustment = _optional_ratio(row.get("quality_allocation_adjustment"))
         quality_action = str(row.get("quality_action") or "")
+        candidate_eligible = _candidate_eligible(row)
+        entry_semantic = str(row.get("semantic_buy_type") or row.get("pm_action") or "").upper()
+        is_entry_candidate = not row.get("current_position") and (
+            entry_semantic in {"BUY_NEW", "NEW", "NEW_FIRST_LOT", "REENTRY", "BUY_REENTRY", "REENTRY_FIRST_LOT"}
+            or row.get("membership_intent") == "ADD_CANDIDATE"
+        )
+        production_deployability_class = "NOT_APPLICABLE"
         if status != "PASS":
             zero_reason = "unresolved_authority"
             review_reason = "target_weight_authority_unresolved"
             reason = "target_weight_authority_unresolved"
+            quality_authorized_target_weight = 0.0
         elif quality_action in {"REJECT", "BUY_REJECTED"} and not row.get("current_position"):
             zero_reason = "buy_quality_rejected"
             reason = "buy_quality_rejected"
             weight = 0.0
+            quality_authorized_target_weight = 0.0
+            quality_target_upper_bound_enforced = True
         elif quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} and _buy_wait_applies_to_member(row):
             zero_reason = "buy_quality_wait"
             reason = "buy_quality_wait"
             weight = 0.0
+            quality_authorized_target_weight = 0.0
+            quality_target_upper_bound_enforced = True
         elif quality_action in {"REVIEW_REQUIRED", "BUY_REVIEW_REQUIRED"} and not row.get("current_position"):
             zero_reason = "buy_quality_review_required"
             review_reason = "buy_quality_review_required"
             reason = "buy_quality_review_required"
             weight = 0.0
+            quality_authorized_target_weight = 0.0
+            quality_target_upper_bound_enforced = True
         elif selected and quality_action == "REDUCED_ALLOCATION_ONLY":
             adjustment = quality_adjustment if quality_adjustment is not None else 0.0
-            reason = "target_weight_quality_reduction_required_downstream"
+            weight = round(weight * adjustment, TARGET_WEIGHT_DECIMALS)
+            quality_authorized_target_weight = weight
+            quality_target_upper_bound_enforced = True
+            reason = "target_weight_quality_reduction_applied"
+        elif selected and quality_action == "FULL_ALLOCATION_ELIGIBLE":
+            quality_authorized_target_weight = weight
+            quality_target_upper_bound_enforced = True
         elif row.get("membership_intent") in {"EXCLUDE", "UNRESOLVED"}:
             zero_reason = "opportunity_not_selected"
             reason = "member_not_selected"
+            quality_authorized_target_weight = 0.0
         elif row.get("membership_intent") == "REDUCE_CANDIDATE":
             current_weight = _optional_ratio(row.get("current_weight"))
             intensity_resolution = resolve_reduce_intensity_authority(
@@ -2161,6 +2279,21 @@ def _resolve_target_weight_contract(
         elif not selected:
             zero_reason = "opportunity_not_selected"
             reason = "opportunity_not_selected"
+            quality_authorized_target_weight = 0.0
+        if is_entry_candidate:
+            if review_reason:
+                production_deployability_class = "REVIEW_REQUIRED"
+            elif weight <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE or zero_reason:
+                production_deployability_class = "REJECT"
+            elif quality_action == "REDUCED_ALLOCATION_ONLY":
+                production_deployability_class = "REDUCED_ALLOCATION_ONLY"
+            else:
+                production_deployability_class = "FULL_ALLOCATION_ELIGIBLE"
+            quality_authorized_target_weight = round(
+                min(max(quality_authorized_target_weight, 0.0), max(pre_quality_base_target_weight, 0.0)),
+                TARGET_WEIGHT_DECIMALS,
+            )
+            quality_target_upper_bound_enforced = True
         cap_applied = selected and status == "PASS" and target_gross_exposure is not None and effective_count > 0 and float(target_gross_exposure) / float(effective_count) > float(single_name_cap)
         target_membership = target_membership_override if target_membership_override is not None else selected
         authority = {
@@ -2195,6 +2328,13 @@ def _resolve_target_weight_contract(
             "normalization_applied": False,
             "zero_weight_reason": zero_reason,
             "review_reason": review_reason,
+            "candidate_eligible": candidate_eligible,
+            "production_deployability_class": production_deployability_class,
+            "pre_quality_base_target_weight": round(pre_quality_base_target_weight, TARGET_WEIGHT_DECIMALS),
+            "quality_allocation_adjustment": quality_adjustment if quality_adjustment is not None else (1.0 if quality_action == "FULL_ALLOCATION_ELIGIBLE" else 0.0),
+            "quality_authorized_target_weight": round(quality_authorized_target_weight, TARGET_WEIGHT_DECIMALS),
+            "quality_target_upper_bound_enforced": quality_target_upper_bound_enforced,
+            "final_deployable_target_weight": weight,
         }
         if selected and quality_action:
             resolution["adjustments"] = [
@@ -2203,10 +2343,9 @@ def _resolve_target_weight_contract(
                     "quality_action": quality_action,
                     "quality_decision_id": str(row.get("quality_decision_id") or ""),
                     "quality_allocation_adjustment": quality_adjustment if quality_adjustment is not None else 0.0,
-                    "pre_quality_base_weight": round(base_weight, TARGET_WEIGHT_DECIMALS),
-                    "post_quality_target_weight": round(weight * (quality_adjustment if quality_adjustment is not None else 0.0), TARGET_WEIGHT_DECIMALS)
-                    if quality_action == "REDUCED_ALLOCATION_ONLY"
-                    else weight,
+                    "pre_quality_base_weight": round(pre_quality_base_target_weight, TARGET_WEIGHT_DECIMALS),
+                    "post_quality_target_weight": round(quality_authorized_target_weight, TARGET_WEIGHT_DECIMALS),
+                    "quality_target_upper_bound_enforced": quality_target_upper_bound_enforced,
                 }
             ]
         if weight == 0 and not zero_reason and status == "PASS":
@@ -2261,6 +2400,13 @@ def _resolve_target_weight_contract(
             "resolved_weight": weight,
             "zero_weight_reason": zero_reason,
             "review_reason": review_reason,
+            "quality_authorized_target_weight": min(
+                round(float(resolution.get("quality_authorized_target_weight") or weight), TARGET_WEIGHT_DECIMALS),
+                round(weight, TARGET_WEIGHT_DECIMALS),
+            )
+            if is_entry_candidate
+            else resolution.get("quality_authorized_target_weight"),
+            "final_deployable_target_weight": weight,
             "cap_applied": bool(resolution.get("cap_applied")) or bool(l16_adjustment["cap_applied"]),
             "adjustments": list(resolution.get("adjustments") or []) + list(l16_adjustment["adjustments"]),
         }
@@ -2276,6 +2422,14 @@ def _resolve_target_weight_contract(
             "target_weight_authority": authority,
             "target_weight_resolution": resolution,
             "weight_reason": reason,
+            "candidate_eligible": candidate_eligible,
+            "production_deployable_new": bool(is_entry_candidate and entry_semantic not in {"REENTRY", "BUY_REENTRY", "REENTRY_FIRST_LOT"} and weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE and not zero_reason and not review_reason),
+            "production_deployable_reentry": bool(is_entry_candidate and entry_semantic in {"REENTRY", "BUY_REENTRY", "REENTRY_FIRST_LOT"} and weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE and not zero_reason and not review_reason),
+            "production_deployability_class": production_deployability_class,
+            "pre_quality_base_target_weight": round(pre_quality_base_target_weight, TARGET_WEIGHT_DECIMALS),
+            "quality_authorized_target_weight": round(min(quality_authorized_target_weight, weight) if is_entry_candidate else quality_authorized_target_weight, TARGET_WEIGHT_DECIMALS),
+            "quality_target_upper_bound_enforced": quality_target_upper_bound_enforced,
+            "final_deployable_target_weight": weight,
             **l16_adjustment["member_fields"],
             **reduce_member_fields,
             **(add_bridge["member_fields"] if add_bridge else {}),
@@ -7095,6 +7249,19 @@ def apply_lot_aware_final_reallocation(
     final_members = []
     for member, item in zip(members, prepared):
         accepted = accepted_by_index.get(item["index"], 0.0)
+        quality_authorized_target = _quality_authorized_entry_target_weight(member)
+        quality_ceiling_enforced = _entry_quality_ceiling_enforced(member, quality_authorized_target)
+        if (
+            item["participant_type"] == "BUY_NEW"
+            and quality_ceiling_enforced
+            and quality_authorized_target is not None
+        ):
+            maximum_quality_authorized_increment = round(
+                max(quality_authorized_target - float(item["baseline"]), 0.0),
+                TARGET_WEIGHT_DECIMALS,
+            )
+            if accepted > maximum_quality_authorized_increment + TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+                accepted = maximum_quality_authorized_increment
         final_weight = round(float(item["baseline"]) + accepted, TARGET_WEIGHT_DECIMALS)
         resolution = dict(member.get("target_weight_resolution") or {})
         if final_weight == 0.0 and resolution.get("status") == "PASS" and not resolution.get("zero_weight_reason"):
@@ -7179,6 +7346,12 @@ def apply_lot_aware_final_reallocation(
                 ),
                 "target_weight": final_weight,
                 "target_membership": final_weight > 0 if not member.get("current_position") else bool(member.get("target_membership")) and final_weight > 0,
+                "quality_authorized_target_weight": quality_authorized_target
+                if quality_authorized_target is not None
+                else member.get("quality_authorized_target_weight"),
+                "quality_target_upper_bound_enforced": quality_ceiling_enforced
+                or bool(member.get("quality_target_upper_bound_enforced")),
+                "final_deployable_target_weight": final_weight,
                 "target_weight_authority": {
                     **dict(member.get("target_weight_authority") or {}),
                     "marginal_capital_value_authority": final_marginal_authority,
@@ -7670,7 +7843,60 @@ def _minimum_executable_one_lot_authority(
         "final_promoted_target_weight": round(float(final_promoted_weight), TARGET_WEIGHT_DECIMALS),
         "ps_final_quantity": one_lot_quantity,
         "future_information_used": False,
+        "historical_outcome_used": False,
     }
+
+
+def _quality_authorized_entry_target_weight(member: Mapping[str, Any]) -> float | None:
+    direct = _optional_ratio(member.get("quality_authorized_target_weight"))
+    if direct is not None:
+        return round(max(direct, 0.0), TARGET_WEIGHT_DECIMALS)
+    resolution = member.get("target_weight_resolution") if isinstance(member.get("target_weight_resolution"), Mapping) else {}
+    resolved = _optional_ratio(resolution.get("quality_authorized_target_weight"))
+    if resolved is not None:
+        return round(max(resolved, 0.0), TARGET_WEIGHT_DECIMALS)
+    for adjustment in resolution.get("adjustments") or []:
+        if not isinstance(adjustment, Mapping):
+            continue
+        if str(adjustment.get("authority") or "") != "ADAPTIVE_BUY_QUALITY_AUTHORITY":
+            continue
+        adjusted = _optional_ratio(
+            adjustment.get("post_quality_target_weight")
+            if "post_quality_target_weight" in adjustment
+            else adjustment.get("quality_authorized_target_weight")
+        )
+        if adjusted is not None:
+            return round(max(adjusted, 0.0), TARGET_WEIGHT_DECIMALS)
+    return None
+
+
+def _entry_quality_ceiling_enforced(member: Mapping[str, Any], quality_authorized_target_weight: float | None) -> bool:
+    if quality_authorized_target_weight is None:
+        return False
+    if bool(member.get("quality_target_upper_bound_enforced")):
+        return True
+    resolution = member.get("target_weight_resolution") if isinstance(member.get("target_weight_resolution"), Mapping) else {}
+    if bool(resolution.get("quality_target_upper_bound_enforced")):
+        return True
+    pre_quality_base = _optional_ratio(member.get("pre_quality_base_target_weight"))
+    if pre_quality_base is None:
+        pre_quality_base = _optional_ratio(resolution.get("pre_quality_base_target_weight"))
+    if pre_quality_base is None:
+        for adjustment in resolution.get("adjustments") or []:
+            if not isinstance(adjustment, Mapping):
+                continue
+            if str(adjustment.get("authority") or "") != "ADAPTIVE_BUY_QUALITY_AUTHORITY":
+                continue
+            pre_quality_base = _optional_ratio(
+                adjustment.get("pre_quality_base_target_weight")
+                if "pre_quality_base_target_weight" in adjustment
+                else adjustment.get("pre_quality_base_weight")
+            )
+            if pre_quality_base is not None:
+                break
+    if pre_quality_base is None:
+        return False
+    return quality_authorized_target_weight < pre_quality_base - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
 
 
 def _quality_adjusted_one_lot_admission(
@@ -7703,6 +7929,8 @@ def _quality_adjusted_one_lot_admission(
     entry_action = str(member.get("entry_admission_action") or "")
     entry_state = str(member.get("entry_admission_state") or "")
     quality_action = str(member.get("quality_action") or "")
+    quality_authorized_target = _quality_authorized_entry_target_weight(member)
+    quality_ceiling_enforced = _entry_quality_ceiling_enforced(member, quality_authorized_target)
     add_worthiness = _add_worthiness_state(member)
     relative_opportunity = str(member.get("strategy_intelligence_relative_strength_state") or "")
     opportunity_cost = str(member.get("opportunity_cost_status") or "")
@@ -7738,6 +7966,18 @@ def _quality_adjusted_one_lot_admission(
         blocked_reason = "quality_adjusted_one_lot_overheated_or_reversal_entry"
         tolerance = "DEFER"
         reason_codes.append("overheated_or_reversal_entry_blocks_one_lot_overshoot")
+    elif (
+        participant_type == "BUY_NEW"
+        and quality_ceiling_enforced
+        and quality_authorized_target is not None
+        and minimum_weight is not None
+        and quality_authorized_target < minimum_weight - TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    ):
+        status = "FAIL_CLOSED"
+        blocked_reason = "lot_minimum_exceeds_quality_authorized_target"
+        tolerance = "FAIL"
+        reason_codes.append("quality_authorized_target_below_one_lot")
+        reason_codes.append("quality_ceiling_blocks_one_lot_rescue")
     elif participant_type == "BUY_ADD" and add_worthiness not in {"ADD_ALLOWED", "ADD_REDUCED_ONLY", "PASS"}:
         status = "FAIL_CLOSED"
         blocked_reason = "minimum_lot_exceeds_concentration_cap"
@@ -7768,6 +8008,8 @@ def _quality_adjusted_one_lot_admission(
         "entry_state": entry_state,
         "entry_admission_action": entry_action,
         "buy_quality_action": quality_action,
+        "quality_authorized_target_weight": quality_authorized_target,
+        "quality_target_upper_bound_enforced": quality_ceiling_enforced,
         "add_worthiness_state": add_worthiness,
         "relative_opportunity_state": relative_opportunity,
         "opportunity_cost_state": opportunity_cost,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -365,6 +366,7 @@ def _current_position(row: dict[str, Any], *, business_date: str) -> CurrentAsse
         valuation_business_date=str(row.get("valuation_business_date") or ""),
         execution_price_basis=str(row.get("execution_price_basis") or ""),
         fill_price_basis=str(row.get("fill_price_basis") or ""),
+        position_campaign_id=str(row.get("position_campaign_id") or ""),
     )
 
 
@@ -446,6 +448,12 @@ def _projected_position_row(
     row["market_value"] = quantity * market_price
     row["current_price"] = market_price
     row["as_of"] = row.get("as_of") or row.get("recorded_at") or business_date
+    row["position_campaign_id"] = _projected_position_campaign_id(
+        symbol=symbol,
+        latest_position=latest,
+        current_sot_before=current_sot_before,
+        canonical_events=canonical_events,
+    )
     row.update(
         _position_basis_metadata(
             symbol=symbol,
@@ -921,6 +929,7 @@ def _public_position(position: CurrentAssetPosition) -> dict[str, Any]:
         "valuation_business_date",
         "execution_price_basis",
         "fill_price_basis",
+        "position_campaign_id",
     ):
         value = getattr(position, field)
         if value:
@@ -928,9 +937,54 @@ def _public_position(position: CurrentAssetPosition) -> dict[str, Any]:
     return payload
 
 
-def _asset_state_id(*, environment: str, source: str, as_of: str, generated_from: tuple[str, ...]) -> str:
-    import hashlib
+def _projected_position_campaign_id(
+    *,
+    symbol: str,
+    latest_position: dict[str, Any],
+    current_sot_before: dict[str, Any],
+    canonical_events: tuple[CanonicalPerformanceExecutionEvent, ...],
+) -> str:
+    before_position = _current_position_payload(symbol, current_sot_before=current_sot_before)
+    inherited = str(
+        before_position.get("position_campaign_id")
+        or before_position.get("campaign_id")
+        or latest_position.get("position_campaign_id")
+        or latest_position.get("campaign_id")
+        or ""
+    ).strip()
+    if inherited:
+        return inherited
+    quantity = 0.0
+    campaign_index = 0
+    campaign_id = ""
+    for event in sorted(canonical_events, key=lambda item: (item.business_date, item.executed_at, item.canonical_dedup_key)):
+        if event.symbol != symbol:
+            continue
+        side = event.side.upper()
+        if side == "BUY":
+            if quantity <= POSITION_QUANTITY_EPSILON:
+                campaign_index += 1
+                campaign_id = _event_campaign_id(event=event, symbol=symbol, sequence=campaign_index)
+            quantity += event.quantity
+            continue
+        if side == "SELL" and quantity > POSITION_QUANTITY_EPSILON:
+            quantity = max(quantity - event.quantity, 0.0)
+            if quantity <= POSITION_QUANTITY_EPSILON:
+                quantity = 0.0
+                campaign_id = ""
+    return campaign_id
 
+
+def _event_campaign_id(*, event: CanonicalPerformanceExecutionEvent, symbol: str, sequence: int) -> str:
+    existing = str(event.position_campaign_id or event.lineage.get("position_campaign_id") or "").strip()
+    if existing and not existing.startswith("ledger-derived-"):
+        return existing
+    execution_ref = str(event.source_execution_id or event.canonical_dedup_key or event.canonical_execution_id)
+
+    return f"pc-{hashlib.sha256(f'{symbol}|{sequence}|{execution_ref}'.encode('utf-8')).hexdigest()[:16]}-{symbol}-{sequence:04d}"
+
+
+def _asset_state_id(*, environment: str, source: str, as_of: str, generated_from: tuple[str, ...]) -> str:
     raw = "|".join((environment, source, as_of, *generated_from))
     return "asset-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 

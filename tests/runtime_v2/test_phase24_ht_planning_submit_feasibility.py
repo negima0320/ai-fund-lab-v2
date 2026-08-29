@@ -47,6 +47,33 @@ def test_phase24_ht_planning_exposure_pass_allows_approved_pending(tmp_path: Pat
     assert linked.planning_submit_feasibility["status"] == "PASS"
 
 
+def test_phase32_db_runtime_rejects_positive_buy_with_blocked_marginal_capital_class(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[])
+    blocked_item = replace(
+        _item("buy-blocked", amount=100_000, symbol="94320", quantity=300),
+        marginal_capital_value_class="BLOCKED_OR_NOT_ELIGIBLE",
+        marginal_capital_value_authority={"authority_type": "MARGINAL_CAPITAL_VALUE_AUTHORITY"},
+    )
+    pending = _pending((blocked_item,), policy=policy)
+    approval = _approval(pending)
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=approval,
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert linked.planning_submit_feasibility["status"] == "REVIEW_REQUIRED"
+    assert item_evidence["violated_policy"] == "marginal_capital_value"
+    assert item_evidence["reason"] == "blocked_marginal_capital_value_positive_buy_quantity"
+    assert linked.approved_buy_item_ids == ()
+
+
 def test_phase24_ht_planning_exposure_fail_blocks_approved_pending(tmp_path: Path) -> None:
     root = _runtime_root(tmp_path)
     policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
@@ -202,6 +229,50 @@ def test_phase30_ak3r1_submit_feasibility_accepts_authorized_minimum_executable_
     assert item_evidence["strategy_requested_position_amount"] == 70_000.0
     assert item_evidence["one_lot_authority_consumed"] is True
     assert item_evidence["one_lot_authority_reason"] == "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED"
+    assert item_evidence["one_lot_submit_authority"]["status"] == "PASS"
+
+
+def test_phase32_co_submit_feasibility_accepts_admit_one_lot_decision(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    policy_path = _write_policy(tmp_path / "capital_deployment_policy.json")
+    policy = load_capital_deployment_policy(policy_path)
+    _write_current(root, cash=400_000, positions=[_position("1111", 100, 1000)])
+    pending = _pending(
+        (
+            _item(
+                "buy-co",
+                amount=100_000.0,
+                symbol="78780",
+                quantity=100,
+                quantity_contract=_quantity_contract(symbol="78780", amount=70_000.0)
+                | {
+                    "selected_notional": 100_000.0,
+                    "selected_quantity": 100,
+                    "planned_quantity": 100,
+                    "planning_intent": "BUY_NEW",
+                    "position_sizing_authority": _ak2_minimum_one_lot_position_sizing_authority(
+                        symbol="78780",
+                        selected_position_amount=70_000.0,
+                        one_lot_notional=100_000.0,
+                        one_lot_decision="ADMIT_ONE_LOT",
+                    ),
+                },
+            ),
+        ),
+        policy=policy,
+    )
+
+    linked = link_approval_to_pending(
+        pending_plan=pending,
+        approval_artifact=_approval(pending),
+        planning_submit_feasibility_current=load_runtime_current_exposure(root / "persistent_ledger" / "state.json"),
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_buy_item_ids == ("buy-co",)
+    item_evidence = linked.planning_submit_feasibility["items"][0]
+    assert item_evidence["one_lot_authority_consumed"] is True
     assert item_evidence["one_lot_submit_authority"]["status"] == "PASS"
 
 
@@ -1747,6 +1818,7 @@ def _ak2_minimum_one_lot_position_sizing_authority(
     selected_position_amount: float,
     one_lot_notional: float,
     intent: str = "BUY_NEW",
+    one_lot_decision: str = "ADMIT",
 ) -> dict:
     one_lot_weight = one_lot_notional / 1_000_000.0
     selected_weight = selected_position_amount / 1_000_000.0
@@ -1784,7 +1856,7 @@ def _ak2_minimum_one_lot_position_sizing_authority(
             "minimum_executable_one_lot_authority": {
                 "schema_version": "minimum_executable_one_lot_authority.v1",
                 "authority_type": "PORTFOLIO_CONSTRUCTION_MINIMUM_EXECUTABLE_ONE_LOT_ADMISSION",
-                "decision": "ADMIT",
+                "decision": one_lot_decision,
                 "reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",
                 "admission_decision": "PASS",
                 "admission_reason": "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED",

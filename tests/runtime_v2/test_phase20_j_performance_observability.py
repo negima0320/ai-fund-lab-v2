@@ -83,8 +83,34 @@ def _prepare_fixture(runner, tmp_path: Path) -> tuple[Path, Path, Path]:
         [
             {"record_type": "execution", "business_date": business_date, "side": "BUY", "symbol": "11110", "filled_quantity": 10, "price": 100, "execution_id": "exec-buy-1", "pending_item_id": "buy-1"},
             {"record_type": "execution", "business_date": business_date, "side": "BUY", "symbol": "11110", "filled_quantity": 5, "price": 110, "execution_id": "exec-buy-2", "pending_item_id": "buy-2"},
-            {"record_type": "execution", "business_date": business_date, "side": "SELL", "symbol": "11110", "filled_quantity": 8, "price": 120, "execution_id": "exec-sell-1", "pending_item_id": "sell-1"},
-            {"record_type": "execution", "business_date": business_date, "side": "SELL", "symbol": "11110", "filled_quantity": 7, "price": 90, "execution_id": "exec-sell-2", "pending_item_id": "sell-2"},
+            {
+                "record_type": "execution",
+                "business_date": business_date,
+                "side": "SELL",
+                "symbol": "11110",
+                "filled_quantity": 8,
+                "price": 120,
+                "execution_id": "exec-sell-1",
+                "pending_item_id": "sell-1",
+                "source_decision_id": "pm-reduce",
+                "source_pm_decision_id": "pm-reduce",
+                "source_decision_type": "REDUCE",
+                "position_campaign_id": "pc-11110-0001",
+            },
+            {
+                "record_type": "execution",
+                "business_date": business_date,
+                "side": "SELL",
+                "symbol": "11110",
+                "filled_quantity": 7,
+                "price": 90,
+                "execution_id": "exec-sell-2",
+                "pending_item_id": "sell-2",
+                "source_decision_id": "pm-exit",
+                "source_pm_decision_id": "pm-exit",
+                "source_decision_type": "EXIT",
+                "position_campaign_id": "pc-11110-0001",
+            },
             {"record_type": "execution", "business_date": business_date, "side": "BUY", "symbol": "11110", "filled_quantity": 3, "price": 95, "execution_id": "exec-buy-reopen", "pending_item_id": "buy-3"},
         ],
     )
@@ -130,6 +156,12 @@ def test_phase20_j_writes_campaign_fills_realized_slices_and_pm_snapshot(tmp_pat
     assert len(fills["fills"]) == 5
     assert fills["fills"][0]["fees"] == {"value": "MISSING", "status": "NOT_AVAILABLE"}
     assert [row["source_decision_type"] for row in slices["realized_slices"]] == ["REDUCE", "EXIT"]
+    sell_fills = [row for row in fills["fills"] if row["side"] == "SELL"]
+    assert [row["source_decision_id"] for row in sell_fills] == ["pm-reduce", "pm-exit"]
+    assert [row["source_decision_type"] for row in sell_fills] == ["REDUCE", "EXIT"]
+    assert [row["position_campaign_id"] for row in sell_fills] == [
+        row["position_campaign_id"] for row in slices["realized_slices"]
+    ]
     assert slices["realized_slices"][0]["gross_realized_pnl"] == pytest.approx((120 - 103.3333333333) * 8)
     assert slices["realized_slices"][0]["net_realized_pnl"] == {"value": "MISSING", "status": "NOT_AVAILABLE"}
     assert pm["snapshot_policy"] == "DECISION_TIME_ONLY_NO_POST_HOC_OUTCOMES"

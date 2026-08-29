@@ -108,6 +108,155 @@ def test_phase31_g122_materialization_is_idempotent_for_add_events(tmp_path: Pat
     assert first_campaign["add_history_summary"] == second_campaign["add_history_summary"]
 
 
+def test_phase32_cw_entry_premise_snapshot_persists_and_add_does_not_overwrite(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution(
+                "exec-37820-buy",
+                "2022-10-03",
+                "37820",
+                "BUY",
+                300,
+                50.0,
+                entry_admission_action="CONTINUATION_WITH_CAUTION",
+                quality_action="REDUCED_ALLOCATION_ONLY",
+                buy_quality_score=0.61,
+                accepted_caution_reasons=["WEAK", "ELEVATED_RISK"],
+                quality_authorized_target_weight=0.019,
+            ),
+            _execution(
+                "exec-37820-add",
+                "2022-10-04",
+                "37820",
+                "BUY",
+                100,
+                51.0,
+                entry_admission_action="ADD_ALLOWED",
+                accepted_caution_reasons=["ADD_FRESH_STRENGTH"],
+            ),
+        ],
+    )
+    first = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-10-04",
+        current=_current("2022-10-04", "37820", quantity=300, average_price=50.0, market_value=15_300),
+        as_of="2022-10-04T00:00:00+00:00",
+    )
+    first_campaign = _campaign(first, "37820")
+    first_snapshot = first_campaign["entry_premise_snapshot"]
+
+    assert first_campaign["entry_premise_snapshot_status"] == "AVAILABLE"
+    assert first_snapshot["schema_version"] == "campaign_entry_premise_snapshot.v1"
+    assert first_snapshot["entry_business_date"] == "2022-10-03"
+    assert first_snapshot["entry_admission_action"] == "CONTINUATION_WITH_CAUTION"
+    assert first_snapshot["future_information_used"] is False
+    assert first_snapshot["historical_outcome_used"] is False
+
+    second = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-10-05",
+        current=_current("2022-10-05", "37820", quantity=400, average_price=50.25, market_value=20_400),
+        as_of="2022-10-05T00:00:00+00:00",
+    )
+    second_campaign = _campaign(second, "37820")
+
+    assert second_campaign["position_campaign_id"] == first_campaign["position_campaign_id"]
+    assert second_campaign["entry_premise_snapshot"] == first_snapshot
+    assert second_campaign["entry_premise_snapshot"]["entry_admission_action"] == "CONTINUATION_WITH_CAUTION"
+    assert second_campaign["entry_premise_snapshot"]["entry_business_date"] == "2022-10-03"
+    assert second_campaign["add_history_summary"]["count"] == 1
+
+
+def test_phase32_cw_missing_entry_premise_materializes_review_required(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [_execution("exec-67860-buy", "2022-10-03", "67860", "BUY", 200, 75.0)],
+    )
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-10-04",
+        current=_current("2022-10-04", "67860", quantity=200, average_price=75.0, market_value=15_000),
+        as_of="2022-10-04T00:00:00+00:00",
+    )
+    campaign = _campaign(result, "67860")
+    snapshot = campaign["entry_premise_snapshot"]
+
+    assert campaign["entry_premise_snapshot_status"] == "REVIEW_REQUIRED"
+    assert snapshot["snapshot_status"] == "REVIEW_REQUIRED"
+    assert snapshot["silent_reconstruction_used"] is False
+    assert snapshot["reason_codes"] == ["entry_premise_source_evidence_missing"]
+
+
+def test_phase32_cy_authoritative_entry_lineage_materializes_sparse_fill_snapshots(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    day0_buys = [
+        ("33500", 400, 40.0, "bq-33500", "REDUCED_ALLOCATION_ONLY", 0.557743, "MEDIUM", 0.0250, 0.01652, 29),
+        ("37820", 300, 68.0, "bq-37820", "REDUCED_ALLOCATION_ONLY", 0.716582, "MEDIUM", 0.0330, 0.02040, 6),
+        ("67860", 200, 80.0, "bq-67860", "REDUCED_ALLOCATION_ONLY", 0.482751, "LOW", 0.0300, 0.01600, 37),
+        ("76470", 700, 27.0, "bq-76470", "REDUCED_ALLOCATION_ONLY", 0.576307, "MEDIUM", 0.0400, 0.01890, 26),
+        ("82540", 100, 302.0, "bq-82540", "REDUCED_ALLOCATION_ONLY", 0.513128, "LOW", 0.0400, 0.03020, 35),
+        ("89180", 2100, 9.0, "bq-89180", "REDUCED_ALLOCATION_ONLY", 0.585257, "MEDIUM", 0.033636, 0.01890, 25),
+        ("94340", 200, 144.6, "bq-94340", "FULL_ALLOCATION_ELIGIBLE", 0.76586, "HIGH", 0.02882, 0.02882, 3),
+        ("96100", 100, 198.0, "bq-96100", "REDUCED_ALLOCATION_ONLY", 0.47122, "LOW", 0.0250, 0.01980, 41),
+    ]
+    _write_strategy_entry_artifacts(run_dir, "2022-10-03", day0_buys)
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution(f"exec-{symbol}", "2022-10-03", symbol, "BUY", quantity, price)
+            for symbol, quantity, price, *_ in day0_buys
+        ],
+    )
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-10-04",
+        current=_current_many(
+            "2022-10-04",
+            [
+                (symbol, quantity, price, quantity * price)
+                for symbol, quantity, price, *_ in day0_buys
+            ],
+        ),
+        as_of="2022-10-04T00:00:00+00:00",
+    )
+
+    campaigns = {
+        row["symbol"]: row
+        for row in json.loads(Path(result["artifact_path"]).read_text(encoding="utf-8"))["position_campaigns"]
+    }
+    assert set(campaigns) == {symbol for symbol, *_ in day0_buys}
+    for symbol, quantity, _price, quality_id, quality_action, quality_score, quality_band, base, quality_target, rank in day0_buys:
+        snapshot = campaigns[symbol]["entry_premise_snapshot"]
+        assert campaigns[symbol]["entry_premise_snapshot_status"] == "PASS"
+        assert snapshot["snapshot_status"] == "PASS"
+        assert snapshot["symbol"] == symbol
+        assert snapshot["entry_business_date"] == "2022-10-03"
+        assert snapshot["accepted_quantity"] == quantity
+        assert snapshot["buy_quality_action"] == quality_action
+        assert snapshot["buy_quality_score"] == quality_score
+        assert snapshot["buy_quality_band"] == quality_band
+        assert snapshot["pre_quality_base_target_weight"] == base
+        assert snapshot["quality_authorized_target_weight"] == quality_target
+        assert snapshot["opportunity_rank"] == rank
+        assert snapshot["source_lineage"]["quality_decision_id"] == quality_id
+        assert snapshot["source_lineage"]["source_decision_id"].startswith(f"plan-{symbol}")
+        assert snapshot["symbol_only_reconstruction_used"] is False
+        assert snapshot["future_information_used"] is False
+        assert snapshot["historical_outcome_used"] is False
+
+
 def test_phase31_g122_quantity_increase_without_buy_execution_does_not_synthesize_add(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     runtime_root = tmp_path / ".runtime"
@@ -411,12 +560,16 @@ def _buy_event_count(campaign: dict) -> int:
 
 
 def _current(business_date: str, symbol: str, *, quantity: float, average_price: float, market_value: float) -> dict:
+    return _current_many(business_date, [(symbol, quantity, average_price, market_value)])
+
+
+def _current_many(business_date: str, rows: list[tuple[str, float, float, float]]) -> dict:
     return {
         "status": "PASS",
         "business_date": business_date,
         "source_ref": "state.json",
         "source_hash": "current-hash",
-        "rows": (
+        "rows": tuple(
             {
                 "security_code": symbol,
                 "quantity": quantity,
@@ -424,7 +577,8 @@ def _current(business_date: str, symbol: str, *, quantity: float, average_price:
                 "market_value": market_value,
                 "quantity_basis": "ADJUSTED",
                 "valuation_price_basis": "ADJUSTED",
-            },
+            }
+            for symbol, quantity, average_price, market_value in rows
         ),
     }
 
@@ -503,3 +657,81 @@ def _write_prior_campaign(
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+
+def _write_strategy_entry_artifacts(
+    run_dir: Path,
+    business_date: str,
+    rows: list[tuple[str, float, float, str, str, float, str, float, float, int]],
+) -> None:
+    strategy_dir = run_dir / "daily" / business_date / "strategy"
+    plans = []
+    positions = []
+    for symbol, quantity, price, quality_id, quality_action, quality_score, quality_band, base, quality_target, rank in rows:
+        plans.append(
+            {
+                "security_code": symbol,
+                "planning_id": f"plan-{symbol}-20221003",
+                "portfolio_construction_reference": f"pc-member-{symbol}",
+                "planning_intent": "BUY_NEW",
+                "order_side_intent": "BUY",
+                "planned_quantity": quantity,
+                "reference_price": price,
+                "quality_decision_id": quality_id,
+                "quality_action": quality_action,
+                "quality_score": quality_score,
+                "quality_band": quality_band,
+                "opportunity_buy_rank": rank,
+                "runtime_opportunity_score": round(1.0 / rank, 6),
+                "strategy_authority_lineage": {
+                    "lineage_hash": f"lineage-{symbol}",
+                    "item": {"pc_member_id": f"pc-member-{symbol}", "portfolio_input_opportunity_rank": rank},
+                    "refined_capital_decision_lineage": {
+                        "reentry_binding": {
+                            "entry_admission": {
+                                "admission_action": "BUY_NEW_ALLOWED",
+                                "entry_state": "CONTINUATION_WITH_CAUTION",
+                                "reason_codes": ["CONTINUATION_WITH_CAUTION", quality_action],
+                                "consumed_evidence": {
+                                    "trend_health": "WEAK_BUT_POSITIVE",
+                                    "acceleration_state": "COMPARABLE_MARGINAL",
+                                    "participation_quality": "MIXED",
+                                    "participation_risk": "ELEVATED_RISK",
+                                    "persistence": "MARGINAL",
+                                    "downside_risk_status": "PASS",
+                                    "regime_compatibility": "PASS",
+                                },
+                            }
+                        }
+                    },
+                },
+            }
+        )
+        positions.append(
+            {
+                "security_code": symbol,
+                "position_reference": f"ps-{symbol}",
+                "quantity_delta_candidate": quantity,
+                "reference_price": price,
+                "semantic_buy_type": "BUY_NEW",
+                "quality_decision_id": quality_id,
+                "quality_action": quality_action,
+                "quality_score": quality_score,
+                "quality_band": quality_band,
+                "opportunity_buy_rank": rank,
+                "target_weight": quality_target,
+                "target_weight_resolution": {
+                    "production_deployability_class": "PRODUCTION_DEPLOYABLE_NEW",
+                    "pre_quality_base_target_weight": base,
+                    "quality_authorized_target_weight": quality_target,
+                    "final_deployable_target_weight": quality_target,
+                },
+            }
+        )
+    _write_json(strategy_dir / "runtime_planning.json", {"business_date": business_date, "plans": plans})
+    _write_json(strategy_dir / "position_sizing.json", {"business_date": business_date, "positions": positions})

@@ -88,6 +88,15 @@ class StrategyPlanningAuthorityResult:
         return payload
 
 
+@dataclass(frozen=True)
+class StrategySellExitProvenance:
+    symbol: str
+    business_date: str
+    source_decision_id: str
+    source_decision_type: str
+    position_campaign_id: str
+
+
 def activate_strategy_planning_authority(
     *,
     runtime_root: Path | str,
@@ -219,6 +228,11 @@ def activate_strategy_planning_authority(
         portfolio_policy_path=portfolio_policy_path,
         portfolio_policy_payload=portfolio_policy_payload,
     )
+    sell_exit_provenance_by_symbol = _same_day_pm_sell_exit_provenance_by_symbol(
+        runtime_root=runtime_root_path,
+        strategy_path=strategy_path,
+        business_date=business_date,
+    )
     sizing_by_symbol = {
         str(item.get("security_code") or ""): item
         for item in position_sizing_payload.get("positions", []) or []
@@ -264,6 +278,12 @@ def activate_strategy_planning_authority(
             }
         )
         if item is not None:
+            item = _pending_item_with_strategy_sell_exit_pm_provenance(
+                item=item,
+                plan=plan,
+                provenance_by_symbol=sell_exit_provenance_by_symbol,
+                business_date=business_date,
+            )
             item = _pending_item_with_accepted_generation_binding(
                 item=item,
                 accepted_generation_binding=accepted_generation_binding,
@@ -695,6 +715,9 @@ def _pending_item_from_strategy_plan(
         reference_price=price,
         reference_price_authority=dict(plan.get("reference_price_authority") or {}),
     )
+    source_decision_id = _strategy_plan_source_decision_id(plan, quantity_contract) if side == "BUY" else ""
+    source_pm_decision_id = str(plan.get("pm_position_reference") or quantity_contract.get("source_pm_decision_id") or "")
+    position_campaign_id = _strategy_plan_position_campaign_id(plan, quantity_contract) if side == "BUY" else ""
     return PendingOrderItem(
         pending_item_id=pending_item_id,
         symbol=symbol,
@@ -735,10 +758,12 @@ def _pending_item_from_strategy_plan(
             if isinstance(plan.get("strategy_authority_lineage"), Mapping)
             else ""
         ),
+        source_decision_id=source_decision_id,
         source_decision_type=intent,
-        source_pm_decision_id=str(plan.get("pm_position_reference") or ""),
+        source_pm_decision_id=source_pm_decision_id,
         source_pm_business_date=business_date,
         source_position_symbol=symbol,
+        position_campaign_id=position_campaign_id,
         add_candidate_signal=intent in {"BUY_NEW", "BUY_ADD"},
         capital_allocation_status="APPROVED",
         capital_allocation_reason="phase22_strategy_position_sizing_consumed",
@@ -748,6 +773,222 @@ def _pending_item_from_strategy_plan(
         canonical_strategy_order_index=_int_or_none(plan.get("canonical_strategy_order_index")),
         canonical_strategy_order_source=str(plan.get("canonical_strategy_order_source") or ""),
     ), "pending_item_generated"
+
+
+def _strategy_plan_source_decision_id(plan: Mapping[str, Any], quantity_contract: Mapping[str, Any]) -> str:
+    lineage = plan.get("strategy_authority_lineage") if isinstance(plan.get("strategy_authority_lineage"), Mapping) else {}
+    item = lineage.get("item") if isinstance(lineage.get("item"), Mapping) else {}
+    return _first_text(
+        plan.get("source_decision_id"),
+        quantity_contract.get("source_decision_id"),
+        plan.get("planning_id"),
+        plan.get("portfolio_construction_reference"),
+        item.get("pc_member_id"),
+        quantity_contract.get("quality_decision_id"),
+    )
+
+
+def _strategy_plan_position_campaign_id(plan: Mapping[str, Any], quantity_contract: Mapping[str, Any]) -> str:
+    lineage = plan.get("strategy_authority_lineage") if isinstance(plan.get("strategy_authority_lineage"), Mapping) else {}
+    item = lineage.get("item") if isinstance(lineage.get("item"), Mapping) else {}
+    return _first_text(
+        plan.get("position_campaign_id"),
+        plan.get("pm_position_campaign_id"),
+        plan.get("current_position_campaign_id"),
+        quantity_contract.get("position_campaign_id"),
+        quantity_contract.get("pm_position_campaign_id"),
+        lineage.get("position_campaign_id"),
+        lineage.get("pm_position_campaign_id"),
+        item.get("position_campaign_id"),
+        item.get("pm_position_campaign_id"),
+    )
+
+
+def _same_day_pm_sell_exit_provenance_by_symbol(
+    *,
+    runtime_root: Path,
+    strategy_path: Path,
+    business_date: str,
+) -> dict[str, StrategySellExitProvenance]:
+    candidates: dict[str, list[tuple[int, StrategySellExitProvenance]]] = {}
+    for source_priority, path in enumerate(_same_day_pm_decision_artifact_paths(
+        runtime_root=runtime_root,
+        strategy_path=strategy_path,
+        business_date=business_date,
+    )):
+        payload = _read_json_optional(path)
+        for row in payload.get("decisions") or ():
+            if not isinstance(row, Mapping):
+                continue
+            provenance = _strategy_sell_exit_provenance_from_pm_row(
+                row=row,
+                payload=payload,
+                business_date=business_date,
+            )
+            if provenance is None:
+                continue
+            candidates.setdefault(provenance.symbol, []).append((source_priority, provenance))
+    resolved: dict[str, StrategySellExitProvenance] = {}
+    for symbol, rows in candidates.items():
+        for priority in sorted({priority for priority, _ in rows}):
+            priority_rows = [row for row_priority, row in rows if row_priority == priority]
+            unique_identity = {
+                (
+                    row.source_decision_id,
+                    row.source_decision_type,
+                    row.business_date,
+                ): row
+                for row in priority_rows
+            }
+            explicit_campaigns = {row.position_campaign_id for row in priority_rows if row.position_campaign_id}
+            if len(unique_identity) == 1 and len(explicit_campaigns) <= 1:
+                row = next(iter(unique_identity.values()))
+                resolved[symbol] = StrategySellExitProvenance(
+                    symbol=row.symbol,
+                    business_date=row.business_date,
+                    source_decision_id=row.source_decision_id,
+                    source_decision_type=row.source_decision_type,
+                    position_campaign_id=next(iter(explicit_campaigns)) if explicit_campaigns else "",
+                )
+                break
+    return resolved
+
+
+def _same_day_pm_decision_artifact_paths(
+    *,
+    runtime_root: Path,
+    strategy_path: Path,
+    business_date: str,
+) -> tuple[Path, ...]:
+    strategy_dir = strategy_path if strategy_path.is_dir() else strategy_path.parent
+    day_dir = strategy_dir.parent if strategy_dir.name in {"strategy", "strategy_eod_shadow"} else strategy_path.parent
+    paths = (
+        strategy_dir / "position_management.json",
+        day_dir / "strategy" / "position_management.json",
+        day_dir / "strategy_eod_shadow" / "position_management.json",
+        day_dir / "position_management" / "pm_decisions.json",
+        runtime_root / "runtime_state" / "position_management" / business_date / "position_management_decisions.json",
+    )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(path for path in unique if path.is_file())
+
+
+def _strategy_sell_exit_provenance_from_pm_row(
+    *,
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    business_date: str,
+) -> StrategySellExitProvenance | None:
+    row_business_date = str(row.get("business_date") or payload.get("business_date") or business_date)
+    if row_business_date != business_date:
+        return None
+    symbol = str(row.get("symbol") or row.get("security_code") or "").strip()
+    if not symbol:
+        return None
+    decision = str(row.get("decision") or row.get("decision_type") or "").upper()
+    status = str(row.get("decision_status") or "").upper()
+    if decision != "EXIT" and status != "SELL_FULL_POSITION":
+        return None
+    source_decision_id = str(row.get("decision_id") or row.get("pm_decision_id") or "").strip()
+    if not source_decision_id or source_decision_id.startswith("runtime-current-"):
+        return None
+    return StrategySellExitProvenance(
+        symbol=symbol,
+        business_date=row_business_date,
+        source_decision_id=source_decision_id,
+        source_decision_type="EXIT",
+        position_campaign_id=str(row.get("position_campaign_id") or "").strip(),
+    )
+
+
+def _pending_item_with_strategy_sell_exit_pm_provenance(
+    *,
+    item: PendingOrderItem,
+    plan: Mapping[str, Any],
+    provenance_by_symbol: Mapping[str, StrategySellExitProvenance],
+    business_date: str,
+) -> PendingOrderItem:
+    if item.side.upper() != "SELL" or str(item.source_decision_type or "").upper() != "SELL_EXIT":
+        return item
+    provenance = provenance_by_symbol.get(item.symbol)
+    if provenance is None:
+        return item
+    if provenance.business_date != business_date:
+        return item
+    if _strategy_sell_exit_campaign_conflict(plan=plan, item=item, provenance=provenance):
+        return item
+
+    contract = dict(item.quantity_contract or {})
+    contract.setdefault("planning_intent", "SELL_EXIT")
+    contract.setdefault("source_decision_id", provenance.source_decision_id)
+    contract.setdefault("source_pm_decision_id", provenance.source_decision_id)
+    contract.setdefault("source_decision_type", provenance.source_decision_type)
+    contract.setdefault("source_pm_business_date", provenance.business_date)
+    contract.setdefault("source_position_symbol", provenance.symbol)
+    if provenance.position_campaign_id:
+        contract.setdefault("position_campaign_id", provenance.position_campaign_id)
+
+    lineage = dict(item.strategy_authority_lineage or {})
+    lineage.setdefault("source_decision_id", provenance.source_decision_id)
+    lineage.setdefault("source_pm_decision_id", provenance.source_decision_id)
+    lineage.setdefault("source_decision_type", provenance.source_decision_type)
+    lineage.setdefault("source_pm_business_date", provenance.business_date)
+    lineage.setdefault("source_position_symbol", provenance.symbol)
+    if provenance.position_campaign_id:
+        lineage.setdefault("position_campaign_id", provenance.position_campaign_id)
+
+    return replace(
+        item,
+        quantity_contract=contract,
+        strategy_authority_lineage=lineage or item.strategy_authority_lineage,
+        source_decision_id=provenance.source_decision_id,
+        source_decision_type=provenance.source_decision_type,
+        source_pm_decision_id=provenance.source_decision_id,
+        source_pm_business_date=provenance.business_date,
+        source_position_symbol=provenance.symbol,
+        position_campaign_id=provenance.position_campaign_id,
+    )
+
+
+def _strategy_sell_exit_campaign_conflict(
+    *,
+    plan: Mapping[str, Any],
+    item: PendingOrderItem,
+    provenance: StrategySellExitProvenance,
+) -> bool:
+    if not provenance.position_campaign_id:
+        return False
+    lineage = item.strategy_authority_lineage if isinstance(item.strategy_authority_lineage, Mapping) else {}
+    contract = item.quantity_contract if isinstance(item.quantity_contract, Mapping) else {}
+    explicit_values = (
+        getattr(item, "position_campaign_id", ""),
+        plan.get("position_campaign_id"),
+        plan.get("pm_position_campaign_id"),
+        plan.get("current_position_campaign_id"),
+        lineage.get("position_campaign_id"),
+        lineage.get("pm_position_campaign_id"),
+        contract.get("position_campaign_id"),
+        contract.get("pm_position_campaign_id"),
+    )
+    for value in explicit_values:
+        text = str(value or "").strip()
+        if text and text != provenance.position_campaign_id:
+            return True
+    return False
+
+
+def _read_json_optional(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 

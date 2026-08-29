@@ -98,6 +98,73 @@ def test_phase31_f1f_existing_pm_exit_is_preserved() -> None:
     assert evidence["escalation_decision"] == "PRESERVE_BASELINE"
 
 
+def test_phase32_cw_known_entry_caution_does_not_escalate_to_exit() -> None:
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [
+            _position(
+                action="EXIT",
+                intensity="NONE",
+                reasons=["trend_and_opportunity_broken"],
+                entry_premise_snapshot=_entry_snapshot(["WEAK", "ELEVATED_RISK", "CONTINUATION_WITH_CAUTION"]),
+            )
+        ],
+        business_date="2022-09-15",
+    )
+
+    row = positions[0]
+    delta = row["entry_premise_delta"]
+    assert row["action"] == "HOLD"
+    assert row["intensity"] == "NONE"
+    assert row["entry_premise_context_class"] == "KNOWN_AT_ENTRY"
+    assert delta["recommended_pm_context_class"] == "KNOWN_AT_ENTRY"
+    assert "current_weakness_already_known_at_entry" in delta["reason_codes"]
+    assert "entry_known_caution_non_escalation" in row["reason_codes"]
+    assert "entry_known_caution_non_escalation" in reasons
+    assert delta["minimum_holding_period_applied"] is False
+
+
+def test_phase32_cw_hard_stop_exit_preserved_with_entry_premise() -> None:
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [
+            _position(
+                action="EXIT",
+                intensity="NONE",
+                reasons=["hard_stop_current_return"],
+                entry_premise_snapshot=_entry_snapshot(["WEAK", "ELEVATED_RISK"]),
+            )
+        ],
+        business_date="2022-09-15",
+    )
+
+    row = positions[0]
+    assert reasons == []
+    assert row["action"] == "EXIT"
+    assert row["entry_premise_context_class"] == "HARD_FAILURE"
+    assert row["entry_premise_delta"]["hard_failure_status"] == "PRESENT"
+
+
+def test_phase32_cw_missing_required_entry_premise_fails_closed() -> None:
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [
+            _position(
+                action="REDUCE",
+                reasons=["risk_increased_but_trend_not_broken"],
+                prior_reduce_count=1,
+                entry_premise_snapshot={"snapshot_status": "REVIEW_REQUIRED", "reason_codes": ["entry_premise_source_evidence_missing"]},
+                entry_premise_snapshot_required=True,
+            )
+        ],
+        business_date="2022-09-15",
+    )
+
+    row = positions[0]
+    assert row["action"] == "UNRESOLVED"
+    assert row["intensity"] == "UNRESOLVED"
+    assert row["entry_premise_context_class"] == "AMBIGUOUS_REVIEW_REQUIRED"
+    assert "entry_premise_delta_ambiguous_review_required" in row["reason_codes"]
+    assert "entry_premise_delta_ambiguous_review_required" in reasons
+
+
 def test_phase31_f1f_minimum_notional_reduce_is_unresolved_and_not_escalated() -> None:
     positions, reasons = position_management._apply_canonical_sell_semantics(
         [
@@ -175,8 +242,10 @@ def _position(
     hold_status: str = "REVIEW_REQUIRED",
     campaign_identity_status: str = "COMPLETE",
     position_state_as_of: str = "2022-09-14",
+    entry_premise_snapshot: dict | None = None,
+    entry_premise_snapshot_required: bool = False,
 ) -> dict:
-    return {
+    row = {
         "position_id": "pm-61750",
         "security_code": "61750",
         "position_campaign_id": "campaign-61750",
@@ -215,4 +284,26 @@ def _position(
         },
         "strategy_intelligence_not_action_authority": True,
         "strategy_intelligence_production_evidence": True,
+    }
+    if entry_premise_snapshot is not None:
+        row["strategy_intelligence_entry_premise_snapshot"] = entry_premise_snapshot
+        row["entry_premise_snapshot_status"] = str(entry_premise_snapshot.get("snapshot_status") or "")
+    if entry_premise_snapshot_required:
+        row["entry_premise_snapshot_required"] = True
+    return row
+
+
+def _entry_snapshot(caution_reasons: list[str]) -> dict:
+    return {
+        "schema_version": "campaign_entry_premise_snapshot.v1",
+        "snapshot_status": "AVAILABLE",
+        "campaign_id": "campaign-61750",
+        "symbol": "61750",
+        "entry_business_date": "2022-09-14",
+        "entry_admission_action": "CONTINUATION_WITH_CAUTION",
+        "buy_quality_action": "REDUCED_ALLOCATION_ONLY",
+        "accepted_caution_reasons": caution_reasons,
+        "source_lineage": {"source_decision_id": "pc-61750-entry"},
+        "future_information_used": False,
+        "historical_outcome_used": False,
     }

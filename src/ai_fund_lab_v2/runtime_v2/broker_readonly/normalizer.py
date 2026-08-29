@@ -106,6 +106,7 @@ def _normalize_order(
     production_equivalent: bool,
 ) -> BrokerOrderSnapshot:
     order_ref_hash = _hash_ref(payload.get("order_ref") or payload.get("order_id"))
+    provenance = _provenance_from_payload(payload)
     return BrokerOrderSnapshot(
         snapshot_id=_snapshot_id("order", order_ref_hash, as_of),
         schema_version="1",
@@ -132,6 +133,12 @@ def _normalize_order(
             else None
         ),
         strategy_authority_lineage_hash=str(payload.get("strategy_authority_lineage_hash") or ""),
+        source_decision_id=provenance["source_decision_id"],
+        source_pm_decision_id=provenance["source_pm_decision_id"],
+        source_decision_type=provenance["source_decision_type"],
+        source_pm_business_date=provenance["source_pm_business_date"],
+        source_position_symbol=provenance["source_position_symbol"],
+        position_campaign_id=provenance["position_campaign_id"],
     )
 
 
@@ -146,6 +153,7 @@ def _normalize_execution(
 ) -> BrokerExecutionSnapshot:
     execution_ref_hash = _hash_ref(payload.get("execution_ref") or payload.get("execution_id"))
     order_ref_hash = _hash_ref(payload.get("order_ref") or payload.get("order_id"))
+    provenance = _provenance_from_payload(payload)
     return BrokerExecutionSnapshot(
         snapshot_id=_snapshot_id("execution", execution_ref_hash, as_of),
         schema_version="1",
@@ -163,7 +171,53 @@ def _normalize_execution(
         quantity=float(payload.get("quantity", 0)),
         price=float(payload.get("price", 0)),
         executed_at=str(payload.get("executed_at", as_of)),
+        source_decision_id=provenance["source_decision_id"],
+        source_pm_decision_id=provenance["source_pm_decision_id"],
+        source_decision_type=provenance["source_decision_type"],
+        source_pm_business_date=provenance["source_pm_business_date"],
+        source_position_symbol=provenance["source_position_symbol"],
+        position_campaign_id=provenance["position_campaign_id"],
     )
+
+
+def _provenance_from_payload(payload: Mapping[str, Any]) -> dict[str, str]:
+    lineage = payload.get("strategy_authority_lineage")
+    lineage_mapping = lineage if isinstance(lineage, Mapping) else {}
+    return {
+        "source_decision_id": _first_text(
+            (payload, lineage_mapping),
+            ("source_decision_id", "source_pm_decision_id", "pm_decision_id", "decision_id"),
+        ),
+        "source_pm_decision_id": _first_text(
+            (payload, lineage_mapping),
+            ("source_pm_decision_id", "source_decision_id", "pm_decision_id"),
+        ),
+        "source_decision_type": _first_text(
+            (payload, lineage_mapping),
+            ("source_decision_type", "decision_type", "source_decision"),
+        ),
+        "source_pm_business_date": _first_text(
+            (payload, lineage_mapping),
+            ("source_pm_business_date", "pm_business_date", "decision_business_date", "business_date"),
+        ),
+        "source_position_symbol": _first_text(
+            (payload, lineage_mapping),
+            ("source_position_symbol", "position_symbol", "symbol", "security_code"),
+        ),
+        "position_campaign_id": _first_text(
+            (payload, lineage_mapping),
+            ("position_campaign_id", "current_position_campaign_id", "pm_position_campaign_id", "campaign_id"),
+        ),
+    }
+
+
+def _first_text(mappings: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> str:
+    for mapping in mappings:
+        for key in keys:
+            value = mapping.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
 
 
 def _normalize_position(
@@ -191,6 +245,7 @@ def _normalize_position(
         quantity=float(payload.get("quantity", 0)),
         average_price=float(payload.get("average_price", 0)),
         market_value=float(payload.get("market_value", 0)),
+        position_campaign_id=str(payload.get("position_campaign_id") or payload.get("campaign_id") or ""),
     )
 
 

@@ -33,6 +33,12 @@ class BrokerOrderSnapshot(BrokerSnapshotBase):
     updated_at: str
     strategy_authority_lineage: dict[str, Any] | None = None
     strategy_authority_lineage_hash: str = ""
+    source_decision_id: str = ""
+    source_pm_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_business_date: str = ""
+    source_position_symbol: str = ""
+    position_campaign_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,12 @@ class BrokerExecutionSnapshot(BrokerSnapshotBase):
     quantity: float
     price: float
     executed_at: str
+    source_decision_id: str = ""
+    source_pm_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_business_date: str = ""
+    source_position_symbol: str = ""
+    position_campaign_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,6 +67,7 @@ class BrokerPositionSnapshot(BrokerSnapshotBase):
     quantity: float
     average_price: float
     market_value: float
+    position_campaign_id: str = ""
 
 
 @dataclass(frozen=True)

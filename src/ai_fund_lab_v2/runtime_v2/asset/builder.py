@@ -43,6 +43,7 @@ def build_current_asset_state(
                 market_value=position.market_value,
                 source=position.source,
                 as_of=position.as_of or as_of,
+                position_campaign_id=position.position_campaign_id,
             )
             for position in positions
         )
@@ -118,4 +119,3 @@ def _asset_state_id(
 ) -> str:
     raw = "|".join((environment, source, as_of, *generated_from))
     return "asset-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-

@@ -248,6 +248,7 @@ def _asset_state_from_payload(payload: Mapping[str, Any]) -> CurrentAssetState:
                 market_value=float(position["market_value"]),
                 source=str(position["source"]),
                 as_of=str(position["as_of"]),
+                position_campaign_id=str(position.get("position_campaign_id") or position.get("campaign_id") or ""),
             )
             for position in (payload.get("positions") or ())
         ),
@@ -379,6 +380,7 @@ def _ledger_positions(asset_state: CurrentAssetState) -> tuple[LedgerPositionRec
             average_price=position.average_price,
             market_value=position.market_value,
             as_of=position.as_of,
+            position_campaign_id=position.position_campaign_id,
         )
         for position in (asset_state.positions or ())
     )

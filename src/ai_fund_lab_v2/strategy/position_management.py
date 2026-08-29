@@ -1396,6 +1396,11 @@ def _attach_strategy_intelligence_positions(
             "strategy_intelligence_current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
             "strategy_intelligence_observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
             "strategy_intelligence_observed_giveback": lifecycle.get("observed_giveback"),
+            "strategy_intelligence_lifecycle_context": dict(lifecycle),
+            "strategy_intelligence_entry_premise_snapshot": dict(lifecycle.get("entry_premise_snapshot") or {})
+            if isinstance(lifecycle.get("entry_premise_snapshot"), Mapping)
+            else {},
+            "entry_premise_snapshot_status": str(lifecycle.get("entry_premise_snapshot_status") or ""),
             "strategy_intelligence_hold_worthiness_evidence": hold_evidence,
             "strategy_intelligence_add_worthiness_evidence": add_evidence,
             "strategy_intelligence_profit_protection_evidence": dict(profit),
@@ -1419,9 +1424,11 @@ def _apply_canonical_sell_semantics(
     for position in positions:
         evidence = sell_semantic_state.evaluate_position_sell_semantic(position, business_date=business_date)
         evidence = _apply_pm_severity_action_mapping(position, evidence)
+        evidence = _apply_entry_premise_delta_context(position, evidence, business_date=business_date)
         final_action = str(evidence.get("final_pm_action") or position.get("action") or "").upper()
         escalation_reason = str(evidence.get("escalation_reason_code") or "")
         action_mapping_reason = str(evidence.get("pm_severity_action_mapping_reason_code") or "")
+        entry_delta_reason = str(evidence.get("entry_premise_delta_action_reason_code") or "")
         position_reasons = list(position.get("reason_codes") or [])
         if final_action == "EXIT" and position.get("action") == "REDUCE" and escalation_reason:
             position_reasons.append(escalation_reason)
@@ -1429,10 +1436,15 @@ def _apply_canonical_sell_semantics(
         if action_mapping_reason and final_action != str(evidence.get("baseline_final_pm_action") or "").upper():
             position_reasons.append(action_mapping_reason)
             reasons.append(action_mapping_reason)
+        if entry_delta_reason:
+            position_reasons.append(entry_delta_reason)
+            reasons.append(entry_delta_reason)
         patched = {
             **position,
             "action": final_action if final_action in PM_ACTIONS else position.get("action"),
             "intensity": evidence.get("final_pm_intensity") or ("NONE" if final_action == "EXIT" else position.get("intensity")),
+            "entry_premise_delta": evidence.get("entry_premise_delta") or {},
+            "entry_premise_context_class": (evidence.get("entry_premise_delta") or {}).get("recommended_pm_context_class"),
             "canonical_sell_semantic_evidence": evidence,
             "canonical_sell_state": evidence.get("canonical_sell_state"),
             "canonical_sell_semantic_contract_version": sell_semantic_state.CONTRACT_VERSION,
@@ -1450,6 +1462,244 @@ def _apply_canonical_sell_semantics(
 PM_SEVERITY_ACTION_MAPPING_CONTRACT_VERSION = "phase31_g8_pm_severity_action_mapping_v1"
 PM_SEVERITY_HOLD_TO_REDUCE_REASON_CODE = "pm_severity_defensive_hold_to_reduce"
 PM_SEVERITY_REDUCE_TO_EXIT_REASON_CODE = "pm_severity_persistent_failure_reduce_to_exit"
+ENTRY_PREMISE_DELTA_CONTRACT_VERSION = "entry_premise_delta.v1"
+ENTRY_PREMISE_KNOWN_NON_ESCALATION_REASON_CODE = "entry_known_caution_non_escalation"
+ENTRY_PREMISE_AMBIGUOUS_REVIEW_REASON_CODE = "entry_premise_delta_ambiguous_review_required"
+ENTRY_PREMISE_HARD_FAILURE_REASONS = {
+    "hard_stop",
+    "hard_stop_current_return",
+    "hard_failure",
+}
+ENTRY_PREMISE_TRUE_BREAKDOWN_REASONS = {
+    "true_breakdown",
+    "trend_and_expected_edge_broken",
+}
+ENTRY_PREMISE_GENERIC_DETERIORATION_REASONS = {
+    "expected_edge_risk_deterioration",
+    "peak_drawdown_warning",
+    "risk_increased_but_trend_not_broken",
+    "trend_and_opportunity_broken",
+    "weak_hold_score",
+}
+
+
+def _apply_entry_premise_delta_context(
+    position: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    business_date: str,
+) -> dict[str, Any]:
+    delta = _entry_premise_delta(position, evidence, business_date=business_date)
+    mapped = dict(evidence)
+    mapped["entry_premise_delta"] = delta
+    mapped["entry_premise_delta_contract_version"] = ENTRY_PREMISE_DELTA_CONTRACT_VERSION
+    mapped["entry_premise_delta_connected"] = delta.get("status") in {"PASS", "REVIEW_REQUIRED"}
+    mapped["entry_premise_delta_action_reason_code"] = ""
+    current_action = str(mapped.get("final_pm_action") or position.get("action") or "").upper()
+    context_class = str(delta.get("recommended_pm_context_class") or "").upper()
+    if context_class in {"HARD_FAILURE", "TRUE_BREAKDOWN", "FRESH_DETERIORATION", "PERSISTENT_DETERIORATION", "IMPROVEMENT"}:
+        return mapped
+    if context_class == "AMBIGUOUS_REVIEW_REQUIRED" and _entry_premise_required(position):
+        mapped["final_pm_action"] = "UNRESOLVED"
+        mapped["final_pm_intensity"] = "UNRESOLVED"
+        mapped["entry_premise_delta_action_reason_code"] = ENTRY_PREMISE_AMBIGUOUS_REVIEW_REASON_CODE
+        mapped["entry_premise_delta_fail_closed"] = True
+        return mapped
+    if context_class == "KNOWN_AT_ENTRY" and current_action in {"REDUCE", "EXIT"}:
+        mapped["final_pm_action"] = "HOLD"
+        mapped["final_pm_intensity"] = "NONE"
+        mapped["entry_premise_delta_action_reason_code"] = ENTRY_PREMISE_KNOWN_NON_ESCALATION_REASON_CODE
+        mapped["entry_known_evidence_singlehanded_sell_escalation_suppressed"] = True
+        mapped["minimum_holding_period_applied"] = False
+    return mapped
+
+
+def _entry_premise_delta(
+    position: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    *,
+    business_date: str,
+) -> dict[str, Any]:
+    snapshot = _entry_premise_snapshot(position)
+    reasons = [str(item) for item in evidence.get("original_pm_reasons") or position.get("reason_codes") or [] if str(item)]
+    current_deterioration = _current_deterioration_dimensions(position, evidence, reasons)
+    known_at_entry = _known_at_entry_dimensions(snapshot)
+    current_tokens = _semantic_tokens([*reasons, *current_deterioration])
+    known_tokens = _semantic_tokens(known_at_entry)
+    new_dimensions = sorted(token for token in current_tokens if token not in known_tokens)
+    persistent_dimensions = sorted(token for token in current_tokens if token in known_tokens and _prior_reduce_count_from_position(position) > 0)
+    improved_dimensions = _improved_dimensions(evidence)
+
+    status = "PASS"
+    comparison_confidence = "HIGH"
+    reason_codes: list[str] = ["entry_premise_delta_materialized"]
+    context_class = "KNOWN_AT_ENTRY"
+
+    if _has_any_reason(reasons, ENTRY_PREMISE_HARD_FAILURE_REASONS):
+        context_class = "HARD_FAILURE"
+        reason_codes.append("hard_failure_preserved")
+    elif _has_any_reason(reasons, ENTRY_PREMISE_TRUE_BREAKDOWN_REASONS):
+        context_class = "TRUE_BREAKDOWN"
+        reason_codes.append("true_breakdown_preserved")
+    elif (
+        _entry_premise_required(position)
+        and (not snapshot or str(snapshot.get("snapshot_status") or "").upper() not in {"AVAILABLE", "PASS"})
+    ):
+        status = "REVIEW_REQUIRED"
+        comparison_confidence = "LOW"
+        context_class = "AMBIGUOUS_REVIEW_REQUIRED"
+        reason_codes.extend(["entry_premise_snapshot_missing_or_unavailable", *[str(item) for item in snapshot.get("reason_codes") or []]])
+    elif str(evidence.get("canonical_sell_state") or "") == sell_semantic_state.PERSISTENT_DETERIORATION:
+        context_class = "PERSISTENT_DETERIORATION"
+        reason_codes.append("persistent_deterioration_preserved")
+    elif improved_dimensions:
+        context_class = "IMPROVEMENT"
+        reason_codes.append("entry_caution_improved")
+    elif not snapshot or str(snapshot.get("snapshot_status") or "").upper() not in {"AVAILABLE", "PASS"}:
+        status = "REVIEW_REQUIRED"
+        comparison_confidence = "LOW"
+        context_class = "AMBIGUOUS_REVIEW_REQUIRED"
+        reason_codes.extend(["entry_premise_snapshot_missing_or_unavailable", *[str(item) for item in snapshot.get("reason_codes") or []]])
+    elif current_tokens and current_tokens <= known_tokens:
+        context_class = "KNOWN_AT_ENTRY"
+        reason_codes.append("current_weakness_already_known_at_entry")
+    elif new_dimensions:
+        context_class = "FRESH_DETERIORATION"
+        reason_codes.append("fresh_deterioration_dimensions_observed")
+    elif current_deterioration:
+        context_class = "FRESH_DETERIORATION"
+        reason_codes.append("current_deterioration_not_proven_known_at_entry")
+    else:
+        context_class = "KNOWN_AT_ENTRY"
+        reason_codes.append("no_fresh_deterioration_dimensions")
+
+    return {
+        "schema_version": ENTRY_PREMISE_DELTA_CONTRACT_VERSION,
+        "business_date": business_date,
+        "symbol": str(position.get("security_code") or position.get("symbol") or ""),
+        "campaign_id": str(position.get("position_campaign_id") or position.get("strategy_intelligence_campaign_id") or ""),
+        "status": status,
+        "entry_premise_snapshot_status": str(snapshot.get("snapshot_status") or ""),
+        "known_at_entry_risk": sorted(known_at_entry),
+        "current_risk": sorted(current_deterioration),
+        "new_risk_dimensions": new_dimensions,
+        "improved_dimensions": improved_dimensions,
+        "persistent_weakness_dimensions": persistent_dimensions,
+        "true_breakdown_dimensions": sorted(current_tokens & _semantic_tokens(ENTRY_PREMISE_TRUE_BREAKDOWN_REASONS)),
+        "hard_failure_status": "PRESENT" if context_class == "HARD_FAILURE" else "ABSENT",
+        "fresh_deterioration_status": "PRESENT" if context_class == "FRESH_DETERIORATION" else "ABSENT",
+        "entry_known_only_status": "PRESENT" if context_class == "KNOWN_AT_ENTRY" else "ABSENT",
+        "comparison_confidence": comparison_confidence,
+        "reason_codes": sorted(set(reason_codes)),
+        "recommended_pm_context_class": context_class,
+        "source_lineage": snapshot.get("source_lineage") or {},
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "minimum_holding_period_applied": False,
+    }
+
+
+def _entry_premise_snapshot(position: Mapping[str, Any]) -> dict[str, Any]:
+    for key in ("entry_premise_snapshot", "campaign_entry_premise_snapshot", "strategy_intelligence_entry_premise_snapshot"):
+        value = position.get(key)
+        if isinstance(value, Mapping):
+            return dict(value)
+    lifecycle = position.get("strategy_intelligence_lifecycle_context")
+    if isinstance(lifecycle, Mapping) and isinstance(lifecycle.get("entry_premise_snapshot"), Mapping):
+        return dict(lifecycle["entry_premise_snapshot"])
+    return {}
+
+
+def _entry_premise_required(position: Mapping[str, Any]) -> bool:
+    if position.get("entry_premise_snapshot_required") is True:
+        return True
+    snapshot_status = str(position.get("entry_premise_snapshot_status") or "").upper()
+    return snapshot_status in {"MISSING", "REVIEW_REQUIRED"}
+
+
+def _current_deterioration_dimensions(position: Mapping[str, Any], evidence: Mapping[str, Any], reasons: Iterable[str]) -> set[str]:
+    values: list[str] = []
+    deterioration = evidence.get("deterioration_dimensions") if isinstance(evidence.get("deterioration_dimensions"), Mapping) else {}
+    for key in ("deterioration_sources", "deterioration_reasons", "pm_deterioration_reasons", "nested_deterioration_states"):
+        values.extend(str(item) for item in deterioration.get(key) or [] if str(item))
+    profit = position.get("strategy_intelligence_profit_protection_evidence")
+    if isinstance(profit, Mapping):
+        values.extend(str(item) for item in profit.get("continuation_deterioration_connection") or [] if str(item))
+        values.extend(str(item) for item in profit.get("downside_risk_rise_connection") or [] if str(item))
+    values.extend(reason for reason in reasons if reason in ENTRY_PREMISE_GENERIC_DETERIORATION_REASONS)
+    return _semantic_tokens(values)
+
+
+def _known_at_entry_dimensions(snapshot: Mapping[str, Any]) -> set[str]:
+    values: list[str] = []
+    for key in (
+        "accepted_caution_reasons",
+        "caution_reasons",
+        "reason_codes",
+        "entry_admission_action",
+        "entry_admission_state",
+        "buy_quality_action",
+        "buy_quality_band",
+        "trend_momentum",
+        "relative_strength",
+        "participation",
+        "persistence",
+        "downside_risk_vector",
+        "regime_context",
+    ):
+        value = snapshot.get(key)
+        if isinstance(value, Mapping):
+            values.extend(str(item) for item in value.values() if str(item))
+        elif isinstance(value, list):
+            values.extend(str(item) for item in value if str(item))
+        elif value not in (None, ""):
+            values.append(str(value))
+    return _semantic_tokens(values)
+
+
+def _semantic_tokens(values: Iterable[Any]) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        text = str(value or "").upper()
+        if not text:
+            continue
+        if "HARD_STOP" in text:
+            tokens.add("HARD_STOP")
+        if "TRUE_BREAKDOWN" in text or "EXPECTED_EDGE_BROKEN" in text:
+            tokens.add("TRUE_BREAKDOWN")
+        if "WEAK" in text or "WEAKNESS" in text or "WEAK_HOLD" in text or "TREND_AND_OPPORTUNITY_BROKEN" in text:
+            tokens.add("WEAK")
+        if "ELEVATED_RISK" in text or "HIGH_RISK" in text or "RISK" in text:
+            tokens.add("ELEVATED_RISK")
+        if "DECELERAT" in text:
+            tokens.add("DECELERATING")
+        if "MIXED" in text or "CAUTION" in text:
+            tokens.add("CAUTION")
+    return tokens
+
+
+def _improved_dimensions(evidence: Mapping[str, Any]) -> list[str]:
+    recovery = evidence.get("recovery_dimensions") if isinstance(evidence.get("recovery_dimensions"), Mapping) else {}
+    if recovery.get("recovery_present") or str(evidence.get("recovery_state") or "") == "RECOVERY_PRESENT":
+        return sorted(_semantic_tokens(recovery.get("recovery_sources") or evidence.get("original_pm_reasons") or []))
+    return []
+
+
+def _has_any_reason(reasons: Iterable[str], wanted: set[str]) -> bool:
+    normalized = {str(item).lower() for item in reasons}
+    return any(item.lower() in normalized for item in wanted)
+
+
+def _prior_reduce_count_from_position(position: Mapping[str, Any]) -> int:
+    hold = position.get("strategy_intelligence_hold_worthiness_evidence")
+    if isinstance(hold, Mapping):
+        summary = hold.get("reduce_history_summary") if isinstance(hold.get("reduce_history_summary"), Mapping) else {}
+        for key in ("event_count", "count"):
+            try:
+                return int(summary.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def _apply_pm_severity_action_mapping(position: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:

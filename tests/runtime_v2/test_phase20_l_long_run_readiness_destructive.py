@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from tests.runtime_v2.test_phase17_k_runtime_test_runner import load_runner
@@ -46,7 +47,7 @@ def test_phase20_l_campaign_identity_cost_basis_rebuy_and_duplicate_execution_gu
         current_state={"positions": [{"symbol": "11110", "quantity": 10, "average_price": 95, "current_price": 95, "unrealized_pnl": 0}]},
     )
 
-    campaigns = state["campaigns"]
+    campaigns = sorted(state["campaigns"], key=lambda row: row["opened_business_date"])
     assert [row["campaign_status"] for row in campaigns] == ["CLOSED", "OPEN"]
     assert campaigns[0]["position_campaign_id"].endswith("-0001")
     assert campaigns[1]["position_campaign_id"].endswith("-0002")
@@ -57,6 +58,48 @@ def test_phase20_l_campaign_identity_cost_basis_rebuy_and_duplicate_execution_gu
     assert daily_slices[1]["gross_realized_pnl"] == 2200.0
     assert daily_slices[2]["gross_realized_pnl"] == -4200.0
     assert campaigns[0]["realized_pnl"] == -3000.0
+
+
+def test_phase32_ad_observability_inherits_canonical_campaign_and_reconstructs_strategy_seed() -> None:
+    runner = load_runner()
+    campaign_a = "pc-canonical-11110-0001"
+    executions = [
+        {
+            "record_type": "execution",
+            "business_date": "2026-07-01",
+            "side": "BUY",
+            "symbol": "11110",
+            "quantity": 100,
+            "price": 100,
+            "execution_id": "buy-campaign-a",
+            "position_campaign_id": campaign_a,
+        },
+        {"record_type": "execution", "business_date": "2026-07-02", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 120, "execution_id": "add-campaign-a"},
+        {"record_type": "execution", "business_date": "2026-07-03", "side": "SELL", "symbol": "11110", "quantity": 50, "price": 130, "execution_id": "reduce-campaign-a"},
+        {"record_type": "execution", "business_date": "2026-07-04", "side": "SELL", "symbol": "11110", "quantity": 150, "price": 90, "execution_id": "exit-campaign-a"},
+        {"record_type": "execution", "business_date": "2026-07-05", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 95, "execution_id": "rebuy-campaign-b"},
+    ]
+
+    state = runner._derive_position_campaign_state(
+        run_id=RUN_ID,
+        business_date="2026-07-05",
+        executions=executions,
+        plans={"buy": [], "sell": []},
+        current_state={"positions": [{"symbol": "11110", "quantity": 100, "average_price": 95, "current_price": 95, "unrealized_pnl": 0}]},
+    )
+
+    campaigns = sorted(state["campaigns"], key=lambda row: row["opened_business_date"])
+    expected_campaign_b = "pc-" + hashlib.sha256("11110|2|rebuy-campaign-b".encode("utf-8")).hexdigest()[:16] + "-11110-0002"
+    assert [row["position_campaign_id"] for row in campaigns] == [campaign_a, expected_campaign_b]
+    assert campaigns[0]["campaign_status"] == "CLOSED"
+    assert campaigns[1]["campaign_status"] == "OPEN"
+    assert [event["position_campaign_id"] for event in campaigns[0]["events"]] == [campaign_a] * 4
+    assert state["execution_campaign_ids"]["buy-campaign-a"] == campaign_a
+    assert state["execution_campaign_ids"]["add-campaign-a"] == campaign_a
+    assert state["execution_campaign_ids"]["reduce-campaign-a"] == campaign_a
+    assert state["execution_campaign_ids"]["exit-campaign-a"] == campaign_a
+    assert state["execution_campaign_ids"]["rebuy-campaign-b"] == expected_campaign_b
+    assert not any("runtime-test-phase20l-fixture" in row["position_campaign_id"] for row in campaigns)
 
 
 def test_phase20_l_zero_quantity_boundary_closes_campaign() -> None:

@@ -540,6 +540,14 @@ def evaluate_buy_item_submit_feasibility(
         violations.append(("safety_hard_maximum", "BUY would exceed safety_hard_maximum", resolved_position_count_authority.authority_source))
     if not resolved_position_sizing_authority.passed:
         violations.append(("position_sizing", resolved_position_sizing_authority.reason, resolved_position_sizing_authority.authority_source))
+    elif _blocked_marginal_capital_value_positive_buy(item):
+        violations.append(
+            (
+                "marginal_capital_value",
+                "blocked_marginal_capital_value_positive_buy_quantity",
+                authority_source,
+            )
+        )
     elif one_lot_submit_authority["status"] == "REVIEW_REQUIRED":
         violations.append(("position_sizing", one_lot_submit_authority["reason"], resolved_position_sizing_authority.authority_source))
     elif canonical_discrete_quantity_submit_authority["status"] == "REVIEW_REQUIRED":
@@ -580,6 +588,24 @@ def evaluate_buy_item_submit_feasibility(
         }
     )
     return evidence
+
+
+def _blocked_marginal_capital_value_positive_buy(item: Any) -> bool:
+    if str(getattr(item, "side", "")).upper() != "BUY":
+        return False
+    quantity = _float(getattr(item, "quantity", 0.0))
+    estimated_amount = _float(getattr(item, "estimated_amount", 0.0))
+    if quantity <= 0 and estimated_amount <= 0:
+        return False
+    marginal_class = str(getattr(item, "marginal_capital_value_class", "") or "").upper()
+    if marginal_class != "BLOCKED_OR_NOT_ELIGIBLE":
+        return False
+    authority = getattr(item, "marginal_capital_value_authority", None)
+    if isinstance(authority, Mapping):
+        diagnostic_only = authority.get("diagnostic_only") or authority.get("diagnostic_only_authority")
+        if diagnostic_only is True or str(diagnostic_only).upper() == "TRUE":
+            return False
+    return True
 
 
 def _sell_item_evidence(
@@ -726,7 +752,7 @@ def _one_lot_submit_authority(
             return {**payload, "status": "REVIEW_REQUIRED", "reason": "one_lot_authority_symbol_mismatch"}
         if authority_intent and authority_intent != semantic:
             return {**payload, "status": "REVIEW_REQUIRED", "reason": "one_lot_authority_intent_mismatch"}
-        if str(authority.get("decision") or "") and str(authority.get("decision") or "") != "ADMIT":
+        if str(authority.get("decision") or "") and str(authority.get("decision") or "") not in {"ADMIT", "ADMIT_ONE_LOT"}:
             return {**payload, "status": "REVIEW_REQUIRED", "reason": "one_lot_authority_decision_not_admit"}
     if authorized_quantity <= 0 or abs(quantity - authorized_quantity) > 0.000001:
         return {**payload, "status": "REVIEW_REQUIRED", "reason": "one_lot_authority_quantity_mismatch"}
@@ -773,7 +799,7 @@ def _pc_discrete_strategy_soft_cap_overshoot_authorized(lot_resolution: Mapping[
         authority = lot_resolution.get("minimum_executable_one_lot_authority")
         if isinstance(authority, Mapping):
             decision = str(authority.get("decision") or authority.get("admission_decision") or "")
-            if decision and decision not in {"ADMIT", "PASS"}:
+            if decision and decision not in {"ADMIT", "ADMIT_ONE_LOT", "PASS"}:
                 return False
     return True
 

@@ -9,7 +9,9 @@ from ai_fund_lab_v2.strategy.shadow_runtime import (
     _existing_pm_decisions,
     _materialize_pre_action_position_campaigns,
     _optional_opportunity_artifact_path,
+    _resolve_prior_closed_campaigns_from_executions,
     _supply_add_expected_edge_baseline,
+    _supply_prior_exit_state,
     _resolve_strategy_source_authority,
     _runtime_current_position_rows,
     generate_strategy_shadow_for_day,
@@ -289,6 +291,240 @@ def test_phase30_ad1_prior_open_campaign_closes_when_strict_prior_ledger_exits(t
     assert payload["position_campaigns"][0]["campaign_status"] == "CLOSED"
     assert payload["position_campaigns"][0]["current_quantity"] == 0.0
     assert result["evidence"]["closed_campaign_symbols"] == ["11110"]
+
+
+def test_phase32_l_prior_exit_materialization_preserves_executed_pm_exit_reason(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                **_execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+                "position_campaign_id": "campaign-11110",
+            },
+            {
+                **_execution("exec-11110-exit", "2026-07-11", "11110", "SELL", 100, 900),
+                "position_campaign_id": "campaign-11110",
+                "source_decision_type": "EXIT",
+                "source_decision_id": "pm-2026-07-11-11110-exit",
+            },
+        ],
+    )
+    _write_pm_decisions(
+        run_dir,
+        "2026-07-11",
+        [
+            {
+                "business_date": "2026-07-11",
+                "symbol": "11110",
+                "decision_type": "EXIT",
+                "pm_decision_id": "pm-2026-07-11-11110-exit",
+                "position_campaign_id": "campaign-11110",
+                "decision_reason": "trend_and_opportunity_broken",
+                "reason_codes": ["trend_and_opportunity_broken"],
+            }
+        ],
+    )
+    candidate = {"rows": ({"security_code": "11110"},)}
+    opportunity = {"rows": ({"symbol": "11110", "opportunity_buy_rank": 1},)}
+
+    result = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-15",
+        candidate=candidate,
+        opportunity=opportunity,
+        current={"rows": ()},
+    )
+
+    supplied = result["opportunity"]["rows"][0]
+    assert supplied["prior_exit_business_date"] == "2026-07-11"
+    assert supplied["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert supplied["prior_exit_reason_codes"] == ["trend_and_opportunity_broken"]
+    assert supplied["prior_exit_reason_authority"] == "STRICT_PRIOR_PM_DECISION_EVIDENCE"
+    assert supplied["prior_exit_reason_future_information_used"] is False
+    assert result["evidence"]["pm_exit_reason_matched_close_count"] == 1
+    assert result["evidence"]["future_or_same_day_exit_used"] is False
+
+
+def test_phase32_l_prior_exit_materialization_preserves_generic_fallback_without_pm_reason(tmp_path: Path) -> None:
+    rows = _resolve_prior_closed_campaigns_from_executions(
+        executions=[
+            _execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+            {
+                **_execution("exec-11110-exit", "2026-07-11", "11110", "SELL", 100, 900),
+                "source_decision_type": "EXIT",
+                "source_decision_id": "pm-2026-07-11-11110-exit",
+            },
+        ],
+        business_date="2026-07-15",
+    )
+
+    assert rows["11110"]["prior_exit_reason"] == "EXIT"
+    assert rows["11110"]["prior_exit_reason_codes"] == []
+    assert rows["11110"]["prior_exit_reason_authority"] == "EXECUTION_ROW_FALLBACK"
+
+
+def test_phase32_l_prior_exit_materialization_ignores_partial_reduce_until_close(tmp_path: Path) -> None:
+    rows = _resolve_prior_closed_campaigns_from_executions(
+        executions=[
+            _execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+            {
+                **_execution("exec-11110-reduce", "2026-07-11", "11110", "SELL", 40, 900),
+                "source_decision_type": "REDUCE",
+                "source_decision_id": "pm-2026-07-11-11110-reduce",
+            },
+        ],
+        business_date="2026-07-15",
+        pm_exit_reason_by_decision={
+            "pm-2026-07-11-11110-reduce": {
+                "business_date": "2026-07-11",
+                "symbol": "11110",
+                "source_pm_decision_id": "pm-2026-07-11-11110-reduce",
+                "prior_exit_reason": "peak_drawdown_warning",
+                "prior_exit_reason_codes": ["peak_drawdown_warning"],
+                "prior_exit_reason_authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+            }
+        },
+    )
+
+    assert rows == {}
+
+
+def test_phase32_l_prior_exit_materialization_uses_final_close_pm_reason_after_reduce(tmp_path: Path) -> None:
+    rows = _resolve_prior_closed_campaigns_from_executions(
+        executions=[
+            _execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+            {
+                **_execution("exec-11110-reduce", "2026-07-11", "11110", "SELL", 40, 900),
+                "source_decision_type": "REDUCE",
+                "source_decision_id": "pm-2026-07-11-11110-reduce",
+            },
+            {
+                **_execution("exec-11110-exit", "2026-07-12", "11110", "SELL", 60, 880),
+                "source_decision_type": "EXIT",
+                "source_decision_id": "pm-2026-07-12-11110-exit",
+            },
+        ],
+        business_date="2026-07-15",
+        pm_exit_reason_by_decision={
+            "pm-2026-07-11-11110-reduce": {
+                "business_date": "2026-07-11",
+                "symbol": "11110",
+                "source_pm_decision_id": "pm-2026-07-11-11110-reduce",
+                "prior_exit_reason": "peak_drawdown_warning",
+                "prior_exit_reason_codes": ["peak_drawdown_warning"],
+                "prior_exit_reason_authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+            },
+            "pm-2026-07-12-11110-exit": {
+                "business_date": "2026-07-12",
+                "symbol": "11110",
+                "source_pm_decision_id": "pm-2026-07-12-11110-exit",
+                "prior_exit_reason": "trend_and_opportunity_broken",
+                "prior_exit_reason_codes": ["trend_and_opportunity_broken"],
+                "prior_exit_reason_authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+            },
+        },
+    )
+
+    assert rows["11110"]["prior_exit_business_date"] == "2026-07-12"
+    assert rows["11110"]["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert rows["11110"]["prior_exit_reason_codes"] == ["trend_and_opportunity_broken"]
+
+
+def test_phase32_l_prior_exit_materialization_rejects_future_wrong_symbol_and_wrong_campaign_pm_reason(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                **_execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+                "position_campaign_id": "campaign-11110",
+            },
+            {
+                **_execution("exec-11110-exit", "2026-07-11", "11110", "SELL", 100, 900),
+                "position_campaign_id": "campaign-11110",
+                "source_decision_type": "EXIT",
+                "source_decision_id": "pm-2026-07-11-11110-exit",
+            },
+        ],
+    )
+    _write_pm_decisions(
+        run_dir,
+        "2026-07-11",
+        [
+            {
+                "business_date": "2026-07-11",
+                "symbol": "22220",
+                "decision_type": "EXIT",
+                "pm_decision_id": "pm-2026-07-11-11110-exit",
+                "position_campaign_id": "campaign-11110",
+                "decision_reason": "trend_and_opportunity_broken",
+                "reason_codes": ["trend_and_opportunity_broken"],
+            }
+        ],
+    )
+    _write_pm_decisions(
+        run_dir,
+        "2026-07-12",
+        [
+            {
+                "business_date": "2026-07-12",
+                "symbol": "11110",
+                "decision_type": "EXIT",
+                "pm_decision_id": "pm-2026-07-12-11110-exit",
+                "position_campaign_id": "campaign-11110",
+                "decision_reason": "future_exit_reason",
+                "reason_codes": ["future_exit_reason"],
+            }
+        ],
+    )
+
+    result = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-12",
+        candidate={"rows": ({"security_code": "11110"},)},
+        opportunity={"rows": ({"symbol": "11110"},)},
+        current={"rows": ()},
+    )
+
+    supplied = result["opportunity"]["rows"][0]
+    assert supplied["prior_exit_reason"] == "EXIT"
+    assert supplied["prior_exit_reason_authority"] == "EXECUTION_ROW_FALLBACK"
+    assert result["evidence"]["pm_exit_reason_matched_close_count"] == 0
+
+    wrong_campaign = _resolve_prior_closed_campaigns_from_executions(
+        executions=[
+            {
+                **_execution("exec-11110-buy", "2026-07-10", "11110", "BUY", 100, 1000),
+                "position_campaign_id": "campaign-11110",
+            },
+            {
+                **_execution("exec-11110-exit", "2026-07-11", "11110", "SELL", 100, 900),
+                "position_campaign_id": "campaign-11110",
+                "source_decision_type": "EXIT",
+                "source_decision_id": "pm-2026-07-11-11110-exit",
+            },
+        ],
+        business_date="2026-07-12",
+        pm_exit_reason_by_decision={
+            "pm-2026-07-11-11110-exit": {
+                "business_date": "2026-07-11",
+                "symbol": "11110",
+                "position_campaign_id": "campaign-other",
+                "source_pm_decision_id": "pm-2026-07-11-11110-exit",
+                "prior_exit_reason": "trend_and_opportunity_broken",
+                "prior_exit_reason_codes": ["trend_and_opportunity_broken"],
+                "prior_exit_reason_authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+            }
+        },
+    )
+
+    assert wrong_campaign["11110"]["prior_exit_reason"] == "EXIT"
+    assert wrong_campaign["11110"]["prior_exit_reason_authority"] == "EXECUTION_ROW_FALLBACK"
 
 
 def test_phase28_d55_c_same_campaign_baseline_supply_uses_latest_prior_strategy_evidence(tmp_path: Path) -> None:
@@ -807,6 +1043,18 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text(
         "".join(json.dumps(row, ensure_ascii=True, sort_keys=True) + "\n" for row in rows),
         encoding="utf-8",
+    )
+
+
+def _write_pm_decisions(run_dir: Path, business_date: str, decisions: list[dict]) -> None:
+    _write_json(
+        run_dir / "daily" / business_date / "position_management" / "pm_decisions.json",
+        {
+            "schema_version": "pm_decision_snapshot.v1",
+            "business_date": business_date,
+            "snapshot_policy": "DECISION_TIME_ONLY_NO_POST_HOC_OUTCOMES",
+            "decisions": decisions,
+        },
     )
 
 

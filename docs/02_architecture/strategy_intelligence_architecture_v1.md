@@ -656,6 +656,23 @@ churn / unresolved continuation
 Cooldown and recovery hurdle remain. Continuation Quality refines recovery
 confirmation; it does not erase semantic REENTRY.
 
+REENTRY Safety gating consumes explicit negative / blocking evidence only. It
+must not infer a Safety failure from generic nouns inside positive support
+reason codes such as broker eligibility support, Cash availability /
+optionality observations, or Safety-pass evidence. Positive support evidence
+with words like `broker`, `cash`, or `safety` remains support evidence unless a
+structured blocking status or canonical blocking reason code is present.
+The REENTRY Safety consumer is a three-state contract: `PASS`,
+`REVIEW_REQUIRED`, or `FAIL_CLOSED`. Positive support evidence maps to `PASS`;
+unresolved structured Safety-relevant evidence such as `UNKNOWN`, `MISSING`,
+or `REVIEW_REQUIRED` maps to `REVIEW_REQUIRED` unless an existing contract
+requires fail-closed; explicit blockers map to `FAIL_CLOSED`. Cash
+competition/optionality is not itself a semantic Safety failure, while
+execution inability such as insufficient buying power or insufficient cash is
+blocking when it reaches this consumer. Safety cap-bound evidence is treated as
+terminal Safety-cap evidence for current capital authority, not as positive
+support.
+
 ### HOLD
 
 HOLD means:
@@ -1350,6 +1367,24 @@ Campaign lifecycle semantics remain single-owner:
 - REENTRY after a ledger-proven full EXIT starts a new deterministic campaign
   identity under the same canonical authority.
 
+Phase32-AD clarifies canonical campaign propagation. Decision-time
+`positions/position_campaigns.json` remains the single campaign lifecycle
+authority; runtime-test summaries, Current write/readback, broker snapshots,
+Pending, persistent orders, persistent executions, fill observability, and
+realized slices must inherit that identity when it is present. A runtime-test
+or observability layer must not create a run-id-derived canonical campaign
+namespace. Ledger-derived campaign reconstruction is allowed only as a
+compatibility fallback when canonical provenance is absent, and it must not
+override a canonical Strategy PM campaign on the same day.
+
+For one continuous open position lifecycle, initial BUY, ADD, partial REDUCE,
+and full EXIT share the same `position_campaign_id`. After full EXIT, a later
+REENTRY starts a new campaign identity. Same-day Strategy-origin `SELL_EXIT`
+lineage resolves the authoritative PM campaign from canonical
+`strategy/position_management.json` before lower-priority PM snapshots or
+runtime-state projections; ambiguous evidence within the selected authority
+priority remains fail-closed.
+
 Phase31-G122 clarifies the ADD event-history materialization contract:
 
 - Initial BUY starts the campaign and is counted in `buy_history_summary`.
@@ -1358,6 +1393,45 @@ Phase31-G122 clarifies the ADD event-history materialization contract:
 - BUY_ADD must append a canonical BUY event to `events`, increment
   `buy_history_summary`, and increment `add_history_summary`.
 - `buy_history_summary` counts all BUY executions in the campaign.
+
+Phase32-CW adds campaign entry-premise preservation for PM context. When an
+actual `BUY_NEW` or `REENTRY` fill opens a campaign, the canonical campaign
+lifecycle row materializes an immutable `campaign_entry_premise_snapshot.v1`
+with the entry admission state, Candidate / opportunity evidence, Buy Quality
+action and target magnitude, accepted quantity/notional, caution reasons,
+trend/momentum/risk context, lineage, and explicit PIT flags. `BUY_ADD` updates
+the existing campaign history and must not overwrite the original entry
+premise. A full EXIT followed by REENTRY starts a new campaign and therefore a
+new entry premise snapshot.
+
+Phase32-CY clarifies the authoritative lineage source for that snapshot. The
+entry premise is not inferred from sparse execution rows alone. At campaign
+open, the lifecycle materializer resolves the same-run, strict-prior
+BUY_NEW/REENTRY decision that actually reached the fill through Entry / Buy
+Quality, PC, BF, PS, Runtime Planning, Pending/order-plan lineage, and the fill
+identity. Joins must use decision/campaign identity when present, or a
+strict-prior same-day symbol + side + filled quantity + semantic type key with
+ambiguity detection; symbol-only latest reconstruction is forbidden. If the
+authoritative decision lineage is missing, stale, ambiguous, conflicting,
+wrong-campaign, or PIT-invalid, the snapshot is `REVIEW_REQUIRED`. Normal
+same-run BUY_NEW/REENTRY fills must persist a PASS snapshot before the next
+morning PM prerequisite is evaluated.
+
+Strategy Intelligence forwards this campaign-owned snapshot into
+`lifecycle_context`. PM then materializes `entry_premise_delta.v1` before final
+action mapping, comparing the immutable entry premise with current PIT
+evidence. The delta classifies current evidence as `KNOWN_AT_ENTRY`,
+`FRESH_DETERIORATION`, `PERSISTENT_DETERIORATION`, `HARD_FAILURE`,
+`TRUE_BREAKDOWN`, `IMPROVEMENT`, or `AMBIGUOUS_REVIEW_REQUIRED`.
+
+`KNOWN_AT_ENTRY` means the weak/risk evidence was already accepted at entry and
+encoded in cautious or reduced allocation. Known-at-entry evidence alone must
+not create a new REDUCE / EXIT escalation. This is not a minimum holding period:
+hard stops, true breakdowns, fresh deterioration, persistent deterioration,
+Safety hard blocks, and Risk Pacing hard blocks remain immediately actionable
+on T+1. Missing, stale, conflicting, or wrong-campaign entry premise evidence is
+explicit `AMBIGUOUS_REVIEW_REQUIRED`; silent HOLD rescue and symbol-only joins
+are forbidden.
 - `add_history_summary` excludes the initial BUY and counts only additional BUY
   executions while the campaign is already open.
 - Quantity increase alone must not synthesize ADD; canonical strict-prior

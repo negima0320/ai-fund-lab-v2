@@ -115,7 +115,33 @@ def build_runtime_v2_submit_command(
             else None
         ),
         strategy_authority_lineage_hash=str(item.strategy_authority_lineage_hash or ""),
+        source_decision_type=_pending_item_provenance(item, "source_decision_type", "decision_type", "source_decision"),
+        source_pm_decision_id=_pending_item_provenance(item, "source_pm_decision_id", "source_decision_id", "pm_decision_id", "decision_id"),
+        source_pm_business_date=_pending_item_provenance(item, "source_pm_business_date", "pm_business_date", "decision_business_date", "business_date"),
+        source_position_symbol=_pending_item_provenance(item, "source_position_symbol", "position_symbol", "symbol", "security_code"),
+        position_campaign_id=_pending_item_provenance(item, "position_campaign_id", "current_position_campaign_id", "pm_position_campaign_id", "campaign_id"),
     )
+
+
+def _pending_item_provenance(item: PendingOrderItem, *keys: str) -> str:
+    mappings = (
+        {
+            "source_decision_id": item.source_decision_id,
+            "source_pm_decision_id": item.source_pm_decision_id,
+            "source_pm_business_date": item.source_pm_business_date,
+            "source_position_symbol": item.source_position_symbol,
+            "position_campaign_id": item.position_campaign_id,
+            "symbol": item.symbol,
+        },
+        item.strategy_authority_lineage if isinstance(item.strategy_authority_lineage, dict) else {},
+        item.quantity_contract if isinstance(item.quantity_contract, dict) else {},
+    )
+    for mapping in mappings:
+        for key in keys:
+            value = mapping.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
 
 
 def _blocked_reason(

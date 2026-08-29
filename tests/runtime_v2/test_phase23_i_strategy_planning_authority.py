@@ -12,7 +12,11 @@ from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import (
     _mark_strategy_planning_authority_consumer_called,
 )
 from ai_fund_lab_v2.runtime_v2.data_readiness import evaluate_runtime_data_readiness
-from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalSubmitAdapter
+from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
+    HistoricalExecutionSnapshotProvider,
+    HistoricalSubmitAdapter,
+)
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import activate_strategy_planning_authority
@@ -26,6 +30,8 @@ from ai_fund_lab_v2.runtime_v2.submit.pipeline import (
     run_submit_pipeline,
     _submit_guard_item_evidence,
 )
+from ai_fund_lab_v2.strategy.portfolio_construction import _previous_exit_reason_class
+from ai_fund_lab_v2.strategy.shadow_runtime import _supply_prior_exit_state
 from tests.runtime_v2.test_phase14e17_submit_pipeline_connection import _demo_settings
 from tests.strategy.test_phase22_g_runtime_planning import (
     _produce as produce_runtime_planning_fixture,
@@ -72,6 +78,422 @@ def test_phase23_i_phase22_strategy_artifact_writes_pending_without_broker_write
     assert pending.plan.items[0].quantity == 100
     assert pending.plan.items[0].quantity_contract["quantity_authority"] == "strategy_runtime_planning_authority"
     assert pending.plan.items[0].source_decision_type == "BUY_NEW"
+
+
+def test_phase32_y_strategy_origin_sell_exit_materializes_pm_provenance_for_multiple_symbols(tmp_path: Path) -> None:
+    runtime_root, strategy_dir, run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+        tmp_path,
+        symbols=("83060", "37820"),
+        pm_decisions=[
+            _phase32_y_pm_exit("83060", campaign_id="pc-phase32-y-83060-0001"),
+            _phase32_y_pm_exit("37820", campaign_id="pc-phase32-y-37820-0001"),
+        ],
+    )
+    policy = load_capital_deployment_policy(policy_path)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    raw_pending = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending = read_pending_order_plan_path(path=pending_path, environment="historical")
+
+    assert result.status == "PASS"
+    assert pending.plan is not None
+    assert len(pending.plan.items) == 2
+    for item in raw_pending["items"]:
+        symbol = item["symbol"]
+        expected_pm = f"pm-{BUSINESS_DATE}-{symbol}-exit"
+        expected_campaign = f"pc-phase32-y-{symbol}-0001"
+        assert item["pending_item_id"].startswith("strategy-")
+        assert item["source_decision_id"] == expected_pm
+        assert item["source_pm_decision_id"] == expected_pm
+        assert item["source_decision_type"] == "EXIT"
+        assert item["source_pm_business_date"] == BUSINESS_DATE
+        assert item["source_position_symbol"] == symbol
+        assert item["position_campaign_id"] == expected_campaign
+        assert item["strategy_authority_lineage"]["source_pm_decision_id"] == expected_pm
+        assert item["strategy_authority_lineage"]["position_campaign_id"] == expected_campaign
+        assert item["strategy_authority_lineage"]["item"]["pm_decision_id"] == f"runtime-current-{symbol}"
+        assert item["quantity_contract"]["planning_intent"] == "SELL_EXIT"
+        assert item["quantity_contract"]["source_pm_decision_id"] == expected_pm
+        assert item["quantity_contract"]["position_campaign_id"] == expected_campaign
+
+
+def test_phase32_y_strategy_origin_sell_exit_materializes_pm_provenance_to_ledger_and_strict_prior(tmp_path: Path) -> None:
+    runtime_root, strategy_dir, run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+        tmp_path,
+        symbols=("83060",),
+        pm_decisions=[
+            _phase32_y_pm_exit("83060", campaign_id="pc-phase32-y-83060-0001"),
+        ],
+    )
+    policy = load_capital_deployment_policy(policy_path)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = read_pending_order_plan_path(path=pending_path, environment="historical")
+
+    assert result.status == "PASS"
+    assert pending.plan is not None
+    item = pending.plan.items[0]
+    assert item.pending_item_id.startswith("strategy-")
+    assert item.source_decision_id == "pm-2026-07-15-83060-exit"
+    assert item.source_pm_decision_id == "pm-2026-07-15-83060-exit"
+    assert item.source_decision_type == "EXIT"
+    assert item.position_campaign_id == "pc-phase32-y-83060-0001"
+
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "record_type": "execution",
+                "business_date": "2026-07-14",
+                "side": "BUY",
+                "symbol": symbol,
+                "filled_quantity": 100.0,
+                "quantity": 100.0,
+                "price": 2500.0,
+                "execution_id": f"buy-{symbol}",
+                "dedup_key": f"buy-{symbol}",
+                "position_campaign_id": f"pc-phase32-y-{symbol}-0001",
+            }
+            for symbol in ("83060",)
+        ],
+    )
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=HistoricalSubmitAdapter(
+            runtime_root=runtime_root,
+            business_date=BUSINESS_DATE,
+            evaluation_time=BUSINESS_DATE + "T08:45:00+09:00",
+        ),
+        capital_deployment_policy_path=policy_path,
+        safety_decision=_historical_submit_safety_decision(),
+    )
+    execution = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE),
+    )
+    order_rows = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+    execution_rows = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+    sell_order = next(row for row in order_rows if row["symbol"] == "83060" and row["side"] == "SELL")
+    sell_execution = next(row for row in execution_rows if row["symbol"] == "83060" and row["side"] == "SELL")
+    bridge = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-16",
+        candidate={"rows": ({"security_code": "83060"},)},
+        opportunity={"rows": ({"symbol": "83060", "opportunity_buy_rank": 1},)},
+        current={"rows": ()},
+    )
+    supplied = bridge["opportunity"]["rows"][0]
+
+    assert submit.status == "PASS"
+    assert execution.status == "PASS"
+    assert sell_order["source_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_order["source_pm_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_order["source_decision_type"] == "EXIT"
+    assert sell_order["position_campaign_id"] == "pc-phase32-y-83060-0001"
+    assert sell_execution["source_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_execution["source_pm_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_execution["source_decision_type"] == "EXIT"
+    assert sell_execution["position_campaign_id"] == "pc-phase32-y-83060-0001"
+    assert bridge["evidence"]["pm_exit_reason_matched_close_count"] > 0
+    assert supplied["prior_exit_reason_authority"] == "STRICT_PRIOR_PM_DECISION_EVIDENCE"
+    assert _previous_exit_reason_class(supplied["prior_exit_reason"], supplied["prior_exit_reason_codes"]) != "GENERIC"
+
+
+def test_phase32_aa_strategy_origin_sell_exit_preserves_campaign_with_blank_runtime_pm_projection(
+    tmp_path: Path,
+) -> None:
+    runtime_root, strategy_dir, run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+        tmp_path,
+        symbols=("83060",),
+        pm_decisions=[
+            _phase32_y_pm_exit("83060", campaign_id="pc-phase32-aa-83060-0001"),
+        ],
+        runtime_pm_projection_decisions=[
+            {
+                "business_date": BUSINESS_DATE,
+                "symbol": "83060",
+                "decision": "EXIT",
+                "decision_id": "pm-2026-07-15-83060-exit",
+                "reason": "trend_and_opportunity_broken",
+                "runtime_sell_quantity": 100.0,
+            }
+        ],
+    )
+    policy = load_capital_deployment_policy(policy_path)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+    pending = read_pending_order_plan_path(path=pending_path, environment="historical")
+
+    assert result.status == "PASS"
+    assert pending.plan is not None
+    pending_item = pending.plan.items[0]
+    raw_item = pending_payload["items"][0]
+    assert raw_item["strategy_authority_lineage"]["item"]["pm_decision_id"] == "runtime-current-83060"
+    assert raw_item["source_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert raw_item["source_pm_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert raw_item["position_campaign_id"] == "pc-phase32-aa-83060-0001"
+    assert raw_item["strategy_authority_lineage"]["position_campaign_id"] == "pc-phase32-aa-83060-0001"
+    assert raw_item["quantity_contract"]["position_campaign_id"] == "pc-phase32-aa-83060-0001"
+    assert pending_item.position_campaign_id == "pc-phase32-aa-83060-0001"
+
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "record_type": "execution",
+                "business_date": "2026-07-14",
+                "side": "BUY",
+                "symbol": "83060",
+                "filled_quantity": 100.0,
+                "quantity": 100.0,
+                "price": 2500.0,
+                "execution_id": "buy-83060",
+                "dedup_key": "buy-83060",
+                "position_campaign_id": "pc-phase32-aa-83060-0001",
+            }
+        ],
+    )
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=HistoricalSubmitAdapter(
+            runtime_root=runtime_root,
+            business_date=BUSINESS_DATE,
+            evaluation_time=BUSINESS_DATE + "T08:45:00+09:00",
+        ),
+        capital_deployment_policy_path=policy_path,
+        safety_decision=_historical_submit_safety_decision(),
+    )
+    execution = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE),
+    )
+    sell_order = next(
+        row
+        for row in _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+        if row["symbol"] == "83060" and row["side"] == "SELL"
+    )
+    sell_execution = next(
+        row
+        for row in _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+        if row["symbol"] == "83060" and row["side"] == "SELL"
+    )
+    bridge = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-16",
+        candidate={"rows": ({"security_code": "83060"},)},
+        opportunity={"rows": ({"symbol": "83060", "opportunity_buy_rank": 1},)},
+        current={"rows": ()},
+    )
+    supplied = bridge["opportunity"]["rows"][0]
+
+    assert submit.status == "PASS"
+    assert execution.status == "PASS"
+    assert sell_order["source_pm_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_order["position_campaign_id"] == "pc-phase32-aa-83060-0001"
+    assert sell_execution["source_pm_decision_id"] == "pm-2026-07-15-83060-exit"
+    assert sell_execution["position_campaign_id"] == "pc-phase32-aa-83060-0001"
+    assert bridge["evidence"]["pm_exit_reason_matched_close_count"] > 0
+    assert supplied["prior_exit_reason_authority"] == "STRICT_PRIOR_PM_DECISION_EVIDENCE"
+    assert _previous_exit_reason_class(supplied["prior_exit_reason"], supplied["prior_exit_reason_codes"]) != "GENERIC"
+
+
+def test_phase32_ad_strategy_pm_campaign_overrides_observability_projection(
+    tmp_path: Path,
+) -> None:
+    canonical_campaign = "pc-phase32-ad-canonical-83060-0001"
+    observability_campaign = "pc-phase32-ad-observability-83060-0001"
+    runtime_root, strategy_dir, _run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+        tmp_path,
+        symbols=("83060",),
+        pm_decisions=[
+            _phase32_y_pm_exit("83060", campaign_id=observability_campaign),
+        ],
+        runtime_pm_projection_decisions=[
+            _phase32_y_pm_exit("83060", campaign_id=observability_campaign),
+        ],
+    )
+    _write_json(
+        strategy_dir / "position_management.json",
+        {
+            "schema_version": "phase32_ad_strategy_pm_fixture.v1",
+            "business_date": BUSINESS_DATE,
+            "decisions": [
+                _phase32_y_pm_exit("83060", campaign_id=canonical_campaign),
+            ],
+        },
+    )
+    policy = load_capital_deployment_policy(policy_path)
+
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+
+    raw_pending = json.loads(
+        (runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8")
+    )
+    item = raw_pending["items"][0]
+    assert result.status == "PASS"
+    assert item["position_campaign_id"] == canonical_campaign
+    assert item["strategy_authority_lineage"]["position_campaign_id"] == canonical_campaign
+    assert item["quantity_contract"]["position_campaign_id"] == canonical_campaign
+
+
+def test_phase32_y_strategy_origin_sell_exit_pm_provenance_fail_closed_controls(tmp_path: Path) -> None:
+    cases = (
+        ("missing_pm", [], ""),
+        ("wrong_symbol", [_phase32_y_pm_exit("99990", campaign_id="pc-wrong")], ""),
+        ("wrong_date", [_phase32_y_pm_exit("83060", business_date="2026-07-14", campaign_id="pc-old")], ""),
+        ("future_date", [_phase32_y_pm_exit("83060", business_date="2026-07-16", campaign_id="pc-future")], ""),
+        (
+            "ambiguous",
+            [
+                _phase32_y_pm_exit("83060", campaign_id="pc-one", pm_decision_id="pm-2026-07-15-83060-exit-a"),
+                _phase32_y_pm_exit("83060", campaign_id="pc-two", pm_decision_id="pm-2026-07-15-83060-exit-b"),
+            ],
+            "",
+        ),
+        (
+            "campaign_mismatch",
+            [_phase32_y_pm_exit("83060", campaign_id="pc-authoritative")],
+            "pc-conflicting-plan",
+        ),
+    )
+    for name, pm_decisions, plan_campaign in cases:
+        runtime_root, strategy_dir, _run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+            tmp_path / name,
+            symbols=("83060",),
+            pm_decisions=pm_decisions,
+            plan_campaign=plan_campaign,
+        )
+        policy = load_capital_deployment_policy(policy_path)
+        result = activate_strategy_planning_authority(
+            runtime_root=runtime_root,
+            business_date=BUSINESS_DATE,
+            mode="historical",
+            strategy_dir=strategy_dir,
+            price_by_symbol={},
+            environment_capability_context=_historical_context(tmp_path / name),
+            safety_authority_payload=_historical_safety_payload(tmp_path / name),
+            submit_policy_authority_payload=_submit_policy_payload(policy),
+        )
+        pending = read_pending_order_plan_path(
+            path=runtime_root / "pending_order_plan" / "pending_order_plan.json",
+            environment="historical",
+        )
+
+        assert result.status == "PASS"
+        assert pending.plan is not None
+        item = pending.plan.items[0]
+        assert item.source_pm_decision_id == ""
+        assert item.source_decision_id == ""
+        assert item.position_campaign_id == ""
+        assert item.strategy_authority_lineage is not None
+        assert item.strategy_authority_lineage["item"]["pm_decision_id"] == "runtime-current-83060"
+
+
+def test_phase32_y_partial_reduce_and_legacy_pending_shape_remain_safe(tmp_path: Path) -> None:
+    runtime_root, strategy_dir, _run_dir, policy_path = _phase32_y_strategy_sell_fixture(
+        tmp_path,
+        symbols=("83060",),
+        pm_decisions=[
+            {
+                "business_date": BUSINESS_DATE,
+                "symbol": "83060",
+                "decision": "REDUCE",
+                "decision_type": "REDUCE",
+                "pm_decision_id": "pm-2026-07-15-83060-reduce",
+                "position_campaign_id": "pc-phase32-y-83060-0001",
+                "reason": "partial_reduce",
+                "decision_reason": "partial_reduce",
+                "reason_codes": ["partial_reduce"],
+            }
+        ],
+        pm_actions={"83060": "REDUCE"},
+        pc_members={"83060": ("REDUCE_CANDIDATE", True)},
+        quantity_delta=-40,
+        target_quantity=60,
+    )
+    policy = load_capital_deployment_policy(policy_path)
+    result = activate_strategy_planning_authority(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        strategy_dir=strategy_dir,
+        price_by_symbol={},
+        environment_capability_context=_historical_context(tmp_path),
+        safety_authority_payload=_historical_safety_payload(tmp_path),
+        submit_policy_authority_payload=_submit_policy_payload(policy),
+    )
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = read_pending_order_plan_path(path=pending_path, environment="historical")
+    legacy_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+    legacy_payload["items"][0].pop("source_decision_id", None)
+    legacy_payload["items"][0].pop("position_campaign_id", None)
+    legacy_path = tmp_path / "legacy_pending.json"
+    _write_json(legacy_path, legacy_payload)
+    legacy = read_pending_order_plan_path(path=legacy_path, environment="historical")
+
+    assert result.status == "PASS"
+    assert pending.plan is not None
+    assert pending.plan.items[0].source_decision_type == "SELL_REDUCE"
+    assert pending.plan.items[0].source_pm_decision_id == ""
+    assert pending.plan.items[0].position_campaign_id == ""
+    assert legacy.valid is True
+    assert legacy.plan is not None
+    assert legacy.plan.items[0].source_decision_id == ""
+    assert legacy.plan.items[0].position_campaign_id == ""
 
 
 def test_phase23_bo_strategy_authority_uses_runtime_plan_price_authority_without_price_map(tmp_path: Path) -> None:
@@ -1252,6 +1674,217 @@ def _write_position_sizing(path: Path, *, symbol: str, target_notional: float, r
     _write_position_sizing_many(path, symbols=(symbol,), target_notional=target_notional, reference_price=reference_price)
 
 
+def _phase32_y_strategy_sell_fixture(
+    tmp_path: Path,
+    *,
+    symbols: tuple[str, ...],
+    pm_decisions: list[dict],
+    pm_actions: dict[str, str] | None = None,
+    pc_members: dict[str, tuple[str, bool]] | None = None,
+    quantity_delta: int = -100,
+    target_quantity: int = 0,
+    plan_campaign: str = "",
+    runtime_pm_projection_decisions: list[dict] | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    runtime_root = _runtime_root_for_data_readiness(tmp_path)
+    _write_phase32_y_current_positions(runtime_root, symbols=symbols)
+    run_dir = tmp_path / "run"
+    strategy_dir = run_dir / "daily" / BUSINESS_DATE / "strategy"
+    strategy_dir.mkdir(parents=True)
+    policy_path = _write_capital_policy(
+        tmp_path / "capital_deployment_policy.json",
+        evaluation_capital=1_000_000,
+        max_exposure=1_000_000,
+    )
+    runtime_plan = produce_runtime_planning_fixture(
+        tmp_path / "rp",
+        pm_actions=pm_actions or {symbol: "EXIT" for symbol in symbols},
+        pc_members=pc_members or {symbol: ("REMOVE_CANDIDATE", True) for symbol in symbols},
+        current_codes=symbols,
+        current_position_rows=tuple(
+            _runtime_owned_current_position_row(
+                symbol,
+                quantity=100,
+                as_of=BUSINESS_DATE,
+                source="runtime_v2_runtime_owned_fill_projection",
+            )
+            for symbol in symbols
+        ),
+        position_sizing_positions={
+            symbol: {
+                "sizing_status": "SIZED",
+                "target_notional": 0.0,
+                "current_notional": 100_000.0,
+                "target_quantity_candidate": target_quantity,
+                "quantity_delta_candidate": quantity_delta,
+                "quantity_status": "RESOLVED_CANDIDATE",
+                "reference_price": 1000.0,
+                "reference_price_authority": {
+                    "authority_type": "REFERENCE_PRICE_AUTHORITY",
+                    "business_date": BUSINESS_DATE,
+                    "canonical_field": "reference_price",
+                    "latest_fallback_used": False,
+                    "price_date": BUSINESS_DATE,
+                    "price_type": "planning_reference_close",
+                    "PIT_status": "PASS",
+                    "source_authority": "MARKET_EVIDENCE_AUTHORITY",
+                    "source_field": "close",
+                    "symbol": symbol,
+                },
+                "reference_price_resolution": {
+                    "status": "PASS",
+                    "reason": "reference_price_resolved",
+                    "resolved_price": 1000.0,
+                    "review_reason": "",
+                },
+            }
+            for symbol in symbols
+        },
+    )
+    runtime_payload = json.loads(Path(runtime_plan.artifact_path).read_text(encoding="utf-8"))
+    for plan in runtime_payload.get("plans", []):
+        symbol = str(plan.get("security_code") or "")
+        if symbol in symbols and isinstance(plan.get("strategy_authority_lineage"), dict):
+            item = plan["strategy_authority_lineage"].get("item")
+            if isinstance(item, dict):
+                item["pm_decision_id"] = f"runtime-current-{symbol}"
+    if plan_campaign:
+        for plan in runtime_payload["plans"]:
+            if plan.get("security_code") == symbols[0]:
+                plan["position_campaign_id"] = plan_campaign
+    _write_json(strategy_dir / "runtime_planning.json", runtime_payload)
+    _write_phase32_y_sell_position_sizing(
+        strategy_dir / "position_sizing.json",
+        symbols=symbols,
+        quantity_delta=quantity_delta,
+        target_quantity=target_quantity,
+    )
+    _write_phase32_y_strategy_source_authority(strategy_dir, symbols=symbols)
+    _write_json(
+        run_dir / "daily" / BUSINESS_DATE / "position_management" / "pm_decisions.json",
+        {
+            "schema_version": "phase32_y_pm_decision_fixture.v1",
+            "business_date": BUSINESS_DATE,
+            "decisions": pm_decisions,
+        },
+    )
+    if runtime_pm_projection_decisions is not None:
+        _write_json(
+            runtime_root / "runtime_state" / "position_management" / BUSINESS_DATE / "position_management_decisions.json",
+            {
+                "schema_version": "phase32_aa_runtime_pm_projection_fixture.v1",
+                "business_date": BUSINESS_DATE,
+                "decisions": runtime_pm_projection_decisions,
+            },
+        )
+    return runtime_root, strategy_dir, run_dir, policy_path
+
+
+def _phase32_y_pm_exit(
+    symbol: str,
+    *,
+    campaign_id: str,
+    business_date: str = BUSINESS_DATE,
+    pm_decision_id: str | None = None,
+) -> dict:
+    return {
+        "business_date": business_date,
+        "symbol": symbol,
+        "decision": "EXIT",
+        "decision_type": "EXIT",
+        "decision_status": "SELL_FULL_POSITION",
+        "pm_decision_id": pm_decision_id or f"pm-{business_date}-{symbol}-exit",
+        "position_campaign_id": campaign_id,
+        "reason": "trend_and_opportunity_broken",
+        "decision_reason": "trend_and_opportunity_broken",
+        "reason_codes": ["trend_and_opportunity_broken"],
+    }
+
+
+def _write_phase32_y_sell_position_sizing(
+    path: Path,
+    *,
+    symbols: tuple[str, ...],
+    quantity_delta: int,
+    target_quantity: int,
+) -> None:
+    _write_json(
+        path,
+        {
+            "schema_version": "position_sizing.v1",
+            "business_date": BUSINESS_DATE,
+            "producer_result_status": "PASS",
+            "positions": [
+                _position_sizing_artifact_row(symbol=symbol, target_notional=0.0, reference_price=1000.0)
+                | {
+                    "current_notional": 100_000.0,
+                    "target_quantity_candidate": target_quantity,
+                    "quantity_delta_candidate": quantity_delta,
+                    "quantity_status": "RESOLVED_CANDIDATE",
+                }
+                for symbol in symbols
+            ],
+        },
+    )
+
+
+def _write_phase32_y_current_positions(runtime_root: Path, *, symbols: tuple[str, ...]) -> None:
+    state_path = runtime_root / "persistent_ledger" / "state.json"
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    positions = [
+        {
+            "symbol": symbol,
+            "quantity": 100.0,
+            "average_price": 1000.0,
+            "market_value": 100_000.0,
+        }
+        for symbol in symbols
+    ]
+    payload["positions"] = positions
+    payload["market_value"] = float(sum(position["market_value"] for position in positions))
+    payload["total_equity"] = float(payload.get("cash") or 0) + payload["market_value"]
+    _write_json(state_path, payload)
+
+
+def _write_phase32_y_strategy_source_authority(strategy_dir: Path, *, symbols: tuple[str, ...]) -> None:
+    import pandas as pd
+
+    listed_path = strategy_dir / "listed_issues.parquet"
+    pd.DataFrame(
+        [
+            {
+                "Date": BUSINESS_DATE,
+                "Code": symbol,
+                "MktNm": "東証",
+                "ProdCat": "011",
+                "SecType": "011",
+            }
+            for symbol in symbols
+        ]
+    ).to_parquet(listed_path, index=False)
+    listed_hash = _file_sha256(listed_path)
+    _write_json(
+        strategy_dir / "input_manifest.json",
+        {
+            "business_date": BUSINESS_DATE,
+            "strategy_source_authority": {
+                "status": "PASS",
+                "business_date": BUSINESS_DATE,
+                "authority": "phase32_y_strategy_source_authority_fixture",
+                "paths": {"listed_issues": str(listed_path)},
+                "source_records": {
+                    "listed_issues": {
+                        "path": str(listed_path),
+                        "exists": True,
+                        "pit_status": "PASS",
+                        "sha256": listed_hash,
+                    }
+                },
+            },
+        },
+    )
+
+
 def _write_position_sizing_many(path: Path, *, symbols: tuple[str, ...], target_notional: float, reference_price: float = 1000.0) -> None:
     path.write_text(
         json.dumps(
@@ -1776,6 +2409,10 @@ def _write_json(path: Path, payload: dict) -> None:
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _file_sha256(path: Path) -> str:

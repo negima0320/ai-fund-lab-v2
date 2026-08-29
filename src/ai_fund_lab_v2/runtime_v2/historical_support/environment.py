@@ -132,6 +132,11 @@ class HistoricalSubmitAdapter:
             "pending_item_id": command.pending_item_id,
             "strategy_authority_lineage": dict(command.strategy_authority_lineage or {}),
             "strategy_authority_lineage_hash": command.strategy_authority_lineage_hash,
+            "source_decision_type": command.source_decision_type,
+            "source_pm_decision_id": command.source_pm_decision_id,
+            "source_pm_business_date": command.source_pm_business_date,
+            "source_position_symbol": command.source_position_symbol,
+            "position_campaign_id": command.position_campaign_id,
             "symbol": command.symbol,
             "side": side,
             "quantity": quantity,
@@ -1323,12 +1328,25 @@ def _trading_unit_from_listed_info(listed_info: dict[str, Any] | None) -> float 
 
 
 def _order_payload(item: dict[str, Any]) -> dict[str, Any]:
+    lineage = item.get("strategy_authority_lineage") if isinstance(item.get("strategy_authority_lineage"), dict) else {}
     return {
         "order_ref": item["order_identity"],
         "pending_plan_id": item["pending_plan_id"],
         "pending_item_id": item["pending_item_id"],
-        "strategy_authority_lineage": item.get("strategy_authority_lineage") or {},
+        "strategy_authority_lineage": lineage,
         "strategy_authority_lineage_hash": item.get("strategy_authority_lineage_hash") or "",
+        "source_decision_id": (
+            item.get("source_decision_id")
+            or item.get("source_pm_decision_id")
+            or lineage.get("source_decision_id")
+            or lineage.get("source_pm_decision_id")
+            or ""
+        ),
+        "source_decision_type": item.get("source_decision_type") or lineage.get("source_decision_type") or "",
+        "source_pm_decision_id": item.get("source_pm_decision_id") or lineage.get("source_pm_decision_id") or "",
+        "source_pm_business_date": item.get("source_pm_business_date") or lineage.get("source_pm_business_date") or "",
+        "source_position_symbol": item.get("source_position_symbol") or lineage.get("source_position_symbol") or "",
+        "position_campaign_id": item.get("position_campaign_id") or lineage.get("position_campaign_id") or "",
         "symbol": item["symbol"],
         "side": item["side"],
         "quantity": item["quantity"],
@@ -1341,10 +1359,25 @@ def _order_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execution_payload(item: dict[str, Any]) -> dict[str, Any]:
+    lineage = item.get("strategy_authority_lineage") if isinstance(item.get("strategy_authority_lineage"), dict) else {}
     return {
         "execution_ref": item["execution_identity"],
         "order_ref": item["order_identity"],
         "execution_key": item["execution_identity"],
+        "strategy_authority_lineage": lineage,
+        "strategy_authority_lineage_hash": item.get("strategy_authority_lineage_hash") or "",
+        "source_decision_id": (
+            item.get("source_decision_id")
+            or item.get("source_pm_decision_id")
+            or lineage.get("source_decision_id")
+            or lineage.get("source_pm_decision_id")
+            or ""
+        ),
+        "source_decision_type": item.get("source_decision_type") or lineage.get("source_decision_type") or "",
+        "source_pm_decision_id": item.get("source_pm_decision_id") or lineage.get("source_pm_decision_id") or "",
+        "source_pm_business_date": item.get("source_pm_business_date") or lineage.get("source_pm_business_date") or "",
+        "source_position_symbol": item.get("source_position_symbol") or lineage.get("source_position_symbol") or "",
+        "position_campaign_id": item.get("position_campaign_id") or lineage.get("position_campaign_id") or "",
         "symbol": item["symbol"],
         "side": item["side"],
         "quantity": item["quantity"],

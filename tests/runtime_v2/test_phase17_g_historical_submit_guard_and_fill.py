@@ -11,7 +11,9 @@ import pandas as pd
 from ai_fund_lab_v2.runtime_v2.approval.linkage import link_approval_to_pending
 from ai_fund_lab_v2.runtime_v2.approval.models import ApprovalArtifact, ApprovalStatus
 from ai_fund_lab_v2.runtime_v2.broker_adapter.capability import get_broker_capability
+from ai_fund_lab_v2.runtime_v2.broker_readonly.normalizer import normalize_broker_readonly_payload
 from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import _write_execution_manifest_evidence
+from ai_fund_lab_v2.runtime_v2.execution.ledger_projection import project_execution_to_ledger_record
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import (
     _evaluate_pre_commit_cash_feasibility,
     run_execution_readonly_pipeline,
@@ -23,18 +25,47 @@ from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
+from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import _pending_item_with_sell_decision_lineage
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     capital_deployment_policy_hash,
     load_capital_deployment_policy,
 )
+from ai_fund_lab_v2.runtime_v2.position_management.producer import _decision_payload, _sell_exit_decisions_from_artifact
 from ai_fund_lab_v2.runtime_v2.submit.guards import run_submit_preflight
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand, SubmitEnvironmentGuardContext
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import _approval_from_pending, run_submit_pipeline
+from ai_fund_lab_v2.strategy.portfolio_construction import _previous_exit_reason_class
+from ai_fund_lab_v2.strategy.shadow_runtime import _supply_prior_exit_state
 
 
 BUSINESS_DATE = "2026-07-06"
 EVALUATION_TIME = "2026-07-06T08:30:00+09:00"
 SYMBOL = "7203"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _write_pm_decisions(run_dir: Path, business_date: str, decisions: list[dict]) -> None:
+    path = run_dir / "daily" / business_date / "position_management" / "pm_decisions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "phase32_r_pm_decision_fixture.v1",
+                "business_date": business_date,
+                "decisions": decisions,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
 
 
 def test_phase17_g_environment_matrix_allows_only_formal_historical_context() -> None:
@@ -645,6 +676,357 @@ def test_phase29_l21t_z_execution_retry_with_low_cash_does_not_reapply_buy_cash_
     assert len(execution_rows) == 1
 
 
+def test_phase32_aa_pm_runtime_adapter_payload_materializes_current_campaign() -> None:
+    payload = _decision_payload(
+        {
+            "target_date": BUSINESS_DATE,
+            "code": SYMBOL,
+            "action": "EXIT",
+            "exit_reason": "trend_and_opportunity_broken",
+            "exit_score": 1.0,
+        },
+        current={
+            "positions": [
+                {
+                    "symbol": SYMBOL,
+                    "quantity": 100.0,
+                    "position_campaign_id": "pc-phase32-aa-7203-0001",
+                }
+            ]
+        },
+        generated_at=EVALUATION_TIME,
+    )
+
+    assert payload["decision_id"] == "pm-2026-07-06-7203-exit"
+    assert payload["position_campaign_id"] == "pc-phase32-aa-7203-0001"
+
+
+def test_phase32_r_historical_execution_ledger_preserves_pm_exit_provenance_for_prior_bridge(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(
+        tmp_path,
+        side="SELL",
+        source_decision_type="EXIT",
+        source_pm_decision_id="pm-2026-07-06-7203-exit",
+        source_pm_business_date=BUSINESS_DATE,
+        source_position_symbol=SYMBOL,
+        position_campaign_id="pc-phase32-r-7203-0001",
+    )
+    run_dir = tmp_path / "run"
+    _write_pm_decisions(
+        run_dir,
+        BUSINESS_DATE,
+        [
+            {
+                "business_date": BUSINESS_DATE,
+                "symbol": SYMBOL,
+                "decision_type": "EXIT",
+                "pm_decision_id": "pm-2026-07-06-7203-exit",
+                "position_campaign_id": "pc-phase32-r-7203-0001",
+                "decision_reason": "trend_and_opportunity_broken",
+                "reason_codes": ["trend_and_opportunity_broken"],
+            }
+        ],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "record_type": "execution",
+                "business_date": "2026-07-05",
+                "side": "BUY",
+                "symbol": SYMBOL,
+                "filled_quantity": 100.0,
+                "quantity": 100.0,
+                "price": 2500.0,
+                "execution_id": "exec-phase32-r-prior-buy",
+                "dedup_key": "phase32-r-prior-buy",
+                "position_campaign_id": "pc-phase32-r-7203-0001",
+            }
+        ],
+    )
+
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    snapshot = json.loads(
+        (runtime_root / "runtime_state" / "broker_readonly" / BUSINESS_DATE / "tachibana_snapshot.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    execution_rows = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+    sell_execution = next(row for row in execution_rows if row["symbol"] == SYMBOL and row["side"] == "SELL")
+
+    bridge = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-07",
+        candidate={"rows": ({"security_code": SYMBOL},)},
+        opportunity={"rows": ({"symbol": SYMBOL, "opportunity_buy_rank": 1},)},
+        current={"rows": ()},
+    )
+    supplied = bridge["opportunity"]["rows"][0]
+
+    assert submit.status == "PASS"
+    assert result.status == "PASS"
+    assert snapshot["orders"][0]["source_pm_decision_id"] == sell_execution["source_pm_decision_id"]
+    assert snapshot["orders"][0]["source_decision_type"] == sell_execution["source_decision_type"]
+    assert snapshot["orders"][0]["position_campaign_id"] == sell_execution["position_campaign_id"]
+    assert sell_execution["source_decision_id"] == "pm-2026-07-06-7203-exit"
+    assert sell_execution["source_pm_decision_id"] == "pm-2026-07-06-7203-exit"
+    assert sell_execution["source_decision_type"] == "EXIT"
+    assert sell_execution["source_pm_business_date"] == BUSINESS_DATE
+    assert sell_execution["source_position_symbol"] == SYMBOL
+    assert sell_execution["position_campaign_id"] == "pc-phase32-r-7203-0001"
+    assert sell_execution["dedup_key"].startswith("runtime_v2_execution_equivalent:")
+    assert supplied["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert supplied["prior_exit_reason_codes"] == ["trend_and_opportunity_broken"]
+    assert supplied["prior_exit_reason_authority"] == "STRICT_PRIOR_PM_DECISION_EVIDENCE"
+    assert bridge["evidence"]["pm_exit_reason_matched_close_count"] == 1
+
+
+def test_phase32_t_actual_sell_path_populates_persistent_ledger_pm_and_campaign_provenance(
+    tmp_path: Path,
+) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(
+        tmp_path,
+        side="SELL",
+        source_decision_type="",
+        source_pm_decision_id="",
+        source_pm_business_date="",
+        source_position_symbol="",
+        position_campaign_id="",
+    )
+    pm_decision_id = "pm-2026-07-06-7203-exit"
+    campaign_id = "pc-phase32-t-7203-0001"
+    pm_payload = {
+        "artifact_path": "daily/2026-07-06/position_management/pm_decisions.json",
+        "decisions": [
+            {
+                "business_date": BUSINESS_DATE,
+                "symbol": SYMBOL,
+                "decision": "EXIT",
+                "decision_type": "EXIT",
+                "pm_decision_id": pm_decision_id,
+                "position_campaign_id": campaign_id,
+                "runtime_sell_quantity": 100.0,
+                "reason": "trend_and_opportunity_broken",
+                "decision_reason": "trend_and_opportunity_broken",
+                "reason_codes": ["trend_and_opportunity_broken"],
+            }
+        ],
+    }
+    decisions = _sell_exit_decisions_from_artifact(pm_payload)
+    pending = _pending("historical", side="SELL", policy_path=policy_path, symbol=SYMBOL)
+    pending_item = _pending_item_with_sell_decision_lineage(
+        item=pending.items[0],
+        decision_by_symbol={decision.symbol: decision for decision in decisions},
+    )
+    assert pending_item.position_campaign_id == campaign_id
+    assert pending_item.strategy_authority_lineage is not None
+    assert pending_item.strategy_authority_lineage["position_campaign_id"] == campaign_id
+    assert pending_item.quantity_contract is not None
+    assert pending_item.quantity_contract["position_campaign_id"] == campaign_id
+    pending = replace(pending, items=(pending_item,))
+    write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
+
+    run_dir = tmp_path / "run"
+    _write_pm_decisions(
+        run_dir,
+        BUSINESS_DATE,
+        [
+            {
+                "business_date": BUSINESS_DATE,
+                "symbol": SYMBOL,
+                "decision_type": "EXIT",
+                "pm_decision_id": pm_decision_id,
+                "position_campaign_id": campaign_id,
+                "decision_reason": "trend_and_opportunity_broken",
+                "reason_codes": ["trend_and_opportunity_broken"],
+            }
+        ],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "record_type": "execution",
+                "business_date": "2026-07-05",
+                "side": "BUY",
+                "symbol": SYMBOL,
+                "filled_quantity": 100.0,
+                "quantity": 100.0,
+                "price": 2500.0,
+                "execution_id": "exec-phase32-t-prior-buy",
+                "dedup_key": "phase32-t-prior-buy",
+                "position_campaign_id": campaign_id,
+            }
+        ],
+    )
+
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE),
+    )
+    order_rows = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+    execution_rows = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+    sell_order = next(row for row in order_rows if row["symbol"] == SYMBOL and row["side"] == "SELL")
+    sell_execution = next(row for row in execution_rows if row["symbol"] == SYMBOL and row["side"] == "SELL")
+    bridge = _supply_prior_exit_state(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date="2026-07-07",
+        candidate={"rows": ({"security_code": SYMBOL},)},
+        opportunity={"rows": ({"symbol": SYMBOL, "opportunity_buy_rank": 1},)},
+        current={"rows": ()},
+    )
+    supplied = bridge["opportunity"]["rows"][0]
+
+    assert submit.status == "PASS"
+    assert result.status == "PASS"
+    assert sell_order["source_decision_id"] == pm_decision_id
+    assert sell_order["source_pm_decision_id"] == pm_decision_id
+    assert sell_order["source_decision_type"] == "EXIT"
+    assert sell_order["source_pm_business_date"] == BUSINESS_DATE
+    assert sell_order["source_position_symbol"] == SYMBOL
+    assert sell_order["position_campaign_id"] == campaign_id
+    assert sell_execution["source_decision_id"] == pm_decision_id
+    assert sell_execution["source_pm_decision_id"] == pm_decision_id
+    assert sell_execution["source_decision_type"] == "EXIT"
+    assert sell_execution["source_pm_business_date"] == BUSINESS_DATE
+    assert sell_execution["source_position_symbol"] == SYMBOL
+    assert sell_execution["position_campaign_id"] == campaign_id
+    assert bridge["evidence"]["pm_exit_reason_matched_close_count"] == 1
+    assert supplied["prior_exit_reason_authority"] == "STRICT_PRIOR_PM_DECISION_EVIDENCE"
+    assert supplied["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert _previous_exit_reason_class(
+        supplied["prior_exit_reason"],
+        supplied["prior_exit_reason_codes"],
+    ) != "GENERIC"
+
+
+def test_phase32_r_historical_execution_retry_keeps_dedupe_key_unchanged_with_provenance(tmp_path: Path) -> None:
+    runtime_root, policy_path, adapter = _runtime_fixture(
+        tmp_path,
+        side="SELL",
+        source_decision_type="EXIT",
+        source_pm_decision_id="pm-2026-07-06-7203-exit",
+        source_pm_business_date=BUSINESS_DATE,
+        source_position_symbol=SYMBOL,
+        position_campaign_id="pc-phase32-r-7203-0001",
+    )
+    submit = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        submit_enabled=True,
+        job="submit",
+        adapter=adapter,
+        capital_deployment_policy_path=policy_path,
+        environment_context=_historical_context(),
+    )
+    provider = HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=BUSINESS_DATE)
+
+    first = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    before = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+    second = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        snapshot_provider=provider,
+    )
+    after = _read_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl")
+
+    assert submit.status == "PASS"
+    assert first.status == "PASS"
+    assert second.status == "PASS"
+    assert second.ledger_executions_appended == 0
+    assert [row["dedup_key"] for row in after] == [row["dedup_key"] for row in before]
+    assert len(after) == len(before) == 1
+
+
+def test_phase32_r_broker_detail_projection_preserves_explicit_order_provenance() -> None:
+    bundle = normalize_broker_readonly_payload(
+        environment="production",
+        source="runtime_v2_execution_readonly",
+        as_of="2026-07-06T09:00:00+09:00",
+        orders=[
+            {
+                "order_id": "broker-order-1",
+                "pending_plan_id": "pending-plan",
+                "pending_item_id": "item-1",
+                "symbol": SYMBOL,
+                "side": "SELL",
+                "quantity": 100,
+                "order_status": "filled",
+                "filled_quantity": 100,
+                "remaining_quantity": 0,
+                "accepted_at": "2026-07-06T09:00:00+09:00",
+                "updated_at": "2026-07-06T09:00:00+09:00",
+                "source_pm_decision_id": "pm-2026-07-06-7203-exit",
+                "source_decision_type": "EXIT",
+                "source_pm_business_date": BUSINESS_DATE,
+                "source_position_symbol": SYMBOL,
+                "position_campaign_id": "pc-phase32-r-7203-0001",
+            }
+        ],
+        executions=[
+            {
+                "execution_id": "broker-execution-1",
+                "order_id": "broker-order-1",
+                "execution_key": "broker-execution-key",
+                "symbol": SYMBOL,
+                "side": "SELL",
+                "quantity": 100,
+                "price": 3000,
+                "executed_at": "2026-07-06T09:00:01+09:00",
+            }
+        ],
+        positions=[],
+        cash={"cash": 1_300_000, "buying_power": 1_300_000},
+    )
+
+    record = project_execution_to_ledger_record(bundle.executions[0], source_order=bundle.orders[0])
+
+    assert record.source_decision_id == "pm-2026-07-06-7203-exit"
+    assert record.source_pm_decision_id == "pm-2026-07-06-7203-exit"
+    assert record.source_decision_type == "EXIT"
+    assert record.source_pm_business_date == BUSINESS_DATE
+    assert record.source_position_symbol == SYMBOL
+    assert record.position_campaign_id == "pc-phase32-r-7203-0001"
+    assert record.dedup_key == bundle.executions[0].execution_ref_hash
+
+
 def test_phase17_g_execution_run_scoped_evidence_writer_records_authorities(tmp_path: Path) -> None:
     evidence_root = tmp_path / "run"
     manifest_path = tmp_path / "runtime-v2-execution.json"
@@ -732,6 +1114,11 @@ def _runtime_fixture(
     side: str,
     safety_decision: str = "ALLOW",
     symbol: str = SYMBOL,
+    source_decision_type: str = "",
+    source_pm_decision_id: str = "",
+    source_pm_business_date: str = "",
+    source_position_symbol: str = "",
+    position_campaign_id: str = "",
 ) -> tuple[Path, Path, HistoricalSubmitAdapter]:
     runtime_root = tmp_path / ".runtime"
     runtime_root.mkdir()
@@ -740,7 +1127,17 @@ def _runtime_fixture(
     _write_policy(policy_path)
     _write_safety(runtime_root, decision=safety_decision)
     _write_current(runtime_root, side=side, symbol=symbol)
-    pending = _pending("historical", side=side, policy_path=policy_path, symbol=symbol)
+    pending = _pending(
+        "historical",
+        side=side,
+        policy_path=policy_path,
+        symbol=symbol,
+        source_decision_type=source_decision_type,
+        source_pm_decision_id=source_pm_decision_id,
+        source_pm_business_date=source_pm_business_date,
+        source_position_symbol=source_position_symbol,
+        position_campaign_id=position_campaign_id,
+    )
     write_pending_order_plan(runtime_root / "pending_order_plan" / "pending_order_plan.json", pending)
     adapter = HistoricalSubmitAdapter(
         runtime_root=runtime_root,
@@ -772,7 +1169,18 @@ def _write_market_data(root: Path, *, symbol: str = SYMBOL) -> None:
     (root / "pit_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
-def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = None, symbol: str = SYMBOL):
+def _pending(
+    environment: str,
+    *,
+    side: str = "BUY",
+    policy_path: Path | None = None,
+    symbol: str = SYMBOL,
+    source_decision_type: str = "",
+    source_pm_decision_id: str = "",
+    source_pm_business_date: str = "",
+    source_position_symbol: str = "",
+    position_campaign_id: str = "",
+):
     policy = load_capital_deployment_policy(policy_path) if policy_path else None
     quantity_contract = _authority_quantity_contract(symbol=symbol, policy=policy)
     binding = _accepted_generation_binding(environment=environment)
@@ -790,6 +1198,10 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         listed_info={
             "code": symbol,
             "trading_unit": 100,
+            "market": "東証",
+            "product_category": "011",
+            "security_type": "011",
+            "current_listed": True,
             "opportunity_buy_eligibility_status": "PASS",
             "opportunity_buy_eligibility": "BUY_ELIGIBLE",
             "opportunity_expected_edge_score": 0.10,
@@ -822,9 +1234,27 @@ def _pending(environment: str, *, side: str = "BUY", policy_path: Path | None = 
         accepted_generation_binding_status="PASS" if is_buy else "NOT_REQUIRED",
         accepted_generation_binding=binding if is_buy else None,
         quantity_contract=quantity_contract,
+        strategy_authority_lineage={
+            key: value
+            for key, value in {
+                "source_decision_id": source_pm_decision_id,
+                "source_pm_decision_id": source_pm_decision_id,
+                "source_decision_type": source_decision_type,
+                "source_pm_business_date": source_pm_business_date,
+                "source_position_symbol": source_position_symbol,
+                "position_campaign_id": position_campaign_id,
+            }.items()
+            if value
+        },
         safety_decision_id="safety-phase17-g",
         safety_policy_version="safety_policy_v1",
         safety_decision="ALLOW",
+        source_decision_id=source_pm_decision_id,
+        source_decision_type=source_decision_type,
+        source_pm_decision_id=source_pm_decision_id,
+        source_pm_business_date=source_pm_business_date,
+        source_position_symbol=source_position_symbol,
+        position_campaign_id=position_campaign_id,
     )
     pending = promote_order_plan_to_pending(
         order_plan_id="order-plan-phase17-g",

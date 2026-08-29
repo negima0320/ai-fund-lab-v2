@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from ai_fund_lab_v2.runtime_v2.broker_readonly.models import (
     BrokerCashSnapshot,
     BrokerExecutionSnapshot,
@@ -18,7 +20,9 @@ from ai_fund_lab_v2.runtime_v2.ledger.models import (
 
 def project_execution_to_ledger_record(
     execution: BrokerExecutionSnapshot,
+    source_order: BrokerOrderSnapshot | None = None,
 ) -> LedgerExecutionRecord:
+    provenance = _execution_provenance(execution=execution, source_order=source_order)
     return LedgerExecutionRecord(
         record_id=f"ledger-execution-{_short_hash(execution.execution_ref_hash)}",
         record_type="execution",
@@ -47,6 +51,12 @@ def project_execution_to_ledger_record(
         price=execution.price,
         average_price=execution.price,
         market_price=execution.price,
+        source_decision_id=provenance["source_decision_id"],
+        source_pm_decision_id=provenance["source_pm_decision_id"],
+        source_decision_type=provenance["source_decision_type"],
+        source_pm_business_date=provenance["source_pm_business_date"],
+        source_position_symbol=provenance["source_position_symbol"],
+        position_campaign_id=provenance["position_campaign_id"],
         detail_required=True,
         detail_status="AVAILABLE",
         executed_at=execution.executed_at,
@@ -70,6 +80,7 @@ def project_position_to_ledger_record(position: BrokerPositionSnapshot) -> Ledge
         average_price=position.average_price,
         market_value=position.market_value,
         as_of=position.as_of,
+        position_campaign_id=position.position_campaign_id,
     )
 
 
@@ -110,9 +121,82 @@ def project_order_to_ledger_record(order: BrokerOrderSnapshot) -> LedgerOrderRec
         symbol=order.symbol,
         quantity=order.quantity,
         status=order.order_status,
+        source_decision_id=order.source_decision_id or order.source_pm_decision_id,
+        source_decision_type=order.source_decision_type,
+        source_pm_decision_id=order.source_pm_decision_id,
+        source_pm_business_date=order.source_pm_business_date,
+        source_position_symbol=order.source_position_symbol,
+        position_campaign_id=order.position_campaign_id,
         strategy_authority_lineage=dict(order.strategy_authority_lineage or {}),
         strategy_authority_lineage_hash=order.strategy_authority_lineage_hash,
     )
+
+
+def _execution_provenance(
+    *,
+    execution: BrokerExecutionSnapshot,
+    source_order: BrokerOrderSnapshot | None,
+) -> dict[str, str]:
+    execution_mapping = {
+        "source_decision_id": execution.source_decision_id,
+        "source_pm_decision_id": execution.source_pm_decision_id,
+        "source_decision_type": execution.source_decision_type,
+        "source_pm_business_date": execution.source_pm_business_date,
+        "source_position_symbol": execution.source_position_symbol,
+        "position_campaign_id": execution.position_campaign_id,
+    }
+    order_mapping = _order_provenance_mapping(source_order)
+    order_lineage: Mapping[str, Any] = (
+        source_order.strategy_authority_lineage
+        if source_order is not None and isinstance(source_order.strategy_authority_lineage, Mapping)
+        else {}
+    )
+    mappings = (execution_mapping, order_mapping, order_lineage)
+    return {
+        "source_decision_id": _first_text(
+            mappings,
+            ("source_decision_id", "source_pm_decision_id", "pm_decision_id", "decision_id"),
+        ),
+        "source_pm_decision_id": _first_text(
+            mappings,
+            ("source_pm_decision_id", "source_decision_id", "pm_decision_id"),
+        ),
+        "source_decision_type": _first_text(mappings, ("source_decision_type", "decision_type", "source_decision")),
+        "source_pm_business_date": _first_text(
+            mappings,
+            ("source_pm_business_date", "pm_business_date", "decision_business_date", "business_date"),
+        ),
+        "source_position_symbol": _first_text(
+            mappings,
+            ("source_position_symbol", "position_symbol", "symbol", "security_code"),
+        ),
+        "position_campaign_id": _first_text(
+            mappings,
+            ("position_campaign_id", "current_position_campaign_id", "pm_position_campaign_id", "campaign_id"),
+        ),
+    }
+
+
+def _order_provenance_mapping(order: BrokerOrderSnapshot | None) -> dict[str, Any]:
+    if order is None:
+        return {}
+    return {
+        "source_decision_id": order.source_decision_id,
+        "source_pm_decision_id": order.source_pm_decision_id,
+        "source_decision_type": order.source_decision_type,
+        "source_pm_business_date": order.source_pm_business_date,
+        "source_position_symbol": order.source_position_symbol,
+        "position_campaign_id": order.position_campaign_id,
+    }
+
+
+def _first_text(mappings: tuple[Mapping[str, Any], ...], keys: tuple[str, ...]) -> str:
+    for mapping in mappings:
+        for key in keys:
+            value = mapping.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
 
 
 def can_use_broker_orders_fallback(

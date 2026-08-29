@@ -347,10 +347,12 @@ def pending_order_plan_from_payload(payload: Mapping[str, Any]) -> PendingOrderP
                     else None
                 ),
                 strategy_authority_lineage_hash=str(item.get("strategy_authority_lineage_hash") or ""),
+                source_decision_id=str(item.get("source_decision_id") or ""),
                 source_decision_type=str(item.get("source_decision_type") or ""),
                 source_pm_decision_id=str(item.get("source_pm_decision_id") or ""),
                 source_pm_business_date=str(item.get("source_pm_business_date") or ""),
                 source_position_symbol=str(item.get("source_position_symbol") or ""),
+                position_campaign_id=str(item.get("position_campaign_id") or ""),
                 add_candidate_signal=bool(item.get("add_candidate_signal")),
                 capital_allocation_status=str(item.get("capital_allocation_status") or ""),
                 capital_allocation_reason=str(item.get("capital_allocation_reason") or ""),

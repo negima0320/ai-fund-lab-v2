@@ -12,6 +12,7 @@ from ai_fund_lab_v2.strategy import corporate_event
 from ai_fund_lab_v2.strategy import buy_quality
 from ai_fund_lab_v2.strategy import input_materialization
 from ai_fund_lab_v2.strategy import market_context
+from ai_fund_lab_v2.strategy import marginal_capital_frontier_authority
 from ai_fund_lab_v2.strategy import portfolio_construction
 from ai_fund_lab_v2.strategy import portfolio_policy
 from ai_fund_lab_v2.strategy import position_management
@@ -43,6 +44,7 @@ ARTIFACT_FILENAMES = {
     "portfolio_construction_draft": "portfolio_construction_draft.json",
     "position_sizing_preflight": "position_sizing_preflight.json",
     "portfolio_construction": "portfolio_construction.json",
+    "marginal_capital_frontier_authority": "marginal_capital_frontier_authority.json",
     "position_sizing": "position_sizing.json",
     "position_management": "position_management.json",
     "runtime_planning": "runtime_planning.json",
@@ -151,6 +153,7 @@ def generate_strategy_shadow_for_day(
     current = _current_summary(runtime_root=runtime_root, business_date=business_date)
     prior_exit_supply = _supply_prior_exit_state(
         runtime_root=runtime_root,
+        run_dir=run_dir,
         business_date=business_date,
         candidate=candidate,
         opportunity=opportunity,
@@ -372,6 +375,10 @@ def generate_strategy_shadow_for_day(
             business_date=business_date,
             draft_path=artifact_paths["portfolio_construction_draft"],
             preflight_path=artifact_paths["position_sizing_preflight"],
+            authority_path=artifact_paths["marginal_capital_frontier_authority"],
+            cash_payload=cash,
+            safety_payload=safety,
+            run_id=run_id,
             output_path=artifact_paths["portfolio_construction"],
         ),
     )
@@ -1197,6 +1204,7 @@ def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any
 def _supply_prior_exit_state(
     *,
     runtime_root: Path,
+    run_dir: Path | None = None,
     business_date: str,
     candidate: Mapping[str, Any],
     opportunity: Mapping[str, Any],
@@ -1209,22 +1217,38 @@ def _supply_prior_exit_state(
         for row in current.get("rows") or ()
         if isinstance(row, Mapping) and _float(row.get("quantity"), default=0.0) > 0
     }
-    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(executions=executions, business_date=business_date)
+    pm_exit_reason_by_decision = _strict_prior_pm_exit_reason_evidence_by_decision(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+    )
+    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(
+        executions=executions,
+        business_date=business_date,
+        pm_exit_reason_by_decision=pm_exit_reason_by_decision,
+    )
     candidate_result = _attach_prior_exit_to_summary(candidate, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
     opportunity_result = _attach_prior_exit_to_summary(opportunity, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
     supplied_symbols = sorted(set(candidate_result["supplied_symbols"]) | set(opportunity_result["supplied_symbols"]))
+    pm_reason_matched_count = sum(1 for row in prior_by_symbol.values() if row.get("prior_exit_reason_authority") == "STRICT_PRIOR_PM_DECISION_EVIDENCE")
     return {
         "candidate": candidate_result["summary"],
         "opportunity": opportunity_result["summary"],
         "evidence": {
-            "schema_version": "phase29_l21k_prior_exit_state_materialization_evidence.v1",
+            "schema_version": "phase32_l_prior_exit_state_materialization_evidence.v1",
             "business_date": business_date,
-            "authority": "persistent_ledger_execution_history",
+            "authority": "persistent_ledger_execution_history_with_strict_prior_pm_exit_reason_bridge",
             "source_path": str(ledger_path),
             "source_hash": _file_hash(ledger_path),
             "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
-            "materialized_field": "prior_exit_business_date",
+            "pm_reason_temporal_selection_rule": "pm_decision_business_date_strictly_less_than_decision_business_date",
+            "pm_reason_join_identity": "execution.source_decision_id == pm.pm_decision_id/decision_id with symbol/date/campaign validation",
+            "pm_reason_authority": "position_management_decision_reason_codes",
+            "execution_authority": "persistent_ledger_execution_history",
+            "materialized_field": "prior_exit_business_date,prior_exit_reason,prior_exit_reason_codes",
             "prior_closed_campaign_count": len(prior_by_symbol),
+            "pm_exit_reason_evidence_count": len(pm_exit_reason_by_decision),
+            "pm_exit_reason_matched_close_count": pm_reason_matched_count,
             "candidate_supplied_count": candidate_result["supplied_count"],
             "opportunity_supplied_count": opportunity_result["supplied_count"],
             "supplied_symbols": supplied_symbols,
@@ -1249,9 +1273,14 @@ def _materialize_pre_action_position_campaigns(
     prior_payload = _read_json(prior_path) if prior_path is not None else {}
     prior_campaigns = prior_payload.get("position_campaigns") if isinstance(prior_payload.get("position_campaigns"), list) else []
     ledger_path = (runtime_root / "persistent_ledger" / "executions.jsonl") if runtime_root is not None else None
+    entry_decision_evidence = _strict_prior_entry_decision_evidence_by_execution_identity(
+        run_dir=run_dir,
+        business_date=business_date,
+    )
     ledger_campaigns = _strict_prior_ledger_campaigns_by_symbol(
         _read_jsonl(ledger_path) if ledger_path is not None else [],
         business_date=business_date,
+        entry_decision_evidence=entry_decision_evidence,
     )
     current_by_symbol = {
         str(row.get("symbol") or row.get("security_code") or row.get("code") or row.get("issue_code") or "").strip(): row
@@ -1356,6 +1385,12 @@ def _materialize_pre_action_position_campaigns(
                 "campaigns_with_evidence": pm_decision_evidence_campaign_count,
                 "evidence_event_count": pm_decision_evidence_count,
             },
+            "strict_prior_entry_decision_evidence": {
+                "authority": "same_run_entry_decision_lineage",
+                "temporal_selection_rule": "entry_decision_business_date_strictly_less_than_decision_business_date",
+                "semantic": "BUY_NEW_REENTRY_ENTRY_PREMISE_AUTHORITY",
+                "evidence_key_count": len(entry_decision_evidence),
+            },
         },
         "temporal_safety": {
             "temporal_stage": "PRE_ACTION_DECISION_SNAPSHOT",
@@ -1383,6 +1418,7 @@ def _materialize_pre_action_position_campaigns(
             "pm_decision_evidence_authority": "strategy.position_management strict-prior decision evidence",
             "pm_decision_evidence_event_count": pm_decision_evidence_count,
             "pm_decision_evidence_campaign_count": pm_decision_evidence_campaign_count,
+            "entry_decision_evidence_key_count": len(entry_decision_evidence),
             "fake_execution_event_created": False,
         },
     }
@@ -1413,6 +1449,7 @@ def _materialize_pre_action_position_campaigns(
             "pm_decision_evidence_authority": "strategy.position_management strict-prior decision evidence",
             "pm_decision_evidence_event_count": pm_decision_evidence_count,
             "pm_decision_evidence_campaign_count": pm_decision_evidence_campaign_count,
+            "entry_decision_evidence_key_count": len(entry_decision_evidence),
             "fake_execution_event_created": False,
             "future_information_used": False,
         },
@@ -1528,7 +1565,250 @@ def _dedupe_pm_decision_evidence_events(events: Iterable[Mapping[str, Any]]) -> 
     return [deduped[key] for key in sorted(deduped)]
 
 
-def _strict_prior_ledger_campaigns_by_symbol(executions: Iterable[Mapping[str, Any]], *, business_date: str) -> dict[str, dict[str, Any]]:
+def _strict_prior_entry_decision_evidence_by_execution_identity(
+    *,
+    run_dir: Path,
+    business_date: str,
+) -> dict[tuple[str, ...], dict[str, Any]]:
+    daily_root = run_dir / "daily"
+    if not daily_root.is_dir():
+        return {}
+    index: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for child in sorted(item for item in daily_root.iterdir() if item.is_dir()):
+        decision_date = child.name
+        if not decision_date or decision_date >= business_date:
+            continue
+        strategy_dir = child / "strategy"
+        runtime_planning_path = strategy_dir / "runtime_planning.json"
+        position_sizing_path = strategy_dir / "position_sizing.json"
+        runtime_payload = _read_json(runtime_planning_path)
+        sizing_payload = _read_json(position_sizing_path)
+        sizing_by_symbol = {
+            str(item.get("security_code") or item.get("symbol") or "").strip(): item
+            for item in sizing_payload.get("positions") or []
+            if isinstance(item, Mapping)
+            and str(item.get("security_code") or item.get("symbol") or "").strip()
+        }
+        for plan_index, plan in enumerate(runtime_payload.get("plans") or []):
+            if not isinstance(plan, Mapping):
+                continue
+            symbol = str(plan.get("security_code") or plan.get("symbol") or "").strip()
+            side = str(plan.get("order_side_intent") or plan.get("side") or "").upper()
+            intent = str(plan.get("planning_intent") or plan.get("semantic_buy_type") or "").upper()
+            quantity = _float(plan.get("planned_quantity") or plan.get("quantity_delta_candidate"), default=0.0)
+            if not symbol or side != "BUY" or intent not in {"BUY_NEW", "REENTRY"} or quantity <= 0:
+                continue
+            sizing = sizing_by_symbol.get(symbol) or {}
+            evidence = _entry_decision_evidence_from_strategy_plan(
+                plan=plan,
+                sizing=sizing,
+                business_date=decision_date,
+                plan_index=plan_index,
+                runtime_planning_path=runtime_planning_path,
+                position_sizing_path=position_sizing_path,
+            )
+            for key in _entry_decision_identity_keys(evidence):
+                index.setdefault(key, []).append(evidence)
+    resolved: dict[tuple[str, ...], dict[str, Any]] = {}
+    for key, rows in index.items():
+        unique = {
+            (
+                str(row.get("source_decision_id") or ""),
+                str(row.get("quality_decision_id") or ""),
+                str(row.get("runtime_planning_id") or ""),
+                str(row.get("position_sizing_reference") or ""),
+            ): row
+            for row in rows
+        }
+        if len(unique) == 1:
+            resolved[key] = next(iter(unique.values()))
+        else:
+            resolved[key] = {
+                "status": "REVIEW_REQUIRED",
+                "reason": "entry_premise_authoritative_lineage_ambiguous",
+                "business_date": key[1] if len(key) > 1 else "",
+                "symbol": key[2] if len(key) > 2 else "",
+                "future_information_used": False,
+                "historical_outcome_used": False,
+            }
+    return resolved
+
+
+def _entry_decision_evidence_from_strategy_plan(
+    *,
+    plan: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+    business_date: str,
+    plan_index: int,
+    runtime_planning_path: Path,
+    position_sizing_path: Path,
+) -> dict[str, Any]:
+    symbol = str(plan.get("security_code") or plan.get("symbol") or "").strip()
+    lineage = plan.get("strategy_authority_lineage") if isinstance(plan.get("strategy_authority_lineage"), Mapping) else {}
+    item = lineage.get("item") if isinstance(lineage.get("item"), Mapping) else {}
+    reentry_binding = lineage.get("refined_capital_decision_lineage", {}).get("reentry_binding") if isinstance(lineage.get("refined_capital_decision_lineage"), Mapping) else {}
+    entry_admission = reentry_binding.get("entry_admission") if isinstance(reentry_binding, Mapping) and isinstance(reentry_binding.get("entry_admission"), Mapping) else {}
+    consumed = entry_admission.get("consumed_evidence") if isinstance(entry_admission.get("consumed_evidence"), Mapping) else {}
+    target_resolution = sizing.get("target_weight_resolution") if isinstance(sizing.get("target_weight_resolution"), Mapping) else {}
+    quantity = _float(plan.get("planned_quantity") or plan.get("quantity_delta_candidate"), default=0.0)
+    price = _float(plan.get("reference_price") or sizing.get("reference_price"), default=0.0)
+    quality_authority = plan.get("buy_quality_authority") if isinstance(plan.get("buy_quality_authority"), Mapping) else {}
+    source_decision_id = str(
+        plan.get("source_decision_id")
+        or plan.get("planning_id")
+        or plan.get("portfolio_construction_reference")
+        or item.get("pc_member_id")
+        or ""
+    )
+    return {
+        "status": "PASS",
+        "schema_version": "campaign_entry_premise_authoritative_lineage.v1",
+        "business_date": business_date,
+        "symbol": symbol,
+        "side": "BUY",
+        "entry_semantic_type": str(plan.get("planning_intent") or sizing.get("semantic_buy_type") or ""),
+        "entry_admission_action": str(entry_admission.get("admission_action") or target_resolution.get("production_deployability_class") or ""),
+        "entry_admission_state": str(entry_admission.get("entry_state") or ""),
+        "opportunity_rank": plan.get("opportunity_buy_rank") or sizing.get("opportunity_buy_rank") or item.get("portfolio_input_opportunity_rank"),
+        "opportunity_score": plan.get("runtime_opportunity_score") or sizing.get("runtime_opportunity_score"),
+        "buy_quality_action": str(plan.get("quality_action") or quality_authority.get("quality_action") or sizing.get("quality_action") or ""),
+        "buy_quality_score": plan.get("quality_score") if plan.get("quality_score") is not None else sizing.get("quality_score"),
+        "buy_quality_band": str(plan.get("quality_band") or quality_authority.get("quality_band") or sizing.get("quality_band") or ""),
+        "pre_quality_base_target_weight": target_resolution.get("pre_quality_base_target_weight") or sizing.get("pre_quality_base_weight") or plan.get("pre_quality_base_weight"),
+        "quality_authorized_target_weight": target_resolution.get("quality_authorized_target_weight") or sizing.get("post_quality_target_weight") or plan.get("post_quality_target_weight"),
+        "accepted_target_weight": target_resolution.get("final_deployable_target_weight") or sizing.get("target_weight") or plan.get("post_quality_target_weight"),
+        "accepted_quantity": quantity,
+        "accepted_notional": round(quantity * price, 2) if quantity > 0 and price > 0 else None,
+        "accepted_caution_reasons": _entry_caution_reason_codes(plan=plan, sizing=sizing, entry_admission=entry_admission),
+        "trend_momentum": {
+            "trend_health": consumed.get("trend_health"),
+            "momentum_trajectory": quality_authority.get("momentum_trajectory_classification"),
+            "acceleration_state": consumed.get("acceleration_state"),
+        },
+        "relative_strength": consumed.get("relative_strength"),
+        "participation": {
+            "participation_quality": consumed.get("participation_quality"),
+            "participation_risk": consumed.get("participation_risk"),
+        },
+        "persistence": consumed.get("persistence"),
+        "downside_risk_vector": {
+            "downside_risk_status": consumed.get("downside_risk_status") or sizing.get("reentry_downside_risk_status"),
+            "regime_risk": consumed.get("regime_risk"),
+            "volatility_risk": consumed.get("volatility_risk"),
+            "reversal_risk": consumed.get("reversal_risk"),
+            "risk_vote_count": consumed.get("risk_vote_count"),
+        },
+        "regime_context": {
+            "regime_compatibility": consumed.get("regime_compatibility"),
+            "market_context_quality_modifier": (plan.get("component_statuses") or {}).get("market_context_quality_modifier")
+            if isinstance(plan.get("component_statuses"), Mapping)
+            else "",
+        },
+        "source_decision_id": source_decision_id,
+        "runtime_planning_id": str(plan.get("planning_id") or f"runtime-planning-index-{plan_index}"),
+        "position_sizing_reference": str(sizing.get("position_reference") or plan.get("portfolio_construction_reference") or ""),
+        "quality_decision_id": str(plan.get("quality_decision_id") or quality_authority.get("quality_decision_id") or sizing.get("quality_decision_id") or ""),
+        "source_artifact_paths": [str(runtime_planning_path), str(position_sizing_path)],
+        "source_artifact_hashes": [
+            {"path": str(runtime_planning_path), "sha256": _file_hash(runtime_planning_path), "role": "runtime_planning"},
+            {"path": str(position_sizing_path), "sha256": _file_hash(position_sizing_path), "role": "position_sizing"},
+        ],
+        "join_identity": {
+            "join_policy": "strict_prior_same_run_entry_decision_identity",
+            "symbol": symbol,
+            "business_date": business_date,
+            "planned_quantity": quantity,
+            "source_decision_id": source_decision_id,
+            "quality_decision_id": str(plan.get("quality_decision_id") or ""),
+            "symbol_only_join": False,
+        },
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _entry_caution_reason_codes(
+    *,
+    plan: Mapping[str, Any],
+    sizing: Mapping[str, Any],
+    entry_admission: Mapping[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    for source in (
+        plan.get("quality_reason_codes"),
+        plan.get("source_pm_reason_codes"),
+        sizing.get("quality_reason_codes"),
+        sizing.get("reason_codes"),
+        entry_admission.get("reason_codes"),
+    ):
+        if isinstance(source, list):
+            reasons.extend(str(item) for item in source if str(item))
+    consumed = entry_admission.get("consumed_evidence") if isinstance(entry_admission.get("consumed_evidence"), Mapping) else {}
+    reasons.extend(str(value) for value in consumed.values() if isinstance(value, str) and value)
+    return sorted(set(reasons))
+
+
+def _entry_decision_identity_keys(evidence: Mapping[str, Any]) -> list[tuple[str, ...]]:
+    date = str(evidence.get("business_date") or "")
+    symbol = str(evidence.get("symbol") or "").strip()
+    quantity = _quantity_key(evidence.get("accepted_quantity"))
+    semantic_type = str(evidence.get("entry_semantic_type") or "").upper()
+    keys: list[tuple[str, ...]] = []
+    source_decision_id = str(evidence.get("source_decision_id") or "").strip()
+    quality_decision_id = str(evidence.get("quality_decision_id") or "").strip()
+    runtime_planning_id = str(evidence.get("runtime_planning_id") or "").strip()
+    position_sizing_reference = str(evidence.get("position_sizing_reference") or "").strip()
+    if source_decision_id:
+        keys.append(("source_decision_id", date, symbol, source_decision_id))
+    if quality_decision_id:
+        keys.append(("quality_decision_id", date, symbol, quality_decision_id))
+    if runtime_planning_id:
+        keys.append(("runtime_planning_id", date, symbol, runtime_planning_id))
+    if position_sizing_reference:
+        keys.append(("position_sizing_reference", date, symbol, position_sizing_reference))
+    if quantity:
+        keys.append(("symbol_quantity", date, symbol, quantity, semantic_type))
+    return keys
+
+
+def _entry_decision_evidence_for_execution(
+    row: Mapping[str, Any],
+    *,
+    execution_date: str,
+    entry_decision_evidence: Mapping[tuple[str, ...], Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    if not entry_decision_evidence:
+        return None
+    symbol = str(row.get("symbol") or row.get("broker_issue_code") or row.get("security_code") or row.get("code") or "").strip()
+    quantity = _quantity_key(row.get("filled_quantity") or row.get("quantity"))
+    semantic_type = str(row.get("source_decision_type") or "").upper()
+    candidate_keys = [
+        ("source_decision_id", execution_date, symbol, str(row.get("source_decision_id") or "").strip()),
+        ("quality_decision_id", execution_date, symbol, str(row.get("quality_decision_id") or "").strip()),
+        ("pending_item_id", execution_date, symbol, str(row.get("pending_item_id") or "").strip()),
+        ("symbol_quantity", execution_date, symbol, quantity, semantic_type if semantic_type in {"BUY_NEW", "REENTRY"} else "BUY_NEW"),
+        ("symbol_quantity", execution_date, symbol, quantity, "REENTRY"),
+    ]
+    for key in candidate_keys:
+        if key[-1] and key in entry_decision_evidence:
+            return entry_decision_evidence[key]
+    return None
+
+
+def _quantity_key(value: Any) -> str:
+    quantity = _float(value, default=0.0)
+    if quantity <= 0:
+        return ""
+    text = f"{quantity:.6f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _strict_prior_ledger_campaigns_by_symbol(
+    executions: Iterable[Mapping[str, Any]],
+    *,
+    business_date: str,
+    entry_decision_evidence: Mapping[tuple[str, ...], Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     states: dict[str, dict[str, Any]] = {}
     ordered = sorted(
         enumerate(executions),
@@ -1553,6 +1833,11 @@ def _strict_prior_ledger_campaigns_by_symbol(executions: Iterable[Mapping[str, A
         before_quantity = _float(state.get("quantity"), default=0.0)
         if side == "BUY":
             if before_quantity <= 1e-6:
+                entry_decision = _entry_decision_evidence_for_execution(
+                    row,
+                    execution_date=execution_date,
+                    entry_decision_evidence=entry_decision_evidence or {},
+                )
                 state["campaign_index"] = int(state.get("campaign_index") or 0) + 1
                 state["campaign"] = _new_campaign_from_execution(
                     row,
@@ -1560,6 +1845,7 @@ def _strict_prior_ledger_campaigns_by_symbol(executions: Iterable[Mapping[str, A
                     business_date=execution_date,
                     campaign_index=int(state["campaign_index"]),
                     source_index=index,
+                    entry_decision_evidence=entry_decision,
                 )
             state["quantity"] = before_quantity + quantity
             campaign = dict(state.get("campaign") or {})
@@ -1603,10 +1889,27 @@ def _new_campaign_from_execution(
     business_date: str,
     campaign_index: int,
     source_index: int,
+    entry_decision_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     execution_ref = str(row.get("execution_id") or row.get("record_id") or row.get("ledger_record_id") or row.get("execution_key") or source_index)
     campaign_id = f"pc-{hashlib.sha256(f'{symbol}|{campaign_index}|{execution_ref}'.encode()).hexdigest()[:16]}-{symbol}-{campaign_index:04d}"
     price = _float(row.get("average_price") or row.get("price") or row.get("market_price"), default=0.0)
+    entry_snapshot = (
+        _campaign_entry_premise_snapshot_from_entry_decision(
+            row,
+            entry_decision=entry_decision_evidence,
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+        )
+        if entry_decision_evidence
+        else _campaign_entry_premise_snapshot_from_execution(
+            row,
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+        )
+    )
     return {
         "position_campaign_id": campaign_id,
         "symbol": symbol,
@@ -1628,8 +1931,207 @@ def _new_campaign_from_execution(
         "quantity_basis": row.get("quantity_basis") or row.get("execution_price_basis") or row.get("fill_price_basis") or "",
         "valuation_price_basis": row.get("valuation_price_basis") or row.get("execution_price_basis") or row.get("fill_price_basis") or "",
         "observed_state_authority": "STRICT_PRIOR_LEDGER_EXECUTION_BOOTSTRAP",
+        "entry_premise_snapshot": entry_snapshot,
+        "entry_premise_snapshot_status": str(entry_snapshot.get("snapshot_status") or "REVIEW_REQUIRED"),
         "future_information_used": False,
         "events": [],
+    }
+
+
+def _campaign_entry_premise_snapshot_from_execution(
+    row: Mapping[str, Any],
+    *,
+    symbol: str,
+    campaign_id: str,
+    business_date: str,
+) -> dict[str, Any]:
+    existing = row.get("campaign_entry_premise_snapshot") or row.get("entry_premise_snapshot")
+    if isinstance(existing, Mapping):
+        snapshot = dict(existing)
+        snapshot_campaign_id = str(snapshot.get("campaign_id") or snapshot.get("position_campaign_id") or "").strip()
+        if snapshot_campaign_id and snapshot_campaign_id != campaign_id:
+            return _missing_entry_premise_snapshot(
+                symbol=symbol,
+                campaign_id=campaign_id,
+                business_date=business_date,
+                reason="entry_premise_campaign_id_conflict",
+                row=row,
+            )
+        snapshot.update(
+            {
+                "schema_version": "campaign_entry_premise_snapshot.v1",
+                "campaign_id": campaign_id,
+                "symbol": symbol,
+                "entry_business_date": str(snapshot.get("entry_business_date") or business_date),
+                "snapshot_status": "AVAILABLE",
+                "future_information_used": False,
+                "historical_outcome_used": False,
+            }
+        )
+        return snapshot
+
+    entry_fields = {
+        "entry_admission_action": row.get("entry_admission_action") or row.get("production_deployability_class") or row.get("source_decision_type"),
+        "entry_admission_state": row.get("entry_admission_state") or row.get("semantic_entry_type") or row.get("semantic_buy_type"),
+        "rank": row.get("rank") or row.get("opportunity_rank"),
+        "opportunity": row.get("opportunity") or row.get("opportunity_score"),
+        "buy_quality_action": row.get("buy_quality_action") or row.get("quality_action"),
+        "buy_quality_score": row.get("buy_quality_score") or row.get("quality_score"),
+        "buy_quality_band": row.get("buy_quality_band") or row.get("quality_band"),
+        "base_target_weight": row.get("base_target_weight") or row.get("pre_quality_base_target_weight"),
+        "quality_authorized_target_weight": row.get("quality_authorized_target_weight"),
+        "accepted_quantity": row.get("filled_quantity") or row.get("quantity"),
+        "accepted_notional": row.get("market_value") or row.get("cash_effect"),
+        "accepted_caution_reasons": row.get("accepted_caution_reasons") or row.get("entry_caution_reasons") or row.get("reason_codes"),
+        "trend_momentum": row.get("trend_momentum") or row.get("trend_momentum_state"),
+        "relative_strength": row.get("relative_strength") or row.get("relative_strength_state"),
+        "participation": row.get("participation") or row.get("participation_state"),
+        "persistence": row.get("persistence") or row.get("persistence_state"),
+        "downside_risk_vector": row.get("downside_risk_vector") or row.get("risk_vector"),
+        "regime_context": row.get("regime_context") or row.get("market_context_regime"),
+    }
+    has_entry_evidence = any(
+        value not in (None, "", [], {})
+        for key, value in entry_fields.items()
+        if key not in {"accepted_quantity", "accepted_notional"}
+    )
+    if not has_entry_evidence:
+        return _missing_entry_premise_snapshot(
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+            reason="entry_premise_source_evidence_missing",
+            row=row,
+        )
+    return {
+        "schema_version": "campaign_entry_premise_snapshot.v1",
+        "snapshot_status": "AVAILABLE",
+        "campaign_id": campaign_id,
+        "symbol": symbol,
+        "entry_business_date": business_date,
+        **entry_fields,
+        "source_lineage": {
+            "source_execution_id": str(row.get("execution_id") or ""),
+            "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
+            "source_decision_id": str(row.get("source_decision_id") or ""),
+            "source_decision_type": str(row.get("source_decision_type") or ""),
+        },
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _campaign_entry_premise_snapshot_from_entry_decision(
+    row: Mapping[str, Any],
+    *,
+    entry_decision: Mapping[str, Any] | None,
+    symbol: str,
+    campaign_id: str,
+    business_date: str,
+) -> dict[str, Any]:
+    decision = dict(entry_decision or {})
+    if str(decision.get("status") or "").upper() != "PASS":
+        return _missing_entry_premise_snapshot(
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+            reason=str(decision.get("reason") or "entry_premise_authoritative_lineage_unavailable"),
+            row=row,
+        )
+    decision_symbol = str(decision.get("symbol") or "").strip()
+    decision_date = str(decision.get("business_date") or "").strip()
+    if decision_symbol and decision_symbol != symbol:
+        return _missing_entry_premise_snapshot(
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+            reason="entry_premise_authoritative_lineage_symbol_conflict",
+            row=row,
+        )
+    if decision_date and decision_date != business_date:
+        return _missing_entry_premise_snapshot(
+            symbol=symbol,
+            campaign_id=campaign_id,
+            business_date=business_date,
+            reason="entry_premise_authoritative_lineage_date_conflict",
+            row=row,
+        )
+    return {
+        "schema_version": "campaign_entry_premise_snapshot.v1",
+        "snapshot_status": "PASS",
+        "position_campaign_id": campaign_id,
+        "campaign_id": campaign_id,
+        "symbol": symbol,
+        "entry_business_date": business_date,
+        "entry_semantic_type": str(decision.get("entry_semantic_type") or row.get("source_decision_type") or ""),
+        "entry_admission_action": str(decision.get("entry_admission_action") or ""),
+        "entry_admission_state": str(decision.get("entry_admission_state") or ""),
+        "rank": decision.get("opportunity_rank"),
+        "opportunity_rank": decision.get("opportunity_rank"),
+        "opportunity": decision.get("opportunity_score"),
+        "opportunity_score": decision.get("opportunity_score"),
+        "buy_quality_action": str(decision.get("buy_quality_action") or ""),
+        "buy_quality_score": decision.get("buy_quality_score"),
+        "buy_quality_band": str(decision.get("buy_quality_band") or ""),
+        "base_target_weight": decision.get("pre_quality_base_target_weight"),
+        "pre_quality_base_target_weight": decision.get("pre_quality_base_target_weight"),
+        "quality_authorized_target_weight": decision.get("quality_authorized_target_weight"),
+        "accepted_target_weight": decision.get("accepted_target_weight"),
+        "accepted_quantity": decision.get("accepted_quantity"),
+        "accepted_notional": decision.get("accepted_notional"),
+        "accepted_caution_reasons": list(decision.get("accepted_caution_reasons") or []),
+        "trend_momentum": dict(decision.get("trend_momentum") or {}),
+        "relative_strength": decision.get("relative_strength"),
+        "participation": dict(decision.get("participation") or {}),
+        "persistence": decision.get("persistence"),
+        "downside_risk_vector": dict(decision.get("downside_risk_vector") or {}),
+        "regime_context": dict(decision.get("regime_context") or {}),
+        "source_lineage": {
+            "source_execution_id": str(row.get("execution_id") or ""),
+            "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
+            "source_decision_id": str(decision.get("source_decision_id") or row.get("source_decision_id") or ""),
+            "source_decision_type": str(decision.get("entry_semantic_type") or row.get("source_decision_type") or ""),
+            "quality_decision_id": str(decision.get("quality_decision_id") or ""),
+            "runtime_planning_id": str(decision.get("runtime_planning_id") or ""),
+            "position_sizing_reference": str(decision.get("position_sizing_reference") or ""),
+            "source_artifact_paths": list(decision.get("source_artifact_paths") or []),
+            "source_artifact_hashes": list(decision.get("source_artifact_hashes") or []),
+            "join_identity": dict(decision.get("join_identity") or {}),
+        },
+        "source_artifact_paths": list(decision.get("source_artifact_paths") or []),
+        "source_artifact_hashes": list(decision.get("source_artifact_hashes") or []),
+        "join_identity": dict(decision.get("join_identity") or {}),
+        "symbol_only_reconstruction_used": False,
+        "silent_reconstruction_used": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _missing_entry_premise_snapshot(
+    *,
+    symbol: str,
+    campaign_id: str,
+    business_date: str,
+    reason: str,
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "campaign_entry_premise_snapshot.v1",
+        "snapshot_status": "REVIEW_REQUIRED",
+        "campaign_id": campaign_id,
+        "symbol": symbol,
+        "entry_business_date": business_date,
+        "reason_codes": [reason],
+        "source_lineage": {
+            "source_execution_id": str(row.get("execution_id") or ""),
+            "source_execution_record_id": str(row.get("record_id") or row.get("ledger_record_id") or ""),
+            "source_decision_id": str(row.get("source_decision_id") or ""),
+            "source_decision_type": str(row.get("source_decision_type") or ""),
+        },
+        "silent_reconstruction_used": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
     }
 
 
@@ -1855,9 +2357,15 @@ def _campaign_event_sort_key(key: tuple[str, str, str, str, str, str]) -> tuple[
     return (business_date, side_order, dedup, execution_id, record_id, quantity)
 
 
-def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapping[str, Any]], business_date: str) -> dict[str, dict[str, Any]]:
+def _resolve_prior_closed_campaigns_from_executions(
+    *,
+    executions: Iterable[Mapping[str, Any]],
+    business_date: str,
+    pm_exit_reason_by_decision: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     states: dict[str, dict[str, Any]] = {}
     latest_closed: dict[str, dict[str, Any]] = {}
+    pm_reason_index = pm_exit_reason_by_decision or {}
     ordered = sorted(
         enumerate(executions),
         key=lambda item: (
@@ -1895,24 +2403,175 @@ def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapp
         if state["quantity"] <= 1e-6:
             closed_count = int(state.get("closed_campaign_count") or 0) + 1
             state["closed_campaign_count"] = closed_count
-            reason_codes = row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes") or row.get("reason_codes")
+            campaign_id = str(row.get("position_campaign_id") or state.get("campaign_id") or f"ledger-derived-{symbol}-{index}")
+            pm_reason = _matched_pm_exit_reason_for_close(
+                execution=row,
+                execution_date=execution_date,
+                symbol=symbol,
+                campaign_id=campaign_id,
+                pm_exit_reason_by_decision=pm_reason_index,
+            )
+            reason_codes = (
+                pm_reason.get("prior_exit_reason_codes")
+                if pm_reason
+                else row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes") or row.get("reason_codes")
+            )
+            reason = (
+                pm_reason.get("prior_exit_reason")
+                if pm_reason
+                else row.get("prior_exit_reason")
+                or row.get("previous_exit_reason")
+                or row.get("source_decision_reason")
+                or row.get("source_decision_type")
+                or row.get("decision_type")
+                or row.get("source_decision")
+                or "EXIT"
+            )
             latest_closed[symbol] = {
                 "prior_exit_business_date": execution_date,
-                "prior_exit_campaign_id": str(state.get("campaign_id") or f"ledger-derived-{symbol}-{index}"),
-                "prior_exit_reason": str(
-                    row.get("prior_exit_reason")
-                    or row.get("previous_exit_reason")
-                    or row.get("source_decision_reason")
-                    or row.get("source_decision_type")
-                    or row.get("decision_type")
-                    or row.get("source_decision")
-                    or "EXIT"
-                ),
+                "prior_exit_campaign_id": campaign_id,
+                "prior_exit_reason": str(reason),
                 "prior_exit_reason_codes": reason_codes if isinstance(reason_codes, list) else [],
                 "prior_same_symbol_exit_count": closed_count,
                 "prior_exit_state_status": "RESOLVED_FROM_PIT_LEDGER_EXECUTION_HISTORY",
+                "prior_exit_reason_authority": str(pm_reason.get("prior_exit_reason_authority") or "EXECUTION_ROW_FALLBACK") if pm_reason else "EXECUTION_ROW_FALLBACK",
+                "prior_exit_reason_source_decision_id": str(pm_reason.get("source_pm_decision_id") or row.get("source_decision_id") or ""),
+                "prior_exit_reason_source_artifact_path": str(pm_reason.get("source_artifact_path") or ""),
+                "prior_exit_reason_future_information_used": False,
             }
     return latest_closed
+
+
+def _matched_pm_exit_reason_for_close(
+    *,
+    execution: Mapping[str, Any],
+    execution_date: str,
+    symbol: str,
+    campaign_id: str,
+    pm_exit_reason_by_decision: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    decision_id = str(execution.get("source_decision_id") or execution.get("source_pm_decision_id") or "").strip()
+    if not decision_id or decision_id.upper() in {"MISSING", "NOT_APPLICABLE", "UNKNOWN"}:
+        return {}
+    evidence = pm_exit_reason_by_decision.get(decision_id)
+    if not evidence:
+        return {}
+    if str(evidence.get("business_date") or "") != execution_date:
+        return {}
+    if str(evidence.get("symbol") or "").strip() != symbol:
+        return {}
+    evidence_campaign = str(evidence.get("position_campaign_id") or "").strip()
+    execution_campaign = str(execution.get("position_campaign_id") or "").strip()
+    if evidence_campaign and execution_campaign and evidence_campaign != execution_campaign:
+        return {}
+    if evidence_campaign and campaign_id and evidence_campaign != campaign_id:
+        return {}
+    return dict(evidence)
+
+
+def _strict_prior_pm_exit_reason_evidence_by_decision(
+    *,
+    run_dir: Path | None,
+    runtime_root: Path,
+    business_date: str,
+) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for source_date, source_path in _strict_prior_pm_reason_source_paths(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+    ):
+        payload = _read_json(source_path)
+        source_rows = payload.get("decisions") or payload.get("positions") or []
+        if not isinstance(source_rows, list):
+            continue
+        source_hash = _file_hash(source_path)
+        payload_date = str(payload.get("business_date") or source_date)
+        if not payload_date or payload_date >= business_date:
+            continue
+        for row in source_rows:
+            if not isinstance(row, Mapping):
+                continue
+            evidence = _pm_prior_exit_reason_evidence(row, source_date=payload_date, source_path=source_path, source_hash=source_hash)
+            if not evidence:
+                continue
+            rows[str(evidence["source_pm_decision_id"])] = evidence
+    return rows
+
+
+def _strict_prior_pm_reason_source_paths(
+    *,
+    run_dir: Path | None,
+    runtime_root: Path,
+    business_date: str,
+) -> list[tuple[str, Path]]:
+    paths: dict[tuple[str, str], Path] = {}
+    if run_dir is not None:
+        daily_root = run_dir / "daily"
+        if daily_root.is_dir():
+            for child in sorted(item for item in daily_root.iterdir() if item.is_dir()):
+                source_date = child.name
+                if not source_date or source_date >= business_date:
+                    continue
+                for relative in (
+                    Path("position_management") / "pm_decisions.json",
+                    Path("strategy") / "position_management.json",
+                    Path("strategy_eod_shadow") / "position_management.json",
+                ):
+                    path = child / relative
+                    if path.is_file():
+                        paths[(source_date, str(path))] = path
+    for root in (
+        runtime_root / "runtime_state" / "sell_pipeline",
+        runtime_root / "runtime_state" / "position_management",
+    ):
+        if not root.is_dir():
+            continue
+        for child in sorted(item for item in root.iterdir() if item.is_dir()):
+            source_date = child.name
+            if not source_date or source_date >= business_date:
+                continue
+            path = child / "position_management_decisions.json"
+            if path.is_file():
+                paths[(source_date, str(path))] = path
+    return [(source_date, path) for (source_date, _), path in sorted(paths.items())]
+
+
+def _pm_prior_exit_reason_evidence(
+    row: Mapping[str, Any],
+    *,
+    source_date: str,
+    source_path: Path,
+    source_hash: str,
+) -> dict[str, Any]:
+    action = str(row.get("decision_type") or row.get("decision") or row.get("action") or "").upper()
+    if action not in {"EXIT", "REDUCE"}:
+        return {}
+    decision_id = str(row.get("pm_decision_id") or row.get("decision_id") or row.get("source_pm_decision_id") or "").strip()
+    if not decision_id or decision_id.upper() in {"MISSING", "NOT_APPLICABLE", "UNKNOWN"}:
+        return {}
+    symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+    if not symbol:
+        return {}
+    reason = str(row.get("decision_reason") or row.get("reason") or row.get("dominant_cause") or "").strip()
+    codes = row.get("reason_codes") or row.get("decision_reason_codes") or row.get("canonical_decision_reason_codes") or row.get("legacy_decision_reason_codes")
+    reason_codes = [str(item) for item in codes] if isinstance(codes, list) else []
+    if not reason and not reason_codes:
+        return {}
+    return {
+        "business_date": source_date,
+        "symbol": symbol,
+        "position_campaign_id": str(row.get("position_campaign_id") or row.get("campaign_id") or "").strip(),
+        "source_pm_decision_id": decision_id,
+        "pm_action": action,
+        "prior_exit_reason": reason or "|".join(reason_codes),
+        "prior_exit_reason_codes": reason_codes,
+        "prior_exit_reason_authority": "STRICT_PRIOR_PM_DECISION_EVIDENCE",
+        "source_artifact_path": str(source_path),
+        "source_artifact_hash": source_hash,
+        "decision_evidence_not_execution": True,
+        "future_information_used": False,
+    }
 
 
 def _attach_prior_exit_to_summary(
@@ -2173,6 +2832,10 @@ def _produce_lot_aware_final_portfolio_construction(
     business_date: str,
     draft_path: Path,
     preflight_path: Path,
+    authority_path: Path,
+    cash_payload: Mapping[str, Any],
+    safety_payload: Mapping[str, Any],
+    run_id: str,
     output_path: Path,
 ) -> Any:
     draft = _read_json(draft_path)
@@ -2201,6 +2864,28 @@ def _produce_lot_aware_final_portfolio_construction(
         "reason_codes": sorted(set([*list(draft.get("reason_codes") or []), *reallocation["reason_codes"]])),
     }
     final_payload = portfolio_construction.promote_final_portfolio_construction_for_production(final_payload)
+    disabled_authority = marginal_capital_frontier_authority.build_marginal_capital_frontier_authority_payload(
+        business_date=business_date,
+        portfolio_construction_payload=final_payload,
+        position_sizing_payload=preflight,
+        safety_payload=safety_payload,
+        cash_payload=cash_payload,
+        source_artifacts={
+            "portfolio_construction": str(output_path),
+            "position_sizing_preflight": str(preflight_path),
+            "cash": "runtime_current_asset_snapshot",
+            "safety": "configs/safety/portfolio_limits.json",
+        },
+        run_id=run_id,
+    )
+    active_authority = marginal_capital_frontier_authority.activate_pc_to_ps_production_consumer_switch(disabled_authority)
+    marginal_capital_frontier_authority.write_marginal_capital_frontier_authority_artifact(active_authority, authority_path)
+    final_payload = {
+        **final_payload,
+        "canonical_marginal_capital_frontier_authority": active_authority,
+        "marginal_capital_frontier_authority_artifact_path": str(authority_path),
+        "marginal_capital_frontier_authority_artifact_hash": active_authority.get("artifact_hash"),
+    }
     portfolio_construction.validate_portfolio_construction_artifact(final_payload)
     artifact_hash = portfolio_construction.portfolio_construction_hash(final_payload)
     final_payload = {**final_payload, "artifact_hash": artifact_hash}

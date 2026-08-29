@@ -556,7 +556,9 @@ def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExi
                 source_decision=decision,
                 reduce_intensity=str(item.get("reduce_intensity") or ""),
                 source_decision_artifact=str(payload.get("artifact_path") or ""),
-                source_decision_id=str(item.get("decision_id") or ""),
+                source_decision_id=str(item.get("decision_id") or item.get("pm_decision_id") or ""),
+                source_business_date=str(item.get("business_date") or payload.get("business_date") or ""),
+                position_campaign_id=str(item.get("position_campaign_id") or ""),
             )
         )
     return tuple(decisions)
@@ -626,6 +628,7 @@ def _decision_payload(
     symbol = str(row.get("code") or "")
     decision = str(row.get("action") or "HOLD").upper()
     position_quantity = _current_quantity(current, symbol)
+    position_campaign_id = _current_position_campaign_id(current, symbol)
     confidence = _confidence(row, decision)
     reason = str(row.get("exit_reason") or row.get("action_reason") or decision)
     runtime_sell_quantity = position_quantity if decision == "EXIT" else 0.0
@@ -668,6 +671,7 @@ def _decision_payload(
         "business_date": str(row.get("target_date") or ""),
         "symbol": symbol,
         "decision": decision,
+        "position_campaign_id": position_campaign_id,
         "reason": reason,
         "confidence": confidence,
         "confidence_semantics": PM_CONFIDENCE_SEMANTICS,
@@ -2073,6 +2077,16 @@ def _current_quantity(current: dict[str, Any], symbol: str) -> float:
         for item in current.get("positions") or ()
         if str(item.get("symbol") or item.get("issue_code") or "") == symbol
     )
+
+
+def _current_position_campaign_id(current: dict[str, Any], symbol: str) -> str:
+    values = {
+        str(item.get("position_campaign_id") or item.get("campaign_id") or "").strip()
+        for item in current.get("positions") or ()
+        if str(item.get("symbol") or item.get("issue_code") or "") == symbol
+        and str(item.get("position_campaign_id") or item.get("campaign_id") or "").strip()
+    }
+    return next(iter(values)) if len(values) == 1 else ""
 
 
 def _confidence(row: dict[str, Any], decision: str) -> float:

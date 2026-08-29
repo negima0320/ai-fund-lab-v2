@@ -64,6 +64,8 @@ class SellExitDecision:
     reduce_intensity: str = ""
     source_decision_artifact: str = ""
     source_decision_id: str = ""
+    source_business_date: str = ""
+    position_campaign_id: str = ""
     quantity_contract: dict[str, Any] | None = None
 
 
@@ -2118,13 +2120,31 @@ def _pending_item_with_sell_decision_lineage(
     contract = dict(item.quantity_contract or decision.quantity_contract or {})
     if decision.source_decision_id and "source_decision_id" not in contract:
         contract["source_decision_id"] = decision.source_decision_id
+    if decision.source_business_date and "business_date" not in contract:
+        contract["business_date"] = decision.source_business_date
+    if decision.position_campaign_id and "position_campaign_id" not in contract:
+        contract["position_campaign_id"] = decision.position_campaign_id
+    lineage = dict(item.strategy_authority_lineage or {})
+    lineage_updates = {
+        "source_decision_id": decision.source_decision_id,
+        "source_pm_decision_id": decision.source_decision_id,
+        "source_decision_type": decision.source_decision,
+        "source_pm_business_date": decision.source_business_date or contract.get("business_date"),
+        "source_position_symbol": decision.symbol or item.symbol,
+        "position_campaign_id": decision.position_campaign_id,
+    }
+    for key, value in lineage_updates.items():
+        if value and not lineage.get(key):
+            lineage[key] = str(value)
     return replace(
         item,
         quantity_contract=contract,
+        strategy_authority_lineage=lineage or item.strategy_authority_lineage,
         source_decision_type=str(decision.source_decision or ""),
         source_pm_decision_id=str(decision.source_decision_id or ""),
-        source_pm_business_date=str(contract.get("business_date") or ""),
+        source_pm_business_date=str(decision.source_business_date or contract.get("business_date") or ""),
         source_position_symbol=str(decision.symbol or item.symbol),
+        position_campaign_id=str(decision.position_campaign_id or item.position_campaign_id or ""),
     )
 
 

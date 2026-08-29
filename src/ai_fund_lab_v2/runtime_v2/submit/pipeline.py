@@ -1578,6 +1578,7 @@ def _ledger_order_record(
 ) -> LedgerOrderRecord:
     record_id = "ledger-order-submit-" + _short_hash(command.command_id)
     pending_item = next((item for item in pending.items if item.pending_item_id == command.pending_item_id), None)
+    provenance = _pending_submit_provenance(pending_item=pending_item, command=command)
     return LedgerOrderRecord(
         record_id=record_id,
         record_type="order",
@@ -1598,10 +1599,12 @@ def _ledger_order_record(
         status=submit_result.status,
         issue_code_normalization=dict(submit_result.issue_code_normalization),
         response_classification=dict(submit_result.response_classification),
-        source_decision_type=str(pending_item.source_decision_type if pending_item is not None else ""),
-        source_pm_decision_id=str(pending_item.source_pm_decision_id if pending_item is not None else ""),
-        source_pm_business_date=str(pending_item.source_pm_business_date if pending_item is not None else ""),
-        source_position_symbol=str(pending_item.source_position_symbol if pending_item is not None else ""),
+        source_decision_id=provenance["source_decision_id"],
+        source_decision_type=provenance["source_decision_type"],
+        source_pm_decision_id=provenance["source_pm_decision_id"],
+        source_pm_business_date=provenance["source_pm_business_date"],
+        source_position_symbol=provenance["source_position_symbol"],
+        position_campaign_id=provenance["position_campaign_id"],
         add_candidate_signal=bool(pending_item.add_candidate_signal if pending_item is not None else False),
         capital_allocation_status=str(pending_item.capital_allocation_status if pending_item is not None else ""),
         capital_allocation_reason=str(pending_item.capital_allocation_reason if pending_item is not None else ""),
@@ -1616,6 +1619,73 @@ def _ledger_order_record(
             else command.strategy_authority_lineage_hash
         ),
     )
+
+
+def _pending_submit_provenance(
+    *,
+    pending_item: Any,
+    command: RuntimeV2SubmitCommand,
+) -> dict[str, str]:
+    item_lineage: Mapping[str, Any] = (
+        pending_item.strategy_authority_lineage
+        if pending_item is not None and isinstance(pending_item.strategy_authority_lineage, Mapping)
+        else {}
+    )
+    item_contract: Mapping[str, Any] = (
+        pending_item.quantity_contract
+        if pending_item is not None and isinstance(pending_item.quantity_contract, Mapping)
+        else {}
+    )
+    item_mapping = {
+        "source_decision_id": getattr(pending_item, "source_decision_id", "") if pending_item is not None else "",
+        "source_decision_type": getattr(pending_item, "source_decision_type", "") if pending_item is not None else "",
+        "source_pm_decision_id": getattr(pending_item, "source_pm_decision_id", "") if pending_item is not None else "",
+        "source_pm_business_date": getattr(pending_item, "source_pm_business_date", "") if pending_item is not None else "",
+        "source_position_symbol": getattr(pending_item, "source_position_symbol", "") if pending_item is not None else "",
+        "position_campaign_id": getattr(pending_item, "position_campaign_id", "") if pending_item is not None else "",
+        "symbol": getattr(pending_item, "symbol", "") if pending_item is not None else "",
+    }
+    command_mapping = {
+        "source_decision_type": command.source_decision_type,
+        "source_pm_decision_id": command.source_pm_decision_id,
+        "source_pm_business_date": command.source_pm_business_date,
+        "source_position_symbol": command.source_position_symbol,
+        "position_campaign_id": command.position_campaign_id,
+        "symbol": command.symbol,
+    }
+    mappings = (item_mapping, command_mapping, item_lineage, item_contract)
+    return {
+        "source_decision_id": _first_provenance_text(
+            mappings,
+            ("source_decision_id", "source_pm_decision_id", "pm_decision_id", "decision_id"),
+        ),
+        "source_pm_decision_id": _first_provenance_text(
+            mappings,
+            ("source_pm_decision_id", "source_decision_id", "pm_decision_id", "decision_id"),
+        ),
+        "source_decision_type": _first_provenance_text(mappings, ("source_decision_type", "decision_type", "source_decision")),
+        "source_pm_business_date": _first_provenance_text(
+            mappings,
+            ("source_pm_business_date", "pm_business_date", "decision_business_date", "business_date"),
+        ),
+        "source_position_symbol": _first_provenance_text(
+            mappings,
+            ("source_position_symbol", "position_symbol", "symbol", "security_code"),
+        ),
+        "position_campaign_id": _first_provenance_text(
+            mappings,
+            ("position_campaign_id", "current_position_campaign_id", "pm_position_campaign_id", "campaign_id"),
+        ),
+    }
+
+
+def _first_provenance_text(mappings: tuple[Mapping[str, Any], ...], keys: tuple[str, ...]) -> str:
+    for mapping in mappings:
+        for key in keys:
+            value = mapping.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
 
 
 def _append_ledger_order_records(path: Path, records: list[LedgerOrderRecord]) -> None:

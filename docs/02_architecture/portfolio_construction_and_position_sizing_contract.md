@@ -1108,3 +1108,300 @@ Existing HOLD capital is not merged into the current NEW_BUY / BUY_ADD / Cash
 execution frontier by this reference. Portfolio-wide rotation must remain a
 future staged capability that depends on high-resolution marginal capital value
 and PM-owned REDUCE / EXIT action authority.
+
+## 21. Phase32-AS Shadow Common Marginal Frontier / PS Boundary
+
+Phase32-AS adds a shadow-only Portfolio Construction-owned capital value
+artifact:
+
+```text
+canonical_marginal_capital_frontier.v1
+```
+
+Implementation module:
+
+```text
+src/ai_fund_lab_v2/strategy/common_marginal_capital_frontier_shadow.py
+```
+
+This artifact is an observability and characterization artifact only. It may
+compare `NEW_FIRST_LOT`, `REENTRY_FIRST_LOT`, `ADD_NEXT_LOT`, and
+`CASH_OPTIONALITY` on a common structured partial-order frontier, but it is not
+the production target-weight authority and it is not a Position Sizing input.
+
+Required boundary:
+
+```text
+artifact_mode = SHADOW_NON_AUTHORITATIVE
+production_consumer_count = 0
+feeds_position_sizing = false
+feeds_runtime_planning = false
+feeds_pending = false
+feeds_orders = false
+feeds_execution = false
+feeds_safety_authority = false
+production_target_weight_changed = false
+production_behavior_changed = false
+```
+
+Position Sizing continues to consume only the accepted production Portfolio
+Construction target / increment / discrete quantity authorities. It must not
+consume `canonical_marginal_capital_frontier.v1` unless a future task
+explicitly promotes the artifact through accepted authority migration.
+
+Phase32-AU defines the shadow-only Cash resolver used by day-level
+materialization. The resolver must not infer zero Cash from absent top-level
+Portfolio Construction fields. It must resolve decision-time Cash from same-day
+artifacts using deterministic priority, with `strategy/portfolio_policy.json`
+ahead of `current_valuation_refresh/valuation_projection.json` fallback, and it
+must preserve source path, source role, content hash, and all observed Cash
+lineage in the shadow artifact.
+
+If the selected-priority Cash evidence is missing or internally ambiguous, the
+frontier must fail closed as `REVIEW_REQUIRED`. That review state is
+observability only; it is not Position Sizing input and cannot change production
+target weights, quantities, Runtime Planning, Pending, Orders, Execution, or
+Safety authority.
+
+## 22. Phase32-AZ Production-Shaped Target-Gap Authority Boundary
+
+Phase32-AZ adds a Portfolio Construction-owned production-shaped artifact:
+
+```text
+canonical_marginal_capital_frontier_authority.v1
+```
+
+The artifact may emit Position Sizing-compatible target fields for future
+dual-read validation:
+
+```text
+current_weight
+target_weight
+accepted_incremental_weight
+target_gap
+target_minus_current
+accepted_incremental_notional
+accepted_frontier_candidate_ids
+capital_value_authority
+target_weight_reason_codes
+```
+
+These fields are not Position Sizing input in Phase32-AZ. The required boundary
+is:
+
+```text
+artifact_mode = PRODUCTION_SHAPED_CONSUMER_DISABLED
+production_consumer_enabled = false
+production_consumer_count = 0
+feeds_position_sizing = false
+feeds_runtime_planning = false
+feeds_pending = false
+feeds_orders = false
+feeds_execution = false
+feeds_safety_authority = false
+production_behavior_changed = false
+```
+
+Position Sizing continues to consume the existing accepted production PC target
+and quantity authorities only. A future migration task must explicitly switch
+the consumer, remove fallback ambiguity, and prove PS equality/acceptance before
+`canonical_marginal_capital_frontier_authority.v1` can affect quantities,
+Pending, Orders, Execution, or Runtime behavior.
+
+## 23. Phase32-BC Budget-Bounded Authority / PS Boundary
+
+Phase32-BC adds budget-bounded acceptance sections to the consumer-disabled
+authority artifact:
+
+```text
+allocation_budget_authority
+frontier_acceptance_sequence[]
+authorized_cash_allocation
+capital_conservation
+budget_stop_reasons
+```
+
+Portfolio Construction must reuse the existing finite deployment budget
+lineage from `available_incremental_budget`, the canonical multi-allocation
+deployment set, and the Portfolio Policy `incremental_capital_budget_envelope`.
+It must not create a duplicate arbitrary budget or tune a budget from
+Historical outcomes.
+
+The BC authority may emit fewer target rows than the raw feasible candidate
+surface because all security lots compete for the same remaining budget. Any
+remaining budget must be published as explicit Cash allocation, and allocated
+security weight plus authorized Cash weight must equal the finite budget.
+
+Position Sizing remains disconnected in BC:
+
+```text
+production_consumer_enabled = false
+feeds_position_sizing = false
+production_behavior_changed = false
+```
+
+Future PS migration may consume only `accepted_incremental_targets[]` whose
+budget authority, capital conservation, guardrails, and target-gap fields all
+validate as PASS.
+
+## 24. Phase32-BF PC-to-PS Switch Boundary Validator
+
+Phase32-BF adds a consumer-disabled PC-to-PS switch boundary validator inside
+`canonical_marginal_capital_frontier_authority.v1`:
+
+```text
+pc_to_ps_consumer_switch_boundary
+```
+
+The boundary aggregates accepted BC target lots into one PS-shaped final target
+per symbol/semantic/campaign. ADD lots remain accepted one at a time by PC, but
+the switch boundary must net ADD lot #1/#2/#N into a single final quantity
+delta before any future PS consumer can use them.
+
+Required per-row output:
+
+```text
+symbol
+semantic_type
+position_campaign_id
+current_quantity
+final_target_quantity
+final_quantity_delta
+current_weight
+final_target_weight
+accepted_incremental_weight
+target_gap
+accepted_frontier_candidate_ids
+source_pm_decision_ids
+source_candidate_ids
+source_pc_evidence_ids
+legacy_target_gap_fallback_allowed = false
+legacy_zero_fallback_allowed = false
+```
+
+Missing authority, duplicate target identity, non-contiguous ADD lots, missing
+ADD campaign identity, or inconsistent final quantity deltas must fail closed
+as `REVIEW_REQUIRED`. Switched rows must not silently fall back to the legacy
+target-gap path or legacy ADD zero path.
+
+Phase32-BF remains consumer disabled:
+
+```text
+production_consumer_enabled = false
+production_consumer_count = 0
+feeds_position_sizing = false
+feeds_runtime_planning = false
+production_behavior_changed = false
+```
+
+## 25. Phase32-BG Explicit Marginal Frontier Consumer Switch
+
+Phase32-BG explicitly switches the PC-to-PS target authority to the BF
+aggregated boundary rows:
+
+```text
+canonical_marginal_capital_frontier_authority.v1
+-> pc_to_ps_consumer_switch_boundary.aggregated_ps_targets[]
+-> Position Sizing
+```
+
+The production switch section is:
+
+```text
+pc_to_ps_production_consumer_switch.v1
+```
+
+Required switch contract:
+
+```text
+production_consumer_enabled = true
+production_consumer_count = 1
+production_consumers = [strategy.position_sizing]
+target_authority_source = BF_AGGREGATED_PS_BOUNDARY_ONLY
+legacy_target_gap_fallback_allowed = false
+legacy_zero_fallback_allowed = false
+shadow_frontier_production_consumer_count = 0
+```
+
+Position Sizing consumes only BF aggregated targets when this switch is present
+and valid. Invalid switched authority is `REVIEW_REQUIRED`; it must not fall
+back to the legacy target-gap path or legacy ADD zero path.
+
+Blocked marginal-capital candidates must never become switched PS targets. For
+all security lots, ADD admission or entry admission is necessary but not
+sufficient. Before a lot enters the common frontier acceptance pool it must
+validate:
+
+```text
+comparison_class != BLOCKED
+marginal_capital_value_class != BLOCKED_OR_NOT_ELIGIBLE
+desirability.status = PASS
+constraints.status = PASS
+feasibility.status = PASS
+observability.status = PASS
+```
+
+`ADD final_add_eligibility = PASS` means the ADD lot may be considered as an
+ADD candidate; it does not override a blocked marginal-capital-value or
+opportunity-quality class. BF aggregation must fail closed if an accepted target
+references a blocked, non-eligible, or non-PASS source candidate. Runtime and
+submit validation must not recompute capital value, but a positive BUY quantity
+with `marginal_capital_value_class = BLOCKED_OR_NOT_ELIGIBLE` is
+`REVIEW_REQUIRED` unless an explicit diagnostic-only authority is present.
+
+Path classification after BG:
+
+| Path | Classification |
+| --- | --- |
+| PM intent/evidence | KEEP |
+| BC marginal capital authority | MIGRATE |
+| BF aggregated PC-to-PS boundary rows | MIGRATE |
+| Existing PS target-to-quantity conversion | KEEP |
+| Runtime/Pending/Orders/Execution mapping | KEEP |
+| REDUCE/EXIT/Safety authority | KEEP |
+| Legacy PC target-gap source for switched rows | REMOVE |
+| Legacy ADD zero fallback for switched rows | REMOVE |
+| Shadow frontier production consumption | FORBIDDEN |
+
+## 26. Phase32-BV NEW/REENTRY Production Admission Restoration
+
+Phase32-BV restores the existing PC-owned first-lot production admission
+boundary for `NEW_FIRST_LOT` and `REENTRY_FIRST_LOT` inside the marginal capital
+frontier authority path.
+
+Candidate evidence and production deployability are separate contracts:
+
+```text
+candidate / buy quality evidence
+-> first-lot frontier candidate observability
+-> PC production admission evidence
+-> common marginal capital competition
+-> BF aggregated PS target
+```
+
+For `NEW_FIRST_LOT` and `REENTRY_FIRST_LOT`, a BF/PS-consumable target requires
+existing PC-owned production admission evidence:
+
+```text
+target_weight > 0
+membership_intent is not EXCLUDE / AVOID / NOT_SELECTED / INELIGIBLE
+target_weight_resolution.status is PASS or absent/not-applicable
+```
+
+`target_weight = 0` is a valid PC outcome and must not be promoted into a
+PS-consumable target by the common frontier alone. Such rows may remain visible
+as frontier candidates for explainability, but their authority disposition must
+be non-deployable, for example:
+
+```text
+INELIGIBLE_PC_PRODUCTION_ADMISSION_BLOCKED
+```
+
+`ADD_NEXT_LOT` does not depend on NEW/REENTRY first-lot admission. ADD remains
+governed by PM campaign identity, ADD evidence, marginal capital competition,
+Cash/budget, effective Strategy/Safety concentration cap, Risk Pacing, and
+no-loss-averaging constraints.
+
+This restoration does not tune rank, quality, marginal-value weights, position
+count, fixed share size, or thresholds, and must not use historical outcome or
+PnL evidence.

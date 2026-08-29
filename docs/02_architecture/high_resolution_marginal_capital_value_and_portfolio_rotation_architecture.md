@@ -15,6 +15,32 @@ This document is an architecture SoT only. It does not implement a schema,
 producer, consumer, threshold, weight, model, runtime behavior, or trading
 behavior.
 
+## 1.1 Implementation Status And Phase31 Deferral Decision
+
+Implementation status:
+
+```text
+NOT_IMPLEMENTED
+```
+
+Current release status:
+
+```text
+DEFERRED / FUTURE_OPTIONAL
+```
+
+Phase31 designed this architecture and considered it as a possible future
+implementation candidate. Implementation was intentionally deferred for the
+current release because the accepted Phase31 Strategy baseline demonstrated
+sufficiently strong performance for Demo / Production readiness entry, and no
+mandatory performance defect required high-resolution marginal capital value or
+portfolio-wide rotation for the current release.
+
+This document is therefore a future architecture design SoT. It does not
+describe an implemented current-production authority path. Reconsideration
+requires new evidence that the current capital-allocation architecture imposes
+a material performance ceiling or operational need.
+
 ## 2. Current Architecture Baseline
 
 The current system already performs capital competition among:
@@ -664,3 +690,314 @@ This SoT materializes accepted findings from:
 
 Phase reports are provenance. This document is the enduring architecture
 contract.
+
+## 26. Phase32-AS Shadow Common Marginal Frontier Materialization
+
+Phase32-AS materializes the first shadow-only implementation of the high
+resolution marginal capital frontier:
+
+```text
+canonical_marginal_capital_frontier.v1
+```
+
+Implementation module:
+
+```text
+src/ai_fund_lab_v2/strategy/common_marginal_capital_frontier_shadow.py
+```
+
+Status:
+
+```text
+SHADOW_NON_AUTHORITATIVE
+```
+
+The artifact places `NEW_FIRST_LOT`, `REENTRY_FIRST_LOT`, `ADD_NEXT_LOT`, and
+`CASH_OPTIONALITY` candidates on one structured partial-order frontier. ADD is
+represented as one object per executable next lot, with hypothetical post-lot
+quantity, weight, Cash, and headroom recomputed for each increment.
+
+The artifact preserves the permanent boundary:
+
+```text
+feeds_position_sizing = false
+feeds_runtime_planning = false
+feeds_pending = false
+feeds_orders = false
+feeds_execution = false
+feeds_safety_authority = false
+production_behavior_changed = false
+```
+
+`canonical_marginal_capital_frontier.v1` must not become production target
+weight, quantity, order, Cash, Runtime, or Safety authority without a later
+explicit acceptance and authority-migration phase.
+
+Phase32-AU adds the shadow day-level Cash source resolver for this artifact.
+The resolver is PIT-safe and deterministic: it reads only same-day artifacts
+available to the shadow materializer and records the selected source plus all
+cash-source lineage in the shadow artifact. The required source priority is:
+
+```text
+strategy/portfolio_policy.json#current_cash_summary
+strategy/portfolio_policy.json#portfolio_policy_allocation_authority.cash_context
+strategy/portfolio_policy.json#portfolio_policy_allocation_authority.available_cash_context
+current_valuation_refresh/valuation_projection.json
+strategy/portfolio_policy.json#top_level
+strategy/portfolio_construction.json#top_level
+strategy/portfolio_construction.json#capital_competition.canonical_multi_allocation_deployment_set
+```
+
+Missing or ambiguous selected-priority Cash evidence must fail closed as
+`REVIEW_REQUIRED`. It must not be converted to zero Cash, because that creates
+false `INFEASIBLE_INSUFFICIENT_CASH` dispositions and makes Cash appear to win
+for the wrong reason. Lower-priority fallback observations are lineage only when
+a higher-priority source resolves cleanly.
+
+## 27. Phase32-AZ Production-Shaped Capital Value Authority
+
+Phase32-AZ adds the consumer-disabled, production-shaped Portfolio
+Construction authority artifact:
+
+```text
+canonical_marginal_capital_frontier_authority.v1
+```
+
+Implementation module:
+
+```text
+src/ai_fund_lab_v2/strategy/marginal_capital_frontier_authority.py
+```
+
+Status:
+
+```text
+PRODUCTION_SHAPED_CONSUMER_DISABLED
+```
+
+This artifact is owned by:
+
+```text
+PORTFOLIO_CONSTRUCTION_CAPITAL_VALUE_AUTHORITY
+```
+
+It converts the accepted shadow candidate surface into a bounded deterministic
+cardinal marginal-capital-value contract and emits future Position
+Sizing-compatible target fields:
+
+```text
+current_weight
+target_weight
+accepted_incremental_weight
+target_gap
+target_minus_current
+accepted_incremental_notional
+accepted_frontier_candidate_ids
+capital_value_authority
+target_weight_reason_codes
+```
+
+The authority evaluates `NEW_FIRST_LOT`, `REENTRY_FIRST_LOT`,
+`ADD_NEXT_LOT`, and `CASH_OPTIONALITY` on one common frontier. ADD remains a
+sequence of next-lot candidates; each accepted ADD lot requires the previous
+lot for the same symbol/campaign to have been accepted first, and remaining
+Cash is recomputed after each accepted increment.
+
+The cardinal value contract is bounded in `[0.0, 1.0]`, deterministic, and
+derived only from decision-time evidence already present in the candidate
+surface: opportunity, quality, rank, requalification evidence, and remaining
+headroom. It does not use fixed share-size rules, fixed ADD multipliers, fixed
+position count, semantic-type multipliers, or Historical outcome parameter
+selection. Ambiguous cross-type top values fail closed as `REVIEW_REQUIRED`.
+
+The production-shaped artifact is deliberately not active production authority
+until a later migration phase explicitly enables consumption. Permanent AZ
+boundary:
+
+```text
+production_consumer_enabled = false
+production_consumer_count = 0
+feeds_position_sizing = false
+feeds_runtime_planning = false
+feeds_pending = false
+feeds_orders = false
+feeds_execution = false
+feeds_safety_authority = false
+production_behavior_changed = false
+```
+
+`canonical_marginal_capital_frontier.v1` remains shadow-only and
+non-authoritative. Phase32-AZ does not migrate PM, Position Sizing, Runtime,
+Safety, REDUCE, EXIT, Cash policy, Risk Pacing, or threshold ownership.
+
+## 28. Phase32-BC Budget-Bounded Acceptance Boundary
+
+Phase32-BC extends `canonical_marginal_capital_frontier_authority.v1` with a
+consumer-disabled allocation boundary:
+
+```text
+allocation_budget_authority
+frontier_acceptance_sequence[]
+authorized_cash_allocation
+capital_conservation
+budget_stop_reasons
+```
+
+Budget source priority must reuse existing authorities:
+
+```text
+1. strategy/portfolio_construction.json#available_incremental_budget
+2. strategy/portfolio_construction.json#capital_competition.canonical_multi_allocation_deployment_set.available_incremental_budget
+3. strategy/portfolio_construction.json#incremental_budget_reconciliation.available_incremental_budget
+4. embedded Portfolio Policy incremental_capital_budget_envelope exposure headroom
+```
+
+Missing or conflicting budget evidence is fail-closed `REVIEW_REQUIRED`.
+
+The acceptance loop allocates the finite decision-time budget one lot at a time
+across `NEW_FIRST_LOT`, `REENTRY_FIRST_LOT`, `ADD_NEXT_LOT`, and
+`CASH_OPTIONALITY`. A security lot is accepted only while it is feasible under
+remaining budget, strictly above Cash optionality, non-ambiguous versus the
+next alternative, and still valid under cap, Cash, Safety, Risk Pacing, and
+no-loss-averaging constraints.
+
+ADD lot #2/#3+ must re-enter common competition after prior accepted lots
+recompute remaining budget, Cash, weight, headroom, and concentration. Later
+ADD lots do not inherit acceptance from earlier ADD lots.
+
+Any unallocated budget is explicitly assigned to Cash optionality and verified
+by `capital_conservation`. Position count remains an output of accepted lots.
+No fixed target count, fixed ADD lot count, fixed share count, fixed ADD
+multiplier, fixed position count, or Historical-outcome-selected threshold is
+introduced.
+
+The Phase32-BC boundary remains:
+
+```text
+production_consumer_enabled = false
+production_consumer_count = 0
+production_behavior_changed = false
+```
+
+## 29. Phase32-BF PC-to-PS Aggregated Target Boundary
+
+Phase32-BF adds a deterministic switch-boundary validator to
+`canonical_marginal_capital_frontier_authority.v1`:
+
+```text
+pc_to_ps_consumer_switch_boundary
+```
+
+This boundary is still owned by Portfolio Construction and remains consumer
+disabled. Its job is to prove the future handoff shape from PC to Position
+Sizing without changing current production behavior.
+
+The boundary aggregates accepted security lots into PS-compatible final target
+rows:
+
+- `NEW_FIRST_LOT` and `REENTRY_FIRST_LOT`: one first-lot row per symbol.
+- `ADD_NEXT_LOT`: accepted lot #1/#2/#N for the same symbol and position
+  campaign are netted into one final target quantity delta.
+
+The validator preserves campaign and decision lineage, checks that final target
+quantity equals current quantity plus net delta, and verifies that aggregated
+security allocation equals the source BC accepted allocation. It fails closed
+as `REVIEW_REQUIRED` for missing or invalid authority, duplicate identities,
+non-contiguous ADD sequences, missing ADD campaign identity, or allocation
+conservation mismatches.
+
+Legacy fallback is forbidden for switched rows:
+
+```text
+legacy_target_gap_input_used = false
+legacy_target_gap_fallback_allowed = false
+legacy_zero_fallback_allowed = false
+fallback_policy = FAIL_CLOSED_REVIEW_REQUIRED_NO_LEGACY_ZERO_FALLBACK
+```
+
+BF does not connect the authority to PS, Runtime Planning, Pending, Orders, or
+Execution. A later consumer switch must explicitly enable those consumers and
+must treat invalid BF boundary rows as review-required rather than reverting to
+the old target-gap or ADD zero path.
+
+## 30. Phase32-BG Explicit PC-to-PS Consumer Switch
+
+Phase32-BG promotes the production-shaped authority to the explicit PC-to-PS
+consumer source:
+
+```text
+canonical_marginal_capital_frontier_authority.v1
+pc_to_ps_production_consumer_switch.v1
+```
+
+The switch enables exactly one production consumer:
+
+```text
+production_consumers = [strategy.position_sizing]
+production_consumer_count = 1
+feeds_position_sizing = true
+feeds_runtime_planning = false
+feeds_pending = false
+feeds_orders = false
+feeds_execution = false
+feeds_safety_authority = false
+```
+
+The shadow frontier remains non-authoritative:
+
+```text
+canonical_marginal_capital_frontier.v1 production_consumer_count = 0
+```
+
+Position Sizing must consume BF aggregated target rows as the only switched
+target authority. ADD multi-lot rows are passed as one net quantity delta per
+symbol/campaign. Position Sizing remains the discrete quantity authority and
+Runtime remains a consumer of Position Sizing quantity deltas; neither may
+recompute marginal capital priority.
+
+Missing or invalid BG authority must fail closed as `REVIEW_REQUIRED`. It must
+not route back to old target-gap, old ADD compression, or ADD zero fallback.
+
+## 31. Phase32-CO Bounded Minimum Executable One-Lot Authority Migration
+
+Phase32-CO migrates the Phase30 PC-owned minimum executable one-lot authority
+into the current CH/CJ/CC/BF marginal capital frontier path.
+
+Normal entry sizing remains quality-bounded:
+
+```text
+one_lot_weight <= quality_authorized_target_weight
+-> CC NEW/REENTRY multi-lot expansion up to the quality-authorized target
+```
+
+For reduced-quality sub-lot `BUY_NEW` / `REENTRY` rows:
+
+```text
+quality_authorized_target_weight > 0
+one_lot_weight > quality_authorized_target_weight
+-> minimum_executable_one_lot_authority.v1
+-> ADMIT_ONE_LOT | BLOCK | REVIEW_REQUIRED
+```
+
+`ADMIT_ONE_LOT` authorizes exactly one `NEW_FIRST_LOT` or
+`REENTRY_FIRST_LOT` candidate to enter common frontier competition. It does not
+force a BUY and does not authorize second-lot-plus expansion. The candidate
+must still compete against other NEW, REENTRY, ADD, and Cash candidates under
+the budget-bounded frontier acceptance sequence.
+
+The authority is owned by Portfolio Construction. Position Sizing remains
+quantity authority, and submit feasibility must validate the authority handoff.
+PS and Runtime must not independently round a reduced sub-lot target up to one
+lot.
+
+Required authority evidence includes quality-authorized target, one-lot
+weight/notional, overshoot weight and ratio, Buy Quality action/score/band,
+opportunity/rank evidence, entry state, regime/risk evidence, Strategy cap,
+Safety hard cap, Risk Pacing, Cash/budget status, source lineage,
+`future_information_used=false`, and `historical_outcome_used=false`.
+
+Safety pass, Cash availability, or low position count alone is not sufficient
+to admit one lot. Missing, ambiguous, stale, or conflicting required evidence
+must fail closed as `REVIEW_REQUIRED`. Strategy cap and Safety hard cap remain
+separate guardrails. ADD, REDUCE, EXIT, PS arithmetic, Runtime mapping, and
+legacy fallback policy are unchanged.

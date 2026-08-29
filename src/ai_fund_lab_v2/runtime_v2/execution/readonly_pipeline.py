@@ -258,10 +258,17 @@ def run_execution_readonly_pipeline(
         cash_present=bundle.cash is not None,
     )
     ledger_orders = tuple(project_order_to_ledger_record(order) for order in bundle.orders)
+    orders_by_ref = {order.order_ref_hash: order for order in bundle.orders}
     broker_detail_executions = (
         ()
         if mode == "historical"
-        else tuple(project_execution_to_ledger_record(execution) for execution in bundle.executions)
+        else tuple(
+            project_execution_to_ledger_record(
+                execution,
+                source_order=orders_by_ref.get(execution.order_ref_hash),
+            )
+            for execution in bundle.executions
+        )
     )
     equivalent_executions = _execution_equivalent_records(
         orders=bundle.orders,
@@ -1509,6 +1516,12 @@ def _execution_equivalent_records(
                 cash_effect=cash_effect,
                 source_order_hash=order.order_ref_hash,
                 source_broker_order_hash=order.order_ref_hash,
+                source_decision_id=order.source_decision_id or order.source_pm_decision_id,
+                source_pm_decision_id=order.source_pm_decision_id,
+                source_decision_type=order.source_decision_type,
+                source_pm_business_date=order.source_pm_business_date,
+                source_position_symbol=order.source_position_symbol,
+                position_campaign_id=order.position_campaign_id,
                 source_position_hash=getattr(position, "position_ref_hash", "") if position is not None else "",
                 evidence_refs=evidence_refs,
                 detail_required=False,
@@ -1688,6 +1701,7 @@ def _historical_position_transition_records(
                 average_price=average_price,
                 market_value=market_value,
                 as_of=business_date,
+                position_campaign_id=str(current.get("position_campaign_id") or current.get("campaign_id") or execution.position_campaign_id or ""),
             )
         )
     return tuple(records), tuple(errors)
@@ -1701,6 +1715,12 @@ def _runtime_order_payload(order: dict[str, Any]) -> dict[str, Any]:
         "pending_item_id": order.get("pending_item_id") or "",
         "strategy_authority_lineage": order.get("strategy_authority_lineage") or {},
         "strategy_authority_lineage_hash": order.get("strategy_authority_lineage_hash") or "",
+        "source_decision_id": order.get("source_decision_id") or order.get("source_pm_decision_id") or "",
+        "source_pm_decision_id": order.get("source_pm_decision_id") or "",
+        "source_decision_type": order.get("source_decision_type") or "",
+        "source_pm_business_date": order.get("source_pm_business_date") or "",
+        "source_position_symbol": order.get("source_position_symbol") or "",
+        "position_campaign_id": order.get("position_campaign_id") or "",
         "symbol": order.get("issue_code") or order.get("symbol") or "",
         "side": _normalize_side(str(order.get("side") or "")),
         "quantity": _float(order.get("quantity")),
@@ -1951,6 +1971,14 @@ def _runtime_execution_payload(execution: dict[str, Any]) -> dict[str, Any]:
         "execution_id": execution.get("execution_id") or execution.get("execution_ref") or _stable_json_ref(execution),
         "order_id": execution.get("order_id_hash") or execution.get("order_id") or execution.get("order_ref") or "",
         "execution_key": execution.get("execution_key") or "",
+        "strategy_authority_lineage": execution.get("strategy_authority_lineage") or {},
+        "strategy_authority_lineage_hash": execution.get("strategy_authority_lineage_hash") or "",
+        "source_decision_id": execution.get("source_decision_id") or execution.get("source_pm_decision_id") or "",
+        "source_pm_decision_id": execution.get("source_pm_decision_id") or "",
+        "source_decision_type": execution.get("source_decision_type") or "",
+        "source_pm_business_date": execution.get("source_pm_business_date") or "",
+        "source_position_symbol": execution.get("source_position_symbol") or "",
+        "position_campaign_id": execution.get("position_campaign_id") or "",
         "symbol": execution.get("issue_code") or execution.get("symbol") or "",
         "side": _normalize_side(str(execution.get("side") or "")),
         "quantity": _float(execution.get("quantity")),
@@ -2070,6 +2098,7 @@ def _read_asset_state(path: Path) -> CurrentAssetState | None:
                 market_value=float(item.get("market_value") or 0),
                 source=str(item.get("source") or payload.get("source") or "current_asset_state"),
                 as_of=str(item.get("as_of") or payload.get("as_of") or payload.get("updated_at") or ""),
+                position_campaign_id=str(item.get("position_campaign_id") or item.get("campaign_id") or ""),
             )
             for item in positions_payload
         )

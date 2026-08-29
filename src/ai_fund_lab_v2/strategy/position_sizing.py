@@ -406,7 +406,14 @@ def build_position_sizing_payload(
         business_date=business_date,
         portfolio_construction_summary=portfolio_construction_summary.summary or {},
     )
-    if g61_compatibility_consumption["status"] == "BLOCK":
+    marginal_capital_frontier_switch = _marginal_capital_frontier_switch_from_pc_summary(portfolio_construction_summary.summary or {})
+    if marginal_capital_frontier_switch["present"] and marginal_capital_frontier_switch["status"] != "PASS" and status != "BLOCK":
+        status = "REVIEW_REQUIRED"
+        reasons.extend(marginal_capital_frontier_switch["reason_codes"])
+    if (
+        g61_compatibility_consumption["status"] == "BLOCK"
+        and not marginal_capital_frontier_switch["present"]
+    ):
         status = "BLOCK"
         source_status = "AUTHORITY_CONFLICT"
         reasons.extend(g61_compatibility_consumption["reason_codes"])
@@ -526,6 +533,10 @@ def build_position_sizing_payload(
         "aggregate_exposure_cap": None if target_exposure is None else round(target_exposure, 6),
         "aggregate_exposure_cap_resolution": numeric_resolution(target_exposure, unresolved=target_exposure is None),
         "passive_convergence_authority": passive_convergence_authority,
+        "marginal_capital_frontier_switch_consumption": _marginal_capital_frontier_switch_consumption_summary(
+            positions,
+            portfolio_construction_summary.summary,
+        ),
         "canonical_deployment_set_consumption": _canonical_deployment_set_consumption_summary(positions, portfolio_construction_summary.summary),
         "g61_lot_aware_compatibility_consumption": g61_compatibility_consumption,
         "safety_authority_resolution": safety_authority,
@@ -775,6 +786,10 @@ def _apply_canonical_deployment_set_to_sizing_rows(
     rows: Sequence[Mapping[str, Any]],
     portfolio_construction_summary: Mapping[str, Any],
 ) -> tuple[Mapping[str, Any], ...]:
+    marginal_switch = _marginal_capital_frontier_switch_from_pc_summary(portfolio_construction_summary)
+    if marginal_switch["present"]:
+        return _apply_marginal_capital_frontier_switch_to_sizing_rows(rows, marginal_switch)
+
     deployment_set = _canonical_deployment_set_from_pc_summary(portfolio_construction_summary)
     multi_selected = _multi_allocation_sizing_selection_by_key(portfolio_construction_summary)
     if not deployment_set and not multi_selected:
@@ -891,6 +906,363 @@ def _apply_canonical_deployment_set_to_sizing_rows(
             )
         )
     return tuple(adjusted)
+
+
+def _marginal_capital_frontier_switch_from_pc_summary(portfolio_construction_summary: Mapping[str, Any]) -> dict[str, Any]:
+    authority = portfolio_construction_summary.get("canonical_marginal_capital_frontier_authority")
+    if not isinstance(authority, Mapping):
+        competition = (
+            portfolio_construction_summary.get("capital_competition")
+            if isinstance(portfolio_construction_summary.get("capital_competition"), Mapping)
+            else {}
+        )
+        authority = (
+            competition.get("canonical_marginal_capital_frontier_authority")
+            if isinstance(competition.get("canonical_marginal_capital_frontier_authority"), Mapping)
+            else {}
+        )
+    if not authority:
+        return {"present": False, "status": "NOT_AVAILABLE", "targets_by_key": {}, "reason_codes": []}
+    switch = authority.get("production_consumer_switch") if isinstance(authority.get("production_consumer_switch"), Mapping) else {}
+    boundary = (
+        authority.get("pc_to_ps_consumer_switch_boundary")
+        if isinstance(authority.get("pc_to_ps_consumer_switch_boundary"), Mapping)
+        else {}
+    )
+    reason_codes: list[str] = []
+    if authority.get("schema_version") != "canonical_marginal_capital_frontier_authority.v1":
+        reason_codes.append("BG_MARGINAL_CAPITAL_AUTHORITY_SCHEMA_INVALID")
+    if authority.get("production_consumer_enabled") is not True or int(authority.get("production_consumer_count") or 0) != 1:
+        reason_codes.append("BG_MARGINAL_CAPITAL_AUTHORITY_CONSUMER_NOT_ENABLED")
+    if switch.get("status") != "PASS" or switch.get("bf_only_target_authority") is not True:
+        reason_codes.append("BG_PRODUCTION_CONSUMER_SWITCH_NOT_PASS")
+    if boundary.get("status") != "PASS":
+        reason_codes.append("BG_BF_BOUNDARY_NOT_PASS")
+    if boundary.get("legacy_zero_fallback_allowed") is not False or boundary.get("legacy_target_gap_fallback_allowed") is not False:
+        reason_codes.append("BG_LEGACY_FALLBACK_NOT_FORBIDDEN")
+    if int(switch.get("shadow_frontier_production_consumer_count") or 0) != 0:
+        reason_codes.append("BG_SHADOW_FRONTIER_CONSUMER_COUNT_NONZERO")
+    targets = [row for row in boundary.get("aggregated_ps_targets") or [] if isinstance(row, Mapping)]
+    targets_by_key: dict[tuple[str, ...], Mapping[str, Any]] = {}
+    for target in targets:
+        symbol = str(target.get("symbol") or "")
+        key = _marginal_switch_target_key(target)
+        key_type = key[0] if key else ""
+        if not symbol or not key_type:
+            reason_codes.append("BG_SWITCH_TARGET_IDENTITY_INVALID")
+            continue
+        if key in targets_by_key:
+            reason_codes.append("BG_DUPLICATE_SWITCH_TARGET_KEY")
+            continue
+        if target.get("legacy_zero_fallback_allowed") is not False or target.get("legacy_target_gap_fallback_allowed") is not False:
+            reason_codes.append("BG_SWITCH_TARGET_LEGACY_FALLBACK_ALLOWED")
+        targets_by_key[key] = target
+    return {
+        "present": True,
+        "status": "REVIEW_REQUIRED" if reason_codes else "PASS",
+        "authority": authority,
+        "switch": switch,
+        "boundary": boundary,
+        "targets_by_key": targets_by_key if not reason_codes else {},
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def _apply_marginal_capital_frontier_switch_to_sizing_rows(
+    rows: Sequence[Mapping[str, Any]],
+    switch: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    adjusted: list[Mapping[str, Any]] = []
+    status = str(switch.get("status") or "")
+    reason_codes = list(switch.get("reason_codes") or [])
+    targets_by_key = switch.get("targets_by_key") if isinstance(switch.get("targets_by_key"), Mapping) else {}
+    for row in rows:
+        competitor_type = _deployment_competitor_type(row)
+        if competitor_type not in {"NEW_BUY", "ADD"}:
+            adjusted.append(
+                {
+                    **dict(row),
+                    "marginal_capital_frontier_switch_sizing_eligibility": "NOT_INCREMENTAL_DEPLOYMENT_COMPETITOR",
+                    "marginal_capital_frontier_production_consumer_enabled": status == "PASS",
+                }
+            )
+            continue
+        key = _marginal_switch_row_key(row, competitor_type)
+        target = targets_by_key.get(key) if status == "PASS" else None
+        if isinstance(target, Mapping):
+            adjusted.append(_marginal_capital_frontier_switched_sizing_row(row, target=target, switch=switch, competitor_type=competitor_type))
+            continue
+        adjusted.append(
+            _marginal_capital_frontier_zero_or_review_row(
+                row,
+                competitor_type=competitor_type,
+                status=status,
+                reason_codes=reason_codes,
+                reason="marginal_capital_frontier_authority_not_selected_for_symbol" if status == "PASS" else "marginal_capital_frontier_authority_review_required",
+            )
+        )
+    return tuple(adjusted)
+
+
+def _marginal_capital_frontier_switched_sizing_row(
+    row: Mapping[str, Any],
+    *,
+    target: Mapping[str, Any],
+    switch: Mapping[str, Any],
+    competitor_type: str,
+) -> dict[str, Any]:
+    next_row = dict(row)
+    semantic_type = str(target.get("semantic_type") or "")
+    current_weight = _ratio(target.get("current_weight"), _ratio(next_row.get("current_weight"), 0.0))
+    target_weight = _ratio(target.get("final_target_weight"), current_weight)
+    quantity_delta = _positive_int(target.get("final_quantity_delta"), 0)
+    final_quantity = _positive_int(target.get("final_target_quantity"), _positive_int(next_row.get("current_quantity"), 0) + quantity_delta)
+    current_quantity = _positive_int(target.get("current_quantity"), _positive_int(next_row.get("current_quantity"), 0))
+    reason_codes = list(next_row.get("reason_codes") or [])
+    reason_codes.extend(["BG_BF_AGGREGATED_TARGET_AUTHORITY_CONSUMED_BY_PS", "BG_LEGACY_TARGET_GAP_FALLBACK_FORBIDDEN"])
+    lot_resolution = _bg_lot_resolution_from_target(next_row, target=target)
+    return {
+        **next_row,
+        "target_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
+        "accepted_incremental_weight": round(_ratio(target.get("accepted_incremental_weight"), 0.0), TARGET_WEIGHT_DECIMALS),
+        "lot_aware_accepted_incremental_weight": round(_ratio(target.get("accepted_incremental_weight"), 0.0), TARGET_WEIGHT_DECIMALS)
+        if competitor_type == "ADD"
+        else round(_ratio(next_row.get("lot_aware_accepted_incremental_weight"), 0.0), TARGET_WEIGHT_DECIMALS),
+        "accepted_buy_new_weight": round(_ratio(target.get("accepted_incremental_weight"), 0.0), TARGET_WEIGHT_DECIMALS)
+        if competitor_type == "NEW_BUY"
+        else round(_ratio(next_row.get("accepted_buy_new_weight"), 0.0), TARGET_WEIGHT_DECIMALS),
+        "lot_aware_accepted_buy_new_weight": round(_ratio(target.get("accepted_incremental_weight"), 0.0), TARGET_WEIGHT_DECIMALS)
+        if competitor_type == "NEW_BUY"
+        else round(_ratio(next_row.get("lot_aware_accepted_buy_new_weight"), 0.0), TARGET_WEIGHT_DECIMALS),
+        "current_quantity": current_quantity,
+        "quality_decision_id": str(next_row.get("quality_decision_id") or f"bg-bf-{target.get('symbol') or ''}"),
+        "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+        "quality_status": "PASS",
+        "quality_allocation_adjustment": 1.0,
+        "buy_quality_authority": {
+            **dict(next_row.get("buy_quality_authority") or {}),
+            "quality_decision_id": str(next_row.get("quality_decision_id") or f"bg-bf-{target.get('symbol') or ''}"),
+            "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+            "quality_score": _ratio(next_row.get("quality_score"), _ratio(next_row.get("allocation_quality_score"), 1.0)),
+            "authority_source": "canonical_marginal_capital_frontier_authority.v1",
+        },
+        "phase29_l19_lot_resolution": lot_resolution,
+        "semantic_buy_type": _bg_semantic_buy_type(semantic_type),
+        "target_weight_authority": {
+            **dict(next_row.get("target_weight_authority") or {}),
+            "authority_type": "TARGET_WEIGHT_AUTHORITY",
+            "authority_owner": "PORTFOLIO_CONSTRUCTION",
+            "authority_source": "canonical_marginal_capital_frontier_authority.v1",
+            "pc_to_ps_boundary_source": "BF_AGGREGATED_PS_BOUNDARY_ONLY",
+            "position_sizing_remains_discrete_quantity_owner": True,
+            "position_sizing_capital_winner_authority": False,
+            "legacy_target_gap_fallback_allowed": False,
+            "legacy_zero_fallback_allowed": False,
+        },
+        "target_weight_resolution": {
+            **dict(next_row.get("target_weight_resolution") or {}),
+            "status": "PASS",
+            "reason": "BG_BF_AGGREGATED_TARGET_AUTHORITY_CONSUMED_BY_PS",
+            "resolved_weight": round(target_weight, TARGET_WEIGHT_DECIMALS),
+            "review_reason": "",
+            "marginal_capital_frontier_switch": {
+                "schema_version": "pc_to_ps_production_consumer_switch.v1",
+                "authority_status": "PASS",
+                "target_authority_source": "BF_AGGREGATED_PS_BOUNDARY_ONLY",
+                "accepted_frontier_candidate_ids": list(target.get("accepted_frontier_candidate_ids") or []),
+                "position_campaign_id": target.get("position_campaign_id"),
+                "final_quantity_delta": quantity_delta,
+                "final_target_quantity": final_quantity,
+                "legacy_target_gap_fallback_allowed": False,
+                "legacy_zero_fallback_allowed": False,
+            },
+            "lot_aware_final_reallocation": {
+                "authority_type": "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_REALLOCATION",
+                "accepted_lot_increment_weight": _ratio(target.get("accepted_incremental_weight"), 0.0),
+                "post_lot_target_weight": target_weight,
+                "pre_lot_target_weight": current_weight,
+                "final_allocated_quantity": quantity_delta,
+                "pc_positive_executable_quantity_authority": lot_resolution["pc_positive_executable_quantity_authority"],
+                "phase29_l19_lot_resolution": lot_resolution,
+            },
+        },
+        "marginal_capital_frontier_switch_sizing_eligibility": "SELECTED_BY_BG_BF_AGGREGATED_TARGET_AUTHORITY",
+        "marginal_capital_frontier_production_consumer_enabled": True,
+        "marginal_capital_frontier_authority_hash": str((switch.get("authority") or {}).get("artifact_hash") or ""),
+        "final_capital_winner_type": "MARGINAL_CAPITAL_FRONTIER_AUTHORITY",
+        "final_capital_winner_symbol": str(target.get("symbol") or ""),
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "deployment_competitor_type": competitor_type,
+        "bg_bf_aggregated_target": dict(target),
+        "legacy_target_gap_fallback_allowed": False,
+        "legacy_zero_fallback_allowed": False,
+        "position_sizing_recomputes_capital_priority": False,
+        "ordinary_lot_feasibility_priority_redecision_allowed": False,
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def _marginal_capital_frontier_zero_or_review_row(
+    row: Mapping[str, Any],
+    *,
+    competitor_type: str,
+    status: str,
+    reason_codes: Sequence[str],
+    reason: str,
+) -> dict[str, Any]:
+    current_weight = _ratio(row.get("current_weight"), 0.0) if competitor_type == "ADD" else 0.0
+    row_reasons = [*list(row.get("reason_codes") or []), reason, "BG_LEGACY_TARGET_GAP_FALLBACK_FORBIDDEN", *list(reason_codes)]
+    resolution_status = "PASS" if status == "PASS" else "REVIEW_REQUIRED"
+    phase29_l19_lot_resolution = dict(row.get("phase29_l19_lot_resolution") or {})
+    if competitor_type == "ADD" and status == "PASS":
+        row_reasons.append("BG_BF_ADD_TARGET_REQUIRED_NO_LEGACY_ADD_FALLBACK")
+        phase29_l19_lot_resolution = _bf_only_zero_add_lot_resolution(row)
+    return {
+        **dict(row),
+        "target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+        "accepted_incremental_weight": 0.0,
+        "lot_aware_accepted_incremental_weight": 0.0,
+        "accepted_buy_new_weight": 0.0,
+        "lot_aware_accepted_buy_new_weight": 0.0,
+        "target_weight_authority": {
+            **dict(row.get("target_weight_authority") or {}),
+            "authority_type": "TARGET_WEIGHT_AUTHORITY",
+            "authority_source": "canonical_marginal_capital_frontier_authority.v1",
+            "pc_to_ps_boundary_source": "BF_AGGREGATED_PS_BOUNDARY_ONLY",
+            "legacy_target_gap_fallback_allowed": False,
+            "legacy_zero_fallback_allowed": False,
+        },
+        "target_weight_resolution": {
+            **dict(row.get("target_weight_resolution") or {}),
+            "status": resolution_status,
+            "reason": reason,
+            "resolved_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+            "zero_weight_reason": reason if resolution_status == "PASS" else "unresolved_authority",
+            "review_reason": "" if resolution_status == "PASS" else reason,
+        },
+        "phase29_l19_lot_resolution": phase29_l19_lot_resolution,
+        "marginal_capital_frontier_switch_sizing_eligibility": "NOT_SELECTED_BY_BG_AUTHORITY"
+        if status == "PASS"
+        else "REVIEW_REQUIRED_BG_AUTHORITY_INVALID",
+        "marginal_capital_frontier_production_consumer_enabled": status == "PASS",
+        "final_capital_winner_type": "MARGINAL_CAPITAL_FRONTIER_AUTHORITY",
+        "final_capital_winner_binds_before_discrete_sizing": True,
+        "deployment_competitor_type": competitor_type,
+        "bg_bf_aggregated_target": {},
+        "legacy_target_gap_fallback_allowed": False,
+        "legacy_zero_fallback_allowed": False,
+        "reason_codes": sorted(set(row_reasons)),
+    }
+
+
+def _bf_only_zero_add_lot_resolution(row: Mapping[str, Any]) -> dict[str, Any]:
+    current_quantity = _positive_int(row.get("current_quantity"), 0)
+    current_weight = _ratio(row.get("current_weight"), 0.0)
+    return {
+        "authority_type": "PHASE32_BG_BF_ONLY_ZERO_ADD_LOT_RESOLUTION",
+        "schema_version": "phase32_bz_bf_only_zero_add_lot_resolution.v1",
+        "semantic_type": "BUY_ADD",
+        "current_quantity": current_quantity,
+        "final_allocated_quantity": 0,
+        "executable_quantity_delta": 0,
+        "preflight_executable_quantity_delta": 0,
+        "final_target_quantity": current_quantity,
+        "current_weight": current_weight,
+        "final_target_weight": current_weight,
+        "post_trade_weight": current_weight,
+        "safety_hard_cap_preserved": True,
+        "pc_positive_executable_quantity_authority": {
+            "authority_type": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+            "status": "BLOCK",
+            "semantic_type": "BUY_ADD",
+            "future_information_used": False,
+            "historical_outcome_used": False,
+            "final_allocated_quantity": 0,
+            "discrete_authorized_quantity": 0,
+            "discrete_authorized_notional": 0.0,
+            "final_target_quantity": current_quantity,
+            "ps_must_consume_canonical_quantity": True,
+            "legacy_target_gap_fallback_allowed": False,
+            "legacy_zero_fallback_allowed": False,
+            "authority_reason": "BG_BF_ADD_TARGET_REQUIRED_NO_LEGACY_ADD_FALLBACK",
+        },
+        "legacy_target_gap_fallback_allowed": False,
+        "legacy_zero_fallback_allowed": False,
+    }
+
+
+def _bg_lot_resolution_from_target(row: Mapping[str, Any], *, target: Mapping[str, Any]) -> dict[str, Any]:
+    current_quantity = _positive_int(target.get("current_quantity"), _positive_int(row.get("current_quantity"), 0))
+    quantity_delta = _positive_int(target.get("final_quantity_delta"), 0)
+    final_quantity = _positive_int(target.get("final_target_quantity"), current_quantity + quantity_delta)
+    final_weight = _ratio(target.get("final_target_weight"), _ratio(row.get("target_weight"), 0.0))
+    current_weight = _ratio(target.get("current_weight"), _ratio(row.get("current_weight"), 0.0))
+    safety_cap = _ratio(row.get("single_name_cap"), max(final_weight, current_weight, 1.0))
+    notional = _positive_float(target.get("accepted_incremental_notional"), 0.0)
+    authority = {
+        "authority_type": "PORTFOLIO_CONSTRUCTION_DISCRETE_EXECUTABLE_QUANTITY_AUTHORITY",
+        "status": "PASS",
+        "semantic_type": _bg_semantic_buy_type(str(target.get("semantic_type") or "")),
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "final_allocated_quantity": quantity_delta,
+        "discrete_authorized_quantity": quantity_delta,
+        "discrete_authorized_notional": notional,
+        "final_target_quantity": final_quantity,
+        "ps_must_consume_canonical_quantity": True,
+        "legacy_target_gap_fallback_allowed": False,
+        "legacy_zero_fallback_allowed": False,
+        "source_frontier_candidate_ids": list(target.get("accepted_frontier_candidate_ids") or []),
+        "source_pm_decision_ids": list(target.get("source_pm_decision_ids") or []),
+        "source_candidate_ids": list(target.get("source_candidate_ids") or []),
+    }
+    return {
+        "authority_type": "PHASE32_BG_BF_AGGREGATED_TARGET_LOT_RESOLUTION",
+        "schema_version": "phase32_bg_bf_aggregated_target_lot_resolution.v1",
+        "semantic_type": authority["semantic_type"],
+        "current_quantity": current_quantity,
+        "final_allocated_quantity": quantity_delta,
+        "executable_quantity_delta": quantity_delta,
+        "preflight_executable_quantity_delta": quantity_delta,
+        "final_target_quantity": final_quantity,
+        "current_weight": current_weight,
+        "final_target_weight": final_weight,
+        "post_trade_weight": final_weight,
+        "safety_hard_cap": safety_cap,
+        "safety_hard_cap_weight": safety_cap,
+        "safety_hard_cap_preserved": True,
+        "pc_positive_executable_quantity_authority": authority,
+        "legacy_target_gap_fallback_allowed": False,
+        "legacy_zero_fallback_allowed": False,
+    }
+
+
+def _marginal_switch_target_key(target: Mapping[str, Any]) -> tuple[str, ...]:
+    semantic_type = str(target.get("semantic_type") or "")
+    key_type = {"NEW_FIRST_LOT": "NEW_BUY", "REENTRY_FIRST_LOT": "REENTRY", "ADD_NEXT_LOT": "ADD"}.get(semantic_type, "")
+    symbol = str(target.get("symbol") or "")
+    if not key_type or not symbol:
+        return ()
+    if key_type == "ADD":
+        campaign = str(target.get("position_campaign_id") or "")
+        if not campaign:
+            return ()
+        return (key_type, symbol, campaign)
+    return (key_type, symbol)
+
+
+def _marginal_switch_row_key(row: Mapping[str, Any], competitor_type: str) -> tuple[str, ...]:
+    symbol = str(row.get("security_code") or row.get("symbol") or "")
+    if competitor_type == "ADD":
+        campaign = str(row.get("position_campaign_id") or "")
+        return ("ADD", symbol, campaign) if symbol and campaign else ()
+    semantic = str(row.get("semantic_buy_type") or "").upper()
+    key_type = "REENTRY" if semantic == "REENTRY" else "NEW_BUY"
+    return (key_type, symbol) if symbol else ()
+
+
+def _bg_semantic_buy_type(semantic_type: str) -> str:
+    return {"NEW_FIRST_LOT": "BUY_NEW", "REENTRY_FIRST_LOT": "REENTRY", "ADD_NEXT_LOT": "BUY_ADD"}.get(semantic_type, semantic_type)
 
 
 def _pc_final_discrete_authority_for_sizing(row: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1310,6 +1682,59 @@ def _canonical_deployment_set_consumption_summary(
     }
 
 
+def _marginal_capital_frontier_switch_consumption_summary(
+    positions: Sequence[Mapping[str, Any]],
+    portfolio_construction_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    switch = _marginal_capital_frontier_switch_from_pc_summary(portfolio_construction_summary)
+    if not switch["present"]:
+        return {
+            "schema_version": "position_sizing.marginal_capital_frontier_switch_consumption.v1",
+            "status": "NOT_AVAILABLE",
+            "owner": "POSITION_SIZING",
+            "production_consumer_enabled": False,
+            "bf_only_target_authority": False,
+            "legacy_target_gap_fallback_used": False,
+            "legacy_zero_fallback_used": False,
+            "position_sizing_quantity_owner": "POSITION_SIZING",
+        }
+    consumed = [
+        row
+        for row in positions
+        if str(row.get("marginal_capital_frontier_switch_sizing_eligibility") or "")
+        == "SELECTED_BY_BG_BF_AGGREGATED_TARGET_AUTHORITY"
+    ]
+    review = [
+        row
+        for row in positions
+        if str(row.get("marginal_capital_frontier_switch_sizing_eligibility") or "")
+        == "REVIEW_REQUIRED_BG_AUTHORITY_INVALID"
+    ]
+    return {
+        "schema_version": "position_sizing.marginal_capital_frontier_switch_consumption.v1",
+        "status": "PASS" if str(switch.get("status") or "") == "PASS" and not review else "REVIEW_REQUIRED",
+        "owner": "POSITION_SIZING",
+        "capital_winner_authority": "PORTFOLIO_CONSTRUCTION",
+        "production_consumer_enabled": str(switch.get("status") or "") == "PASS",
+        "bf_only_target_authority": str(switch.get("status") or "") == "PASS",
+        "accepted_boundary_target_count": len((switch.get("boundary") or {}).get("aggregated_ps_targets") or []),
+        "consumed_position_count": len(consumed),
+        "review_required_position_count": len(review),
+        "multi_lot_add_consumed_count": sum(
+            1
+            for row in consumed
+            if (row.get("bg_bf_aggregated_target") or {}).get("semantic_type") == "ADD_NEXT_LOT"
+            and int((row.get("bg_bf_aggregated_target") or {}).get("accepted_lot_count") or 0) > 1
+        ),
+        "legacy_target_gap_fallback_used": False,
+        "legacy_zero_fallback_used": False,
+        "position_sizing_quantity_owner": "POSITION_SIZING",
+        "position_sizing_capital_winner_authority": False,
+        "runtime_logic_changed": False,
+        "reason_codes": list(switch.get("reason_codes") or []),
+    }
+
+
 def _zero_allocation_position(row: Mapping[str, Any], *, config: PositionSizingConfig, safety_cap: float, reason: str) -> dict[str, Any]:
     base = _raw_position(
         row,
@@ -1370,7 +1795,7 @@ def _raw_position(
     adaptive_quality = resolve_adaptive_buy_quality(row)
     quality = adaptive_quality["quality_allocation_adjustment"]
     vol = _volatility_multiplier(row, config)
-    reasons = [f"pm_action:{pm_action}", f"membership_intent:{membership}"]
+    reasons = [f"pm_action:{pm_action}", f"membership_intent:{membership}", *[str(reason) for reason in row.get("reason_codes") or []]]
     status = "SIZED"
     uncertainty = "LOW"
     target = target_weight_resolution["resolved_weight"]
@@ -1787,6 +2212,12 @@ def _raw_position(
         "ordinary_lot_feasibility_priority_redecision_allowed": bool(
             row.get("ordinary_lot_feasibility_priority_redecision_allowed")
         ),
+        "marginal_capital_frontier_switch_sizing_eligibility": str(row.get("marginal_capital_frontier_switch_sizing_eligibility") or ""),
+        "marginal_capital_frontier_production_consumer_enabled": bool(row.get("marginal_capital_frontier_production_consumer_enabled")),
+        "marginal_capital_frontier_authority_hash": str(row.get("marginal_capital_frontier_authority_hash") or ""),
+        "bg_bf_aggregated_target": dict(row.get("bg_bf_aggregated_target") or {}),
+        "legacy_target_gap_fallback_allowed": bool(row.get("legacy_target_gap_fallback_allowed")),
+        "legacy_zero_fallback_allowed": bool(row.get("legacy_zero_fallback_allowed")),
         "final_capital_winner_type": str(row.get("final_capital_winner_type") or ""),
         "final_capital_winner_symbol": str(row.get("final_capital_winner_symbol") or ""),
         "final_capital_winner_binds_before_discrete_sizing": bool(row.get("final_capital_winner_binds_before_discrete_sizing")),
@@ -3486,7 +3917,7 @@ def _minimum_executable_one_lot_authorized_row(
         return False
     if str(row.get("membership_intent") or "").upper() != "ADD_CANDIDATE":
         return False
-    if str(authority.get("decision") or "") != "ADMIT":
+    if str(authority.get("decision") or "") not in {"ADMIT", "ADMIT_ONE_LOT"}:
         return False
     if str(authority.get("reason") or authority.get("admission_reason") or "") != "MINIMUM_EXECUTABLE_ONE_LOT_ADMITTED":
         return False

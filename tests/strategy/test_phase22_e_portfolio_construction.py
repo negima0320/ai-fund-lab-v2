@@ -217,6 +217,9 @@ def test_phase29_l21t_ak_negative_uncalibrated_reduced_quality_reaches_target_me
     assert member["target_membership"] is True
     assert member["requested_buy_new_weight"] > 0
     assert member["target_weight_resolution"]["adjustments"][0]["quality_action"] == "REDUCED_ALLOCATION_ONLY"
+    assert member["target_weight"] == member["quality_authorized_target_weight"]
+    assert member["quality_target_upper_bound_enforced"] is True
+    assert member["target_weight"] <= member["pre_quality_base_target_weight"]
     assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
 
 
@@ -585,6 +588,9 @@ def test_phase29_l21t_am_actual_adapter_positive_candidate_preserved(tmp_path: P
     assert member["target_member_eligibility"]["status"] == "PASS"
     assert member["requested_buy_new_weight"] > 0
     assert member["target_weight_resolution"]["adjustments"][0]["quality_action"] == "REDUCED_ALLOCATION_ONLY"
+    assert member["target_weight"] == member["quality_authorized_target_weight"]
+    assert member["quality_target_upper_bound_enforced"] is True
+    assert member["target_weight"] <= member["pre_quality_base_target_weight"]
     assert member["no_buy_reason_classification"]["status"] == "PASS"
     assert validate_portfolio_construction_artifact(payload)["status"] == "PASS"
 
@@ -2925,6 +2931,7 @@ def test_phase29_l16_semantic_reentry_cooldown_and_recovery_hurdle(tmp_path: Pat
     assert by_code["22220"]["semantic_buy_type"] == "REENTRY"
     assert by_code["22220"]["reentry_cooldown_status"] == "PASS"
     assert by_code["22220"]["reentry_recovery_status"] == "PASS"
+    assert by_code["22220"]["previous_exit_reason_class"] == "TREND_MOMENTUM"
     assert by_code["22220"]["reentry_semantic_state"] == "REENTRY_ELIGIBLE"
     assert by_code["22220"]["reentry_semantic_status"] == "PASS"
     assert by_code["22220"]["reentry_semantic_eligibility"]["owner"] == "PORTFOLIO_CONSTRUCTION"
@@ -3079,6 +3086,76 @@ def test_phase29_l21s_one_lot_fallback_allocates_positive_buy_new_below_normal_l
     assert member["lot_aware_accepted_buy_new_weight"] == 0.08
     assert member["phase29_l19_lot_resolution"]["one_lot_fallback_applied"] is True
     assert member["phase29_l19_lot_resolution"]["final_allocated_quantity"] == 100
+
+
+def test_phase32_cj_quality_deployable_new_reaches_lot_aware_boundary_after_reduced_one_lot_blocks() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[
+            _quality_reduced_lot_member("33700", priority=1, base=0.0340, quality=0.0200),
+            _quality_reduced_lot_member("92420", priority=2, base=0.0340, quality=0.0200),
+            _quality_reduced_lot_member("89180", priority=3, base=0.033636, quality=0.019686),
+            _quality_reduced_lot_member("76470", priority=4, base=0.040000, quality=0.019385),
+        ],
+        lot_feasibility_rows=[
+            _cj_lot_feasibility_row("33700", one_lot_weight=0.0340, executable_quantity=100),
+            _cj_lot_feasibility_row("92420", one_lot_weight=0.0340, executable_quantity=100),
+            _cj_lot_feasibility_row("89180", one_lot_weight=0.0005, executable_quantity=3900),
+            _cj_lot_feasibility_row("76470", one_lot_weight=0.0015, executable_quantity=1200),
+        ],
+        target_gross_exposure=0.05,
+        single_name_cap=0.18,
+    )
+    by_code = {member["security_code"]: member for member in result["members"]}
+
+    assert by_code["33700"]["target_weight"] == 0.0
+    assert by_code["33700"]["lot_first_rebatch_skip_reason"] == "lot_minimum_exceeds_quality_authorized_target"
+    assert by_code["92420"]["target_weight"] == 0.0
+    assert by_code["92420"]["lot_first_rebatch_skip_reason"] == "lot_minimum_exceeds_quality_authorized_target"
+
+    assert by_code["89180"]["target_weight"] == 0.0195
+    assert by_code["89180"]["target_weight"] <= by_code["89180"]["quality_authorized_target_weight"]
+    assert by_code["89180"]["phase29_l19_lot_resolution"]["final_allocated_quantity"] == 3900
+
+    assert by_code["76470"]["target_weight"] == 0.018
+    assert by_code["76470"]["target_weight"] <= by_code["76470"]["quality_authorized_target_weight"]
+    assert by_code["76470"]["phase29_l19_lot_resolution"]["final_allocated_quantity"] == 1200
+
+    conservation = result["evidence"]["capital_conservation"]
+    assert conservation["status"] == "PASS"
+    assert conservation["allocated_increment_weight"] == 0.0375
+
+
+def test_phase32_cj_ch_controls_preserve_37820_and_below_one_lot_quality_blocks() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[
+            _quality_reduced_lot_member("37820", priority=1, base=0.032, quality=0.024103),
+            _quality_reduced_lot_member("33700", priority=2, base=0.034, quality=0.020),
+            _quality_reduced_lot_member("83060", priority=3, base=0.033, quality=0.019),
+            _quality_reduced_lot_member("92420", priority=4, base=0.034, quality=0.020),
+            _quality_reduced_lot_member("58200", priority=5, base=0.032, quality=0.018),
+            _quality_full_lot_member("94340", priority=6, target=0.033636),
+        ],
+        lot_feasibility_rows=[
+            _cj_lot_feasibility_row("37820", one_lot_weight=0.0068, executable_quantity=300),
+            _cj_lot_feasibility_row("33700", one_lot_weight=0.034, executable_quantity=100),
+            _cj_lot_feasibility_row("83060", one_lot_weight=0.033, executable_quantity=100),
+            _cj_lot_feasibility_row("92420", one_lot_weight=0.034, executable_quantity=100),
+            _cj_lot_feasibility_row("58200", one_lot_weight=0.032, executable_quantity=100),
+            _cj_lot_feasibility_row("94340", one_lot_weight=0.01441, executable_quantity=200),
+        ],
+        target_gross_exposure=0.08,
+        single_name_cap=0.18,
+    )
+    by_code = {member["security_code"]: member for member in result["members"]}
+
+    assert by_code["37820"]["target_weight"] == 0.0204
+    assert by_code["37820"]["target_weight"] <= by_code["37820"]["quality_authorized_target_weight"]
+    assert by_code["37820"]["phase29_l19_lot_resolution"]["final_allocated_quantity"] == 300
+    for code in ("33700", "83060", "92420", "58200"):
+        assert by_code[code]["target_weight"] == 0.0
+        assert by_code[code]["lot_first_rebatch_skip_reason"] == "lot_minimum_exceeds_quality_authorized_target"
+    assert by_code["94340"]["target_weight"] == 0.02882
+    assert by_code["94340"]["phase29_l19_lot_resolution"]["final_allocated_quantity"] == 200
 
 
 def test_phase29_l21s_one_lot_fallback_blocks_cash_shortfall() -> None:
@@ -3457,6 +3534,66 @@ def _lot_rebatch_member(code: str, *, priority: int, request: float, accepted: f
     }
 
 
+def _quality_reduced_lot_member(code: str, *, priority: int, base: float, quality: float) -> dict[str, object]:
+    member = _lot_rebatch_member(code, priority=priority, request=quality, accepted=quality)
+    member.update(
+        {
+            "entry_admission_action": "BUY_NEW_REDUCED_ONLY",
+            "entry_admission_state": "CONTINUATION_WITH_CAUTION",
+            "quality_action": "REDUCED_ALLOCATION_ONLY",
+            "candidate_eligible": True,
+            "production_deployable_new": True,
+            "production_deployability_class": "REDUCED_ALLOCATION_ONLY",
+            "pre_quality_base_target_weight": base,
+            "quality_authorized_target_weight": quality,
+            "quality_target_upper_bound_enforced": True,
+            "final_deployable_target_weight": quality,
+            "target_weight_resolution": {
+                "status": "PASS",
+                "resolved_weight": quality,
+                "pre_quality_base_target_weight": base,
+                "quality_authorized_target_weight": quality,
+                "quality_target_upper_bound_enforced": True,
+                "adjustments": [
+                    {
+                        "authority": "ADAPTIVE_BUY_QUALITY_AUTHORITY",
+                        "pre_quality_base_target_weight": base,
+                        "post_quality_target_weight": quality,
+                    }
+                ],
+            },
+        }
+    )
+    return member
+
+
+def _quality_full_lot_member(code: str, *, priority: int, target: float) -> dict[str, object]:
+    member = _lot_rebatch_member(code, priority=priority, request=target, accepted=target)
+    member.update(
+        {
+            "entry_admission_action": "BUY_NEW_ALLOWED",
+            "entry_admission_state": "HEALTHY_CONTINUATION_ENTRY",
+            "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+            "candidate_eligible": True,
+            "production_deployable_new": True,
+            "production_deployability_class": "FULL_ALLOCATION_ELIGIBLE",
+            "pre_quality_base_target_weight": target,
+            "quality_authorized_target_weight": target,
+            "quality_target_upper_bound_enforced": True,
+            "final_deployable_target_weight": target,
+            "target_weight_resolution": {
+                "status": "PASS",
+                "resolved_weight": target,
+                "pre_quality_base_target_weight": target,
+                "quality_authorized_target_weight": target,
+                "quality_target_upper_bound_enforced": True,
+                "adjustments": [],
+            },
+        }
+    )
+    return member
+
+
 def _lot_rebatch_add_member(code: str, *, priority: int, current_weight: float, request: float, accepted: float) -> dict[str, object]:
     target = round(current_weight + accepted, 6)
     return {
@@ -3479,6 +3616,15 @@ def _lot_rebatch_add_member(code: str, *, priority: int, current_weight: float, 
         "target_weight_resolution": {"status": "PASS", "resolved_weight": target, "adjustments": []},
         "runtime_opportunity_score": max(0.0, 1.0 - priority / 100.0),
     }
+
+
+def _cj_lot_feasibility_row(code: str, *, one_lot_weight: float, executable_quantity: int) -> dict[str, object]:
+    return _ak9r19_discrete_requirement_row(
+        code,
+        one_lot_weight=one_lot_weight,
+        executable_quantity=executable_quantity,
+        continuous_target_weight=round(one_lot_weight * (executable_quantity / 100), 6),
+    )
 
 
 def _ak9r19_discrete_requirement_row(

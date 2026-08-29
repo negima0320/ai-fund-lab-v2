@@ -439,11 +439,28 @@ No fixed cooldown duration is selected by this design. Existing configured
 cooldowns remain existing implementation details until a later implementation
 task changes them through normal review.
 
+Prior-exit semantic authority is not the execution action label. Execution
+evidence proves what actually filled and whether a campaign fully closed. The
+semantic reason for that close must come from the authoritative PM SELL/REDUCE
+decision evidence that caused the executed close, joined by exact PM decision
+identity and validated by symbol, business date, and campaign identity where
+available. Bare execution labels such as `EXIT` are fallback context only and
+must not replace available PM `decision_reason` / `reason_codes`.
+
+Partial REDUCE executions do not create prior-exit context while the campaign
+remains open. If several SELL decisions occur inside one campaign, re-entry
+prior-exit context uses the decision evidence attached to the final strict-prior
+execution that closes the campaign. Same-day or future PM evidence must not be
+used for a re-entry decision.
+
 ```text
 BLANKET_REENTRY_BAN = NO
 BLANKET_REENTRY_PERMISSION = NO
 REENTRY_SEMANTIC_CONTRACT_DEFINED = YES
 FIXED_REENTRY_COOLDOWN_SELECTED = NO
+PRIOR_EXIT_SEMANTIC_AUTHORITY = AUTHORITATIVE_PM_DECISION_EVIDENCE_FOR_EXECUTED_CLOSE
+EXECUTION_TYPE_AS_EXIT_REASON_AUTHORITY = NO
+PARTIAL_REDUCE_CREATES_PRIOR_EXIT_CONTEXT = NO
 ```
 
 ## 11. ADD as Capital Competitor

@@ -976,6 +976,10 @@ Phase13-F に defer する詳細:
 
 Current State は、日付別 artifact の探索ではなく、固定 Path の読み取りで決定する。
 
+`persistent_ledger/executions.jsonl` は、実際に約定した事実の会計 authority であると同時に、約定を発生させた Strategy / PM source decision provenance を保持する。利用可能な canonical order / planning lineage が存在する場合、execution row は `source_decision_id`、`source_pm_decision_id`、`source_decision_type`、`source_pm_business_date`、`source_position_symbol`、`position_campaign_id` を lossless に保存する。PM decision reason 本文は execution ledger へ複製しない。PM reason は strict source identity で PM artifact へ join して取得する。
+
+これらの provenance field は dedupe key、execution identity hash、cash / position accounting equality へ混入してはならない。legacy row に provenance field が存在しない場合、reader は既存の fallback / fail-closed policy を維持する。
+
 Current State が欠損、古い、不明、または source 不明の場合、Runtime は安全側に倒す。保有情報が読めないことを「保有 0」と解釈してはならない。
 
 Current State 不明時の必須 flags:
@@ -2805,6 +2809,32 @@ opportunity_id
 pending_item_id
 order_plan_item_id
 ```
+
+For Strategy-origin `SELL_EXIT`, the same-day authoritative PM `EXIT` decision is
+the canonical source for `source_pm_decision_id`, PM business date, source
+position symbol, and closed `position_campaign_id`. Runtime must preserve that
+campaign id losslessly through Pending top-level fields, shallow
+`strategy_authority_lineage`, `quantity_contract`, persistent order rows, and
+persistent execution rows so strict-prior re-entry reconstruction can join the
+execution close back to PM reason evidence. Missing, conflicting, future-date,
+wrong-symbol, or ambiguous PM campaign evidence must fail closed; Runtime must
+not infer the campaign from symbol/date/quantity/history.
+
+Phase32-AD narrows campaign identity authority to the canonical decision-time
+campaign lifecycle. `positions/position_campaigns.json` owns the campaign
+identity; Current, broker-readonly snapshots, persistent position rows,
+Pending, orders, executions, runtime-owned fill projection, runtime-test
+observability, and realized-slice evidence preserve or reconstruct only from
+that canonical lineage. Runtime-test observability must not mint a run-id based
+campaign identity when execution/order provenance already supplies a canonical
+campaign. Ledger-derived campaign ids are compatibility fallback only for
+legacy rows and must not override canonical Strategy PM evidence.
+
+When multiple same-day PM artifacts are available, `strategy/position_management.json`
+is the highest-priority PM campaign source for Strategy-origin `SELL_EXIT`.
+Lower-priority daily PM snapshots and runtime-state PM projections may fill
+legacy gaps, but they must not create a second campaign namespace or veto a
+non-ambiguous canonical Strategy PM identity.
 
 BUY_ADD may be executable only through the canonical chain:
 

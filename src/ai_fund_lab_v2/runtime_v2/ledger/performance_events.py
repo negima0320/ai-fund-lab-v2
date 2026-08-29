@@ -30,6 +30,12 @@ class CanonicalPerformanceExecutionEvent:
     source: str
     canonical_dedup_key: str
     lineage: dict[str, Any]
+    source_decision_id: str = ""
+    source_pm_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_business_date: str = ""
+    source_position_symbol: str = ""
+    position_campaign_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -192,6 +198,12 @@ def _canonical_event(
         evidence_type=CANONICAL_EXECUTION_EVIDENCE_TYPE,
         source=str(row.get("source") or ""),
         canonical_dedup_key=canonical_dedup_key,
+        source_decision_id=str(row.get("source_decision_id") or row.get("source_pm_decision_id") or ""),
+        source_pm_decision_id=str(row.get("source_pm_decision_id") or row.get("source_decision_id") or ""),
+        source_decision_type=str(row.get("source_decision_type") or ""),
+        source_pm_business_date=str(row.get("source_pm_business_date") or ""),
+        source_position_symbol=str(row.get("source_position_symbol") or ""),
+        position_campaign_id=str(row.get("position_campaign_id") or ""),
         lineage={
             "submit_order_record_id": str((submit or {}).get("record_id") or ""),
             "submit_order_id": str((submit or {}).get("order_id") or ""),
@@ -200,6 +212,12 @@ def _canonical_event(
             "source_order_hash": str(row.get("source_order_hash") or ""),
             "source_broker_order_hash": str(row.get("source_broker_order_hash") or ""),
             "source_position_hash": str(row.get("source_position_hash") or ""),
+            "source_decision_id": str(row.get("source_decision_id") or row.get("source_pm_decision_id") or ""),
+            "source_pm_decision_id": str(row.get("source_pm_decision_id") or row.get("source_decision_id") or ""),
+            "source_decision_type": str(row.get("source_decision_type") or ""),
+            "source_pm_business_date": str(row.get("source_pm_business_date") or ""),
+            "source_position_symbol": str(row.get("source_position_symbol") or ""),
+            "position_campaign_id": str(row.get("position_campaign_id") or ""),
             "source_execution_record_id": str(row.get("record_id") or ""),
             "source_execution_dedup_key": str(row.get("dedup_key") or ""),
         },

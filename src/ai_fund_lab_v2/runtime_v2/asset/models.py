@@ -28,6 +28,7 @@ class CurrentAssetPosition:
     valuation_business_date: str = ""
     execution_price_basis: str = ""
     fill_price_basis: str = ""
+    position_campaign_id: str = ""
 
 
 @dataclass(frozen=True)

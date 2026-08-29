@@ -1354,6 +1354,10 @@ def _lifecycle_context(
         "buy_history_summary": history["buy_history_summary"],
         "prior_unrepresentable_reduce_summary": history["prior_unrepresentable_reduce_summary"],
         "pm_decision_history_summary": history["pm_decision_history_summary"],
+        "entry_premise_snapshot": dict(campaign.get("entry_premise_snapshot") or {})
+        if isinstance(campaign.get("entry_premise_snapshot"), Mapping)
+        else {},
+        "entry_premise_snapshot_status": str(campaign.get("entry_premise_snapshot_status") or ""),
         "campaign_source_reference": _source_ref(campaign_artifact) if campaign_artifact else {},
         "semantic_entry_type": portfolio_construction.get("semantic_entry_type")
         or portfolio_construction.get("semantic_buy_type")

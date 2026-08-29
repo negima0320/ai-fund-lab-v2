@@ -526,7 +526,7 @@ def _minimum_executable_one_lot_authority(
         return empty
     if str(authority.get("authority_type") or "") != MINIMUM_EXECUTABLE_ONE_LOT_AUTHORITY_TYPE:
         return empty
-    if str(authority.get("decision") or "") != "ADMIT":
+    if str(authority.get("decision") or "") not in {"ADMIT", "ADMIT_ONE_LOT"}:
         return empty
     if str(authority.get("reason") or authority.get("admission_reason") or "") != MINIMUM_EXECUTABLE_ONE_LOT_REASON:
         return empty
