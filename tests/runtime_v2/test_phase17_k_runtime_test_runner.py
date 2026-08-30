@@ -276,6 +276,273 @@ def _make_l21t_stale_pending_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
     return root, reports, run_id
 
 
+def _make_phase32_ac_partial_submit_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
+    root = tmp_path / ".runtime"
+    reports = tmp_path / "reports"
+    run_id = "runtime-test-phase32-ac-partial-submit"
+    run_dir = reports / "runs" / run_id
+    pending_plan_id = "pending-strategy-plan-historical-2023-10-11-f650d7dcd8b7c7d7"
+    consumed_item_id = "strategy-24ef30251cec051aac6a"
+    blocked_item_id = "strategy-b6716e1e95fc9cc0a9aa"
+    order_id = "b95f550a15c75dbb6de73a3ef5886b9c79d990825cc42ddddd756a4d356c8733"
+    (root / "persistent_ledger").mkdir(parents=True)
+    (root / "pending_order_plan").mkdir(parents=True)
+    (root / "runtime_state" / "historical_broker" / "2023-10-11").mkdir(parents=True)
+    (root / "runtime_state" / "run_manifest" / "2023-10-11").mkdir(parents=True)
+    state = {
+        "schema_version": "runtime_v2_current_temporal_v1",
+        "environment": "historical",
+        "as_of": "2023-10-10",
+        "business_date": "2023-10-10",
+        "cash": 816580.0,
+        "buying_power": 816580.0,
+        "positions": [
+            {"symbol": "66780", "quantity": 100.0},
+            {"symbol": "59660", "quantity": 100.0},
+            {"symbol": "50280", "quantity": 100.0},
+            {"symbol": "92460", "quantity": 100.0, "average_price": 1350.0, "market_value": 135000.0},
+        ],
+    }
+    _write_json(root / "persistent_ledger" / "state.json", state)
+    _append_jsonl(
+        root / "persistent_ledger" / "orders.jsonl",
+        [
+            {"record_id": "prior-order", "dedup_key": "prior-order", "business_date": "2023-10-10"},
+            {
+                "record_id": "ledger-order-submit-eb4911bfbcb7f197",
+                "dedup_key": "runtime_v2_submit:submit-command-8d63867bd2f64d35",
+                "source": "runtime_v2_submit_pipeline",
+                "business_date": "2023-10-11",
+                "pending_plan_id": pending_plan_id,
+                "pending_item_id": consumed_item_id,
+                "symbol": "92460",
+                "issue_code_normalization": {"broker_issue_code": "92460"},
+                "side": "SELL",
+                "quantity": 100.0,
+                "status": "ACCEPTED",
+                "order_id": order_id,
+                "source_decision_id": "rp-2023-10-11-92460-sell_exit-3b430763f0529b62",
+                "source_pm_decision_id": "pm-2023-10-11-92460-reduce",
+            },
+        ],
+    )
+    for name in ("executions.jsonl", "positions.jsonl", "cash.jsonl", "events.jsonl"):
+        (root / "persistent_ledger" / name).write_text("", encoding="utf-8")
+    _write_json(
+        root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "runtime_v2_pending_slot_v1",
+            "pending_plan_id": pending_plan_id,
+            "state": "REVIEW_REQUIRED",
+            "status": "REVIEW_REQUIRED",
+            "plan_created_date": "2023-10-11",
+            "target_session_date": "2023-10-11",
+            "approved_item_ids": [blocked_item_id, consumed_item_id],
+            "review_required_buy_item_ids": ["strategy-4c1cff246933bff23312", "strategy-a92ce60a05bb6b2c9cc4"],
+            "review_scope": "BUY_ITEM_SCOPED_REVIEW",
+            "sell_continuation_allowed": True,
+            "items": [
+                {"pending_item_id": blocked_item_id, "symbol": "50280", "side": "SELL", "quantity": 100.0, "state": "APPROVED", "approved": True},
+                {"pending_item_id": consumed_item_id, "symbol": "92460", "side": "SELL", "quantity": 100.0, "state": "CONSUMED", "approved": True},
+                {"pending_item_id": "strategy-4c1cff246933bff23312", "symbol": "38560", "side": "BUY", "quantity": 100.0, "state": "REVIEW_REQUIRED", "approved": False},
+                {"pending_item_id": "strategy-a92ce60a05bb6b2c9cc4", "symbol": "76920", "side": "BUY", "quantity": 400.0, "state": "REVIEW_REQUIRED", "approved": False},
+            ],
+        },
+    )
+    broker_path = root / "runtime_state" / "historical_broker" / "2023-10-11" / "92460.json"
+    _write_json(
+        broker_path,
+        {
+            "status": "ACCEPTED",
+            "target_session_date": "2023-10-11",
+            "pending_plan_id": pending_plan_id,
+            "pending_item_id": consumed_item_id,
+            "source_decision_id": "rp-2023-10-11-92460-sell_exit-3b430763f0529b62",
+            "source_decision_type": "SELL_EXIT",
+            "source_pm_decision_id": "pm-2023-10-11-92460-reduce",
+            "order_plan_item_id": consumed_item_id,
+            "position_campaign_id": "pc-92460",
+            "campaign_id": "pc-92460",
+            "symbol": "92460",
+            "side": "SELL",
+            "quantity": 100.0,
+            "order_identity": order_id,
+            "execution_identity": "execution-92460-2023-10-11",
+            "fill_datetime": "2023-10-11T15:00:00+09:00",
+            "fill_date": "2023-10-11",
+            "fill_price": 1350.0,
+            "cash_effect": 135000.0,
+        },
+    )
+    submit_manifest = {
+        "final_state": "REVIEW_REQUIRED",
+        "submitted_count": 1,
+        "blocked_count": 1,
+        "submit_guard_item_evidence": [
+            {"pending_item_id": consumed_item_id, "symbol": "92460", "status": "PASS", "guard_decision": "PASS"},
+            {
+                "pending_item_id": blocked_item_id,
+                "symbol": "50280",
+                "status": "REVIEW_REQUIRED",
+                "guard_decision": "BLOCKED",
+                "violated_policy": "corporate_action_adjustment_authority",
+            },
+        ],
+    }
+    _write_json(root / "runtime_state" / "run_manifest" / "2023-10-11" / "runtime-v2-submit.json", submit_manifest)
+    _write_json(run_dir / "daily" / "2023-10-11" / "submit" / "runtime_manifest.json", submit_manifest)
+    _write_json(
+        run_dir / "run_state.json",
+        {
+            "schema_version": "runtime_test_run_state_v1",
+            "run_id": run_id,
+            "profile_id": "historical-smoke",
+            "status": "HALT",
+            "completed_business_days": ["2023-10-10"],
+            "completed_jobs": [
+                {"business_date": "2023-10-10", "job": "execution", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "market_refresh", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "data_readiness", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "morning", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "sell_planning", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "submit", "exit_code": 20},
+            ],
+            "halted_at": {"business_date": "2023-10-11", "job": "submit", "exit_code": 20},
+            "next_job": "2023-10-11:submit",
+            "halt_summary": {"root_reason": "corporate_action_event_not_resolved"},
+            "source_baseline": {},
+        },
+    )
+    return root, reports, run_id
+
+
+def _make_phase32_ae_partial_submit_finalization_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
+    root, reports, run_id = _make_phase32_ac_partial_submit_fixture(tmp_path)
+    run_dir = reports / "runs" / run_id
+    old_plan_id = "pending-strategy-plan-historical-2023-10-11-f650d7dcd8b7c7d7"
+    new_plan_id = "pending-strategy-plan-historical-2023-10-11-1340bca9c0bec9b6"
+    consumed_item_id = "strategy-24ef30251cec051aac6a"
+    order_id = "b95f550a15c75dbb6de73a3ef5886b9c79d990825cc42ddddd756a4d356c8733"
+    _write_json(
+        root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "runtime_v2_pending_slot_v1",
+            "pending_plan_id": new_plan_id,
+            "state": "REVIEW_REQUIRED",
+            "status": "REVIEW_REQUIRED",
+            "plan_created_date": "2023-10-11",
+            "target_session_date": "2023-10-11",
+            "approved_item_ids": [],
+            "approved_sell_item_ids": [],
+            "approved_buy_item_ids": [],
+            "review_required_buy_item_ids": ["strategy-4e98c1cb77def51708c5", "strategy-c5d39910c741daebcd6d"],
+            "review_scope": "AUTHORITY_UNKNOWN_REVIEW",
+            "sell_continuation_allowed": False,
+            "items": [
+                {
+                    "pending_item_id": "strategy-3da5436ff9481d6af209",
+                    "symbol": "50280",
+                    "side": "SELL",
+                    "quantity": 100.0,
+                    "state": "REVIEW_REQUIRED",
+                    "approved": False,
+                    "item_review_reason": "corporate_action_event_not_resolved",
+                    "source_pm_decision_id": "pm-2023-10-11-50280-reduce",
+                },
+                {
+                    "pending_item_id": "strategy-d1be135b15c4cc97433a",
+                    "symbol": "92460",
+                    "side": "SELL",
+                    "quantity": 100.0,
+                    "state": "REVIEW_REQUIRED",
+                    "approved": False,
+                    "batch_submit_status": "BLOCKED_BY_BATCH_REVIEW",
+                    "source_pm_decision_id": "pm-2023-10-11-92460-reduce",
+                },
+                {
+                    "pending_item_id": "strategy-4e98c1cb77def51708c5",
+                    "symbol": "38560",
+                    "side": "BUY",
+                    "quantity": 100.0,
+                    "state": "REVIEW_REQUIRED",
+                    "approved": False,
+                },
+                {
+                    "pending_item_id": "strategy-c5d39910c741daebcd6d",
+                    "symbol": "76920",
+                    "side": "BUY",
+                    "quantity": 400.0,
+                    "state": "REVIEW_REQUIRED",
+                    "approved": False,
+                },
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "daily" / "2023-10-11" / "morning" / "runtime_manifest.json",
+        {
+            "business_date": "2023-10-11",
+            "job": "morning",
+            "final_state": "PASS",
+            "final_safety_status": "READY",
+            "final_safety_reason": "historical_neutral_no_event_safety_ready",
+        },
+    )
+    _write_json(
+        run_dir / "plan.json",
+        {
+            "schema_version": "runtime_test_plan_v1",
+            "run_id": run_id,
+            "business_dates": [
+                {"business_date": "2023-10-10", "jobs": [{"job": "execution", "command": []}]},
+                {
+                    "business_date": "2023-10-11",
+                    "jobs": [
+                        {"job": "morning", "command": []},
+                        {"job": "sell_planning", "command": []},
+                        {"job": "submit", "command": []},
+                        {"job": "execution", "command": []},
+                    ],
+                },
+                {"business_date": "2023-10-12", "jobs": [{"job": "market_refresh", "command": []}]},
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "run_state.json",
+        {
+            "schema_version": "runtime_test_run_state_v1",
+            "run_id": run_id,
+            "profile_id": "historical-smoke",
+            "status": "HALT",
+            "completed_business_days": ["2023-10-10"],
+            "completed_jobs": [
+                {"business_date": "2023-10-10", "job": "execution", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "morning", "exit_code": 0},
+                {"business_date": "2023-10-11", "job": "sell_planning", "exit_code": 20},
+            ],
+            "halted_at": {"business_date": "2023-10-11", "job": "sell_planning", "exit_code": 20},
+            "next_job": "2023-10-11:sell_planning",
+            "halt_summary": {"root_reason": "historical_safety_temporal_authority_missing"},
+            "scoped_partial_submit_recovery": {
+                "schema_version": "runtime_test_scoped_partial_submit_recovery_state_v1",
+                "recovery_id": "scoped-partial-submit-7fc8aca4bb8fef42",
+                "business_date": "2023-10-11",
+                "rewind_to_job": "morning",
+                "status": "RECOVERY_APPLIED",
+                "evidence_path": str(run_dir / "recovery" / "scoped-partial-submit-7fc8aca4bb8fef42" / "recovery_evidence.json"),
+                "preserved_accepted_item_ids": [consumed_item_id],
+                "preserved_order_ids": [order_id],
+                "excluded_from_resubmit_item_ids": [consumed_item_id],
+                "replay_contract": "submit_pipeline_existing_item_submission_reconciliation",
+                "superseded_pending_plan_id": old_plan_id,
+            },
+            "source_baseline": {},
+        },
+    )
+    return root, reports, run_id
+
+
 def _write_accepted_generation_authority(root: Path, *, business_date: str) -> None:
     generation_id = "phase26-step10r4-fixture-generation"
     generation_dir = root / "ai_lifecycle" / "generations" / generation_id
@@ -362,6 +629,12 @@ def _append_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def call_main(module, args: list[str], capsys: pytest.CaptureFixture[str]) -> dict:
     exit_code = module.main(args + ["--json"])
     captured = capsys.readouterr()
@@ -426,7 +699,11 @@ def test_phase29_l21t_q3b_failed_execution_recovery_dry_run_detects_scope(tmp_pa
         capsys,
     )
 
-    assert payload["_exit_code"] == runner.EXIT_PASS
+    assert payload["_exit_code"] == runner.EXIT_PASS, (
+        payload.get("reason"),
+        (payload.get("execution_result") or {}).get("runtime_owned_projection_reason"),
+        (payload.get("execution_result") or {}).get("transaction_validation_reason"),
+    )
     assert payload["status"] == "DRY_RUN"
     assert payload["dry_run_no_mutation"] is True
     assert len(payload["failed_ledger_rows"]["executions"]) == 4
@@ -465,7 +742,11 @@ def test_phase29_l21t_q3b_failed_execution_recovery_rewinds_and_preserves_prior_
     pending = json.loads((root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
     recovery_dir = reports / "runs" / run_id / "recovery" / payload["recovery_id"]
 
-    assert payload["_exit_code"] == runner.EXIT_PASS
+    assert payload["_exit_code"] == runner.EXIT_PASS, (
+        payload.get("reason"),
+        (payload.get("execution_result") or {}).get("runtime_owned_projection_reason"),
+        (payload.get("execution_result") or {}).get("transaction_validation_reason"),
+    )
     assert payload["status"] == "PASS"
     assert run_state["next_job"] == "2023-06-08:morning"
     assert run_state["status"] == "HALT"
@@ -665,6 +946,308 @@ def test_phase29_l21t_t_stale_pending_recovery_refuses_existing_target_ledger_ro
     assert payload["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
     assert payload["status"] == "PRECONDITION_FAILURE"
     assert "target business date already has ledger rows; use failed-execution recovery or audit first" in payload["errors"]
+
+
+def test_phase32_ac_partial_submit_recovery_dry_run_is_deterministic_and_read_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ac_partial_submit_fixture(tmp_path)
+    before_runtime_hash = runner.directory_hash(root)
+    before_run_state = (reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8")
+
+    args = [
+        "recover-partial-submit",
+        "--runtime-root",
+        str(root),
+        "--evidence-root",
+        str(reports),
+        "--run-id",
+        run_id,
+        "--business-date",
+        "2023-10-11",
+        "--dry-run",
+    ]
+    first = call_main(runner, args, capsys)
+    second = call_main(runner, args, capsys)
+
+    assert first["_exit_code"] == second["_exit_code"] == runner.EXIT_PASS
+    assert first["status"] == second["status"] == "DRY_RUN"
+    assert first["dry_run_no_mutation"] is True
+    assert first["recovery_id"] == second["recovery_id"]
+    assert first["preserved_accepted_item_ids"] == ["strategy-24ef30251cec051aac6a"]
+    assert first["excluded_from_resubmit_item_ids"] == ["strategy-24ef30251cec051aac6a"]
+    assert "strategy-b6716e1e95fc9cc0a9aa" in first["regenerated_item_ids"]
+    assert first["target_ledger_counts"] == {"orders": 1, "executions": 0, "positions": 0, "cash": 0, "events": 0}
+    assert first["submit_guard_block_evidence"][0]["violated_policy"] == "corporate_action_adjustment_authority"
+    assert runner.directory_hash(root) == before_runtime_hash
+    assert (reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8") == before_run_state
+
+
+def test_phase32_ac_partial_submit_recovery_preserves_accepted_order_and_rewinds_pending(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ac_partial_submit_fixture(tmp_path)
+    orders_before = (root / "persistent_ledger" / "orders.jsonl").read_text(encoding="utf-8")
+    broker_before = (root / "runtime_state" / "historical_broker" / "2023-10-11" / "92460.json").read_text(encoding="utf-8")
+
+    payload = call_main(
+        runner,
+        [
+            "recover-partial-submit",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--confirm",
+            CONFIRM_FLAG,
+        ],
+        capsys,
+    )
+    run_state = json.loads((reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8"))
+    pending = json.loads((root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+    recovery_dir = reports / "runs" / run_id / "recovery" / payload["recovery_id"]
+
+    assert payload["_exit_code"] == runner.EXIT_PASS
+    assert payload["status"] == "PASS"
+    assert payload["run_state_rewind_from"] == "2023-10-11:submit"
+    assert payload["run_state_rewind_to"] == "2023-10-11:morning"
+    assert (root / "persistent_ledger" / "orders.jsonl").read_text(encoding="utf-8") == orders_before
+    assert (root / "runtime_state" / "historical_broker" / "2023-10-11" / "92460.json").read_text(encoding="utf-8") == broker_before
+    assert pending["state"] == "EMPTY"
+    assert pending["superseded_pending_plan_id"] == "pending-strategy-plan-historical-2023-10-11-f650d7dcd8b7c7d7"
+    assert pending["preserved_accepted_item_ids"] == ["strategy-24ef30251cec051aac6a"]
+    assert pending["replay_contract"] == "submit_pipeline_existing_item_submission_reconciliation"
+    assert run_state["status"] == "HALT"
+    assert run_state["next_job"] == "2023-10-11:morning"
+    assert run_state["completed_business_days"] == ["2023-10-10"]
+    assert all(
+        not (record.get("business_date") == "2023-10-11" and record.get("job") in {"morning", "sell_planning", "submit", "execution"})
+        for record in run_state["completed_jobs"]
+    )
+    assert run_state["scoped_partial_submit_recovery"]["excluded_from_resubmit_item_ids"] == ["strategy-24ef30251cec051aac6a"]
+    assert (recovery_dir / "partial_submit_pending_order_plan.json").is_file()
+    assert (recovery_dir / "preserved_orders.json").is_file()
+    assert (recovery_dir / "preserved_historical_broker" / "92460.json").is_file()
+
+
+def test_phase32_ac_partial_submit_recovery_after_apply_fails_closed_as_already_recovered(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ac_partial_submit_fixture(tmp_path)
+    call_main(
+        runner,
+        [
+            "recover-partial-submit",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--confirm",
+            CONFIRM_FLAG,
+        ],
+        capsys,
+    )
+
+    second = call_main(
+        runner,
+        [
+            "recover-partial-submit",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--dry-run",
+        ],
+        capsys,
+    )
+
+    assert second["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
+    assert second["status"] == "PRECONDITION_FAILURE"
+    assert "partial submit recovery already applied" in second["errors"]
+
+
+def test_phase32_ac_partial_submit_recovery_rejects_broker_order_mismatch(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ac_partial_submit_fixture(tmp_path)
+    broker_path = root / "runtime_state" / "historical_broker" / "2023-10-11" / "92460.json"
+    broker = json.loads(broker_path.read_text(encoding="utf-8"))
+    broker["order_identity"] = "different-order"
+    _write_json(broker_path, broker)
+
+    payload = call_main(
+        runner,
+        [
+            "recover-partial-submit",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--dry-run",
+        ],
+        capsys,
+    )
+
+    assert payload["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
+    assert payload["status"] == "PRECONDITION_FAILURE"
+    assert "historical broker accepted evidence missing or mismatched for target order row" in payload["errors"]
+
+
+def test_phase32_ae_partial_submit_finalization_dry_run_is_read_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ae_partial_submit_finalization_fixture(tmp_path)
+    before_runtime_hash = runner.directory_hash(root)
+    before_run_state = (reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8")
+
+    payload = call_main(
+        runner,
+        [
+            "finalize-partial-submit-day",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--dry-run",
+        ],
+        capsys,
+    )
+
+    assert payload["_exit_code"] == runner.EXIT_PASS
+    assert payload["status"] == "DRY_RUN"
+    assert payload["dry_run_no_mutation"] is True
+    assert payload["preserved_order_ids"] == ["b95f550a15c75dbb6de73a3ef5886b9c79d990825cc42ddddd756a4d356c8733"]
+    assert payload["preserved_accepted_item_ids"] == ["strategy-24ef30251cec051aac6a"]
+    assert "strategy-3da5436ff9481d6af209" in payload["review_item_ids_not_executed"]
+    assert payload["safety_authority"]["status"] == "PASS"
+    assert runner.directory_hash(root) == before_runtime_hash
+    assert (reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8") == before_run_state
+
+
+def test_phase32_ae_partial_submit_finalization_executes_preserved_order_once(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ae_partial_submit_finalization_fixture(tmp_path)
+    order_id = "b95f550a15c75dbb6de73a3ef5886b9c79d990825cc42ddddd756a4d356c8733"
+
+    payload = call_main(
+        runner,
+        [
+            "finalize-partial-submit-day",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--confirm",
+            CONFIRM_FLAG,
+        ],
+        capsys,
+    )
+    run_state = json.loads((reports / "runs" / run_id / "run_state.json").read_text(encoding="utf-8"))
+    pending = json.loads((root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8"))
+    state = json.loads((root / "persistent_ledger" / "state.json").read_text(encoding="utf-8"))
+    executions = [
+        row
+        for row in _read_jsonl(root / "persistent_ledger" / "executions.jsonl")
+        if row.get("business_date") == "2023-10-11"
+    ]
+    raw_submit_orders = [
+        row
+        for row in _read_jsonl(root / "persistent_ledger" / "orders.jsonl")
+        if row.get("business_date") == "2023-10-11" and row.get("order_id") == order_id
+    ]
+
+    assert payload["_exit_code"] == runner.EXIT_PASS, (
+        payload.get("reason"),
+        (payload.get("execution_result") or {}).get("runtime_owned_projection_reason"),
+        (payload.get("execution_result") or {}).get("transaction_validation_reason"),
+    )
+    assert payload["status"] == "PASS"
+    assert payload["execution_result"]["status"] == "REVIEW_REQUIRED"
+    assert payload["execution_result"]["persistent_commit_completed"] is True
+    assert payload["execution_result"]["reason"].startswith("reconciliation findings=")
+    assert len(raw_submit_orders) == 1
+    assert len(executions) == 1
+    assert executions[0]["symbol"] == "92460"
+    assert executions[0]["side"] == "SELL"
+    assert pending["state"] == "CONSUMED"
+    assert pending["review_item_ids_not_executed"] == [
+        "strategy-3da5436ff9481d6af209",
+        "strategy-d1be135b15c4cc97433a",
+        "strategy-4e98c1cb77def51708c5",
+        "strategy-c5d39910c741daebcd6d",
+    ]
+    assert "2023-10-11" in run_state["completed_business_days"]
+    assert run_state["next_job"] == "2023-10-12:market_refresh"
+    assert run_state["partial_submit_day_finalization"]["status"] == "PASS"
+    assert all(position.get("symbol") != "92460" for position in state.get("positions", []))
+    assert (reports / "runs" / run_id / "daily" / "2023-10-11" / "day_completion" / "day_completion_evidence.json").is_file()
+
+
+def test_phase32_ae_partial_submit_finalization_rejects_missing_safety_authority(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = load_runner()
+    root, reports, run_id = _make_phase32_ae_partial_submit_finalization_fixture(tmp_path)
+    (reports / "runs" / run_id / "daily" / "2023-10-11" / "morning" / "runtime_manifest.json").unlink()
+
+    payload = call_main(
+        runner,
+        [
+            "finalize-partial-submit-day",
+            "--runtime-root",
+            str(root),
+            "--evidence-root",
+            str(reports),
+            "--run-id",
+            run_id,
+            "--business-date",
+            "2023-10-11",
+            "--dry-run",
+        ],
+        capsys,
+    )
+
+    assert payload["_exit_code"] == runner.EXIT_PRECONDITION_FAILURE
+    assert payload["status"] == "PRECONDITION_FAILURE"
+    assert any("historical safety authority missing" in error for error in payload["errors"])
 
 
 def test_phase26_pf3f_runtime_cli_records_trace_without_fixed_timeout(tmp_path: Path) -> None:

@@ -414,6 +414,14 @@ def build_parser() -> argparse.ArgumentParser:
     stale_pending_recovery.add_argument("--rewind-to-job", default="morning")
     stale_pending_recovery.add_argument("--expected-pending-plan-id", default="")
 
+    partial_submit_recovery = subparsers.add_parser("recover-partial-submit")
+    add_common(partial_submit_recovery)
+    add_mutation_safety(partial_submit_recovery)
+    partial_submit_recovery.add_argument("--run-id", required=True)
+    partial_submit_recovery.add_argument("--business-date", required=True)
+    partial_submit_recovery.add_argument("--rewind-to-job", default="morning")
+    partial_submit_recovery.add_argument("--expected-pending-plan-id", default="")
+
     replay = subparsers.add_parser("replay-recovered-day")
     add_common(replay)
     add_mutation_safety(replay)
@@ -424,6 +432,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="morning,sell_planning,submit,execution",
         help="Comma-separated planned jobs to replay for the recovered business date.",
     )
+
+    partial_submit_finalize = subparsers.add_parser("finalize-partial-submit-day")
+    add_common(partial_submit_finalize)
+    add_mutation_safety(partial_submit_finalize)
+    partial_submit_finalize.add_argument("--run-id", required=True)
+    partial_submit_finalize.add_argument("--business-date", required=True)
 
     abandon = subparsers.add_parser("abandon")
     add_common(abandon)
@@ -525,8 +539,22 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
             runtime_root=runtime_root,
             evidence_root=evidence_root,
         )
+    if args.subcommand == "recover-partial-submit":
+        return recover_partial_submit_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
     if args.subcommand == "replay-recovered-day":
         return replay_recovered_day_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
+    if args.subcommand == "finalize-partial-submit-day":
+        return finalize_partial_submit_day_command(
             args,
             profile=profile,
             runtime_root=runtime_root,
@@ -5253,6 +5281,105 @@ def recover_stale_pending_command(
     return CommandResult("PASS", EXIT_PASS, runner_response(payload))
 
 
+def recover_partial_submit_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_dir = runs_root(evidence_root) / str(args.run_id)
+    run_state_path = run_dir / "run_state.json"
+    run_state = load_run_state(evidence_root, args.run_id)
+    business_date = str(args.business_date)
+    rewind_to_job = str(args.rewind_to_job or "morning")
+    if rewind_to_job not in RECOVERABLE_REPLAY_JOBS:
+        raise RuntimeTestError(
+            f"unsupported rewind target job: {rewind_to_job}",
+            status="INVALID_ARGUMENT",
+            exit_code=EXIT_INVALID_ARGUMENT,
+        )
+    recovery = build_partial_submit_recovery_plan(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_state=run_state,
+        run_id=str(args.run_id),
+        business_date=business_date,
+        rewind_to_job=rewind_to_job,
+        expected_pending_plan_id=str(args.expected_pending_plan_id or ""),
+    )
+    payload = base_payload("recover-partial-submit", "DRY_RUN" if args.dry_run else recovery["status"])
+    payload.update(recovery)
+    payload["dry_run"] = bool(args.dry_run)
+    if recovery["status"] != "PASS":
+        payload["status"] = recovery["status"]
+        return CommandResult(payload["status"], EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        payload["dry_run_no_mutation"] = True
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    recovery_id = str(recovery["recovery_id"])
+    recovery_dir = run_dir / "recovery" / recovery_id
+    recovery_dir.mkdir(parents=True, exist_ok=True)
+    _preserve_partial_submit_evidence(
+        recovery_dir=recovery_dir,
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        recovery=recovery,
+    )
+    _retire_partial_submit_pending(runtime_root=runtime_root, recovery=recovery)
+    before_run_state = dict(run_state)
+    run_state["status"] = "HALT"
+    run_state["next_job"] = f"{business_date}:{rewind_to_job}"
+    run_state["completed_jobs"] = [
+        record
+        for record in run_state.get("completed_jobs", [])
+        if not (
+            str(record.get("business_date") or "") == business_date
+            and str(record.get("job") or "") in RECOVERABLE_REPLAY_JOBS
+        )
+    ]
+    run_state["completed_business_days"] = [
+        day for day in run_state.get("completed_business_days", []) if str(day) != business_date
+    ]
+    run_state["scoped_partial_submit_recovery"] = {
+        "schema_version": "runtime_test_scoped_partial_submit_recovery_state_v1",
+        "recovery_id": recovery_id,
+        "business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "status": "RECOVERY_APPLIED",
+        "created_at": utc_now(),
+        "evidence_path": str(recovery_dir / "recovery_evidence.json"),
+        "preserved_accepted_item_ids": recovery.get("preserved_accepted_item_ids", []),
+        "preserved_order_ids": recovery.get("preserved_order_ids", []),
+        "excluded_from_resubmit_item_ids": recovery.get("excluded_from_resubmit_item_ids", []),
+        "replay_contract": "submit_pipeline_existing_item_submission_reconciliation",
+    }
+    run_state.pop("halt_summary", None)
+    run_state["halted_at"] = {
+        "business_date": business_date,
+        "job": rewind_to_job,
+        "exit_code": EXIT_HALT,
+        "runtime_test_job_status": "SCOPED_PARTIAL_SUBMIT_RECOVERY_READY_FOR_REPLAY",
+        "reason": "scoped partial submit recovery rewound run to replay boundary",
+    }
+    write_json_atomic(run_state_path, run_state)
+    applied = {
+        **recovery,
+        "status": "PASS",
+        "recovery_applied": True,
+        "run_state_rewind_from": before_run_state.get("next_job", ""),
+        "run_state_rewind_to": run_state["next_job"],
+        "post_recovery_hashes": _recovery_state_hashes(runtime_root),
+    }
+    write_json_atomic(recovery_dir / "recovery_evidence.json", applied)
+    payload.update(applied)
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
 def replay_recovered_day_command(
     args: argparse.Namespace,
     *,
@@ -5293,6 +5420,487 @@ def replay_recovered_day_command(
     payload = base_payload("replay-recovered-day", replay["status"])
     payload.update(replay)
     return CommandResult(replay["status"], EXIT_PASS if replay["status"] == "PASS" else EXIT_HALT, runner_response(payload))
+
+
+def finalize_partial_submit_day_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_dir = runs_root(evidence_root) / str(args.run_id)
+    run_state_path = run_dir / "run_state.json"
+    run_state = load_run_state(evidence_root, args.run_id)
+    business_date = str(args.business_date)
+    plan = build_partial_submit_finalization_plan(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        run_state=run_state,
+        run_id=str(args.run_id),
+        business_date=business_date,
+    )
+    payload = base_payload("finalize-partial-submit-day", "DRY_RUN" if args.dry_run else plan["status"])
+    payload.update(plan)
+    payload["dry_run"] = bool(args.dry_run)
+    if plan["status"] != "PASS":
+        payload["status"] = plan["status"]
+        return CommandResult(payload["status"], EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        payload["dry_run_no_mutation"] = True
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+
+    from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
+    from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
+
+    finalization_id = str(plan["finalization_id"])
+    finalization_dir = run_dir / "recovery" / finalization_id
+    finalization_dir.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(finalization_dir / "finalization_plan.json", plan)
+    if (runtime_root / "pending_order_plan" / "pending_order_plan.json").is_file():
+        shutil.copy2(
+            runtime_root / "pending_order_plan" / "pending_order_plan.json",
+            finalization_dir / "pre_finalization_pending_order_plan.json",
+        )
+    pre_hashes = _recovery_state_hashes(runtime_root)
+    execution_result = run_execution_readonly_pipeline(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode="historical",
+        snapshot_provider=HistoricalExecutionSnapshotProvider(runtime_root=runtime_root, business_date=business_date),
+    )
+    execution_details = execution_result.to_stage_details()
+    _write_partial_submit_finalization_execution_evidence(
+        run_dir=run_dir,
+        business_date=business_date,
+        execution=execution_details,
+    )
+    execution_commit_accepted = (
+        execution_result.status == "PASS"
+        or (
+            execution_result.status == "REVIEW_REQUIRED"
+            and bool(execution_details.get("persistent_commit_completed"))
+            and str(execution_details.get("reason") or "").startswith("reconciliation findings=")
+        )
+    )
+    if not execution_commit_accepted:
+        applied = {
+            **plan,
+            "status": "HALT",
+            "reason": f"accepted partial submit execution finalization failed: {execution_result.reason}",
+            "execution_result": execution_details,
+            "pre_finalization_hashes": pre_hashes,
+            "post_finalization_hashes": _recovery_state_hashes(runtime_root),
+        }
+        write_json_atomic(finalization_dir / "finalization_evidence.json", applied)
+        payload.update(applied)
+        return CommandResult("HALT", EXIT_HALT, runner_response(payload))
+
+    _terminalize_partial_submit_pending(
+        runtime_root=runtime_root,
+        run_dir=run_dir,
+        business_date=business_date,
+        plan=plan,
+        execution=execution_details,
+    )
+    day_completion = _write_day_completion_evidence(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+    )
+    if day_completion["status"] != "PASS":
+        applied = {
+            **plan,
+            "status": "HALT",
+            "reason": "partial submit day completion gate failed: " + str(day_completion.get("reason") or ""),
+            "execution_result": execution_details,
+            "day_completion": day_completion,
+            "pre_finalization_hashes": pre_hashes,
+            "post_finalization_hashes": _recovery_state_hashes(runtime_root),
+        }
+        write_json_atomic(finalization_dir / "finalization_evidence.json", applied)
+        payload.update(applied)
+        return CommandResult("HALT", EXIT_HALT, runner_response(payload))
+
+    before_run_state = dict(run_state)
+    _record_partial_submit_finalized_jobs(
+        run_state=run_state,
+        business_date=business_date,
+        finalization_id=finalization_id,
+        execution=execution_details,
+        day_completion=day_completion,
+    )
+    if business_date not in run_state.get("completed_business_days", []):
+        run_state.setdefault("completed_business_days", []).append(business_date)
+    run_state["status"] = "HALT"
+    run_state["next_job"] = _next_job_after_completed_day(run_dir=run_dir, business_date=business_date)
+    run_state["partial_submit_day_finalization"] = {
+        "schema_version": "runtime_test_partial_submit_day_finalization_state_v1",
+        "finalization_id": finalization_id,
+        "business_date": business_date,
+        "status": "PASS",
+        "completed_at": utc_now(),
+        "evidence_path": str(finalization_dir / "finalization_evidence.json"),
+        "preserved_order_ids": plan.get("preserved_order_ids", []),
+        "preserved_accepted_item_ids": plan.get("preserved_accepted_item_ids", []),
+        "review_item_ids_not_executed": plan.get("review_item_ids_not_executed", []),
+        "resume_contract": "same_run_resume_from_next_business_day",
+    }
+    run_state.pop("halt_summary", None)
+    run_state["halted_at"] = {
+        "business_date": business_date,
+        "job": "day_completion_gate",
+        "exit_code": EXIT_HALT,
+        "runtime_test_job_status": "PARTIAL_SUBMIT_DAY_FINALIZED_READY_FOR_RESUME",
+        "reason": "partial submit day finalized; resume may continue with next uncompleted business day",
+    }
+    write_json_atomic(run_state_path, run_state)
+    applied = {
+        **plan,
+        "status": "PASS",
+        "finalization_applied": True,
+        "execution_result": execution_details,
+        "day_completion": day_completion,
+        "run_state_rewind_from": before_run_state.get("next_job", ""),
+        "run_state_resume_next_job": run_state["next_job"],
+        "pre_finalization_hashes": pre_hashes,
+        "post_finalization_hashes": _recovery_state_hashes(runtime_root),
+    }
+    write_json_atomic(finalization_dir / "finalization_evidence.json", applied)
+    payload.update(applied)
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def build_partial_submit_finalization_plan(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_state: dict[str, Any],
+    run_id: str,
+    business_date: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    recovery = run_state.get("scoped_partial_submit_recovery")
+    if not isinstance(recovery, dict):
+        errors.append("scoped partial submit recovery state missing")
+        recovery = {}
+    if str(recovery.get("status") or "") != "RECOVERY_APPLIED":
+        errors.append("scoped partial submit recovery is not applied")
+    if str(recovery.get("business_date") or "") != business_date:
+        errors.append("scoped partial submit recovery business_date mismatch")
+    if str(run_state.get("status") or "") != "HALT":
+        errors.append("run status is not HALT")
+    existing_finalization = run_state.get("partial_submit_day_finalization")
+    if isinstance(existing_finalization, dict) and str(existing_finalization.get("status") or "") == "PASS":
+        errors.append("partial submit day already finalized")
+
+    preserved_order_ids = [str(item) for item in recovery.get("preserved_order_ids") or [] if str(item)]
+    preserved_item_ids = [str(item) for item in recovery.get("preserved_accepted_item_ids") or [] if str(item)]
+    if not preserved_order_ids:
+        errors.append("preserved accepted order ids missing")
+    order_rows = [
+        row
+        for row in _read_jsonl_rows(runtime_root / "persistent_ledger" / "orders.jsonl")
+        if str(row.get("business_date") or "") == business_date
+        and str(row.get("order_id") or "") in set(preserved_order_ids)
+    ]
+    if len(order_rows) != len(set(preserved_order_ids)):
+        errors.append("preserved accepted order rows missing or ambiguous")
+    execution_rows = [
+        row
+        for row in _read_jsonl_rows(runtime_root / "persistent_ledger" / "executions.jsonl")
+        if str(row.get("business_date") or "") == business_date
+    ]
+    if execution_rows:
+        errors.append("target business date already has execution rows")
+    broker_records = _accepted_historical_broker_records(runtime_root=runtime_root, business_date=business_date)
+    broker_by_order = {str(item.get("order_identity") or ""): item for item in broker_records}
+    broker_errors = []
+    for row in order_rows:
+        broker = broker_by_order.get(str(row.get("order_id") or ""))
+        if not broker:
+            broker_errors.append(str(row.get("order_id") or ""))
+            continue
+        for key in ("symbol", "side", "quantity", "pending_item_id", "pending_plan_id", "source_pm_decision_id"):
+            if str(row.get(key) or "") != str(broker.get(key) or ""):
+                broker_errors.append(f"{row.get('order_id')}:{key}")
+    if broker_errors:
+        errors.append("historical broker accepted evidence missing or mismatched for preserved order rows: " + ",".join(broker_errors))
+    safety = _partial_submit_finalization_safety_authority(run_dir=run_dir, runtime_root=runtime_root, business_date=business_date)
+    if safety["status"] != "PASS":
+        errors.append("historical safety authority missing for partial submit finalization: " + str(safety.get("reason") or ""))
+    pending = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    pending_items = pending.get("items") if isinstance(pending.get("items"), list) else []
+    if str(pending.get("target_session_date") or "") != business_date:
+        errors.append("current Pending target_session_date mismatch")
+    if str(pending.get("state") or pending.get("status") or "") != "REVIEW_REQUIRED":
+        errors.append("current Pending is not REVIEW_REQUIRED")
+    approved_ids = {str(item) for item in pending.get("approved_item_ids") or [] if str(item)}
+    unexpected_approved = sorted(approved_ids - set(preserved_item_ids))
+    if unexpected_approved:
+        errors.append("current Pending has unexpected approved item ids: " + ",".join(unexpected_approved))
+    review_items = [
+        str(item.get("pending_item_id") or "")
+        for item in pending_items
+        if str(item.get("state") or item.get("status") or "") == "REVIEW_REQUIRED"
+    ]
+    finalization_id = _partial_submit_finalization_id(
+        run_id=run_id,
+        business_date=business_date,
+        preserved_order_ids=set(preserved_order_ids),
+    )
+    status = "PASS" if not errors else "PRECONDITION_FAILURE"
+    return {
+        "schema_version": "runtime_test_partial_submit_day_finalization_plan_v1",
+        "status": status,
+        "errors": errors,
+        "run_id": run_id,
+        "business_date": business_date,
+        "finalization_id": finalization_id,
+        "recovery_id": str(recovery.get("recovery_id") or ""),
+        "preserved_order_ids": preserved_order_ids,
+        "preserved_accepted_item_ids": preserved_item_ids,
+        "preserved_order_row_count": len(order_rows),
+        "accepted_broker_evidence_count": len(broker_records),
+        "review_item_ids_not_executed": review_items,
+        "current_pending_plan_id": str(pending.get("pending_plan_id") or ""),
+        "current_pending_state": str(pending.get("state") or pending.get("status") or ""),
+        "safety_authority": safety,
+        "finalization_contract": {
+            "strategy_redecision_allowed": False,
+            "submit_resubmission_allowed": False,
+            "accepted_order_execution_reconciliation": "existing_historical_broker_evidence_only",
+            "review_items_execution_allowed": False,
+            "resume_after_completion": "same_run_next_uncompleted_business_day",
+        },
+    }
+
+
+def _accepted_historical_broker_records(*, runtime_root: Path, business_date: str) -> list[dict[str, Any]]:
+    broker_dir = runtime_root / "runtime_state" / "historical_broker" / business_date
+    records: list[dict[str, Any]] = []
+    if not broker_dir.exists():
+        return records
+    for path in sorted(broker_dir.glob("*.json")):
+        payload = read_json_optional(path)
+        if str(payload.get("status") or "") == "ACCEPTED":
+            records.append(payload)
+    return records
+
+
+def _partial_submit_finalization_safety_authority(*, run_dir: Path, runtime_root: Path, business_date: str) -> dict[str, Any]:
+    candidates = [
+        run_dir / "daily" / business_date / "morning" / "runtime_manifest.json",
+        run_dir / "daily" / business_date / "morning" / "cli_result.json",
+    ]
+    manifest_dir = runtime_root / "runtime_state" / "run_manifest" / business_date
+    if manifest_dir.exists():
+        candidates.extend(sorted(manifest_dir.glob("runtime-v2-morning*.json")))
+    for path in candidates:
+        payload = read_json_optional(path)
+        if not payload:
+            continue
+        text = json.dumps(payload, ensure_ascii=False)
+        status_values = {
+            str(payload.get("safety_status") or ""),
+            str(payload.get("final_safety_status") or ""),
+            str(payload.get("status") or ""),
+        }
+        reason_values = {
+            str(payload.get("safety_reason") or ""),
+            str(payload.get("final_safety_reason") or ""),
+            str(payload.get("reason") or ""),
+        }
+        if "historical_neutral_no_event_safety_ready" in text or "READY" in status_values:
+            return {
+                "status": "PASS",
+                "reason": next((reason for reason in reason_values if reason), "historical safety authority ready"),
+                "evidence_path": str(path),
+            }
+    return {"status": "REVIEW_REQUIRED", "reason": "morning historical safety authority READY evidence not found", "evidence_path": ""}
+
+
+def _partial_submit_finalization_id(*, run_id: str, business_date: str, preserved_order_ids: set[str]) -> str:
+    raw = json.dumps(
+        {
+            "run_id": run_id,
+            "business_date": business_date,
+            "preserved_order_ids": sorted(preserved_order_ids),
+            "finalization_type": "partial_submit_accepted_items_only",
+        },
+        sort_keys=True,
+    )
+    return "partial-submit-finalize-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _write_partial_submit_finalization_execution_evidence(
+    *,
+    run_dir: Path,
+    business_date: str,
+    execution: dict[str, Any],
+) -> None:
+    evidence_dir = run_dir / "daily" / business_date / "execution"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": "runtime_test_partial_submit_finalization_execution_manifest_v1",
+        "business_date": business_date,
+        "job": "execution",
+        "final_state": execution.get("status") or "NOT_EXECUTED",
+        "stages": [
+            {
+                "name": "runtime_v2_execution_readonly_pipeline",
+                "status": execution.get("status") or "NOT_EXECUTED",
+                "reason": execution.get("reason") or "",
+                "details": execution,
+            }
+        ],
+        "partial_submit_finalization": True,
+    }
+    write_json_atomic(evidence_dir / "runtime_manifest.json", manifest)
+    write_json_atomic(evidence_dir / "execution_manifest.json", {"source_manifest_path": "", "manifest": manifest})
+    write_json_atomic(
+        evidence_dir / "pending_terminalization_evidence.json",
+        {
+            "status": execution.get("pending_terminalization_status") or "NOT_REQUIRED",
+            "pending_consumed": bool(execution.get("pending_consumed")),
+            "pending_mutated": bool(execution.get("pending_mutated")),
+            "pending_read_valid": bool(execution.get("pending_read_valid")),
+            "pending_classification": execution.get("pending_classification") or "",
+            "pending_active": execution.get("pending_active"),
+            "pending_plan_present": bool(execution.get("pending_plan_present")),
+            "pending_item_count": execution.get("pending_item_count", 0),
+            "execution_references": list(execution.get("execution_references") or []),
+            "item_lifecycle_authority": execution.get("item_lifecycle_authority") or {"status": "NOT_APPLICABLE"},
+        },
+    )
+    write_json_atomic(
+        evidence_dir / "ledger_append_evidence.json",
+        {
+            "status": "PASS" if execution.get("ledger_connected") else "NOT_EXECUTED",
+            "ledger_orders_appended": execution.get("ledger_orders_appended", 0),
+            "ledger_executions_appended": execution.get("ledger_executions_appended", 0),
+            "ledger_positions_appended": execution.get("ledger_positions_appended", 0),
+            "ledger_cash_appended": execution.get("ledger_cash_appended", 0),
+            "ledger_events_appended": execution.get("ledger_events_appended", 0),
+        },
+    )
+    write_json_atomic(
+        evidence_dir / "current_apply_evidence.json",
+        {
+            "status": execution.get("current_apply_status") or "NOT_EXECUTED",
+            "reason": execution.get("current_apply_reason") or "",
+            "runtime_owned_projection_status": execution.get("runtime_owned_projection_status") or "NOT_EXECUTED",
+            "runtime_owned_projection_reason": execution.get("runtime_owned_projection_reason") or "",
+            "asset_current_written": bool(execution.get("asset_current_written")),
+            "current_hash": execution.get("current_hash") or "",
+            "current_version": execution.get("current_version") or "",
+            "runtime_state_path": execution.get("runtime_state_path") or "",
+            "runtime_state_version": execution.get("runtime_state_version") or "",
+        },
+    )
+
+
+def _terminalize_partial_submit_pending(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    business_date: str,
+    plan: dict[str, Any],
+    execution: dict[str, Any],
+) -> None:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = read_json_optional(pending_path)
+    payload = {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "state": "CONSUMED",
+        "status": "CONSUMED",
+        "active_pending": False,
+        "target_session_date": business_date,
+        "pending_plan_id": pending.get("pending_plan_id") or plan.get("current_pending_plan_id") or "",
+        "superseded_pending_plan_id": pending.get("pending_plan_id") or "",
+        "finalization_id": plan.get("finalization_id") or "",
+        "partial_submit_finalization_state": "ACCEPTED_ITEMS_EXECUTED_REVIEW_ITEMS_NOT_SUBMITTED",
+        "preserved_accepted_item_ids": plan.get("preserved_accepted_item_ids", []),
+        "preserved_order_ids": plan.get("preserved_order_ids", []),
+        "review_item_ids_not_executed": plan.get("review_item_ids_not_executed", []),
+        "execution_references": list(execution.get("execution_references") or []),
+        "items": pending.get("items") if isinstance(pending.get("items"), list) else [],
+    }
+    write_json_atomic(pending_path, payload)
+    lifecycle_dir = run_dir / "daily" / business_date / "pending_lifecycle"
+    lifecycle_dir.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        lifecycle_dir / "runtime_manifest.json",
+        {
+            "schema_version": "runtime_test_partial_submit_finalization_pending_lifecycle_v1",
+            "business_date": business_date,
+            "pending_lifecycle_status": "CONSUMED",
+            "pending_lifecycle_reason": "partial submit finalization consumed accepted items and terminalized reviewed items",
+            "previous_state": pending.get("state") or pending.get("status") or "",
+            "new_state": "CONSUMED",
+            "current_pending_path": str(pending_path),
+            "idempotent_noop": False,
+        },
+    )
+
+
+def _record_partial_submit_finalized_jobs(
+    *,
+    run_state: dict[str, Any],
+    business_date: str,
+    finalization_id: str,
+    execution: dict[str, Any],
+    day_completion: dict[str, Any],
+) -> None:
+    completed_jobs = [
+        record
+        for record in run_state.get("completed_jobs", [])
+        if not (
+            str(record.get("business_date") or "") == business_date
+            and str(record.get("job") or "") in {"sell_planning", "submit", "execution", "pending_lifecycle", "day_completion_gate"}
+        )
+    ]
+    for job_name, status in (
+        ("sell_planning", "PARTIAL_SUBMIT_FINALIZED_WITH_REVIEW_ITEMS"),
+        ("submit", "PARTIAL_SUBMIT_FINALIZED_NO_RESUBMIT"),
+        ("execution", "PASS"),
+        ("pending_lifecycle", "PASS"),
+        ("day_completion_gate", "PASS"),
+    ):
+        completed_jobs.append(
+            {
+                "business_date": business_date,
+                "job": job_name,
+                "exit_code": 0,
+                "command": ["runtime_test.py", "internal:finalize_partial_submit_day", job_name],
+                "planned_command": {},
+                "runtime_test_job_status": status,
+                "partial_submit_finalization_id": finalization_id,
+                "execution_transaction_id": execution.get("execution_transaction_id") or "",
+                "day_completion_status": day_completion.get("status") or "",
+            }
+        )
+    run_state["completed_jobs"] = completed_jobs
+
+
+def _next_job_after_completed_day(*, run_dir: Path, business_date: str) -> str:
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        return ""
+    plan_payload = load_plan(plan_path)
+    dates = [str(item.get("business_date") or "") for item in plan_payload.get("business_dates", [])]
+    if business_date not in dates:
+        return ""
+    index = dates.index(business_date)
+    if index + 1 >= len(dates):
+        return ""
+    next_day = plan_payload.get("business_dates", [])[index + 1]
+    jobs = next_day.get("jobs") if isinstance(next_day, dict) else []
+    first_job = str((jobs[0] if jobs else {}).get("job") or "")
+    return f"{dates[index + 1]}:{first_job}" if first_job else dates[index + 1]
 
 
 def build_failed_execution_recovery_plan(
@@ -5502,6 +6110,409 @@ def build_stale_pending_recovery_plan(
     }
 
 
+def build_partial_submit_recovery_plan(
+    *,
+    runtime_root: Path,
+    run_dir: Path,
+    run_state: dict[str, Any],
+    run_id: str,
+    business_date: str,
+    rewind_to_job: str,
+    expected_pending_plan_id: str = "",
+) -> dict[str, Any]:
+    errors: list[str] = []
+    state = read_json_optional(runtime_root / "persistent_ledger" / "state.json")
+    pending = read_json_optional(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    recovery_date = _previous_completed_business_day(run_dir=run_dir, business_date=business_date)
+    state_business_date = str(state.get("as_of") or state.get("business_date") or "")
+    halted_at = run_state.get("halted_at") if isinstance(run_state.get("halted_at"), dict) else {}
+    pending_state = str(pending.get("state") or pending.get("status") or "").upper()
+    pending_plan_id = str(pending.get("pending_plan_id") or "")
+    pending_target = str(pending.get("target_session_date") or pending.get("business_date") or "")
+    pending_created = str(pending.get("plan_created_date") or pending.get("created_at") or "")
+    pending_items = pending.get("items") if isinstance(pending.get("items"), list) else []
+    items_by_id = {str(item.get("pending_item_id") or ""): item for item in pending_items if isinstance(item, dict)}
+    ledger_rows = {
+        name: _recovery_rows_for_business_date(runtime_root / "persistent_ledger" / f"{name}.jsonl", business_date)
+        for name in ("orders", "executions", "positions", "cash", "events")
+    }
+    existing_recovery = run_state.get("scoped_partial_submit_recovery")
+    if isinstance(existing_recovery, dict) and str(existing_recovery.get("business_date") or "") == business_date:
+        errors.append("partial submit recovery already applied")
+    if not recovery_date:
+        errors.append("previous completed business day recovery boundary missing")
+    if state_business_date != recovery_date:
+        errors.append("persistent state is not at last completed coherent boundary")
+    if str(run_state.get("status") or "") != "HALT":
+        errors.append("run_state is not HALT")
+    if str(run_state.get("next_job") or "") != f"{business_date}:submit":
+        errors.append("run_state next_job is not partial submit boundary")
+    if str(halted_at.get("business_date") or "") != business_date:
+        errors.append("halted_at business_date does not match target")
+    if str(halted_at.get("job") or "") != "submit":
+        errors.append("halted_at job is not submit")
+    if pending_state != "REVIEW_REQUIRED":
+        errors.append("pending is not REVIEW_REQUIRED partial-submit candidate")
+    if pending_target != business_date:
+        errors.append("pending target_session_date does not match recovery business_date")
+    if pending_created and pending_created != business_date:
+        errors.append("pending plan_created_date does not match recovery business_date")
+    if expected_pending_plan_id and pending_plan_id != expected_pending_plan_id:
+        errors.append("pending_plan_id mismatch")
+    if not pending_items:
+        errors.append("pending has no items to reconcile")
+    if not ledger_rows["orders"]:
+        errors.append("target business date has no accepted order rows to preserve")
+    if ledger_rows["executions"] or ledger_rows["positions"] or ledger_rows["cash"] or ledger_rows["events"]:
+        errors.append("target business date has execution/current external-effect rows")
+
+    consumed_item_ids = sorted(
+        item_id for item_id, item in items_by_id.items() if str(item.get("state") or "").upper() == "CONSUMED"
+    )
+    approved_not_submitted_item_ids = sorted(
+        item_id
+        for item_id, item in items_by_id.items()
+        if str(item.get("state") or "").upper() == "APPROVED"
+    )
+    review_required_item_ids = sorted(
+        item_id
+        for item_id, item in items_by_id.items()
+        if str(item.get("state") or "").upper() == "REVIEW_REQUIRED"
+    )
+    if not consumed_item_ids:
+        errors.append("partial submit has no consumed item to preserve")
+    if not approved_not_submitted_item_ids:
+        errors.append("partial submit has no approved not-submitted item to regenerate")
+
+    order_reconciliations, order_errors = _partial_submit_order_reconciliations(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        pending_plan_id=pending_plan_id,
+        items_by_id=items_by_id,
+        order_rows=ledger_rows["orders"],
+    )
+    errors.extend(order_errors)
+    preserved_accepted_item_ids = sorted({row["pending_item_id"] for row in order_reconciliations})
+    preserved_order_ids = sorted({row["order_id"] for row in order_reconciliations if row.get("order_id")})
+    preserved_broker_evidence_ids = sorted(
+        {
+            evidence
+            for row in order_reconciliations
+            for evidence in row.get("broker_evidence_paths", [])
+            if evidence
+        }
+    )
+    blocked_evidence = _partial_submit_blocked_guard_evidence(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date=business_date,
+        candidate_item_ids=approved_not_submitted_item_ids,
+    )
+    blocked_item_ids = sorted({str(row.get("pending_item_id") or "") for row in blocked_evidence if row.get("pending_item_id")})
+    if not blocked_item_ids:
+        errors.append("approved not-submitted items lack canonical submit guard block evidence")
+    unpreserved_consumed = sorted(set(consumed_item_ids) - set(preserved_accepted_item_ids))
+    if unpreserved_consumed:
+        errors.append("consumed pending items lack matching accepted order evidence")
+    submitted_not_consumed = sorted(set(preserved_accepted_item_ids) - set(consumed_item_ids))
+    if submitted_not_consumed:
+        errors.append("accepted order evidence reconciles to non-consumed pending items")
+    if set(preserved_accepted_item_ids) & set(approved_not_submitted_item_ids):
+        errors.append("accepted item preservation overlaps with approved regeneration set")
+    if not _partial_submit_historical_broker_directory_reconciled(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        reconciliations=order_reconciliations,
+    ):
+        errors.append("historical broker accepted evidence has unreconciled target-date entry")
+
+    recovery_id = _scoped_partial_submit_recovery_id(
+        run_id=run_id,
+        business_date=business_date,
+        pending_plan_id=pending_plan_id,
+        preserved_order_ids=set(preserved_order_ids),
+    )
+    status = "PASS" if not errors else "PRECONDITION_FAILURE"
+    return {
+        "schema_version": "runtime_test_scoped_partial_submit_recovery_plan_v1",
+        "status": status,
+        "errors": errors,
+        "recovery_id": recovery_id,
+        "target_run_id": run_id,
+        "target_business_date": business_date,
+        "rewind_to_job": rewind_to_job,
+        "recovery_classification": "PARTIAL_SUBMIT_SUCCESS_LATER_ITEM_BLOCK",
+        "source_recovery_point": {
+            "business_date": recovery_date,
+            "cash": state.get("cash"),
+            "buying_power": state.get("buying_power"),
+            "position_count": len(state.get("positions") or []),
+        },
+        "partial_submit_pending": {
+            "pending_plan_id": pending_plan_id,
+            "state": pending_state,
+            "target_session_date": pending_target,
+            "plan_created_date": pending_created,
+            "item_count": len(pending_items),
+            "review_scope": str(pending.get("review_scope") or ""),
+            "sell_continuation_allowed": bool(pending.get("sell_continuation_allowed")),
+            "approved_item_ids": list(pending.get("approved_item_ids") or []),
+            "consumed_item_ids": consumed_item_ids,
+            "approved_not_submitted_item_ids": approved_not_submitted_item_ids,
+            "review_required_item_ids": review_required_item_ids,
+        },
+        "target_ledger_counts": {name: len(rows) for name, rows in ledger_rows.items()},
+        "target_ledger_rows": {name: [row for row in rows] for name, rows in ledger_rows.items()},
+        "order_reconciliations": order_reconciliations,
+        "submit_guard_block_evidence": blocked_evidence,
+        "preserved_accepted_item_ids": preserved_accepted_item_ids,
+        "preserved_order_ids": preserved_order_ids,
+        "preserved_broker_evidence_ids": preserved_broker_evidence_ids,
+        "excluded_from_resubmit_item_ids": preserved_accepted_item_ids,
+        "regenerated_item_ids": sorted(set(approved_not_submitted_item_ids + review_required_item_ids)),
+        "superseded_pending_plan_id": pending_plan_id,
+        "replay_boundary": f"{business_date}:{rewind_to_job}",
+        "safe_replay_jobs": list(RECOVERABLE_REPLAY_JOBS),
+        "idempotency_validation": {
+            "accepted_orders_preserved": True,
+            "ledger_order_rows_deleted": False,
+            "historical_broker_evidence_deleted": False,
+            "submit_replay_duplicate_prevention": "pending_item_existing_submission_reconciliation",
+        },
+        "pre_recovery_hashes": _recovery_state_hashes(runtime_root),
+        "manual_file_edit_required": False,
+        "ledger_current_recovery_required": False,
+        "production_common_recovery": True,
+    }
+
+
+def _partial_submit_order_reconciliations(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    pending_plan_id: str,
+    items_by_id: dict[str, dict[str, Any]],
+    order_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    errors: list[str] = []
+    reconciliations: list[dict[str, Any]] = []
+    seen_order_ids: set[str] = set()
+    seen_pending_ids: set[str] = set()
+    for row in order_rows:
+        pending_item_id = str(row.get("pending_item_id") or "")
+        order_id = str(row.get("order_id") or "")
+        if str(row.get("pending_plan_id") or "") != pending_plan_id:
+            errors.append("target order row pending_plan_id does not match current pending")
+            continue
+        if str(row.get("status") or "").upper() != "ACCEPTED":
+            errors.append("target order row is not ACCEPTED")
+            continue
+        if not pending_item_id or pending_item_id not in items_by_id:
+            errors.append("target order row pending_item_id is missing from current pending")
+            continue
+        item = items_by_id[pending_item_id]
+        if str(item.get("state") or "").upper() != "CONSUMED":
+            errors.append("target order row does not reconcile to CONSUMED pending item")
+            continue
+        if not order_id:
+            errors.append("target order row missing order_id")
+            continue
+        if order_id in seen_order_ids:
+            errors.append("duplicate accepted target order_id")
+            continue
+        if pending_item_id in seen_pending_ids:
+            errors.append("duplicate accepted target pending_item_id")
+            continue
+        if not _pending_item_matches_order_row(item, row):
+            errors.append("target order row does not match pending item symbol/side/quantity")
+            continue
+        broker_paths = _matching_historical_broker_evidence_paths(
+            runtime_root=runtime_root,
+            business_date=business_date,
+            pending_plan_id=pending_plan_id,
+            pending_item_id=pending_item_id,
+            item=item,
+            order_id=order_id,
+        )
+        if not broker_paths:
+            errors.append("historical broker accepted evidence missing or mismatched for target order row")
+            continue
+        seen_order_ids.add(order_id)
+        seen_pending_ids.add(pending_item_id)
+        reconciliations.append(
+            {
+                "pending_item_id": pending_item_id,
+                "pending_plan_id": pending_plan_id,
+                "symbol": str(row.get("symbol") or item.get("symbol") or ""),
+                "side": str(row.get("side") or item.get("side") or "").upper(),
+                "quantity": _safe_float(row.get("quantity")),
+                "order_id": order_id,
+                "ledger_order_record_id": str(row.get("ledger_record_id") or row.get("record_id") or ""),
+                "dedup_key": str(row.get("dedup_key") or ""),
+                "source_decision_id": str(row.get("source_decision_id") or item.get("source_decision_id") or ""),
+                "source_pm_decision_id": str(row.get("source_pm_decision_id") or item.get("source_pm_decision_id") or ""),
+                "broker_evidence_paths": broker_paths,
+                "replay_exclusion_authority": "submit_pipeline_existing_item_submission_reconciliation",
+            }
+        )
+    return reconciliations, errors
+
+
+def _pending_item_matches_order_row(item: dict[str, Any], row: dict[str, Any]) -> bool:
+    if str(row.get("symbol") or "") and str(row.get("symbol") or "") != str(item.get("symbol") or ""):
+        return False
+    if str(row.get("side") or "").upper() != str(item.get("side") or "").upper():
+        return False
+    return abs(_safe_float(row.get("quantity")) - _safe_float(item.get("quantity"))) <= 1e-9
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _matching_historical_broker_evidence_paths(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    pending_plan_id: str,
+    pending_item_id: str,
+    item: dict[str, Any],
+    order_id: str,
+) -> list[str]:
+    directory = runtime_root / "runtime_state" / "historical_broker" / business_date
+    if not directory.exists():
+        return []
+    matches: list[str] = []
+    for path in sorted(directory.glob("*.json")):
+        payload = read_json_optional(path)
+        if str(payload.get("status") or "").upper() != "ACCEPTED":
+            continue
+        if str(payload.get("pending_plan_id") or "") != pending_plan_id:
+            continue
+        if str(payload.get("pending_item_id") or "") != pending_item_id:
+            continue
+        if str(payload.get("order_identity") or payload.get("order_id") or "") != order_id:
+            continue
+        if str(payload.get("target_session_date") or payload.get("fill_date") or business_date) != business_date:
+            continue
+        if not _pending_item_matches_order_row(item, payload):
+            continue
+        matches.append(str(path))
+    return matches
+
+
+def _partial_submit_historical_broker_directory_reconciled(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    reconciliations: list[dict[str, Any]],
+) -> bool:
+    directory = runtime_root / "runtime_state" / "historical_broker" / business_date
+    if not directory.exists():
+        return bool(reconciliations)
+    allowed_paths = {
+        str(path)
+        for row in reconciliations
+        for path in row.get("broker_evidence_paths", [])
+    }
+    for path in sorted(directory.glob("*.json")):
+        payload = read_json_optional(path)
+        if str(payload.get("status") or "").upper() != "ACCEPTED":
+            continue
+        if str(path) not in allowed_paths:
+            return False
+    return True
+
+
+def _partial_submit_blocked_guard_evidence(
+    *,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    candidate_item_ids: list[str],
+) -> list[dict[str, Any]]:
+    candidates = set(candidate_item_ids)
+    evidence: list[dict[str, Any]] = []
+    for payload in _partial_submit_manifest_payloads(run_dir=run_dir, runtime_root=runtime_root, business_date=business_date):
+        for node in _iter_dict_nodes(payload):
+            item_id = str(node.get("pending_item_id") or "")
+            if item_id not in candidates:
+                continue
+            status = str(
+                node.get("submit_status")
+                or node.get("status")
+                or node.get("preflight_status")
+                or node.get("authority_status")
+                or ""
+            ).upper()
+            guard_decision = str(node.get("guard_decision") or "").upper()
+            violated_policy = str(node.get("violated_policy") or node.get("guard_reason") or node.get("reason") or "")
+            if guard_decision == "BLOCKED" or status in {"BLOCKED", "REVIEW_REQUIRED", "FAIL_CLOSED"}:
+                evidence.append(
+                    {
+                        "pending_item_id": item_id,
+                        "status": status,
+                        "guard_decision": guard_decision,
+                        "violated_policy": violated_policy,
+                    }
+                )
+    return evidence
+
+
+def _partial_submit_manifest_payloads(*, run_dir: Path, runtime_root: Path, business_date: str) -> list[dict[str, Any]]:
+    paths: list[Path] = []
+    for directory in (
+        run_dir / "daily" / business_date / "submit",
+        runtime_root / "runtime_state" / "run_manifest" / business_date,
+    ):
+        if not directory.exists():
+            continue
+        paths.extend(path for path in sorted(directory.glob("*.json")) if path.is_file())
+    payloads: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        payload = read_json_optional(path)
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
+def _iter_dict_nodes(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from _iter_dict_nodes(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_dict_nodes(nested)
+
+
+def _scoped_partial_submit_recovery_id(
+    *,
+    run_id: str,
+    business_date: str,
+    pending_plan_id: str,
+    preserved_order_ids: set[str],
+) -> str:
+    raw = json.dumps(
+        {
+            "run_id": run_id,
+            "business_date": business_date,
+            "pending_plan_id": pending_plan_id,
+            "preserved_order_ids": sorted(preserved_order_ids),
+            "recovery_type": "partial_submit",
+        },
+        sort_keys=True,
+    )
+    return "scoped-partial-submit-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _run_scoped_replay_jobs(
     *,
     run_dir: Path,
@@ -5632,6 +6643,50 @@ def _preserve_failed_attempt_evidence(
     pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
     if pending_path.exists():
         shutil.copy2(pending_path, recovery_dir / "failed_pending_order_plan.json")
+
+
+def _preserve_partial_submit_evidence(
+    *,
+    recovery_dir: Path,
+    run_dir: Path,
+    runtime_root: Path,
+    business_date: str,
+    recovery: dict[str, Any],
+) -> None:
+    write_json_atomic(recovery_dir / "recovery_plan.json", recovery)
+    for name, rows in (recovery.get("target_ledger_rows") or {}).items():
+        write_json_atomic(recovery_dir / f"preserved_{name}.json", {"rows": rows})
+    daily = run_dir / "daily" / business_date
+    if daily.exists():
+        shutil.copytree(daily, recovery_dir / "partial_submit_daily_evidence", dirs_exist_ok=True)
+    historical_broker = runtime_root / "runtime_state" / "historical_broker" / business_date
+    if historical_broker.exists():
+        shutil.copytree(historical_broker, recovery_dir / "preserved_historical_broker", dirs_exist_ok=True)
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    if pending_path.exists():
+        shutil.copy2(pending_path, recovery_dir / "partial_submit_pending_order_plan.json")
+
+
+def _retire_partial_submit_pending(*, runtime_root: Path, recovery: dict[str, Any]) -> None:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    payload = {
+        "schema_version": "runtime_v2_pending_slot_v1",
+        "state": "EMPTY",
+        "status": "EMPTY",
+        "active_pending": False,
+        "items": [],
+        "superseded_pending_plan_id": recovery.get("superseded_pending_plan_id", ""),
+        "recovery_id": recovery.get("recovery_id", ""),
+        "no_action_reason": "scoped_partial_submit_recovery_retired_mixed_pending_for_replay",
+        "partial_submit_recovery_state": "READY_FOR_REPLAY",
+        "preserved_accepted_item_ids": recovery.get("preserved_accepted_item_ids", []),
+        "preserved_order_ids": recovery.get("preserved_order_ids", []),
+        "preserved_broker_evidence_ids": recovery.get("preserved_broker_evidence_ids", []),
+        "excluded_from_resubmit_item_ids": recovery.get("excluded_from_resubmit_item_ids", []),
+        "regenerated_item_ids": recovery.get("regenerated_item_ids", []),
+        "replay_contract": "submit_pipeline_existing_item_submission_reconciliation",
+    }
+    write_json_atomic(pending_path, payload)
 
 
 def _apply_failed_execution_ledger_recovery(*, runtime_root: Path, recovery: dict[str, Any]) -> None:

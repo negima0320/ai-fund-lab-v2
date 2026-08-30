@@ -62,6 +62,7 @@ CANONICAL_ADD_MARGINAL_CAPITAL_COMPETITION_SCHEMA_VERSION = "canonical_add_margi
 CANONICAL_ADD_MARGINAL_CAPITAL_COMPETITION_AUTHORITY_SCHEMA_VERSION = (
     "canonical_add_marginal_capital_competition_authority.v1"
 )
+ADD_ACCELERATION_AUTHORITY_SCHEMA_VERSION = "portfolio_construction.add_acceleration_authority.v1"
 LOT_AWARE_ALLOCATION_TO_SIZING_COMPATIBILITY_SCHEMA_VERSION = (
     "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1"
 )
@@ -2314,6 +2315,7 @@ def _resolve_target_weight_contract(
             target_gross_exposure=target_gross_exposure,
             members=members,
             business_date=business_date,
+            risk_pacing_evidence=policy_authority["risk_pacing_evidence"],
         )
         if add_bridge:
             weight = add_bridge["post_add_target_weight"]
@@ -8015,9 +8017,11 @@ def _resolve_canonical_add_allocation_bridge(
     target_gross_exposure: float | None,
     members: list[dict[str, Any]],
     business_date: str,
+    risk_pacing_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not row.get("current_position") or str(row.get("pm_action") or "").upper() != "ADD":
         return None
+    risk_pacing_evidence = risk_pacing_evidence or {}
     current_weight = _optional_ratio(row.get("current_weight"))
     reason_codes: list[str] = []
     add_evidence = resolve_add_investment_evidence(row=row, members=members, business_date=business_date)
@@ -8058,6 +8062,17 @@ def _resolve_canonical_add_allocation_bridge(
     desired_increment = round(max(float(candidate_target_weight) - current_weight, 0.0), TARGET_WEIGHT_DECIMALS)
     broker_status = str(row.get("broker_eligibility_status") or "")
     if broker_status == "FAIL_CLOSED":
+        acceleration = _no_add_acceleration_authority(
+            row=row,
+            business_date=business_date,
+            pre_acceleration_incremental_weight=add_increment_request,
+            current_weight=current_weight if current_weight_observed else 0.0,
+            single_name_cap=single_name_cap,
+            target_gross_exposure=target_gross_exposure,
+            risk_pacing_evidence=risk_pacing_evidence,
+            reason="ADD_ACCELERATION_BROKER_FAIL_CLOSED",
+            add_evidence=add_evidence,
+        )
         broker_reason = str(row.get("broker_eligibility_reason") or "broker_eligibility_fail_closed")
         reason_codes.extend([broker_reason, "broker_eligibility_buy_add_excluded_existing_position_visible", "ADD_TARGET_WEIGHT_UNCHANGED"])
         review_reason = ",".join(sorted(set(reason_codes)))
@@ -8099,10 +8114,28 @@ def _resolve_canonical_add_allocation_bridge(
                 "incremental_investment_value_state": "BROKER_ELIGIBILITY_FAIL_CLOSED",
                 "opportunity_cost_status": "NOT_EVALUATED",
                 "no_loss_averaging_status": "NOT_EVALUATED",
+                "pre_acceleration_incremental_weight": acceleration["pre_acceleration_incremental_weight"],
+                "tier_bounded_incremental_weight": acceleration["tier_bounded_incremental_weight"],
+                "add_acceleration_tier": acceleration["tier"],
+                "add_acceleration_status": acceleration["status"],
+                "add_acceleration_reason_codes": acceleration["reason_codes"],
+                "add_acceleration_authority": acceleration["authority"],
+                "add_acceleration_guardrails": acceleration["guardrails"],
                 "add_investment_evidence": trace["add_investment_evidence"],
             },
         }
     if incremental_add_quality_blocked:
+        acceleration = _no_add_acceleration_authority(
+            row=row,
+            business_date=business_date,
+            pre_acceleration_incremental_weight=add_increment_request,
+            current_weight=current_weight if current_weight_observed else 0.0,
+            single_name_cap=single_name_cap,
+            target_gross_exposure=target_gross_exposure,
+            risk_pacing_evidence=risk_pacing_evidence,
+            reason="BUY_QUALITY_BLOCKS_INCREMENTAL_ADD",
+            add_evidence=add_evidence,
+        )
         reason_codes.extend(["BUY_QUALITY_BLOCKS_INCREMENTAL_ADD", "ADD_TARGET_WEIGHT_UNCHANGED"])
         review_reason = ",".join(sorted(set(reason_codes)))
         trace = {
@@ -8151,6 +8184,13 @@ def _resolve_canonical_add_allocation_bridge(
                 "incremental_investment_value_state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED",
                 "opportunity_cost_status": "NOT_EVALUATED",
                 "no_loss_averaging_status": "NOT_EVALUATED",
+                "pre_acceleration_incremental_weight": acceleration["pre_acceleration_incremental_weight"],
+                "tier_bounded_incremental_weight": acceleration["tier_bounded_incremental_weight"],
+                "add_acceleration_tier": acceleration["tier"],
+                "add_acceleration_status": acceleration["status"],
+                "add_acceleration_reason_codes": acceleration["reason_codes"],
+                "add_acceleration_authority": acceleration["authority"],
+                "add_acceleration_guardrails": acceleration["guardrails"],
                 "add_investment_evidence": trace["add_investment_evidence"],
             },
         }
@@ -8204,10 +8244,22 @@ def _resolve_canonical_add_allocation_bridge(
         and add_increment_request > 0
     )
     if eligible:
+        acceleration = resolve_add_acceleration_tier(
+            row=row,
+            business_date=business_date,
+            pre_acceleration_incremental_weight=add_increment_request,
+            current_weight=current_weight,
+            single_name_cap=single_name_cap,
+            target_gross_exposure=target_gross_exposure,
+            risk_pacing_evidence=risk_pacing_evidence,
+            add_evidence=add_evidence,
+        )
         cap = single_name_cap if single_name_cap is not None else 1.0
         exposure_cap = target_gross_exposure if target_gross_exposure is not None else 1.0
         max_add_target = min(float(cap), float(exposure_cap))
-        post_add_target = round(min(current_weight + add_increment_request, max_add_target), TARGET_WEIGHT_DECIMALS)
+        accelerated_increment = float(acceleration["tier_bounded_incremental_weight"])
+        post_add_target = round(min(current_weight + accelerated_increment, max_add_target), TARGET_WEIGHT_DECIMALS)
+        reason_codes.extend(acceleration["reason_codes"])
         if post_add_target > current_weight:
             target_reason = "canonical_add_allocation_bridge_pass"
             zero_reason = ""
@@ -8215,6 +8267,18 @@ def _resolve_canonical_add_allocation_bridge(
         else:
             reason_codes.append("ADD_TARGET_WEIGHT_UNCHANGED")
             zero_reason = "ADD_TARGET_WEIGHT_UNCHANGED"
+    else:
+        acceleration = _no_add_acceleration_authority(
+            row=row,
+            business_date=business_date,
+            pre_acceleration_incremental_weight=add_increment_request,
+            current_weight=current_weight if current_weight_observed else 0.0,
+            single_name_cap=single_name_cap,
+            target_gross_exposure=target_gross_exposure,
+            risk_pacing_evidence=risk_pacing_evidence,
+            reason="ADD_BASELINE_ELIGIBILITY_NOT_PASS",
+            add_evidence=add_evidence,
+        )
     target_change = round(post_add_target - current_weight, TARGET_WEIGHT_DECIMALS) if current_weight_observed else 0.0
     if target_change <= 0 and not review_reason:
         review_reason = ",".join(sorted(set(reason_codes))) if reason_codes else ""
@@ -8228,6 +8292,7 @@ def _resolve_canonical_add_allocation_bridge(
         "opportunity_cost": opportunity_cost,
         "no_loss_averaging": no_loss,
         "si_interpretation_context": si_interpretation_context,
+        "add_acceleration": acceleration,
         "add_investment_evidence": add_evidence,
     }
     return {
@@ -8244,12 +8309,21 @@ def _resolve_canonical_add_allocation_bridge(
             "legacy_add_executable_used": False,
             "add_investment_evidence_schema_version": add_evidence["schema_version"],
             "add_investment_evidence_producer_version": add_evidence["producer_version"],
+            "add_acceleration_authority_schema_version": acceleration["schema_version"],
+            "add_acceleration_authority": acceleration["authority"],
         },
         "member_fields": {
             "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
             "current_target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
             "desired_incremental_weight": desired_increment,
             "add_increment_request_weight": add_increment_request,
+            "pre_acceleration_incremental_weight": acceleration["pre_acceleration_incremental_weight"],
+            "tier_bounded_incremental_weight": acceleration["tier_bounded_incremental_weight"],
+            "add_acceleration_tier": acceleration["tier"],
+            "add_acceleration_status": acceleration["status"],
+            "add_acceleration_reason_codes": acceleration["reason_codes"],
+            "add_acceleration_authority": acceleration["authority"],
+            "add_acceleration_guardrails": acceleration["guardrails"],
             "post_add_target_weight": post_add_target,
             "normalized_target_weight": post_add_target,
             "target_weight_change": target_change,
@@ -8262,6 +8336,267 @@ def _resolve_canonical_add_allocation_bridge(
             "add_investment_evidence": add_evidence,
         },
     }
+
+
+def resolve_add_acceleration_tier(
+    *,
+    row: Mapping[str, Any],
+    business_date: str,
+    pre_acceleration_incremental_weight: float,
+    current_weight: float,
+    single_name_cap: float | None,
+    target_gross_exposure: float | None,
+    risk_pacing_evidence: Mapping[str, Any],
+    add_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    pre_increment = round(max(float(pre_acceleration_incremental_weight or 0.0), 0.0), TARGET_WEIGHT_DECIMALS)
+    current = round(max(float(current_weight or 0.0), 0.0), TARGET_WEIGHT_DECIMALS)
+    cap = float(single_name_cap) if single_name_cap is not None else 1.0
+    exposure_cap = float(target_gross_exposure) if target_gross_exposure is not None else 1.0
+    max_target = round(min(cap, exposure_cap), TARGET_WEIGHT_DECIMALS)
+    headroom = round(max(max_target - current, 0.0), TARGET_WEIGHT_DECIMALS)
+    reason_codes: list[str] = []
+    guardrails = _add_acceleration_guardrails(
+        row=row,
+        risk_pacing_evidence=risk_pacing_evidence,
+        add_evidence=add_evidence,
+        headroom=headroom,
+    )
+    required_failures = [
+        name
+        for name, status in guardrails.items()
+        if name != "buy_quality_reduced_allocation"
+        and not (name == "risk_pacing" and str(status).upper() == "DOWN_TIER")
+        and str(status).upper() != "PASS"
+    ]
+    for name in required_failures:
+        reason_codes.append(f"ADD_ACCELERATION_{name.upper()}_{str(guardrails[name]).upper()}")
+    tier = "NORMAL_ADD"
+    status = "PASS"
+    tier_increment = min(pre_increment, headroom)
+    if pre_increment <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        tier = "NO_ACCELERATION"
+        status = "FAIL_CLOSED"
+        reason_codes.append("ADD_ACCELERATION_NO_BASE_INCREMENT")
+        tier_increment = 0.0
+    elif required_failures:
+        tier = "NO_ACCELERATION"
+        status = "FAIL_CLOSED"
+        tier_increment = pre_increment
+    else:
+        quality_reduced = guardrails["buy_quality_reduced_allocation"] == "DOWN_TIER"
+        risk_pacing = str(guardrails["risk_pacing"])
+        if quality_reduced:
+            reason_codes.append("ADD_ACCELERATION_REDUCED_BUY_QUALITY_NORMAL_ONLY")
+        if risk_pacing == "DOWN_TIER":
+            reason_codes.append(f"ADD_ACCELERATION_RISK_PACING_{risk_pacing}")
+        if (
+            not quality_reduced
+            and risk_pacing == "PASS"
+            and _strong_add_evidence(row=row, add_evidence=add_evidence)
+        ):
+            tier = "STRONG_ADD"
+            tier_increment = min(pre_increment + min(pre_increment, headroom), headroom)
+            reason_codes.append("ADD_ACCELERATION_STRONG_ADD_AUTHORIZED")
+            if _exceptional_add_evidence(row=row, risk_pacing_evidence=risk_pacing_evidence):
+                tier = "EXCEPTIONAL_ADD"
+                tier_increment = min(pre_increment + min(pre_increment * 2.0, headroom), headroom)
+                reason_codes.append("ADD_ACCELERATION_EXCEPTIONAL_ADD_AUTHORIZED")
+        else:
+            reason_codes.append("ADD_ACCELERATION_NORMAL_ADD_BASELINE_PRESERVED")
+    tier_increment = round(max(tier_increment, 0.0), TARGET_WEIGHT_DECIMALS)
+    post_target = round(current + tier_increment, TARGET_WEIGHT_DECIMALS)
+    if headroom <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE:
+        reason_codes.append("ADD_ACCELERATION_HEADROOM_ZERO")
+    elif tier_increment < pre_increment:
+        reason_codes.append("ADD_ACCELERATION_CAPPED_BY_HEADROOM")
+    return {
+        "schema_version": ADD_ACCELERATION_AUTHORITY_SCHEMA_VERSION,
+        "business_date": business_date,
+        "tier": tier,
+        "status": status,
+        "pre_acceleration_incremental_weight": pre_increment,
+        "tier_bounded_incremental_weight": tier_increment,
+        "post_acceleration_target_weight": post_target,
+        "current_weight": current,
+        "single_name_cap": single_name_cap,
+        "target_gross_exposure": target_gross_exposure,
+        "headroom_weight": headroom,
+        "guardrails": guardrails,
+        "reason_codes": sorted(set(reason_codes)),
+        "authority": {
+            "authority_type": "PC_EVIDENCE_TIERED_ADD_ACCELERATION_AUTHORITY",
+            "schema_version": ADD_ACCELERATION_AUTHORITY_SCHEMA_VERSION,
+            "owner": "PORTFOLIO_CONSTRUCTION",
+            "pm_add_intent_owner": "POSITION_MANAGEMENT",
+            "position_sizing_quantity_owner": "POSITION_SIZING",
+            "runtime_order_increment_owner": "RUNTIME_CONSUMES_PS_BOUND_INCREMENT",
+            "fixed_lot_multiplier_used": False,
+            "runtime_quantity_redecision_allowed": False,
+            "historical_profitability_used": False,
+            "future_information_used": False,
+            "parameter_selection_status": "PARAMETER_SELECTION_DEFERRED",
+            "magnitude_derivation": "existing_pc_increment_unit_bounded_by_single_name_cap_target_gross_exposure_and_risk_pacing",
+        },
+    }
+
+
+def _no_add_acceleration_authority(
+    *,
+    row: Mapping[str, Any],
+    business_date: str,
+    pre_acceleration_incremental_weight: float,
+    current_weight: float,
+    single_name_cap: float | None,
+    target_gross_exposure: float | None,
+    risk_pacing_evidence: Mapping[str, Any],
+    reason: str,
+    add_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = resolve_add_acceleration_tier(
+        row=row,
+        business_date=business_date,
+        pre_acceleration_incremental_weight=pre_acceleration_incremental_weight,
+        current_weight=current_weight,
+        single_name_cap=single_name_cap,
+        target_gross_exposure=target_gross_exposure,
+        risk_pacing_evidence=risk_pacing_evidence,
+        add_evidence=add_evidence,
+    )
+    return {
+        **result,
+        "tier": "NO_ACCELERATION",
+        "status": "FAIL_CLOSED",
+        "tier_bounded_incremental_weight": 0.0,
+        "post_acceleration_target_weight": round(max(float(current_weight or 0.0), 0.0), TARGET_WEIGHT_DECIMALS),
+        "reason_codes": sorted(set([*list(result["reason_codes"]), reason])),
+    }
+
+
+def _add_acceleration_guardrails(
+    *,
+    row: Mapping[str, Any],
+    risk_pacing_evidence: Mapping[str, Any],
+    add_evidence: Mapping[str, Any],
+    headroom: float,
+) -> dict[str, str]:
+    quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "").upper()
+    quality_adjustment = _optional_ratio(row.get("quality_allocation_adjustment"))
+    explicit_quality_adjustment = "quality_allocation_adjustment" in row
+    quality_blocked = quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE", "REJECT", "BUY_REJECTED"} or (
+        explicit_quality_adjustment and quality_adjustment is not None and quality_adjustment <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
+    campaign_status = _add_campaign_authority_status(row)
+    current_status = _add_current_position_authority_status(row)
+    safety_status = _add_safety_guardrail_status(row)
+    broker_status = _explicit_pass_or_default(row, ("broker_eligibility_status", "broker_status", "broker_product_eligibility_status"), default="PASS")
+    corporate_status = _add_corporate_action_guardrail_status(row)
+    liquidity_status = _add_liquidity_guardrail_status(row)
+    return {
+        "pm_add": "PASS" if str(row.get("pm_action") or "").upper() == "ADD" else "FAIL_CLOSED",
+        "campaign_provenance": campaign_status,
+        "current_position_authority": current_status,
+        "expected_edge": str((add_evidence.get("expected_edge") or {}).get("status") or "FAIL_CLOSED"),
+        "incremental_value": str((add_evidence.get("incremental_value") or {}).get("status") or "FAIL_CLOSED"),
+        "opportunity_cost": str((add_evidence.get("opportunity_cost") or {}).get("status") or "FAIL_CLOSED"),
+        "no_loss_averaging": str((add_evidence.get("no_loss_averaging") or {}).get("status") or "FAIL_CLOSED"),
+        "buy_quality": "FAIL_CLOSED" if quality_blocked else "PASS",
+        "buy_quality_reduced_allocation": "DOWN_TIER" if quality_action == "REDUCED_ALLOCATION_ONLY" else "PASS",
+        "headroom": "PASS" if headroom > TARGET_WEIGHT_ABSOLUTE_TOLERANCE else "FAIL_CLOSED",
+        "risk_pacing": _add_acceleration_risk_pacing_status(risk_pacing_evidence),
+        "safety": safety_status,
+        "broker": broker_status,
+        "corporate_action": corporate_status,
+        "liquidity": liquidity_status,
+    }
+
+
+def _strong_add_evidence(*, row: Mapping[str, Any], add_evidence: Mapping[str, Any]) -> bool:
+    reason_text = " ".join(str(item) for item in row.get("reason_codes") or row.get("source_pm_reason_codes") or [])
+    quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "").upper()
+    expected_edge_state = str((add_evidence.get("expected_edge") or {}).get("state") or row.get("expected_edge_improvement_state") or "").upper()
+    incremental_value_state = str((add_evidence.get("incremental_value") or {}).get("state") or row.get("incremental_investment_value_state") or "").upper()
+    opportunity_cost_status = str((add_evidence.get("opportunity_cost") or {}).get("status") or row.get("opportunity_cost_status") or "").upper()
+    return (
+        "STRONG_TREND_CONTINUATION" in reason_text.upper()
+        and "OPPORTUNITY_RANK_STILL_HIGH" in reason_text.upper()
+        and quality_action == "FULL_ALLOCATION_ELIGIBLE"
+        and expected_edge_state == "IMPROVING"
+        and incremental_value_state == "POSITIVE"
+        and opportunity_cost_status == "PASS"
+    )
+
+
+def _exceptional_add_evidence(*, row: Mapping[str, Any], risk_pacing_evidence: Mapping[str, Any]) -> bool:
+    if str(risk_pacing_evidence.get("risk_pacing_intent") or "").upper() != "NORMAL_DEPLOYMENT":
+        return False
+    return str(row.get("add_exceptional_acceleration_candidate") or "").upper() == "TRUE"
+
+
+def _add_campaign_authority_status(row: Mapping[str, Any]) -> str:
+    campaign_id = _first_nonempty(
+        row.get("position_campaign_id"),
+        row.get("current_position_campaign_id"),
+        row.get("pm_position_campaign_id"),
+        row.get("campaign_id"),
+    )
+    current_campaign = str(row.get("current_position_campaign_id") or "").strip()
+    pm_campaign = str(row.get("pm_position_campaign_id") or "").strip()
+    if not campaign_id:
+        return "FAIL_CLOSED"
+    if current_campaign and pm_campaign and current_campaign != pm_campaign:
+        return "FAIL_CLOSED"
+    return "PASS"
+
+
+def _add_current_position_authority_status(row: Mapping[str, Any]) -> str:
+    if not bool(row.get("current_position")):
+        return "FAIL_CLOSED"
+    if _optional_ratio(row.get("current_weight")) is None:
+        return "FAIL_CLOSED"
+    return "PASS"
+
+
+def _add_acceleration_risk_pacing_status(risk_pacing_evidence: Mapping[str, Any]) -> str:
+    intent = str(risk_pacing_evidence.get("risk_pacing_intent") or "").upper()
+    if intent in {"NORMAL_DEPLOYMENT", "GRADUAL_REDEPLOYMENT"}:
+        return "PASS"
+    if intent in {"CAUTIOUS_DEPLOYMENT", "PRESERVE_OPTIONALITY"}:
+        return "DOWN_TIER"
+    return "FAIL_CLOSED"
+
+
+def _add_safety_guardrail_status(row: Mapping[str, Any]) -> str:
+    for field in ("genuine_safety_restriction_status", "safety_restriction_status", "runtime_safety_status", "safety_status"):
+        value = str(row.get(field) or "").upper()
+        if value in {"FAIL_CLOSED", "BLOCK", "BLOCKED", "RESTRICTED"}:
+            return "FAIL_CLOSED"
+        if value in {"REVIEW_REQUIRED", "UNKNOWN"}:
+            return "FAIL_CLOSED"
+        if value == "PASS":
+            return "PASS"
+    return "PASS"
+
+
+def _add_corporate_action_guardrail_status(row: Mapping[str, Any]) -> str:
+    value = str(row.get("corporate_action_status") or row.get("corporate_event_status") or "").upper()
+    if value in {"EVENT_PRESENT", "BLOCK", "BLOCKED", "FAIL_CLOSED"}:
+        return "FAIL_CLOSED"
+    if value in {"UNKNOWN", "REVIEW_REQUIRED"}:
+        return "FAIL_CLOSED"
+    return "PASS"
+
+
+def _add_liquidity_guardrail_status(row: Mapping[str, Any]) -> str:
+    for field in ("liquidity_capacity_status", "add_liquidity_status", "capacity_status"):
+        value = str(row.get(field) or "").upper()
+        if value in {"BLOCK", "FAIL_CLOSED", "INFEASIBLE"}:
+            return "FAIL_CLOSED"
+        if value in {"UNKNOWN", "REVIEW_REQUIRED"}:
+            return "FAIL_CLOSED"
+        if value in {"PASS", "NORMAL", "WATCH"}:
+            return "PASS"
+    return "PASS"
 
 
 def _resolve_expected_edge_improvement(row: Mapping[str, Any], *, business_date: str) -> dict[str, Any]:

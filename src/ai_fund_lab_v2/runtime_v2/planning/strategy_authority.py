@@ -17,6 +17,13 @@ from ai_fund_lab_v2.runtime_v2.approval.policy import (
     build_approval_request,
     build_approved_order_conditions,
 )
+from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
+    evaluate_corporate_action_adjustment_authority,
+    materialize_corporate_action_adjustment_authority,
+)
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
+    historical_corporate_action_event_evidence,
+)
 from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPlanState
 from ai_fund_lab_v2.runtime_v2.pending.promotion import promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
@@ -246,6 +253,7 @@ def activate_strategy_planning_authority(
             submit_feasibility_current=submit_feasibility_current,
             runtime_planning_path=runtime_planning_path,
             strategy_authority_context=strategy_authority_context,
+            environment_capability_context=environment_capability_context,
         )
         item_lineage.append(
             {
@@ -640,6 +648,7 @@ def _pending_item_from_strategy_plan(
     submit_feasibility_current: RuntimeCurrentExposure,
     runtime_planning_path: Path,
     strategy_authority_context: Mapping[str, Any] | None = None,
+    environment_capability_context: Mapping[str, Any] | None = None,
 ) -> tuple[PendingOrderItem | None, str]:
     symbol = str(plan.get("security_code") or "")
     intent = str(plan.get("planning_intent") or "")
@@ -693,6 +702,51 @@ def _pending_item_from_strategy_plan(
     )
     if side == "SELL" and listed_info is None:
         return None, f"{listed_info_reason or 'strategy_sell_canonical_listed_info_missing'}:{symbol}"
+    corporate_action_adjustment_authority = _planning_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        mode=mode,
+        symbol=symbol,
+        side=side,
+        quantity=float(planned_quantity),
+        current=submit_feasibility_current,
+        environment_capability_context=environment_capability_context,
+    )
+    if corporate_action_adjustment_authority:
+        quantity_contract = {
+            **quantity_contract,
+            "corporate_action_adjustment_authority": corporate_action_adjustment_authority,
+        }
+        listed_info = {
+            **dict(listed_info or {}),
+            "corporate_action_adjustment_authority": corporate_action_adjustment_authority,
+            "corporate_action_adjustment_authority_status": str(
+                corporate_action_adjustment_authority.get("corporate_action_adjustment_authority_status") or ""
+            ),
+            "corporate_action_adjustment_authority_reason": str(
+                corporate_action_adjustment_authority.get("corporate_action_adjustment_authority_reason") or ""
+            ),
+            "corporate_action_event_status": str(
+                corporate_action_adjustment_authority.get("corporate_action_event_status") or ""
+            ),
+            "corporate_action_event_type": str(
+                corporate_action_adjustment_authority.get("corporate_action_event_type") or ""
+            ),
+            "corporate_action_adjustment_factor": corporate_action_adjustment_authority.get(
+                "corporate_action_adjustment_factor"
+            ),
+            "quantity_reconciliation_status": str(
+                corporate_action_adjustment_authority.get("quantity_reconciliation_status") or ""
+            ),
+            "price_reconciliation_status": str(
+                corporate_action_adjustment_authority.get("price_reconciliation_status") or ""
+            ),
+            "already_applied_status": str(
+                corporate_action_adjustment_authority.get("already_applied_status") or ""
+            ),
+            "pit_validation_status": str(corporate_action_adjustment_authority.get("pit_validation_status") or ""),
+            "future_data_used": bool(corporate_action_adjustment_authority.get("future_data_used", False)),
+        }
     reservation = resolve_order_cash_reservation(
         runtime_root=runtime_root,
         business_date=business_date,
@@ -761,6 +815,103 @@ def _pending_item_from_strategy_plan(
         canonical_strategy_order_source=str(plan.get("canonical_strategy_order_source") or ""),
     ), "pending_item_generated"
 
+
+def _planning_corporate_action_adjustment_authority(
+    *,
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    current: RuntimeCurrentExposure,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if str(mode).lower() != "historical":
+        return {}
+    raw_ohlcv_path = _historical_raw_ohlcv_path(
+        business_date=business_date,
+        environment_capability_context=environment_capability_context,
+    )
+    if not raw_ohlcv_path:
+        return {}
+    current_quantity = _current_quantity_for_symbol(current, symbol)
+    event = historical_corporate_action_event_evidence(
+        raw_ohlcv_path=raw_ohlcv_path,
+        business_date=business_date,
+        symbol=symbol,
+    )
+    materialize_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=symbol,
+        event_evidence=event,
+        current_quantity=current_quantity,
+        broker_available_quantity=current_quantity,
+        pending_quantity=quantity,
+        submit_quantity=quantity,
+    )
+    authority = evaluate_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=symbol,
+        side=side,
+        submit_quantity=quantity,
+        pending_quantity=quantity,
+        current_quantity=current_quantity,
+        broker_available_quantity=current_quantity,
+        event_evidence=event,
+    )
+    return {
+        **authority,
+        "corporate_action_planning_pending_alignment_contract": (
+            "phase32_aa_planning_pending_submit_ca_authority_alignment_v1"
+        ),
+        "corporate_action_planning_pending_alignment_source": (
+            "strategy_planning_authority_pre_pending_membership"
+        ),
+        "corporate_action_submit_defense_preserved": True,
+    }
+
+
+def _historical_raw_ohlcv_path(
+    *,
+    business_date: str,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> Path | None:
+    context = dict(environment_capability_context or {})
+    direct = str(context.get("raw_ohlcv_path") or context.get("historical_raw_ohlcv_path") or "")
+    if direct:
+        return Path(direct)
+    evidence_root = str(
+        context.get("runtime_test_evidence_root")
+        or context.get("evidence_root")
+        or context.get("runtime_test_run_evidence_root")
+        or ""
+    )
+    if not evidence_root:
+        return None
+    return (
+        Path(evidence_root)
+        / "daily"
+        / business_date
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "raw"
+        / "jquants"
+        / "equities_bars_daily"
+        / "data.parquet"
+    )
+
+
+def _current_quantity_for_symbol(current: RuntimeCurrentExposure, symbol: str) -> float | None:
+    normalized = str(symbol or "").strip()
+    for existing_symbol, quantity in current.positions.items():
+        if str(existing_symbol).strip() == normalized:
+            return float(quantity)
+    return None
 
 
 def _rank_authority_lineage_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:

@@ -245,7 +245,7 @@ def _resolve_incremental_value(
     no_loss: Mapping[str, Any],
 ) -> dict[str, Any]:
     explicit = str(row.get("incremental_investment_value_state") or row.get("add_incremental_investment_value_state") or "").upper()
-    if explicit in {"POSITIVE", "NEUTRAL", "NEGATIVE"}:
+    if explicit in {"POSITIVE", "NEUTRAL", "NEGATIVE", "UNKNOWN"}:
         state = explicit
     elif (
         expected_edge.get("status") == "PASS"
@@ -254,8 +254,6 @@ def _resolve_incremental_value(
         and no_loss.get("status") == "PASS"
     ):
         state = "POSITIVE"
-    elif explicit == "UNKNOWN":
-        state = "UNKNOWN"
     else:
         state = "UNKNOWN"
     status = "PASS" if state == "POSITIVE" else "FAIL_CLOSED"

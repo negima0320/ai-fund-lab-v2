@@ -685,6 +685,64 @@ PYTHONPATH=src python3 scripts/runtime_test.py recover-failed-execution \
   --json
 ```
 
+### Partial Submit Recovery
+
+Use `recover-partial-submit` only for submit-stage HALT runs where Submit
+accepted at least one item before a later approved item was blocked, and no
+target-date execution/current external effect has been written yet. This path
+preserves accepted order and historical broker evidence, retires the mixed
+Pending slot to `EMPTY`, records the accepted item as replay-excluded, and
+rewinds the run for scoped replay.
+
+Required shape:
+
+```text
+run_state.status = HALT
+run_state.next_job = <business-date>:submit
+current Pending state = REVIEW_REQUIRED
+at least one Pending item = CONSUMED with matching ACCEPTED order evidence
+at least one Pending item = APPROVED with canonical Submit guard block evidence
+target-date Ledger orders >= 1
+target-date Ledger executions/positions/cash/events = none
+historical broker accepted evidence reconciles to preserved order rows
+```
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-partial-submit \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --expected-pending-plan-id <PENDING_PLAN_ID> \
+  --dry-run \
+  --json
+```
+
+Actual recovery:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py recover-partial-submit \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --rewind-to-job morning \
+  --expected-pending-plan-id <PENDING_PLAN_ID> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state \
+  --json
+```
+
+Do not use this command if target-date executions, positions, cash, or event
+rows exist. Do not delete the accepted target-date order rows; replay Submit
+must reconcile them through the existing pending-item submission reconciliation
+contract.
+
 ### Stale Pending Recovery
 
 Use `recover-stale-pending` when a halted run contains a same-day
@@ -774,6 +832,58 @@ PYTHONPATH=src python3 scripts/runtime_test.py replay-recovered-day \
 
 After replay, inspect the regenerated Pending, Submit, Execution, and run_state
 evidence before considering `resume --dry-run`.
+
+### Partial Submit Day Finalization
+
+Use `finalize-partial-submit-day` only after `recover-partial-submit` has been
+applied and scoped replay has proven that the unresolved regenerated items are
+same-day `REVIEW_REQUIRED` before any new Submit. This command finalizes the day
+from preserved accepted order evidence only. It never resubmits the accepted
+item, never executes reviewed regenerated items, and does not rerun Strategy,
+Planning, or Submit.
+
+Required shape:
+
+```text
+run_state.status = HALT
+scoped_partial_submit_recovery.status = RECOVERY_APPLIED
+current Pending target_session_date = <business-date>
+current Pending state = REVIEW_REQUIRED
+no unexpected approved item ids in current Pending
+preserved accepted order rows exist
+historical broker accepted evidence reconciles to preserved order rows
+target-date Ledger executions = none
+same-day Historical safety temporal authority = READY
+```
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py finalize-partial-submit-day \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --dry-run \
+  --json
+```
+
+Actual finalization:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py finalize-partial-submit-day \
+  --profile historical-smoke \
+  --runtime-root .runtime \
+  --evidence-root reports/runtime_tests \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state \
+  --json
+```
+
+After a `PASS`, run `resume --dry-run` for the same run before actual resume.
 
 ## Rollback
 
@@ -884,6 +994,8 @@ Phase20-H implemented the Phase20-G recommendations for `run-status` and `summar
 | `resume` | Can a halted compatible run continue from remaining jobs? | Resume incomplete job sequence | Original plan, run state, baseline consistency | Mutating unless `--dry-run` | Yes for actual | Existing run state, original plan, current baseline | `runtime_test_run_state_v1` updates | `reports/runtime_tests/runs/<run_id>/` | `0`, `30`, `60`, `70`, `80`, `90` | `resume_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py`, `test_phase19_bj_runtime_test_abandon.py` | Documented | `run` execution loop | Keep |
 | `stop` | Should a RUNNING run be formally stopped before resume or abandon? | Operator stop lifecycle transition | Run-scoped `run_state.json` only | Evidence mutation only; no Trading State mutation | Yes for actual | Existing RUNNING/HALT run state | `runtime_test_run_state_v1` operator stop HALT record | `reports/runtime_tests/runs/<run_id>/run_state.json` | `0`, `60`, `70` | `stop_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py` Phase29-L21T-AE tests | Documented | `resume`, `abandon`, `run-status`, `show` | Keep; no separate STOPPED top-level status |
 | `recover-failed-execution` | Can a failed execution or submit-only precommit halt be rewound for scoped replay? | Scoped failed execution recovery | Target-day failed Ledger/Pending/Broker evidence and run_state rewind | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:execution`, consumed failed-attempt Pending, target-date failed rows | `runtime_test_scoped_failed_execution_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_failed_execution_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` Q3B/Q1B recovery tests | Documented | `rollback`, `resume`, `recover-stale-pending` | Keep; do not use for stale REVIEW_REQUIRED Pending |
+| `recover-partial-submit` | Can a partial submit HALT preserve accepted orders and rewind unresolved items for scoped replay? | Scoped partial submit recovery | Mixed Pending, accepted target-date orders, broker evidence, run_state rewind | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:submit`, REVIEW_REQUIRED mixed Pending, accepted order rows, no execution/current rows | `runtime_test_scoped_partial_submit_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_partial_submit_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` Phase32-AC tests | Documented | `recover-failed-execution`, `recover-stale-pending`, `resume` | Keep separate; preserves accepted order evidence and relies on Submit reconciliation during replay |
+| `finalize-partial-submit-day` | Can an already recovered partial-submit day be finalized from preserved accepted orders only? | Accepted-items-only partial submit finalization | Preserved accepted order rows, historical broker evidence, execution/current projection, Pending terminalization, day completion | Mutating unless `--dry-run` | Yes for actual | Applied scoped partial submit recovery, regenerated same-day REVIEW_REQUIRED Pending, preserved accepted order rows, no target-date execution rows | `runtime_test_partial_submit_day_finalization_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<finalization_id>/` | `0`, `30`, `60`, `70` | `finalize_partial_submit_day_command` | default emit / finalization evidence schema | `test_phase17_k_runtime_test_runner.py` Phase32-AE tests | Documented | `recover-partial-submit`, `replay-recovered-day`, `resume` | Dedicated path for replay gap; never resubmits accepted items or executes reviewed regenerated items |
 | `recover-stale-pending` | Can a same-day stale REVIEW_REQUIRED Pending be superseded so the day can be regenerated? | Scoped stale Pending recovery | Current Pending slot and target-day run_state replay records only | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:sell_planning`, same-day REVIEW_REQUIRED Pending, no target-date Ledger rows | `runtime_test_scoped_stale_pending_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_stale_pending_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` stale pending tests | Documented | `recover-failed-execution`, `resume` | Keep; do not use when target-date Ledger rows exist |
 | `replay-recovered-day` | Can the officially rewound day be replayed from selected jobs? | Scoped day replay | Planned jobs subset: morning, sell_planning, submit, execution | Mutating unless `--dry-run` | Yes for actual | Existing run plan, run_state after scoped recovery | `runtime_test_run_state_v1` updates plus replay payload | `reports/runtime_tests/runs/<run_id>/daily/<date>/` | `0`, `70` | `replay_recovered_day_command` | default emit / replay payload | `test_phase17_k_runtime_test_runner.py` recovery coverage | Documented | `resume`, `run` | Keep scoped to recovered day jobs |
 | `abandon` | Should a halted run be finalized as abandoned without touching trading state? | Abandon halted run | Run evidence finalization | Evidence mutation only, no trading mutation | Yes for actual except idempotent existing abandon | Existing halted run state | `runtime_test_abandonment_v1`, final summary | `reports/runtime_tests/runs/<run_id>/` | `0`, `60`, `70` | `abandon_command` | default emit / abandonment and final summary schemas | `test_phase19_bj_runtime_test_abandon.py` | Documented | `close`, `resume` | Keep |
@@ -915,6 +1027,7 @@ Aliases and deprecated aliases:
 | Can I inspect raw run or backup evidence? | `show`, `list-runs`, `list-backups` |
 | Can I continue a halted compatible run? | `resume --dry-run`, then `resume --confirm ...` |
 | Can I rewind a failed execution day for scoped replay? | `recover-failed-execution --dry-run`, then `recover-failed-execution --confirm ...`, then `replay-recovered-day` |
+| Can I preserve accepted submit rows while regenerating unresolved same-day items? | `recover-partial-submit --dry-run`, then `recover-partial-submit --confirm ...`, then `replay-recovered-day` |
 | Can I supersede a stale same-day REVIEW_REQUIRED Pending and regenerate the day? | `recover-stale-pending --dry-run`, then `recover-stale-pending --confirm ...`, then `replay-recovered-day` |
 | Can I finalize a halted run as abandoned? | `abandon --dry-run`, then `abandon --confirm ...` |
 | Can I restore the previous resettable state? | `rollback --dry-run`, then `rollback --confirm ...` |
@@ -936,7 +1049,7 @@ Performance observability and position lifecycle analysis: Option A is recommend
 | Specialist Inspection | `ai-status` | AI artifact authority and readiness |
 | Planning | `plan`, `prepare-isolated` | Read-only plan creation and historical root preparation |
 | Lifecycle Execution | `run`, `fresh-run`, `resume` | Runtime job execution via normal Runtime v2 CLI |
-| Safety / Recovery | `backup`, `reset`, `rollback`, `abandon`, `close`, `validate`, `recover-failed-execution`, `recover-stale-pending`, `replay-recovered-day` | Resettable state, evidence finalization, validation, scoped recovery and replay |
+| Safety / Recovery | `backup`, `reset`, `rollback`, `abandon`, `close`, `validate`, `recover-failed-execution`, `recover-partial-submit`, `finalize-partial-submit-day`, `recover-stale-pending`, `replay-recovered-day` | Resettable state, evidence finalization, validation, scoped recovery and replay |
 | Artifact Inspection | `show`, `list-runs`, `list-backups` | Low-level evidence discovery |
 | Post-run Analysis | `summarize` | Run-scoped summaries, future performance and lifecycle scopes |
 

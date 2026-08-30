@@ -14,7 +14,7 @@ from ai_fund_lab_v2.strategy.sell_semantic_state import (
 )
 
 
-def test_phase31_f1i_83060_prior_unrepresentable_reduce_bridge_enables_persistent_exit(tmp_path: Path) -> None:
+def test_phase31_f1i_83060_prior_unrepresentable_reduce_bridge_preserves_active_episode_without_auto_exit(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_prior_campaign(run_dir, "2022-08-16", "83060", "campaign-83060")
     _write_pm(run_dir, "2022-08-16", [_pm_row("83060", "campaign-83060", action="REDUCE")])
@@ -29,7 +29,31 @@ def test_phase31_f1i_83060_prior_unrepresentable_reduce_bridge_enables_persisten
     assert campaign["pm_decision_evidence_events"][0]["fake_execution_event_created"] is False
 
     positions, reasons = position_management._apply_canonical_sell_semantics(
-        [_position("83060", "campaign-83060", prior_summary=summary)],
+        [_position("83060", "campaign-83060", prior_summary=summary, current_campaign_relative_return=0.02)],
+        business_date="2022-08-17",
+    )
+
+    row = positions[0]
+    evidence = row["canonical_sell_semantic_evidence"]
+    assert reasons == []
+    assert row["canonical_sell_state"] == PERSISTENT_DETERIORATION
+    assert row["action"] == "REDUCE"
+    assert evidence["prior_unrepresentable_reduce_count"] == 1
+    assert evidence["soft_deterioration_episode_state"] == "SOFT_DETERIORATION_PERSISTENT"
+    assert evidence["exit_confirmation_state"] == "DEFENSIVE_ONLY"
+    assert evidence["escalation_decision"] == "PRESERVE_BASELINE"
+
+
+def test_phase32_x_83060_confirmed_persistent_episode_can_still_exit(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_prior_campaign(run_dir, "2022-08-16", "83060", "campaign-83060")
+    _write_pm(run_dir, "2022-08-16", [_pm_row("83060", "campaign-83060", action="REDUCE")])
+
+    campaign = _materialized_campaign(run_dir, "2022-08-17", "83060")
+    summary = strategy_intelligence._campaign_history_summary(campaign)["prior_unrepresentable_reduce_summary"]
+
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [_position("83060", "campaign-83060", prior_summary=summary, current_campaign_relative_return=-0.02)],
         business_date="2022-08-17",
     )
 
@@ -38,7 +62,7 @@ def test_phase31_f1i_83060_prior_unrepresentable_reduce_bridge_enables_persisten
     assert reasons == [ESCALATION_REASON_CODE]
     assert row["canonical_sell_state"] == PERSISTENT_DETERIORATION
     assert row["action"] == "EXIT"
-    assert evidence["prior_unrepresentable_reduce_count"] == 1
+    assert evidence["exit_confirmation_state"] == "CONFIRMED_DETERIORATION"
     assert evidence["escalation_decision"] == "PM_EXIT"
 
 
@@ -88,7 +112,7 @@ def test_phase31_f1i_54010_recovery_reset_clears_old_unrepresentable_history(tmp
     assert positions[0]["canonical_sell_state"] == WEAKENING_BUT_INTACT
 
 
-def test_phase31_f1i_61750_second_discrete_reduce_reaches_existing_f1f_gate(tmp_path: Path) -> None:
+def test_phase31_f1i_61750_second_discrete_reduce_needs_confirmation_for_f1f_gate(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_prior_campaign(run_dir, "2022-09-13", "61750", "campaign-61750")
     _write_pm(run_dir, "2022-09-13", [_pm_row("61750", "campaign-61750", action="REDUCE")])
@@ -96,7 +120,26 @@ def test_phase31_f1i_61750_second_discrete_reduce_reaches_existing_f1f_gate(tmp_
     campaign = _materialized_campaign(run_dir, "2022-09-14", "61750")
     summary = strategy_intelligence._campaign_history_summary(campaign)["prior_unrepresentable_reduce_summary"]
     positions, reasons = position_management._apply_canonical_sell_semantics(
-        [_position("61750", "campaign-61750", prior_summary=summary)],
+        [_position("61750", "campaign-61750", prior_summary=summary, current_campaign_relative_return=0.01)],
+        business_date="2022-09-14",
+    )
+
+    assert summary["event_count"] == 1
+    assert reasons == []
+    assert positions[0]["action"] == "REDUCE"
+    assert positions[0]["canonical_sell_state"] == PERSISTENT_DETERIORATION
+    assert positions[0]["canonical_sell_semantic_evidence"]["exit_confirmation_state"] == "DEFENSIVE_ONLY"
+
+
+def test_phase32_x_61750_confirmed_second_discrete_reduce_reaches_f1f_gate(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_prior_campaign(run_dir, "2022-09-13", "61750", "campaign-61750")
+    _write_pm(run_dir, "2022-09-13", [_pm_row("61750", "campaign-61750", action="REDUCE")])
+
+    campaign = _materialized_campaign(run_dir, "2022-09-14", "61750")
+    summary = strategy_intelligence._campaign_history_summary(campaign)["prior_unrepresentable_reduce_summary"]
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [_position("61750", "campaign-61750", prior_summary=summary, current_campaign_relative_return=-0.01)],
         business_date="2022-09-14",
     )
 
@@ -104,6 +147,7 @@ def test_phase31_f1i_61750_second_discrete_reduce_reaches_existing_f1f_gate(tmp_
     assert reasons == [ESCALATION_REASON_CODE]
     assert positions[0]["action"] == "EXIT"
     assert positions[0]["canonical_sell_state"] == PERSISTENT_DETERIORATION
+    assert positions[0]["canonical_sell_semantic_evidence"]["exit_confirmation_state"] == "CONFIRMED_DETERIORATION"
 
 
 def test_phase31_f1i_minimum_notional_is_excluded_from_prior_history(tmp_path: Path) -> None:
@@ -269,6 +313,7 @@ def _position(
     *,
     prior_summary: dict,
     current_quantity: int = 100,
+    current_campaign_relative_return: float | None = None,
 ) -> dict:
     return {
         "position_id": f"pm-{symbol}",
@@ -290,6 +335,7 @@ def _position(
             "downside_risk_rise_connection": ["ELEVATED_RISK"],
             "future_information_used": False,
         },
+        "strategy_intelligence_current_campaign_relative_return": current_campaign_relative_return,
         "strategy_intelligence_hold_worthiness_evidence": {
             "status": "PASS",
             "campaign_identity_authority_status": "COMPLETE",

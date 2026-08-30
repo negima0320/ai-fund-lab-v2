@@ -30,13 +30,39 @@ def test_phase31_f1f_first_one_lot_weakening_reduce_does_not_exit() -> None:
     assert ESCALATION_REASON_CODE not in row["reason_codes"]
 
 
-def test_phase31_f1f_persistent_discrete_lot_reduce_escalates_inside_pm() -> None:
+def test_phase31_f1f_persistent_discrete_lot_reduce_defensive_only_does_not_exit() -> None:
     positions, reasons = position_management._apply_canonical_sell_semantics(
         [
             _position(
                 action="REDUCE",
                 reasons=["risk_increased_but_trend_not_broken"],
                 prior_reduce_count=1,
+                current_campaign_relative_return=0.03,
+            )
+        ],
+        business_date="2022-09-14",
+    )
+
+    row = positions[0]
+    evidence = row["canonical_sell_semantic_evidence"]
+    assert reasons == []
+    assert row["action"] == "REDUCE"
+    assert row["canonical_sell_state"] == PERSISTENT_DETERIORATION
+    assert row["pm_severity"] == "PM_SEVERITY_CAUTION"
+    assert evidence["exit_confirmation_state"] == "DEFENSIVE_ONLY"
+    assert evidence["soft_deterioration_episode_state"] == "SOFT_DETERIORATION_PERSISTENT"
+    assert evidence["zero_lot_reduce_persistence_scope"] == "ACTIVE_SOFT_EPISODE_ONLY"
+    assert ESCALATION_REASON_CODE not in row["reason_codes"]
+
+
+def test_phase32_x_persistent_discrete_lot_reduce_requires_confirmation_to_exit() -> None:
+    positions, reasons = position_management._apply_canonical_sell_semantics(
+        [
+            _position(
+                action="REDUCE",
+                reasons=["risk_increased_but_trend_not_broken"],
+                prior_reduce_count=1,
+                current_campaign_relative_return=-0.03,
             )
         ],
         business_date="2022-09-14",
@@ -48,6 +74,7 @@ def test_phase31_f1f_persistent_discrete_lot_reduce_escalates_inside_pm() -> Non
     assert row["action"] == "EXIT"
     assert row["intensity"] == "NONE"
     assert row["canonical_sell_state"] == PERSISTENT_DETERIORATION
+    assert evidence["exit_confirmation_state"] == "CONFIRMED_DETERIORATION"
     assert row["reason_codes"] == [
         ESCALATION_REASON_CODE,
         "risk_increased_but_trend_not_broken",
@@ -175,6 +202,7 @@ def _position(
     hold_status: str = "REVIEW_REQUIRED",
     campaign_identity_status: str = "COMPLETE",
     position_state_as_of: str = "2022-09-14",
+    current_campaign_relative_return: float | None = None,
 ) -> dict:
     return {
         "position_id": "pm-61750",
@@ -193,6 +221,7 @@ def _position(
         "strategy_intelligence_continuation_quality_status": "PASS",
         "strategy_intelligence_downside_risk_status": "PASS",
         "strategy_intelligence_profit_protection_status": "OBSERVED",
+        "strategy_intelligence_current_campaign_relative_return": current_campaign_relative_return,
         "strategy_intelligence_profit_protection_evidence": {
             "status": "OBSERVED",
             "continuation_deterioration_connection": ["WEAK"],

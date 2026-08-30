@@ -215,7 +215,11 @@ class HistoricalSubmitAdapter:
     def corporate_action_event_evidence(self, *, symbol: str, business_date: str) -> dict[str, Any]:
         """Return the PIT corporate action event evidence used by submit preflight."""
 
-        return _corporate_action_evidence(Path(self.raw_ohlcv_path), business_date, symbol)
+        return historical_corporate_action_event_evidence(
+            raw_ohlcv_path=Path(self.raw_ohlcv_path),
+            business_date=business_date,
+            symbol=symbol,
+        )
 
     def _validate_command(self, command: RuntimeV2SubmitCommand) -> dict[str, Any]:
         if not self.business_date:
@@ -1178,6 +1182,17 @@ def _corporate_action_status(raw_ohlcv_path: Path, business_date: str, symbol: s
         ).get("corporate_action_status")
         or "MISSING"
     )
+
+
+def historical_corporate_action_event_evidence(
+    *,
+    raw_ohlcv_path: Path | str,
+    business_date: str,
+    symbol: str,
+) -> dict[str, Any]:
+    """Return PIT AdjFactor corporate-action evidence shared by Planning and Submit."""
+
+    return _corporate_action_evidence(Path(raw_ohlcv_path), business_date, symbol)
 
 
 def _corporate_action_evidence(raw_ohlcv_path: Path, business_date: str, symbol: str) -> dict[str, Any]:

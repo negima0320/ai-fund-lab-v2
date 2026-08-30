@@ -2,6 +2,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from ai_fund_lab_v2.runtime_v2.historical_support.corporate_action_quarantine import (
     upsert_quarantine,
 )
@@ -15,6 +17,9 @@ from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
 )
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
     load_runtime_current_exposure,
+)
+from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import (
+    _planning_corporate_action_adjustment_authority,
 )
 from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     ManualReviewThreshold,
@@ -165,6 +170,194 @@ def test_phase31_a5_common_ca_adjustment_authority_is_consumed_before_pending_me
     assert ca_evidence["violated_policy"] == "corporate_action_adjustment_authority"
     assert ca_evidence["guard_code"] == "CORPORATE_ACTION_UNRESOLVED"
     assert ca_evidence["typed_guard"]["consumer_action"] == "FAIL_CLOSED_REVIEW_ITEM_ALLOW_UNAFFECTED_ITEMS"
+
+
+def test_phase32_aa_50280_unresolved_historical_sell_ca_adjustment_cannot_be_approved_pending(
+    tmp_path: Path,
+) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    root = _runtime_root(tmp_path)
+    business_date = "2023-10-11"
+    raw_path = _write_raw_ohlcv(
+        tmp_path,
+        pd=pd,
+        business_date=business_date,
+        symbol="50280",
+        close=461.0,
+        adj_factor=1.0 / 3.0,
+    )
+    _write_current(
+        root,
+        business_date=business_date,
+        cash=1_000_000.0,
+        positions=[{"symbol": "50280", "quantity": 100, "market_value": 46_100.0}],
+    )
+    policy = _policy(tmp_path)
+    current = load_runtime_current_exposure(
+        root / "persistent_ledger" / "state.json",
+        business_date=business_date,
+    )
+    authority = _planning_corporate_action_adjustment_authority(
+        runtime_root=root,
+        business_date=business_date,
+        mode="historical",
+        symbol="50280",
+        side="SELL",
+        quantity=100.0,
+        current=current,
+        environment_capability_context={"raw_ohlcv_path": str(raw_path)},
+    )
+    ca_sell = replace(
+        _sell_item("strategy-b6716e1e95fc9cc0a9aa", symbol="50280"),
+        quantity_contract=_quantity_contract("50280") | {"corporate_action_adjustment_authority": authority},
+        listed_info={"corporate_action_adjustment_authority": authority},
+    )
+    pending = _pending((ca_sell,), policy=policy, environment="historical", business_date=business_date)
+
+    linked = attach_approval_link(
+        pending,
+        approval_path=f"approval_artifact/{business_date}/approval.json",
+        approval_hash="approval-hash",
+        approval_status="APPROVED",
+        approved_item_ids=("strategy-b6716e1e95fc9cc0a9aa",),
+        approval_expires_at=f"{business_date}T15:00:00+09:00",
+        planning_submit_feasibility_current=current,
+        planning_submit_feasibility_policy=policy,
+    )
+
+    ca_evidence = _item_evidence(linked, "strategy-b6716e1e95fc9cc0a9aa")
+
+    assert authority["corporate_action_event_status"] == "IMPACT_DETECTED"
+    assert authority["corporate_action_adjustment_factor"] == 1.0 / 3.0
+    assert authority["corporate_action_adjustment_authority_status"] == "REVIEW_REQUIRED"
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert linked.approved_sell_item_ids == ()
+    assert linked.review_required_sell_item_ids == ("strategy-b6716e1e95fc9cc0a9aa",)
+    assert ca_evidence["status"] == "REVIEW_REQUIRED"
+    assert ca_evidence["violated_policy"] == "corporate_action_adjustment_authority"
+    assert ca_evidence["guard_code"] == "CORPORATE_ACTION_UNRESOLVED"
+    assert ca_evidence["corporate_action_event_status"] == "IMPACT_DETECTED"
+    assert ca_evidence["corporate_action_adjustment_factor"] == 1.0 / 3.0
+    assert ca_evidence["future_data_used"] is False
+
+
+def test_phase32_aa_historical_sell_ca_pass_remains_submittable(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    root = _runtime_root(tmp_path)
+    business_date = "2023-10-11"
+    raw_path = _write_raw_ohlcv(
+        tmp_path,
+        pd=pd,
+        business_date=business_date,
+        symbol="92460",
+        close=1_000.0,
+        adj_factor=1.0,
+    )
+    _write_current(
+        root,
+        business_date=business_date,
+        cash=1_000_000.0,
+        positions=[{"symbol": "92460", "quantity": 100, "market_value": 100_000.0}],
+    )
+    policy = _policy(tmp_path)
+    current = load_runtime_current_exposure(
+        root / "persistent_ledger" / "state.json",
+        business_date=business_date,
+    )
+    authority = _planning_corporate_action_adjustment_authority(
+        runtime_root=root,
+        business_date=business_date,
+        mode="historical",
+        symbol="92460",
+        side="SELL",
+        quantity=100.0,
+        current=current,
+        environment_capability_context={"raw_ohlcv_path": str(raw_path)},
+    )
+    sell = replace(
+        _sell_item("sell-pass", symbol="92460"),
+        quantity_contract=_quantity_contract("92460") | {"corporate_action_adjustment_authority": authority},
+        listed_info={"corporate_action_adjustment_authority": authority},
+    )
+    pending = _pending((sell,), policy=policy, environment="historical", business_date=business_date)
+
+    linked = attach_approval_link(
+        pending,
+        approval_path=f"approval_artifact/{business_date}/approval.json",
+        approval_hash="approval-hash",
+        approval_status="APPROVED",
+        approved_item_ids=("sell-pass",),
+        approval_expires_at=f"{business_date}T15:00:00+09:00",
+        planning_submit_feasibility_current=current,
+        planning_submit_feasibility_policy=policy,
+    )
+
+    assert authority["corporate_action_event_status"] == "PASS"
+    assert authority["corporate_action_adjustment_authority_status"] == "PASS"
+    assert linked.state == PendingPlanState.APPROVED
+    assert linked.approved_sell_item_ids == ("sell-pass",)
+
+
+def test_phase32_aa_buy_item_review_plus_pass_sell_preserves_partial_submission(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    business_date = "2023-10-11"
+    _write_current(
+        root,
+        business_date=business_date,
+        cash=1_000_000.0,
+        positions=[{"symbol": "92460", "quantity": 100, "market_value": 100_000.0}],
+    )
+    policy = _policy(tmp_path)
+    sell = replace(
+        _sell_item("sell-pass", symbol="92460"),
+        quantity_contract=_quantity_contract("92460")
+        | {
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "PASS",
+                "corporate_action_event_status": "PASS",
+            },
+        },
+    )
+    ca_buy = replace(
+        _buy_item("buy-ca", symbol="50280"),
+        quantity_contract=_quantity_contract("50280")
+        | {
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+                "corporate_action_adjustment_authority_reason": "corporate_action_adjustment_authority_unresolved",
+                "corporate_action_adjustment_authority_path": (
+                    "runtime_state/corporate_action_adjustments/2023-10-11/50280.json"
+                ),
+                "corporate_action_event_status": "IMPACT_DETECTED",
+                "corporate_action_adjustment_factor": 1.0 / 3.0,
+            },
+        },
+    )
+    pending = _pending((sell, ca_buy), policy=policy, environment="historical", business_date=business_date)
+
+    linked = attach_approval_link(
+        pending,
+        approval_path=f"approval_artifact/{business_date}/approval.json",
+        approval_hash="approval-hash",
+        approval_status="APPROVED",
+        approved_item_ids=("sell-pass", "buy-ca"),
+        approval_expires_at=f"{business_date}T15:00:00+09:00",
+        planning_submit_feasibility_current=load_runtime_current_exposure(
+            root / "persistent_ledger" / "state.json",
+            business_date=business_date,
+        ),
+        planning_submit_feasibility_policy=policy,
+    )
+    authority = build_pending_review_scope_authority(linked)
+
+    assert linked.review_scope == "BUY_ITEM_SCOPED_REVIEW"
+    assert linked.sell_continuation_allowed is True
+    assert linked.approved_sell_item_ids == ("sell-pass",)
+    assert linked.review_required_buy_item_ids == ("buy-ca",)
+    assert authority.executable_sell_item_ids == ("sell-pass",)
+    assert "buy-ca" not in authority.executable_item_ids
 
 
 def test_phase31_a5_submit_blocked_evidence_materializes_typed_guard_fields() -> None:
@@ -353,3 +546,47 @@ def _write_json(path: Path, payload: dict) -> None:
 def _item_evidence(pending, pending_item_id: str) -> dict:
     items = pending.planning_submit_feasibility["items"]
     return next(item for item in items if item["pending_item_id"] == pending_item_id)
+
+
+def _write_raw_ohlcv(
+    tmp_path: Path,
+    *,
+    pd,
+    business_date: str,
+    symbol: str,
+    close: float,
+    adj_factor: float,
+) -> Path:
+    raw_path = (
+        tmp_path
+        / "evidence"
+        / "daily"
+        / business_date
+        / "market_refresh"
+        / "inputs"
+        / "historical_asof"
+        / business_date
+        / "raw"
+        / "jquants"
+        / "equities_bars_daily"
+        / "data.parquet"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "Date": business_date,
+                "Code": symbol,
+                "Open": close,
+                "High": close,
+                "Low": close,
+                "Close": close,
+                "AdjOpen": close,
+                "AdjHigh": close,
+                "AdjLow": close,
+                "AdjClose": close,
+                "AdjFactor": adj_factor,
+            }
+        ]
+    ).to_parquet(raw_path, index=False)
+    return raw_path

@@ -49,7 +49,10 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     missing_policy_manifest_fields,
 )
 from ai_fund_lab_v2.runtime_v2.provenance import pending_item_provenance
-from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalSubmitAdapter
+from ai_fund_lab_v2.runtime_v2.historical_support.environment import (
+    HistoricalSubmitAdapter,
+    historical_corporate_action_event_evidence,
+)
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
     RuntimeSafetyDecision,
     load_runtime_safety_decision,
@@ -2753,7 +2756,11 @@ def _materialize_corporate_action_authority_for_item(
 ) -> dict[str, Any] | None:
     if mode != "historical" or not isinstance(adapter, HistoricalSubmitAdapter):
         return None
-    event = adapter.corporate_action_event_evidence(symbol=str(item.symbol), business_date=business_date)
+    event = historical_corporate_action_event_evidence(
+        raw_ohlcv_path=adapter.raw_ohlcv_path,
+        business_date=business_date,
+        symbol=str(item.symbol),
+    )
     materialize_corporate_action_adjustment_authority(
         runtime_root=runtime_root,
         business_date=business_date,

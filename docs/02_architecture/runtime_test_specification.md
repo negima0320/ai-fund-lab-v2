@@ -1030,6 +1030,72 @@ Rollback target is the full resettable Trading State bundle:
 
 Partial restore is prohibited. Current-only restore, Ledger-only restore, Pending-only restore, and manual state edits are test-invalidating actions. Operational Foundation, Registry, Accepted Artifacts, Canonical Data, Raw Data, Feature Schema, Policy, Safety definitions, Configs, and Evidence must not be restored by Runtime Test rollback.
 
+### 26.10.1 Scoped Partial Submit Recovery
+
+`recover-partial-submit` is the canonical recovery path for a Historical Runtime
+Test run halted at `<business-date>:submit` after one or more same-day orders
+were accepted and a later approved item was blocked by a canonical Submit guard.
+It is not a rollback or manual partial restore. It is a scoped, evidence-backed
+rewind that preserves accepted submit effects and regenerates unresolved items
+from the approved replay boundary.
+
+Required preconditions:
+
+- run status is `HALT`;
+- `run_state.next_job` and `halted_at` identify `<business-date>:submit`;
+- previous completed business day Current is still the persistent coherent
+  boundary;
+- current Pending is same-day `REVIEW_REQUIRED` mixed partial-submit state;
+- target-date Ledger `orders` rows exist;
+- target-date Ledger `executions`, `positions`, `cash`, and `events` rows do not
+  exist;
+- every target-date order row is `ACCEPTED` and reconciles to a `CONSUMED`
+  Pending item by pending plan id, pending item id, symbol, side, quantity, and
+  order id;
+- historical broker accepted evidence reconciles to the preserved order rows;
+- at least one approved not-submitted Pending item has canonical Submit guard
+  block evidence;
+- no unreconciled accepted historical broker evidence or external effect exists.
+
+Recovery mutation:
+
+- preserves accepted order rows and historical broker accepted evidence;
+- writes recovery evidence under
+  `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/`;
+- retires the current mixed Pending slot to `EMPTY` with the superseded plan id,
+  preserved accepted item ids, preserved order ids, and replay exclusion
+  authority;
+- removes target-date replay jobs from `completed_jobs`;
+- rewinds `run_state.next_job` to the requested replay boundary, normally
+  `<business-date>:morning`;
+- leaves completed business days through the previous completed day unchanged.
+
+Replay authority:
+
+- replay Submit must not resubmit a preserved accepted item;
+- preserved items are reconciled by the Submit pipeline's existing
+  pending-item submission reconciliation against Ledger and historical broker
+  evidence;
+- unresolved approved/review items are regenerated under current Planning,
+  Pending, and Submit code;
+- ambiguity, missing reconciliation, duplicate order identity, or target-date
+  execution/current rows must fail closed.
+
+If a scoped partial-submit replay regenerates a same-day `REVIEW_REQUIRED`
+Pending before Submit because later items are no longer submittable under
+current canonical guards, `finalize-partial-submit-day` is the canonical
+accepted-items-only finalization path. It is narrower than full scoped replay:
+it does not run Strategy, Planning, Pending production, Submit, or another
+broker submission. It validates the applied partial-submit recovery state,
+preserved accepted order rows, matching historical broker accepted evidence,
+same-day Historical safety temporal authority, absence of target-date execution
+rows, and the regenerated review-only Pending. It then runs the normal
+historical execution readonly projection for preserved accepted broker evidence
+only, terminalizes the same-day Pending to `CONSUMED`, writes day completion
+evidence, marks the target business day complete, and leaves the run halted at a
+resume-ready next-job boundary. Reviewed regenerated items remain not submitted
+and not executed.
+
 ### 26.11 Command Execution Order
 
 | Command | State Change | Responsibility |
@@ -1044,6 +1110,7 @@ Partial restore is prohibited. Current-only restore, Ledger-only restore, Pendin
 | `resume` | Yes | Continue from the last valid checkpoint if baselines match; never skip failed jobs. |
 | `stop` | Evidence only | Mark a RUNNING run as operator-stopped HALT without deleting evidence or mutating Trading State. |
 | `abandon` | Evidence only | Mark a non-resumed HALT run abandoned without deleting evidence or mutating Trading State. |
+| `recover-partial-submit` | Yes | Preserve accepted same-day submit evidence and rewind unresolved mixed Pending for scoped replay. |
 | `rollback` | Yes | Restore the full resettable Trading State bundle from backup. |
 | `close` | No | Freeze final evidence, validity judgment, acceptance gate judgment, and lifecycle recommendation. |
 

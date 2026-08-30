@@ -212,6 +212,49 @@ Known limitations:
 - After Run close is `REVIEW_REQUIRED` for non-mutating Strategy Shadow review; it is non-blocking but remains an adoption limitation.
 - Future performance changes must not use this adoption as permission to change ADD, BUY_NEW, Sizing, Runtime Planning, Pending, Submit, Safety, or Execution.
 
+Phase32-X implements the minimum winner-retention performance lifecycle change:
+soft defensive deterioration is modeled as a recoverable PM-owned episode, not
+as indefinite campaign-level full-EXIT debt.
+
+```text
+healthy / recovered campaign
+  -> soft deterioration episode starts from non-terminal PM deterioration evidence
+  -> REDUCE may remain valid while optionality remains
+  -> renewed strength via PM HOLD or ADD closes/de-escalates the active soft episode
+  -> later soft weakness starts a new episode
+  -> non-emergency EXIT requires active unrecovered episode confirmation
+  -> terminal breakdown / hard stop / Safety remains immediate EXIT authority
+```
+
+The Phase32-X episode contract is:
+
+- episode identity is PM-owned and campaign-scoped, never symbol-only;
+- soft deterioration examples include `risk_increased_but_trend_not_broken`,
+  `peak_drawdown_warning`, and `expected_edge_risk_deterioration`;
+- zero-lot REDUCE intent may be episode evidence, but PS lot infeasibility does
+  not redefine PM deterioration severity and does not become terminal evidence
+  by itself;
+- PM `HOLD` or `ADD` with `HEALTHY_OR_RECOVERING`, `RECOVERY_PRESENT`, PIT
+  `PASS`, and no hard non-reset condition closes/de-escalates the active soft
+  episode;
+- closed soft episodes remain auditable history but are inactive for later
+  persistent EXIT escalation;
+- non-emergency persistent EXIT requires an active unrecovered soft episode and
+  `CONFIRMED_DETERIORATION`;
+- `DEFENSIVE_ONLY` evidence preserves REDUCE/review authority but does not by
+  itself authorize full EXIT;
+- `TERMINAL_BREAKDOWN` evidence bypasses recovery logic and may EXIT
+  immediately.
+
+Hard stop, genuine trend/Expected Edge breakdown, Safety full-close, broker
+block, corporate-action block, severe liquidity/risk failure, and explicit
+Runtime/Safety full-close authority remain immediate defensive authority. This
+change is an intentional user-approved performance semantic change to SELL
+lifecycle handling only; it does not change BUY_NEW selection, ADD acceleration
+tiers, Portfolio Construction capital competition, Position Sizing lot
+conversion, Runtime Planning, Pending, Submit, Safety, Execution, ledger, Cash,
+Risk Pacing, or G129 BUY_ADD order-increment semantics.
+
 ## 3. Strategy Layer Component Map
 
 Formal target architecture:

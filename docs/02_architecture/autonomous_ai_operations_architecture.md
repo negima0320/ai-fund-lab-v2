@@ -1164,6 +1164,8 @@ Authority Matrix:
 
 `AdjFactor` is an impact signal, not an event-type authority. Unknown corporate action type remains fail-closed until an accepted PIT authority resolves the event and proves idempotent ledger/current/pending adjustment lineage.
 
+Phase32-AA extends this authority to the Planning-to-Pending approval boundary. Before a Historical SELL item can become `APPROVED` / `PASS_ITEM_SUBMITTABLE`, Pending membership must consume the same business-date PIT corporate-action adjustment authority required by Submit. If the authority is unresolved, the item must materialize `REVIEW_REQUIRED` with corporate-action event status, event type, adjustment factor, quantity reconciliation, price reconciliation, already-applied status, PIT validation status, authority path, and future-data flag before Submit. Submit Guard remains the final hard guard and must not be bypassed or weakened; Pending only aligns earlier approval with the same Runtime-owned authority.
+
 ### AE-9 Phase19 Entry Boundary
 
 Phase19 may begin implementation with AD-U1 only if the implementation plan preserves these AE clarifications. Phase19 is not authorized to claim autonomous operation complete until AD-U1 through AD-U7 and the Production-equivalent Acceptance Contract pass.

@@ -1630,3 +1630,45 @@ evidence lineage and PIT / anti-leakage metadata. It must not use later return,
 future price, campaign final outcome, MFE/MAE, Paper Ledger result, or
 Historical profitability to select features, weights, thresholds, ranking
 rules, or rotation rules.
+
+## 37. Phase32-S PC-Owned Evidence-Tiered ADD Acceleration Contract
+
+Portfolio Construction owns ADD acceleration tiering and continuous marginal
+capital magnitude. Position Management remains the directional ADD intent owner;
+Position Sizing remains the discrete executable quantity owner; Runtime remains
+an exact consumer of the PS-bound order increment and must not redecide quantity.
+
+The canonical PC ADD acceleration states are:
+
+```text
+NO_ACCELERATION
+NORMAL_ADD
+STRONG_ADD
+EXCEPTIONAL_ADD
+```
+
+PC may produce `STRONG_ADD` or `EXCEPTIONAL_ADD` only from strict-prior,
+already-materialized evidence: PM ADD, campaign/current-position authority PASS,
+expected edge IMPROVING, incremental investment value POSITIVE, opportunity cost
+PASS, no-loss averaging PASS, Buy Quality eligible, available cap/headroom,
+Risk Pacing compatibility, Safety PASS, broker eligibility PASS, corporate
+action PASS, and liquidity feasibility. Missing, UNKNOWN, conflicting, or
+blocked authority remains fail-closed. CAUTIOUS / preserve-optionality Risk
+Pacing may down-tier acceleration to normal ADD, but unknown Risk Pacing is not
+compatible evidence.
+
+Acceleration magnitude is derived from the existing PC incremental capital unit
+and bounded by single-name cap, target gross exposure, available headroom, and
+Risk Pacing. This contract does not introduce fixed lot multipliers and does not
+select parameters from Historical PnL, future returns, future prices, future
+regime, campaign final outcome, or MFE/MAE.
+
+BUY_WAIT and explicit zero `quality_allocation_adjustment` keep incremental ADD
+at zero. Reduced Buy Quality allocation can preserve normal ADD only; it cannot
+re-expand into unrestricted strong/exceptional acceleration.
+
+BUY_NEW, accepted REENTRY initial sizing, REDUCE, EXIT, Cash optionality, and
+NEW / ADD / Cash competition remain separate authorities. Strong ADD can compete
+for capital but does not automatically win. PS may convert the PC continuous
+target into zero, one, or multiple 100-share lots under its existing discrete
+feasibility authority.
