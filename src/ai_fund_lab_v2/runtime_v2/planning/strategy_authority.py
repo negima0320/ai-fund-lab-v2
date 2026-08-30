@@ -38,6 +38,7 @@ from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
 )
 from ai_fund_lab_v2.runtime_v2.position_count_authority import resolve_position_count_authority
 from ai_fund_lab_v2.runtime_v2.position_sizing_authority import resolve_position_sizing_authority
+from ai_fund_lab_v2.runtime_v2.provenance import first_text, nested_text
 from ai_fund_lab_v2.strategy.runtime_planning import (
     RuntimePlanningSchemaError,
     validate_runtime_planning_artifact,
@@ -676,6 +677,13 @@ def _pending_item_from_strategy_plan(
     pending_item_id = "strategy-" + hashlib.sha256(
         f"{business_date}|{symbol}|{intent}|{side}|{plan.get('planning_id')}".encode("utf-8")
     ).hexdigest()[:20]
+    source_decision_id = str(plan.get("planning_id") or pending_item_id)
+    position_campaign_id = _runtime_planning_position_campaign_id(
+        plan=plan,
+        symbol=symbol,
+        business_date=business_date,
+        source_decision_id=source_decision_id,
+    )
     listed_info, listed_info_reason = _listed_info_for_strategy_pending(
         symbol=symbol,
         business_date=business_date,
@@ -735,10 +743,14 @@ def _pending_item_from_strategy_plan(
             if isinstance(plan.get("strategy_authority_lineage"), Mapping)
             else ""
         ),
+        source_decision_id=source_decision_id,
         source_decision_type=intent,
-        source_pm_decision_id=str(plan.get("pm_position_reference") or ""),
+        source_pm_decision_id=str(plan.get("source_pm_decision_id") or plan.get("pm_position_reference") or ""),
         source_pm_business_date=business_date,
         source_position_symbol=symbol,
+        order_plan_item_id=pending_item_id,
+        position_campaign_id=position_campaign_id,
+        campaign_id=position_campaign_id,
         add_candidate_signal=intent in {"BUY_NEW", "BUY_ADD"},
         capital_allocation_status="APPROVED",
         capital_allocation_reason="phase22_strategy_position_sizing_consumed",
@@ -901,6 +913,14 @@ def _planning_quantity_contract(
         "requested_notional": requested_notional,
         "selected_notional": selected_notional,
         "source_planning_id": str(plan.get("planning_id") or ""),
+        "source_decision_id": str(plan.get("planning_id") or ""),
+        "source_pm_decision_id": str(plan.get("source_pm_decision_id") or plan.get("pm_position_reference") or ""),
+        "position_campaign_id": _runtime_planning_position_campaign_id(
+            plan=plan,
+            symbol=symbol,
+            business_date=business_date,
+            source_decision_id=str(plan.get("planning_id") or ""),
+        ),
         "source_position_sizing_reference": str(sizing.get("position_reference") or ""),
         "planned_quantity": planned_quantity,
         "target_quantity_candidate": plan.get("target_quantity_candidate"),
@@ -939,6 +959,30 @@ def _planning_quantity_contract(
         "runtime_mode": mode,
         "business_date": business_date,
     }
+
+
+def _runtime_planning_position_campaign_id(
+    *,
+    plan: Mapping[str, Any],
+    symbol: str,
+    business_date: str,
+    source_decision_id: str,
+) -> str:
+    existing_campaign_id = first_text(
+        plan.get("position_campaign_id"),
+        plan.get("campaign_id"),
+        nested_text(plan, "marginal_capital_value_authority", "source_evidence", "current_position_campaign_id"),
+        nested_text(plan, "marginal_capital_value_authority", "add_campaign_evidence", "campaign_identifier"),
+        nested_text(plan, "marginal_capital_value_authority", "source_pm_intent", "position_campaign_id"),
+        nested_text(plan, "strategy_authority_lineage", "refined_capital_decision_lineage", "add_binding", "source_pm_intent", "position_campaign_id"),
+    )
+    intent = str(plan.get("planning_intent") or "").upper()
+    if intent == "BUY_ADD":
+        return existing_campaign_id
+    if intent == "BUY_NEW":
+        seed = first_text(source_decision_id, plan.get("planning_id"), f"{business_date}|{symbol}|BUY_NEW")
+        return f"pc-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}-{symbol}-0001"
+    return existing_campaign_id
 
 
 def _position_market_value(current: RuntimeCurrentExposure, symbol: str) -> float:

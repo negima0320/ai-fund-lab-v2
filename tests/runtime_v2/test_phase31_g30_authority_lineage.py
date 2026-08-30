@@ -4,11 +4,14 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from ai_fund_lab_v2.runtime_v2.execution.readonly_pipeline import run_execution_readonly_pipeline
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalExecutionSnapshotProvider
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.strategy_authority import activate_strategy_planning_authority
+from ai_fund_lab_v2.runtime_v2.submit.guards import build_runtime_v2_submit_command
 from ai_fund_lab_v2.runtime_v2.submit.pipeline import run_submit_pipeline
 from ai_fund_lab_v2.strategy.runtime_planning import build_runtime_planning_payload
 from tests.runtime_v2.test_phase17_g_historical_submit_guard_and_fill import (
@@ -107,6 +110,11 @@ def test_phase31_g30_submit_and_execution_preserve_lineage_without_redecision(tm
         pending.items[0],
         strategy_authority_lineage=lineage,
         strategy_authority_lineage_hash=lineage["lineage_hash"],
+        source_decision_id="rp-phase32-c-buy-new",
+        source_decision_type="BUY_NEW",
+        order_plan_item_id="opi-phase32-c-buy-new",
+        position_campaign_id="pc-phase32-c-7203-0001",
+        campaign_id="pc-phase32-c-7203-0001",
     )
     pending = replace(
         pending,
@@ -143,6 +151,42 @@ def test_phase31_g30_submit_and_execution_preserve_lineage_without_redecision(tm
     assert execution.status == "PASS"
     assert {record["strategy_authority_lineage_hash"] for record in order_records} == {lineage["lineage_hash"]}
     assert all(record["strategy_authority_lineage"]["downstream_strategy_redecision_allowed"] is False for record in order_records)
+    assert {record["source_decision_id"] for record in order_records} == {"rp-phase32-c-buy-new"}
+    assert {record["source_decision_type"] for record in order_records} == {"BUY_NEW"}
+    assert {record["order_plan_item_id"] for record in order_records} == {"opi-phase32-c-buy-new"}
+    assert {record["position_campaign_id"] for record in order_records} == {"pc-phase32-c-7203-0001"}
+    execution_records = [
+        json.loads(line)
+        for line in (runtime_root / "persistent_ledger" / "executions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert {record["source_decision_id"] for record in execution_records} == {"rp-phase32-c-buy-new"}
+    assert {record["pending_item_id"] for record in execution_records} == {item.pending_item_id}
+    assert {record["order_plan_item_id"] for record in execution_records} == {"opi-phase32-c-buy-new"}
+    assert {record["position_campaign_id"] for record in execution_records} == {"pc-phase32-c-7203-0001"}
+
+
+def test_phase32_c_pending_provenance_mismatch_fails_closed(tmp_path: Path) -> None:
+    _, policy_path, _ = _runtime_fixture(tmp_path, side="BUY")
+    pending = _pending("historical", side="BUY", policy_path=policy_path)
+    item = replace(
+        pending.items[0],
+        source_decision_id="rp-phase32-c-item",
+        order_plan_item_id="opi-phase32-c-item",
+        quantity_contract={
+            "source_decision_id": "rp-phase32-c-contract-other",
+            "order_plan_item_id": "opi-phase32-c-item",
+        },
+    )
+    pending = replace(pending, items=(item,))
+
+    with pytest.raises(ValueError, match="pending item provenance mismatch: source_decision_id"):
+        build_runtime_v2_submit_command(
+            pending_plan=pending,
+            approval_artifact=pending.approval,
+            approved_item_id=item.pending_item_id,
+            live_order_allowed=True,
+        )
 
 
 def test_phase31_g30_no_action_runtime_payload_preserves_authority_lineage(tmp_path: Path) -> None:

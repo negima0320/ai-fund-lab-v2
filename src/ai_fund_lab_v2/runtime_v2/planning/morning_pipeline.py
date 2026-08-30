@@ -42,6 +42,7 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     capital_deployment_policy_hash_from_context,
     load_capital_deployment_policy,
 )
+from ai_fund_lab_v2.runtime_v2.provenance import first_text
 from ai_fund_lab_v2.runtime_v2.planning.models import (
     AIPlanningSignal,
     CapitalAllocationSignal,
@@ -1538,6 +1539,7 @@ def _policy_hash(policy_context: dict[str, Any]) -> str:
 
 
 def _pending_item(item, *, runtime_root: Path, business_date: str) -> PendingOrderItem:
+    contract = item.quantity_contract if isinstance(item.quantity_contract, dict) else {}
     reservation = resolve_order_cash_reservation(
         runtime_root=runtime_root,
         business_date=business_date,
@@ -1589,6 +1591,13 @@ def _pending_item(item, *, runtime_root: Path, business_date: str) -> PendingOrd
         safety_source=item.safety_source,
         safety_decision=item.safety_decision,
         safety_reason=item.safety_reason,
+        quantity_contract=item.quantity_contract,
+        source_decision_id=first_text(contract.get("source_decision_id"), contract.get("source_planning_id"), item.source_signal_id, item.order_plan_item_id),
+        source_decision_type=first_text(contract.get("planning_intent"), contract.get("source_decision"), item.side),
+        source_pm_decision_id=first_text(contract.get("source_pm_decision_id")),
+        order_plan_item_id=item.order_plan_item_id,
+        position_campaign_id=first_text(contract.get("position_campaign_id"), contract.get("campaign_id")),
+        campaign_id=first_text(contract.get("campaign_id"), contract.get("position_campaign_id")),
     )
 
 

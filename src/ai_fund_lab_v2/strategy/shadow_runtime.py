@@ -150,6 +150,7 @@ def generate_strategy_shadow_for_day(
     opportunity_artifact_path = _optional_opportunity_artifact_path(opportunity, business_date=business_date)
     current = _current_summary(runtime_root=runtime_root, business_date=business_date)
     prior_exit_supply = _supply_prior_exit_state(
+        run_dir=run_dir,
         runtime_root=runtime_root,
         business_date=business_date,
         candidate=candidate,
@@ -1196,6 +1197,7 @@ def _current_summary(*, runtime_root: Path, business_date: str) -> dict[str, Any
 
 def _supply_prior_exit_state(
     *,
+    run_dir: Path | None = None,
     runtime_root: Path,
     business_date: str,
     candidate: Mapping[str, Any],
@@ -1209,7 +1211,16 @@ def _supply_prior_exit_state(
         for row in current.get("rows") or ()
         if isinstance(row, Mapping) and _float(row.get("quantity"), default=0.0) > 0
     }
-    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(executions=executions, business_date=business_date)
+    pm_exit_evidence = (
+        _strict_prior_pm_exit_decision_evidence_by_campaign(run_dir=run_dir, business_date=business_date)
+        if run_dir is not None
+        else {}
+    )
+    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(
+        executions=executions,
+        business_date=business_date,
+        pm_exit_evidence_by_campaign=pm_exit_evidence,
+    )
     candidate_result = _attach_prior_exit_to_summary(candidate, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
     opportunity_result = _attach_prior_exit_to_summary(opportunity, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
     supplied_symbols = sorted(set(candidate_result["supplied_symbols"]) | set(opportunity_result["supplied_symbols"]))
@@ -1222,8 +1233,10 @@ def _supply_prior_exit_state(
             "authority": "persistent_ledger_execution_history",
             "source_path": str(ledger_path),
             "source_hash": _file_hash(ledger_path),
+            "pm_exit_evidence_supplied": bool(pm_exit_evidence),
+            "pm_exit_evidence_campaign_count": len(pm_exit_evidence),
             "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
-            "materialized_field": "prior_exit_business_date",
+            "materialized_field": "prior_exit_context",
             "prior_closed_campaign_count": len(prior_by_symbol),
             "candidate_supplied_count": candidate_result["supplied_count"],
             "opportunity_supplied_count": opportunity_result["supplied_count"],
@@ -1451,6 +1464,80 @@ def _strict_prior_pm_sell_decision_evidence_by_campaign(
     }
 
 
+def _strict_prior_pm_exit_decision_evidence_by_campaign(
+    *,
+    run_dir: Path,
+    business_date: str,
+) -> dict[str, dict[str, Any]]:
+    daily_root = run_dir / "daily"
+    if not daily_root.is_dir():
+        return {}
+    by_campaign: dict[str, dict[str, Any]] = {}
+    for child in sorted(item for item in daily_root.iterdir() if item.is_dir()):
+        decision_date = child.name
+        if not decision_date or decision_date >= business_date:
+            continue
+        for pm_path in (
+            child / "position_management" / "pm_decisions.json",
+            child / "strategy" / "position_management.json",
+        ):
+            payload = _read_json(pm_path)
+            rows = payload.get("decisions") if isinstance(payload.get("decisions"), list) else payload.get("positions")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                event = _pm_exit_decision_context_event(row, business_date=decision_date, source_path=pm_path)
+                if not event:
+                    continue
+                campaign_id = str(event.get("prior_campaign_id") or "").strip()
+                if not campaign_id:
+                    continue
+                current = by_campaign.get(campaign_id)
+                if current is None or str(event.get("prior_exit_business_date") or "") >= str(current.get("prior_exit_business_date") or ""):
+                    by_campaign[campaign_id] = event
+    return by_campaign
+
+
+def _pm_exit_decision_context_event(
+    row: Mapping[str, Any],
+    *,
+    business_date: str,
+    source_path: Path,
+) -> dict[str, Any] | None:
+    decision_type = str(row.get("decision_type") or row.get("action") or "").upper()
+    decision_status = str(row.get("decision_status") or "").upper()
+    if decision_type not in {"EXIT", "SELL_EXIT"} and "SELL_FULL_POSITION" not in decision_status:
+        return None
+    campaign_id = str(
+        row.get("position_campaign_id")
+        or row.get("campaign_id")
+        or row.get("strategy_intelligence_campaign_id")
+        or ""
+    ).strip()
+    symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+    reason_codes = row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else []
+    decision_reason = str(row.get("decision_reason") or row.get("dominant_cause") or decision_type or "").strip()
+    return {
+        "schema_version": "phase32_h_prior_exit_context.v1",
+        "prior_campaign_id": campaign_id,
+        "prior_exit_business_date": business_date,
+        "prior_exit_decision_type": "EXIT",
+        "prior_exit_reason": decision_reason,
+        "prior_exit_reason_codes": [str(item) for item in reason_codes if str(item)],
+        "source_pm_decision_id": str(row.get("pm_decision_id") or row.get("decision_id") or ""),
+        "source_decision_id": str(row.get("source_decision_id") or row.get("pm_decision_id") or row.get("decision_id") or ""),
+        "symbol": symbol,
+        "provenance_status": "PASS",
+        "authority": "STRICT_PRIOR_PM_EXIT_DECISION_CONTEXT",
+        "source_artifact_path": str(source_path),
+        "source_artifact_hash": _file_hash(source_path),
+        "temporal_selection_rule": "pm_exit_decision_business_date_strictly_less_than_reentry_decision_business_date",
+        "future_information_used": False,
+    }
+
+
 def _pm_sell_decision_evidence_event(
     row: Mapping[str, Any],
     *,
@@ -1605,7 +1692,15 @@ def _new_campaign_from_execution(
     source_index: int,
 ) -> dict[str, Any]:
     execution_ref = str(row.get("execution_id") or row.get("record_id") or row.get("ledger_record_id") or row.get("execution_key") or source_index)
-    campaign_id = f"pc-{hashlib.sha256(f'{symbol}|{campaign_index}|{execution_ref}'.encode()).hexdigest()[:16]}-{symbol}-{campaign_index:04d}"
+    explicit_campaign_id = str(
+        row.get("position_campaign_id")
+        or row.get("campaign_id")
+        or row.get("canonical_position_campaign_id")
+        or row.get("open_position_campaign_id")
+        or row.get("source_position_campaign_id")
+        or ""
+    ).strip()
+    campaign_id = explicit_campaign_id or f"pc-{hashlib.sha256(f'{symbol}|{campaign_index}|{execution_ref}'.encode()).hexdigest()[:16]}-{symbol}-{campaign_index:04d}"
     price = _float(row.get("average_price") or row.get("price") or row.get("market_price"), default=0.0)
     return {
         "position_campaign_id": campaign_id,
@@ -1855,9 +1950,16 @@ def _campaign_event_sort_key(key: tuple[str, str, str, str, str, str]) -> tuple[
     return (business_date, side_order, dedup, execution_id, record_id, quantity)
 
 
-def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapping[str, Any]], business_date: str) -> dict[str, dict[str, Any]]:
+def _resolve_prior_closed_campaigns_from_executions(
+    *,
+    executions: Iterable[Mapping[str, Any]],
+    business_date: str,
+    pm_exit_evidence_by_campaign: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     states: dict[str, dict[str, Any]] = {}
     latest_closed: dict[str, dict[str, Any]] = {}
+    pm_exit_evidence_by_campaign = pm_exit_evidence_by_campaign or {}
+    pm_exit_evidence_by_source_id = _pm_exit_evidence_by_source_id(pm_exit_evidence_by_campaign)
     ordered = sorted(
         enumerate(executions),
         key=lambda item: (
@@ -1881,7 +1983,8 @@ def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapp
         if side == "BUY":
             if _float(state.get("quantity"), default=0.0) <= 1e-6:
                 state["campaign_index"] = int(state.get("campaign_index") or 0) + 1
-                state["campaign_id"] = f"ledger-derived-{symbol}-{int(state['campaign_index']):04d}"
+                explicit_campaign_id = str(row.get("position_campaign_id") or row.get("campaign_id") or "").strip()
+                state["campaign_id"] = explicit_campaign_id or f"ledger-derived-{symbol}-{int(state['campaign_index']):04d}"
             state["quantity"] = _float(state.get("quantity"), default=0.0) + quantity
             continue
         if side != "SELL":
@@ -1896,23 +1999,75 @@ def _resolve_prior_closed_campaigns_from_executions(*, executions: Iterable[Mapp
             closed_count = int(state.get("closed_campaign_count") or 0) + 1
             state["closed_campaign_count"] = closed_count
             reason_codes = row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes") or row.get("reason_codes")
+            campaign_id = str(row.get("position_campaign_id") or row.get("campaign_id") or state.get("campaign_id") or f"ledger-derived-{symbol}-{index}").strip()
+            pm_context = dict(
+                pm_exit_evidence_by_campaign.get(campaign_id)
+                or pm_exit_evidence_by_source_id.get(str(row.get("source_pm_decision_id") or "").strip())
+                or pm_exit_evidence_by_source_id.get(str(row.get("source_decision_id") or "").strip())
+                or {}
+            )
+            if pm_context:
+                campaign_id = str(pm_context.get("prior_campaign_id") or campaign_id).strip()
+            prior_exit_reason = str(
+                pm_context.get("prior_exit_reason")
+                or row.get("prior_exit_reason")
+                or row.get("previous_exit_reason")
+                or row.get("source_decision_reason")
+                or row.get("source_decision_type")
+                or row.get("decision_type")
+                or row.get("source_decision")
+                or "EXIT"
+            )
+            prior_exit_reason_codes = list(pm_context.get("prior_exit_reason_codes") or []) if pm_context else reason_codes if isinstance(reason_codes, list) else []
+            source_pm_decision_id = str(pm_context.get("source_pm_decision_id") or row.get("source_pm_decision_id") or "")
+            source_decision_id = str(row.get("source_decision_id") or pm_context.get("source_decision_id") or "")
+            prior_exit_context = dict(pm_context) if pm_context else {}
+            if prior_exit_context:
+                prior_exit_context["source_pm_decision_id"] = source_pm_decision_id
+                prior_exit_context["source_decision_id"] = source_decision_id
             latest_closed[symbol] = {
                 "prior_exit_business_date": execution_date,
-                "prior_exit_campaign_id": str(state.get("campaign_id") or f"ledger-derived-{symbol}-{index}"),
-                "prior_exit_reason": str(
-                    row.get("prior_exit_reason")
-                    or row.get("previous_exit_reason")
-                    or row.get("source_decision_reason")
-                    or row.get("source_decision_type")
-                    or row.get("decision_type")
-                    or row.get("source_decision")
-                    or "EXIT"
-                ),
-                "prior_exit_reason_codes": reason_codes if isinstance(reason_codes, list) else [],
+                "prior_exit_campaign_id": campaign_id,
+                "prior_campaign_id": campaign_id,
+                "prior_exit_decision_type": str(pm_context.get("prior_exit_decision_type") or "EXIT"),
+                "prior_exit_reason": prior_exit_reason,
+                "prior_exit_reason_codes": prior_exit_reason_codes,
+                "source_pm_decision_id": source_pm_decision_id,
+                "source_decision_id": source_decision_id,
                 "prior_same_symbol_exit_count": closed_count,
-                "prior_exit_state_status": "RESOLVED_FROM_PIT_LEDGER_EXECUTION_HISTORY",
+                "prior_exit_state_status": "RESOLVED_FROM_STRICT_PRIOR_PM_EXIT_CONTEXT_AND_PIT_LEDGER"
+                if pm_context
+                else "RESOLVED_FROM_PIT_LEDGER_EXECUTION_HISTORY",
+                "prior_exit_provenance_status": "PASS" if pm_context else "REVIEW_REQUIRED",
+                "prior_exit_context": prior_exit_context
+                if pm_context
+                else {
+                    "schema_version": "phase32_h_prior_exit_context.v1",
+                    "prior_campaign_id": campaign_id,
+                    "prior_exit_business_date": execution_date,
+                    "prior_exit_decision_type": "EXIT",
+                    "prior_exit_reason": prior_exit_reason,
+                    "prior_exit_reason_codes": prior_exit_reason_codes,
+                    "source_pm_decision_id": "",
+                    "source_decision_id": str(row.get("source_decision_id") or ""),
+                    "provenance_status": "REVIEW_REQUIRED",
+                    "authority": "PIT_LEDGER_EXECUTION_HISTORY_WITHOUT_PM_EXIT_DETAIL",
+                    "future_information_used": False,
+                },
             }
     return latest_closed
+
+
+def _pm_exit_evidence_by_source_id(
+    pm_exit_evidence_by_campaign: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    by_source_id: dict[str, Mapping[str, Any]] = {}
+    for event in pm_exit_evidence_by_campaign.values():
+        for field in ("source_pm_decision_id", "source_decision_id"):
+            source_id = str(event.get(field) or "").strip()
+            if source_id:
+                by_source_id[source_id] = event
+    return by_source_id
 
 
 def _attach_prior_exit_to_summary(
@@ -1929,7 +2084,7 @@ def _attach_prior_exit_to_summary(
         item = dict(row) if isinstance(row, Mapping) else {}
         symbol = str(item.get("code") or item.get("security_code") or item.get("symbol") or "").strip()
         prior = prior_by_symbol.get(symbol)
-        if symbol and symbol not in current_symbols and prior and not _has_prior_exit_field(item):
+        if symbol and symbol not in current_symbols and prior and _should_attach_prior_exit_context(item, prior):
             item.update(prior)
             supplied_symbols.append(symbol)
         enriched_rows.append(item)
@@ -1952,6 +2107,51 @@ def _has_prior_exit_field(row: Mapping[str, Any]) -> bool:
         if str(row.get(field) or "").strip():
             return True
     return False
+
+
+def _prior_exit_business_date(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("prior_exit_business_date")
+        or row.get("last_exit_business_date")
+        or row.get("previous_exit_business_date")
+        or ""
+    ).strip()
+
+
+def _has_complete_prior_exit_context(row: Mapping[str, Any]) -> bool:
+    context = row.get("prior_exit_context") if isinstance(row.get("prior_exit_context"), Mapping) else {}
+    prior_campaign_id = str(
+        (context or {}).get("prior_campaign_id")
+        or row.get("prior_campaign_id")
+        or row.get("prior_exit_campaign_id")
+        or ""
+    ).strip()
+    source_pm_decision_id = str(
+        (context or {}).get("source_pm_decision_id")
+        or row.get("source_pm_decision_id")
+        or ""
+    ).strip()
+    source_decision_id = str(
+        (context or {}).get("source_decision_id")
+        or row.get("source_decision_id")
+        or ""
+    ).strip()
+    provenance_status = str(
+        row.get("prior_exit_provenance_status")
+        or (context or {}).get("provenance_status")
+        or ""
+    ).strip().upper()
+    return bool(prior_campaign_id and source_pm_decision_id and source_decision_id and provenance_status == "PASS")
+
+
+def _should_attach_prior_exit_context(row: Mapping[str, Any], prior: Mapping[str, Any]) -> bool:
+    if not _has_prior_exit_field(row):
+        return True
+    if _has_complete_prior_exit_context(row):
+        return False
+    existing_date = _prior_exit_business_date(row)
+    prior_date = _prior_exit_business_date(prior)
+    return bool(existing_date and prior_date and existing_date == prior_date)
 
 
 def _supply_reentry_source_evidence(

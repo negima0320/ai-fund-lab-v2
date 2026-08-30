@@ -186,6 +186,101 @@ def test_phase31_g122_flat_after_exit_buy_starts_new_campaign(tmp_path: Path) ->
     assert open_campaigns[0]["buy_history_summary"]["count"] == 1
 
 
+def test_phase32_l_buy_new_fill_campaign_is_row_authority_when_current_lacks_campaign(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    campaign_id = "pc-actual-fill-83060-0001"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution(
+                "exec-83060-buy-new",
+                "2022-10-26",
+                "83060",
+                "BUY",
+                100,
+                711.5,
+                position_campaign_id=campaign_id,
+                campaign_id=campaign_id,
+                source_decision_type="BUY_NEW",
+            )
+        ],
+    )
+
+    result = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-10-27",
+        current=_current("2022-10-27", "83060", quantity=100, average_price=711.5, market_value=69_110),
+        as_of="2022-10-27T00:00:00+00:00",
+    )
+    campaign = _campaign(result, "83060")
+
+    assert campaign["position_campaign_id"] == campaign_id
+    assert campaign["events"][0]["position_campaign_id"] == campaign_id
+    assert campaign["observed_state_authority"] == "PRE_ACTION_CURRENT_PLUS_PRIOR_CANONICAL_CAMPAIGN"
+
+
+def test_phase32_l_reentry_new_campaign_keeps_fill_campaign_then_add_inherits_it(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    runtime_root = tmp_path / ".runtime"
+    prior_campaign = "pc-prior-76470-0001"
+    reentry_campaign = "pc-reentry-fill-76470-0002"
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "executions.jsonl",
+        [
+            _execution("exec-76470-buy-old", "2022-10-12", "76470", "BUY", 800, 25.0, position_campaign_id=prior_campaign),
+            _execution("exec-76470-exit", "2022-10-14", "76470", "SELL", 800, 25.5, position_campaign_id=prior_campaign),
+            _execution(
+                "exec-76470-reentry",
+                "2022-11-11",
+                "76470",
+                "BUY",
+                300,
+                26.0,
+                position_campaign_id=reentry_campaign,
+                source_decision_type="BUY_NEW",
+            ),
+            _execution(
+                "exec-76470-add",
+                "2022-11-25",
+                "76470",
+                "BUY",
+                100,
+                26.5,
+                position_campaign_id=reentry_campaign,
+                source_decision_type="BUY_ADD",
+            ),
+        ],
+    )
+
+    pre_add = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-11-24",
+        current=_current("2022-11-24", "76470", quantity=300, average_price=26.0, market_value=8_100),
+        as_of="2022-11-24T00:00:00+00:00",
+    )
+    open_before_add = _campaign(pre_add, "76470")
+    assert open_before_add["position_campaign_id"] == reentry_campaign
+    assert open_before_add["position_campaign_id"] != prior_campaign
+
+    post_add = _materialize_pre_action_position_campaigns(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        business_date="2022-11-28",
+        current=_current("2022-11-28", "76470", quantity=400, average_price=26.125, market_value=10_450),
+        as_of="2022-11-28T00:00:00+00:00",
+    )
+    open_after_add = _campaign(post_add, "76470")
+    assert open_after_add["position_campaign_id"] == reentry_campaign
+    assert _buy_event_count(open_after_add) == 2
+    assert open_after_add["add_history_summary"]["count"] == 1
+    assert {event["position_campaign_id"] for event in open_after_add["events"] if event["side"] == "BUY"} == {
+        reentry_campaign
+    }
+
+
 def test_phase31_g129_actual_buy_add_fill_runtime_id_merges_when_open_campaign_lineage_proves_identity(
     tmp_path: Path,
 ) -> None:

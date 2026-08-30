@@ -1349,6 +1349,23 @@ def _resolved_lot_aware_add_increment(row: Mapping[str, Any]) -> float:
     return nested if nested > 0 else 0.0
 
 
+def _buy_quality_blocks_incremental_add(
+    *,
+    row: Mapping[str, Any],
+    existing_position: bool,
+    pm_action: str,
+    adaptive_quality: Mapping[str, Any],
+) -> bool:
+    if not existing_position or pm_action != "ADD":
+        return False
+    quality_action = str(adaptive_quality.get("quality_action") or "").upper()
+    quality_adjustment = _ratio(adaptive_quality.get("quality_allocation_adjustment"), 0.0)
+    explicit_quality_adjustment = "quality_allocation_adjustment" in row
+    return quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} or (
+        explicit_quality_adjustment and quality_adjustment <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
+
+
 def _raw_position(
     row: Mapping[str, Any],
     *,
@@ -1391,6 +1408,15 @@ def _raw_position(
     existing_position = current_quantity > 0
     accepted_incremental_weight = _ratio(row.get("accepted_incremental_weight"), 0.0)
     lot_aware_accepted_incremental_weight = _resolved_lot_aware_add_increment(row)
+    incremental_add_quality_blocked = _buy_quality_blocks_incremental_add(
+        row=row,
+        existing_position=existing_position,
+        pm_action=pm_action,
+        adaptive_quality=adaptive_quality,
+    )
+    if incremental_add_quality_blocked:
+        accepted_incremental_weight = 0.0
+        lot_aware_accepted_incremental_weight = 0.0
     quality_adjustment_scope = "BUY_NEW_TOTAL_TARGET"
     minimum_meaningful_notional_applied_to = "TOTAL_TARGET_NOTIONAL"
     position_type = "EXISTING_POSITION" if existing_position else "NEW_POSITION"
@@ -1415,6 +1441,10 @@ def _raw_position(
         reasons.append("existing_position_baseline_quantity_authoritative")
         if pm_action in {"HOLD", "ADD", "UNRESOLVED"}:
             baseline_quantity_preserved = True
+        if incremental_add_quality_blocked:
+            adjusted = current_weight
+            target = current_weight
+            reasons.append("BUY_QUALITY_BLOCKS_INCREMENTAL_ADD")
     else:
         adjusted = target * quality
     if pm_action == "EXIT" or membership in {"REMOVE_CANDIDATE", "EXCLUDE"}:
@@ -1483,13 +1513,16 @@ def _raw_position(
             uncertainty = "UNRESOLVED"
             reasons.append("pm_action_unresolved_no_implicit_exit")
     elif existing_position and pm_action == "ADD":
-        increment_weight = (
-            lot_aware_accepted_incremental_weight
-            if lot_aware_accepted_incremental_weight > 0
-            else accepted_incremental_weight
-            if accepted_incremental_weight > 0
-            else max(target - current_weight, 0.0)
-        )
+        if incremental_add_quality_blocked:
+            increment_weight = 0.0
+        else:
+            increment_weight = (
+                lot_aware_accepted_incremental_weight
+                if lot_aware_accepted_incremental_weight > 0
+                else accepted_incremental_weight
+                if accepted_incremental_weight > 0
+                else max(target - current_weight, 0.0)
+            )
         transaction_delta_weight = round(max(increment_weight, 0.0), 6)
         transaction_target_notional = round(transaction_delta_weight * portfolio_value, 2)
         target_quantity_candidate = int(current_quantity)

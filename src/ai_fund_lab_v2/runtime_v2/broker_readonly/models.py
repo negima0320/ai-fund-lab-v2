@@ -31,6 +31,12 @@ class BrokerOrderSnapshot(BrokerSnapshotBase):
     remaining_quantity: float
     accepted_at: str
     updated_at: str
+    source_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_decision_id: str = ""
+    order_plan_item_id: str = ""
+    position_campaign_id: str = ""
+    campaign_id: str = ""
     strategy_authority_lineage: dict[str, Any] | None = None
     strategy_authority_lineage_hash: str = ""
 

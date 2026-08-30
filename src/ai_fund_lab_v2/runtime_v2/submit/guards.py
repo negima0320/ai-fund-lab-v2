@@ -17,6 +17,7 @@ from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
     build_pending_review_scope_authority,
     pending_scope_allows_partial_submit,
 )
+from ai_fund_lab_v2.runtime_v2.provenance import pending_item_provenance, validate_pending_item_provenance
 from ai_fund_lab_v2.runtime_v2.submit.models import (
     RuntimeV2SubmitCommand,
     RuntimeV2SubmitPreflightResult,
@@ -88,6 +89,10 @@ def build_runtime_v2_submit_command(
     source_current_path: str = "pending_order_plan/pending_order_plan.json",
 ) -> RuntimeV2SubmitCommand:
     item = next(item for item in pending_plan.items if item.pending_item_id == approved_item_id)
+    provenance_mismatches = validate_pending_item_provenance(item)
+    if provenance_mismatches:
+        raise ValueError("pending item provenance mismatch: " + ",".join(provenance_mismatches))
+    provenance = pending_item_provenance(item)
     conditions = approval_artifact.approved_order_conditions
     item_condition = conditions.get(item.pending_item_id) if isinstance(conditions, dict) else None
     if not isinstance(item_condition, dict):
@@ -109,6 +114,12 @@ def build_runtime_v2_submit_command(
         live_order_allowed=live_order_allowed,
         source_current_path=source_current_path,
         listed_info=item.listed_info,
+        source_decision_id=provenance["source_decision_id"],
+        source_decision_type=provenance["source_decision_type"],
+        source_pm_decision_id=provenance["source_pm_decision_id"],
+        order_plan_item_id=provenance["order_plan_item_id"],
+        position_campaign_id=provenance["position_campaign_id"],
+        campaign_id=provenance["campaign_id"],
         strategy_authority_lineage=(
             dict(item.strategy_authority_lineage)
             if isinstance(item.strategy_authority_lineage, dict)

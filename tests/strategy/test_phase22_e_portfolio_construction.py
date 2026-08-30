@@ -3328,6 +3328,80 @@ def test_phase29_l21s_buy_add_one_lot_fallback_preserves_add_semantics() -> None
     assert member["phase29_l19_lot_resolution"]["second_lot_plus_promotion"]["promotion_candidate"] is False
 
 
+def test_phase32_f_buy_wait_existing_add_preserves_baseline_and_blocks_increment() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[
+            {
+                **_lot_rebatch_add_member("94320", priority=1, current_weight=0.10, request=0.03, accepted=0.03),
+                "semantic_buy_type": "BUY_ADD",
+                "quality_action": "BUY_WAIT",
+                "quality_allocation_adjustment": 0.0,
+            },
+        ],
+        lot_feasibility_rows=[
+            {
+                "symbol": "94320",
+                "intent_type": "BUY_ADD",
+                "lot_feasible": True,
+                "broker_eligible": True,
+                "minimum_executable_weight": 0.02,
+                "phase29_l19_lot_resolution": {
+                    "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+                    "semantic_type": "BUY_ADD",
+                    "one_lot_quantity": 100,
+                    "safety_hard_cap_preserved": True,
+                },
+            }
+        ],
+        target_gross_exposure=0.5,
+        single_name_cap=0.18,
+    )
+    member = result["members"][0]
+
+    assert member["pm_action"] == "ADD"
+    assert member["target_weight"] == 0.10
+    assert member["target_membership"] is True
+    assert member["lot_aware_accepted_incremental_weight"] == 0.0
+    assert member["phase29_l19_lot_resolution"]["requested_incremental_weight"] == 0.0
+    assert "BUY_QUALITY_BLOCKS_INCREMENTAL_ADD" in result["reason_codes"]
+
+
+def test_phase32_f_reduced_existing_add_remains_positive_when_quality_authorizes_increment() -> None:
+    result = apply_lot_aware_final_reallocation(
+        members=[
+            {
+                **_lot_rebatch_add_member("94320", priority=1, current_weight=0.10, request=0.03, accepted=0.03),
+                "semantic_buy_type": "BUY_ADD",
+                "quality_action": "REDUCED_ALLOCATION_ONLY",
+                "quality_allocation_adjustment": 0.5,
+            },
+        ],
+        lot_feasibility_rows=[
+            {
+                "symbol": "94320",
+                "intent_type": "BUY_ADD",
+                "lot_feasible": True,
+                "broker_eligible": True,
+                "minimum_executable_weight": 0.02,
+                "phase29_l19_lot_resolution": {
+                    "boundary_classification": "CAP_CONSTRAINED_LOT_EXECUTABLE",
+                    "semantic_type": "BUY_ADD",
+                    "one_lot_quantity": 100,
+                    "safety_hard_cap_preserved": True,
+                },
+            }
+        ],
+        target_gross_exposure=0.5,
+        single_name_cap=0.18,
+    )
+    member = result["members"][0]
+
+    assert member["pm_action"] == "ADD"
+    assert member["target_weight"] > member["current_weight"]
+    assert member["lot_aware_accepted_incremental_weight"] > 0.0
+    assert member["phase29_l19_lot_resolution"]["semantic_type"] == "BUY_ADD"
+
+
 def test_phase29_l16_canonical_add_is_not_reentry_and_remains_positive_when_low_price_capped(tmp_path: Path) -> None:
     payload = _build_d28_payload(
         tmp_path,

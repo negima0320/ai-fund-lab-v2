@@ -110,6 +110,12 @@ def project_order_to_ledger_record(order: BrokerOrderSnapshot) -> LedgerOrderRec
         symbol=order.symbol,
         quantity=order.quantity,
         status=order.order_status,
+        source_decision_id=order.source_decision_id,
+        source_decision_type=order.source_decision_type,
+        source_pm_decision_id=order.source_pm_decision_id,
+        order_plan_item_id=order.order_plan_item_id,
+        position_campaign_id=order.position_campaign_id,
+        campaign_id=order.campaign_id or order.position_campaign_id,
         strategy_authority_lineage=dict(order.strategy_authority_lineage or {}),
         strategy_authority_lineage_hash=order.strategy_authority_lineage_hash,
     )

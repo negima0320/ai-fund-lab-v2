@@ -9463,12 +9463,26 @@ def _derive_position_campaign_state(
         if qty <= 0 or price < 0:
             continue
         state = positions[symbol]
+        row_campaign_id = _execution_position_campaign_id(row)
         if side == "BUY":
             if state["quantity"] <= POSITION_QUANTITY_EPSILON:
                 state["campaign_index"] += 1
-                state["campaign_id"] = _position_campaign_id(run_id=run_id, symbol=symbol, sequence=int(state["campaign_index"]))
-                campaigns[state["campaign_id"]] = _new_campaign(row=row, run_id=run_id, business_date=business_date, symbol=symbol, campaign_id=state["campaign_id"], plans=plans)
+                state["campaign_id"] = row_campaign_id or _position_campaign_id(run_id=run_id, symbol=symbol, sequence=int(state["campaign_index"]))
+                campaigns[state["campaign_id"]] = _new_campaign(
+                    row=row,
+                    run_id=run_id,
+                    business_date=business_date,
+                    symbol=symbol,
+                    campaign_id=state["campaign_id"],
+                    plans=plans,
+                    campaign_identity_authority_status="COMPLETE" if row_campaign_id else "REVIEW_REQUIRED",
+                )
             campaign = campaigns[state["campaign_id"]]
+            if row_campaign_id and row_campaign_id != state["campaign_id"]:
+                campaign["campaign_identity_authority_status"] = "REVIEW_REQUIRED"
+                campaign.setdefault("campaign_identity_mismatch_events", []).append(
+                    {"execution_id": _execution_key(row), "execution_position_campaign_id": row_campaign_id}
+                )
             old_quantity = _float(state["quantity"])
             state["quantity"] = old_quantity + qty
             state["cost"] = _float(state["cost"]) + qty * price
@@ -9476,14 +9490,19 @@ def _derive_position_campaign_state(
             campaign["average_cost"] = state["cost"] / state["quantity"] if state["quantity"] > 0 else _missing_value()
             campaign["buy_notional"] = _float(campaign.get("buy_notional")) + qty * price
             campaign["events"].append(_campaign_event(row=row, stage="BUY" if old_quantity <= 0 else "ADD", campaign_id=state["campaign_id"], realized_slice_id=""))
-            execution_campaign_ids[_execution_key(row)] = state["campaign_id"]
+            execution_campaign_ids[_execution_key(row)] = row_campaign_id or state["campaign_id"]
             continue
         if side != "SELL":
             continue
-        campaign_id = str(state.get("campaign_id") or "")
-        execution_campaign_ids[_execution_key(row)] = campaign_id
+        campaign_id = str(state.get("campaign_id") or row_campaign_id or "")
+        execution_campaign_ids[_execution_key(row)] = row_campaign_id or campaign_id
         if not campaign_id or campaign_id not in campaigns:
             continue
+        if row_campaign_id and row_campaign_id != campaign_id:
+            campaigns[campaign_id]["campaign_identity_authority_status"] = "REVIEW_REQUIRED"
+            campaigns[campaign_id].setdefault("campaign_identity_mismatch_events", []).append(
+                {"execution_id": _execution_key(row), "execution_position_campaign_id": row_campaign_id}
+            )
         average_cost = state["cost"] / state["quantity"] if state["quantity"] > 0 else 0.0
         sell_quantity = min(qty, _float(state["quantity"]))
         allocated_cost = average_cost * sell_quantity
@@ -9551,14 +9570,32 @@ def _position_campaign_id(*, run_id: str, symbol: str, sequence: int) -> str:
     return f"pc-{_short_hash(run_id)}-{symbol}-{sequence:04d}"
 
 
+def _execution_position_campaign_id(row: dict[str, Any]) -> str:
+    value = str(row.get("position_campaign_id") or row.get("campaign_id") or "").strip()
+    return "" if value in {"", "MISSING", "UNKNOWN"} else value
+
+
 def _short_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _new_campaign(*, row: dict[str, Any], run_id: str, business_date: str, symbol: str, campaign_id: str, plans: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+def _new_campaign(
+    *,
+    row: dict[str, Any],
+    run_id: str,
+    business_date: str,
+    symbol: str,
+    campaign_id: str,
+    plans: dict[str, list[dict[str, Any]]],
+    campaign_identity_authority_status: str,
+) -> dict[str, Any]:
     source = _execution_source_decision(row=row, plans=plans)
     return {
         "position_campaign_id": campaign_id,
+        "campaign_identity_authority_status": campaign_identity_authority_status,
+        "identity_policy": "UPSTREAM_EXECUTION_POSITION_CAMPAIGN_ID"
+        if campaign_identity_authority_status == "COMPLETE"
+        else "REVIEW_REQUIRED_MISSING_EXECUTION_POSITION_CAMPAIGN_ID_COMPATIBILITY",
         "run_id": run_id,
         "symbol": symbol,
         "campaign_status": "OPEN",
@@ -9615,14 +9652,14 @@ def _execution_source_decision(*, row: dict[str, Any], plans: dict[str, list[dic
         matched = next((item for item in symbol_candidates if str(item.get("_plan_date") or item.get("business_date") or "") == business_date), {})
     contract = matched.get("quantity_contract") if isinstance(matched.get("quantity_contract"), dict) else {}
     quality_authority = contract.get("buy_quality_authority") if isinstance(contract.get("buy_quality_authority"), dict) else {}
-    source_decision = str(contract.get("source_decision") or ("BUY" if side == "BUY" else "MISSING"))
+    source_decision = str(row.get("source_decision_type") or contract.get("source_decision") or ("BUY" if side == "BUY" else "MISSING"))
     return {
         "source_decision_type": source_decision,
-        "source_decision_id": matched.get("source_decision_id") or contract.get("source_decision_id") or contract.get("source_planning_id") or matched.get("decision_id") or "MISSING",
-        "order_plan_item_id": matched.get("order_plan_item_id") or matched.get("plan_item_id") or contract.get("source_planning_id") or "MISSING",
+        "source_decision_id": row.get("source_decision_id") or matched.get("source_decision_id") or contract.get("source_decision_id") or contract.get("source_planning_id") or matched.get("decision_id") or "MISSING",
+        "order_plan_item_id": row.get("order_plan_item_id") or matched.get("order_plan_item_id") or matched.get("plan_item_id") or contract.get("source_planning_id") or "MISSING",
         "pending_item_id": pending_item_id or matched.get("pending_item_id") or "MISSING",
         "order_id": row.get("order_id") or row.get("order_ref") or "MISSING",
-        "quality_decision_id": matched.get("quality_decision_id") or contract.get("quality_decision_id") or quality_authority.get("quality_decision_id") or "MISSING",
+        "quality_decision_id": row.get("quality_decision_id") or matched.get("quality_decision_id") or contract.get("quality_decision_id") or quality_authority.get("quality_decision_id") or "MISSING",
     }
 
 
@@ -9647,7 +9684,7 @@ def _build_fill_rows(
             {
                 "run_id": run_id,
                 "business_date": business_date,
-                "position_campaign_id": execution_campaign_ids.get(_execution_key(row)) or "MISSING",
+                "position_campaign_id": _execution_position_campaign_id(row) or execution_campaign_ids.get(_execution_key(row)) or "MISSING",
                 "symbol": row.get("symbol") or row.get("broker_issue_code") or "",
                 "side": side,
                 "execution_id": row.get("execution_id") or row.get("record_id") or row.get("execution_ref") or "",

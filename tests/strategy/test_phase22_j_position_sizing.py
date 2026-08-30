@@ -956,6 +956,65 @@ def test_phase30_ak9r16_ps_consumes_pc_discrete_soft_cap_overshoot_for_94320_buy
     assert validate_position_sizing_artifact(payload)["status"] == "PASS"
 
 
+def test_phase32_f_buy_wait_existing_add_does_not_resurrect_positive_delta(tmp_path: Path) -> None:
+    row = _row("94320", price=158.0, membership="RETAIN", pm_action="ADD", current_weight=0.030675)
+    row.update(
+        {
+            "current_position": True,
+            "current_quantity": 200,
+            "target_weight": 0.045821,
+            "accepted_incremental_weight": 0.021765,
+            "lot_aware_accepted_incremental_weight": 0.015146,
+            "semantic_buy_type": "BUY_ADD",
+            "add_allocation_eligibility_status": "PASS",
+        }
+    )
+    row["target_weight_resolution"]["resolved_weight"] = 0.045821
+    row.update(_buy_quality_contract("94320", score=0.76, action="BUY_WAIT"))
+    row["quality_allocation_adjustment"] = 0.0
+    row["buy_quality_authority"]["quality_allocation_adjustment"] = 0.0
+
+    payload = _produce(tmp_path / "phase32_f_buy_wait_existing_add", rows=[row], target_count=1, exposure=0.8).payload
+    item = payload["positions"][0]
+
+    assert item["pm_action"] == "ADD"
+    assert item["baseline_quantity_preserved"] is True
+    assert item["target_weight"] == item["current_weight"]
+    assert item["accepted_incremental_weight"] == 0.0
+    assert item["lot_aware_accepted_incremental_weight"] == 0.0
+    assert item["quantity_delta_candidate"] == 0
+    assert item["final_quantity_delta"] == 0
+    assert item["quantity_status"] == "RESOLVED_ZERO_DELTA"
+    assert "BUY_QUALITY_BLOCKS_INCREMENTAL_ADD" in item["reason_codes"]
+    assert "ADD_POSITIVE_QUANTITY_DELTA" not in item["reason_codes"]
+
+
+def test_phase32_f_reduced_existing_add_preserves_positive_authorized_delta(tmp_path: Path) -> None:
+    row = _row("94320", price=158.0, membership="RETAIN", pm_action="ADD", current_weight=0.030675)
+    row.update(
+        {
+            "current_position": True,
+            "current_quantity": 200,
+            "target_weight": 0.050675,
+            "accepted_incremental_weight": 0.02,
+            "lot_aware_accepted_incremental_weight": 0.02,
+            "semantic_buy_type": "BUY_ADD",
+            "add_allocation_eligibility_status": "PASS",
+        }
+    )
+    row["target_weight_resolution"]["resolved_weight"] = 0.050675
+    row.update(_buy_quality_contract("94320", score=0.76, action="REDUCED_ALLOCATION_ONLY"))
+
+    payload = _produce(tmp_path / "phase32_f_reduced_existing_add", rows=[row], target_count=1, exposure=0.8).payload
+    item = payload["positions"][0]
+
+    assert item["pm_action"] == "ADD"
+    assert item["quality_action"] == "REDUCED_ALLOCATION_ONLY"
+    assert item["quality_allocation_adjustment"] > 0.0
+    assert item["quantity_delta_candidate"] > 0
+    assert "ADD_POSITIVE_QUANTITY_DELTA" in item["reason_codes"]
+
+
 def test_phase30_ak9r16_strategy_soft_cap_boundary_unchanged(tmp_path: Path) -> None:
     row = _phase30_ak9r16_94320_pc_discrete_soft_cap_add_row()
     row["target_weight"] = 0.18

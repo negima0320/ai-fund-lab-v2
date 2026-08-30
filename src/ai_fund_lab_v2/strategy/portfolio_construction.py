@@ -1152,8 +1152,15 @@ def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str,
         "price_momentum_return_20d",
         "trend_close_over_ma_20d",
         "prior_exit_business_date",
+        "prior_campaign_id",
+        "prior_exit_campaign_id",
+        "prior_exit_decision_type",
         "prior_exit_reason",
         "prior_exit_reason_codes",
+        "source_pm_decision_id",
+        "source_decision_id",
+        "prior_exit_provenance_status",
+        "prior_exit_context",
         "prior_same_symbol_exit_count",
         "last_exit_business_date",
         "last_exit_reason",
@@ -1412,9 +1419,19 @@ def _semantic_reentry_evidence(*, row: Mapping[str, Any], business_date: str, is
         }
     days_since_exit = _completed_business_days_between(prior_exit, business_date)
     status = "PASS" if days_since_exit >= REENTRY_COOLDOWN_BUSINESS_DAYS else "FAIL_CLOSED"
+    prior_context = _prior_exit_context(row)
     return {
         "semantic_buy_type": "REENTRY",
         "prior_exit_business_date": prior_exit,
+        "prior_campaign_id": prior_context["prior_campaign_id"],
+        "prior_exit_campaign_id": prior_context["prior_campaign_id"],
+        "prior_exit_decision_type": prior_context["prior_exit_decision_type"],
+        "prior_exit_reason": prior_context["prior_exit_reason"],
+        "prior_exit_reason_codes": prior_context["prior_exit_reason_codes"],
+        "source_pm_decision_id": prior_context["source_pm_decision_id"],
+        "source_decision_id": prior_context["source_decision_id"],
+        "prior_exit_provenance_status": prior_context["provenance_status"],
+        "prior_exit_context": prior_context,
         "business_days_since_exit": days_since_exit,
         "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
         "reentry_cooldown_status": status,
@@ -1570,6 +1587,8 @@ def _canonical_reentry_semantic_eligibility(
         zero_weight_reason=zero_weight_reason,
         review_reason=review_reason,
     )
+    broker_status = _reentry_broker_eligibility_status(row)
+    corporate_action_status = str(recovery.get("reentry_corporate_action_status") or _corporate_action_status(row))
     safety_status = _reentry_safety_status(row=row, liquidity_status=liquidity_status, reason_text=" ".join([target_weight_reason, zero_weight_reason, review_reason]))
     if semantic_type != "REENTRY":
         return {
@@ -1586,6 +1605,8 @@ def _canonical_reentry_semantic_eligibility(
             "churn_protection_status": "NOT_APPLICABLE",
             "renewed_current_evidence_status": "NOT_APPLICABLE",
             "candidate_eligibility_status": current_candidate_status,
+            "broker_eligibility_status": broker_status,
+            "corporate_action_status": corporate_action_status,
             "safety_restriction_status": safety_status,
             "temporal_contract_status": temporal_status,
             "constraint_scope": "NOT_APPLICABLE",
@@ -1609,6 +1630,8 @@ def _canonical_reentry_semantic_eligibility(
             churn_status=str(semantic.get("reentry_cooldown_status") or ""),
             renewed_status="NOT_EVALUATED",
             current_candidate_status=current_candidate_status,
+            broker_status=broker_status,
+            corporate_action_status=corporate_action_status,
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
@@ -1625,6 +1648,8 @@ def _canonical_reentry_semantic_eligibility(
             churn_status="FAIL_CLOSED",
             renewed_status="NOT_EVALUATED",
             current_candidate_status=current_candidate_status,
+            broker_status=broker_status,
+            corporate_action_status=corporate_action_status,
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
@@ -1646,6 +1671,8 @@ def _canonical_reentry_semantic_eligibility(
             churn_status="PASS",
             renewed_status=renewed_status,
             current_candidate_status=current_candidate_status,
+            broker_status=broker_status,
+            corporate_action_status=corporate_action_status,
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
@@ -1661,6 +1688,8 @@ def _canonical_reentry_semantic_eligibility(
             churn_status="PASS",
             renewed_status="PASS",
             current_candidate_status=current_candidate_status,
+            broker_status=broker_status,
+            corporate_action_status=corporate_action_status,
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
@@ -1676,6 +1705,8 @@ def _canonical_reentry_semantic_eligibility(
             churn_status="PASS",
             renewed_status="PASS",
             current_candidate_status=current_candidate_status,
+            broker_status=broker_status,
+            corporate_action_status=corporate_action_status,
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
@@ -1690,6 +1721,8 @@ def _canonical_reentry_semantic_eligibility(
         churn_status="PASS",
         renewed_status="PASS",
         current_candidate_status=current_candidate_status,
+        broker_status=broker_status,
+        corporate_action_status=corporate_action_status,
         safety_status=safety_status,
         temporal_status=temporal_status,
     )
@@ -1707,6 +1740,8 @@ def _reentry_semantic_result(
     churn_status: str,
     renewed_status: str,
     current_candidate_status: str,
+    broker_status: str,
+    corporate_action_status: str,
     safety_status: str,
     temporal_status: str,
 ) -> dict[str, Any]:
@@ -1721,6 +1756,15 @@ def _reentry_semantic_result(
         "reason_codes": [code for code in dict.fromkeys(str(item) for item in reason_codes if str(item))],
         "reentry_identity": "PRIOR_EXIT_SAME_SYMBOL",
         "prior_exit_business_date": str(semantic.get("prior_exit_business_date") or ""),
+        "prior_campaign_id": str(semantic.get("prior_campaign_id") or semantic.get("prior_exit_campaign_id") or ""),
+        "prior_exit_campaign_id": str(semantic.get("prior_exit_campaign_id") or semantic.get("prior_campaign_id") or ""),
+        "prior_exit_decision_type": str(semantic.get("prior_exit_decision_type") or "EXIT"),
+        "prior_exit_reason": str(recovery.get("previous_exit_reason") or semantic.get("prior_exit_reason") or ""),
+        "prior_exit_reason_codes": list(semantic.get("prior_exit_reason_codes") or []),
+        "source_pm_decision_id": str(semantic.get("source_pm_decision_id") or ""),
+        "source_decision_id": str(semantic.get("source_decision_id") or ""),
+        "prior_exit_provenance_status": str(semantic.get("prior_exit_provenance_status") or ""),
+        "prior_exit_context": dict(semantic.get("prior_exit_context") or {}),
         "business_days_since_exit": semantic.get("business_days_since_exit"),
         "prior_exit_context_status": prior_exit_context_status,
         "prior_exit_reason_class": str(recovery.get("previous_exit_reason_class") or ""),
@@ -1728,6 +1772,8 @@ def _reentry_semantic_result(
         "cooldown_threshold_business_days": semantic.get("reentry_cooldown_threshold_bd"),
         "renewed_current_evidence_status": renewed_status,
         "candidate_eligibility_status": current_candidate_status,
+        "broker_eligibility_status": broker_status,
+        "corporate_action_status": corporate_action_status,
         "safety_restriction_status": safety_status,
         "temporal_contract_status": temporal_status,
         "constraint_scope": "SYMBOL_LOCAL",
@@ -1771,12 +1817,29 @@ def _reentry_current_candidate_status(
     return "PASS" if normal_target_weight > TARGET_WEIGHT_ABSOLUTE_TOLERANCE else "FAIL_CLOSED"
 
 
+def _reentry_broker_eligibility_status(row: Mapping[str, Any]) -> str:
+    for field in ("broker_eligibility_status", "broker_status", "broker_product_eligibility_status"):
+        value = str(row.get(field) or "").strip().upper()
+        if value:
+            return value
+    return "UNKNOWN"
+
+
 def _reentry_safety_status(*, row: Mapping[str, Any], liquidity_status: str, reason_text: str) -> str:
     text = " ".join([reason_text, " ".join(str(item) for item in row.get("reason_codes") or [])]).lower()
-    if any(token in text for token in ("safety", "broker", "cash", "buying_power", "corporate_action_blocking")):
+    explicit_status = str(
+        row.get("genuine_safety_restriction_status")
+        or row.get("safety_restriction_status")
+        or row.get("runtime_safety_status")
+        or row.get("safety_status")
+        or ""
+    ).upper()
+    if explicit_status in {"FAIL_CLOSED", "BLOCK", "BLOCKED", "RESTRICTED"}:
         return "FAIL_CLOSED"
-    if liquidity_status == "UNKNOWN":
+    if explicit_status in {"REVIEW_REQUIRED", "UNKNOWN"}:
         return "REVIEW_REQUIRED"
+    if any(token in text for token in ("safety", "hard_cap", "risk_quarantine", "quarantine")):
+        return "FAIL_CLOSED"
     return "PASS"
 
 
@@ -1918,6 +1981,38 @@ def _previous_exit_reason(row: Mapping[str, Any]) -> str:
         if value:
             return value
     return "UNKNOWN"
+
+
+def _prior_exit_context(row: Mapping[str, Any]) -> dict[str, Any]:
+    raw_context = row.get("prior_exit_context") if isinstance(row.get("prior_exit_context"), Mapping) else {}
+    reason_codes = (
+        raw_context.get("prior_exit_reason_codes")
+        or row.get("prior_exit_reason_codes")
+        or row.get("previous_exit_reason_codes")
+        or row.get("source_pm_reason_codes")
+        or []
+    )
+    if not isinstance(reason_codes, list):
+        reason_codes = []
+    prior_exit_date = _prior_exit_business_date(row)
+    return {
+        "schema_version": str(raw_context.get("schema_version") or "phase32_h_prior_exit_context.v1"),
+        "prior_campaign_id": str(
+            raw_context.get("prior_campaign_id")
+            or row.get("prior_campaign_id")
+            or row.get("prior_exit_campaign_id")
+            or ""
+        ),
+        "prior_exit_business_date": str(raw_context.get("prior_exit_business_date") or prior_exit_date),
+        "prior_exit_decision_type": str(raw_context.get("prior_exit_decision_type") or row.get("prior_exit_decision_type") or "EXIT"),
+        "prior_exit_reason": str(raw_context.get("prior_exit_reason") or row.get("prior_exit_reason") or row.get("previous_exit_reason") or ""),
+        "prior_exit_reason_codes": [str(item) for item in reason_codes if str(item)],
+        "source_pm_decision_id": str(raw_context.get("source_pm_decision_id") or row.get("source_pm_decision_id") or ""),
+        "source_decision_id": str(raw_context.get("source_decision_id") or row.get("source_decision_id") or ""),
+        "provenance_status": str(raw_context.get("provenance_status") or row.get("prior_exit_provenance_status") or "REVIEW_REQUIRED"),
+        "authority": str(raw_context.get("authority") or "STRICT_PRIOR_PRIOR_EXIT_CONTEXT"),
+        "future_information_used": bool(raw_context.get("future_information_used", False)),
+    }
 
 
 def _previous_exit_reason_class(reason: str, reason_codes: Any = None) -> str:
@@ -6673,15 +6768,19 @@ def apply_lot_aware_final_reallocation(
         requested_increment = 0.0
         if current_position and pm_action in {"HOLD", "ADD"}:
             baseline = current_weight if current_weight is not None else target
-            requested_increment = round(
-                max(
-                    float(member.get("requested_incremental_weight") or 0.0),
-                    float(member.get("accepted_incremental_weight") or 0.0),
-                    target - baseline,
-                    0.0,
-                ),
-                TARGET_WEIGHT_DECIMALS,
-            )
+            if _buy_quality_blocks_incremental_add(member):
+                requested_increment = 0.0
+                reason_codes.append("BUY_QUALITY_BLOCKS_INCREMENTAL_ADD")
+            else:
+                requested_increment = round(
+                    max(
+                        float(member.get("requested_incremental_weight") or 0.0),
+                        float(member.get("accepted_incremental_weight") or 0.0),
+                        target - baseline,
+                        0.0,
+                    ),
+                    TARGET_WEIGHT_DECIMALS,
+                )
             participant_type = "BUY_ADD" if pm_action == "ADD" and requested_increment > 0 else "NONE"
         elif current_position:
             baseline = target
@@ -7935,6 +8034,12 @@ def _resolve_canonical_add_allocation_bridge(
     add_worthiness_state = str(row.get("strategy_intelligence_add_worthiness_state") or "").upper()
     entry_admission_action = str(row.get("entry_admission_action") or "").upper()
     entry_admission_state = str(row.get("entry_admission_state") or "").upper()
+    quality_action = str(row.get("quality_action") or row.get("buy_quality_action") or "").upper()
+    quality_adjustment = _optional_ratio(row.get("quality_allocation_adjustment"))
+    explicit_quality_adjustment = "quality_allocation_adjustment" in row
+    incremental_add_quality_blocked = quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} or (
+        explicit_quality_adjustment and quality_adjustment is not None and quality_adjustment <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
     si_interpretation_context = {
         "strategy_intelligence_add_worthiness_state": add_worthiness_state,
         "entry_admission_action": entry_admission_action,
@@ -7992,6 +8097,58 @@ def _resolve_canonical_add_allocation_bridge(
                 "add_allocation_eligibility_status": "FAIL_CLOSED",
                 "expected_edge_improvement_state": "BROKER_ELIGIBILITY_FAIL_CLOSED",
                 "incremental_investment_value_state": "BROKER_ELIGIBILITY_FAIL_CLOSED",
+                "opportunity_cost_status": "NOT_EVALUATED",
+                "no_loss_averaging_status": "NOT_EVALUATED",
+                "add_investment_evidence": trace["add_investment_evidence"],
+            },
+        }
+    if incremental_add_quality_blocked:
+        reason_codes.extend(["BUY_QUALITY_BLOCKS_INCREMENTAL_ADD", "ADD_TARGET_WEIGHT_UNCHANGED"])
+        review_reason = ",".join(sorted(set(reason_codes)))
+        trace = {
+            "status": "FAIL_CLOSED",
+            "business_date": business_date,
+            "current_weight_observed": current_weight_observed,
+            "eligibility_checks": {
+                "pm_add": "PASS",
+                "buy_quality_incremental_add_authority": "FAIL_CLOSED",
+                "quality_action": quality_action,
+                "quality_allocation_adjustment": quality_adjustment,
+            },
+            "expected_edge_improvement": {"status": "NOT_EVALUATED", "state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED"},
+            "incremental_investment_value": {"status": "NOT_EVALUATED", "state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED"},
+            "opportunity_cost": {"status": "NOT_EVALUATED", "state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED"},
+            "add_investment_evidence": {**add_evidence, "producer_result_status": "NOT_EVALUATED_BUY_QUALITY_INCREMENTAL_ADD_BLOCKED"},
+        }
+        return {
+            "post_add_target_weight": current_weight,
+            "target_weight_reason": "buy_quality_blocks_incremental_add",
+            "zero_weight_reason": "BUY_QUALITY_BLOCKS_INCREMENTAL_ADD",
+            "review_reason": review_reason,
+            "trace": trace,
+            "authority": {
+                "authority_type": "CANONICAL_ADD_ALLOCATION_BRIDGE_AUTHORITY",
+                "business_date": business_date,
+                "decision_scope": "portfolio_construction_target_weight_existing_position_add",
+                "pm_quantity_authority_used": False,
+                "legacy_add_executable_used": False,
+                "buy_quality_incremental_add_authority_preserved": True,
+            },
+            "member_fields": {
+                "current_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+                "current_target_weight": round(current_weight, TARGET_WEIGHT_DECIMALS),
+                "desired_incremental_weight": desired_increment,
+                "add_increment_request_weight": add_increment_request,
+                "requested_incremental_weight": 0.0,
+                "accepted_incremental_weight": 0.0,
+                "lot_aware_accepted_incremental_weight": 0.0,
+                "post_add_target_weight": current_weight,
+                "normalized_target_weight": current_weight,
+                "target_weight_change": 0.0,
+                "target_weight_reason_codes": sorted(set(reason_codes)),
+                "add_allocation_eligibility_status": "FAIL_CLOSED",
+                "expected_edge_improvement_state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED",
+                "incremental_investment_value_state": "BUY_QUALITY_INCREMENTAL_ADD_BLOCKED",
                 "opportunity_cost_status": "NOT_EVALUATED",
                 "no_loss_averaging_status": "NOT_EVALUATED",
                 "add_investment_evidence": trace["add_investment_evidence"],
@@ -8660,6 +8817,19 @@ def _buy_wait_applies_to_member(row: Mapping[str, Any]) -> bool:
     if semantic and semantic != "BUY_NEW":
         return False
     return not bool(row.get("current_position"))
+
+
+def _buy_quality_blocks_incremental_add(member: Mapping[str, Any]) -> bool:
+    if not bool(member.get("current_position")):
+        return False
+    if str(member.get("pm_action") or "").upper() != "ADD":
+        return False
+    quality_action = str(member.get("quality_action") or member.get("buy_quality_action") or "").upper()
+    quality_adjustment = _optional_ratio(member.get("quality_allocation_adjustment"))
+    explicit_quality_adjustment = "quality_allocation_adjustment" in member
+    return quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE"} or (
+        explicit_quality_adjustment and quality_adjustment is not None and quality_adjustment <= TARGET_WEIGHT_ABSOLUTE_TOLERANCE
+    )
 
 
 def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstructionSourceSummary) -> dict[str, Any]:

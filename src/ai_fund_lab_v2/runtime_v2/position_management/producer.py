@@ -557,6 +557,7 @@ def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExi
                 reduce_intensity=str(item.get("reduce_intensity") or ""),
                 source_decision_artifact=str(payload.get("artifact_path") or ""),
                 source_decision_id=str(item.get("decision_id") or ""),
+                position_campaign_id=str(item.get("position_campaign_id") or item.get("campaign_id") or ""),
             )
         )
     return tuple(decisions)

@@ -50,6 +50,7 @@ from ai_fund_lab_v2.runtime_v2.safety_decision import (
     safety_manifest_fields,
 )
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_current_exposure
+from ai_fund_lab_v2.runtime_v2.provenance import first_text
 from ai_fund_lab_v2.runtime_v2.symbol_identity import same_symbol_identity
 from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
 
@@ -64,6 +65,7 @@ class SellExitDecision:
     reduce_intensity: str = ""
     source_decision_artifact: str = ""
     source_decision_id: str = ""
+    position_campaign_id: str = ""
     quantity_contract: dict[str, Any] | None = None
 
 
@@ -1973,6 +1975,7 @@ def _allocation(
 
 
 def _pending_item(item) -> PendingOrderItem:
+    contract = item.quantity_contract if isinstance(item.quantity_contract, dict) else {}
     return PendingOrderItem(
         pending_item_id=item.order_plan_item_id,
         symbol=item.symbol,
@@ -2015,6 +2018,12 @@ def _pending_item(item) -> PendingOrderItem:
         safety_decision=item.safety_decision,
         safety_reason=item.safety_reason,
         quantity_contract=item.quantity_contract,
+        source_decision_id=first_text(contract.get("source_decision_id"), contract.get("source_planning_id"), item.source_signal_id, item.order_plan_item_id),
+        source_decision_type=first_text(contract.get("source_decision"), contract.get("planning_intent"), item.side),
+        source_pm_decision_id=first_text(contract.get("source_pm_decision_id"), contract.get("source_decision_id")),
+        order_plan_item_id=item.order_plan_item_id,
+        position_campaign_id=first_text(contract.get("position_campaign_id"), contract.get("campaign_id")),
+        campaign_id=first_text(contract.get("campaign_id"), contract.get("position_campaign_id")),
     )
 
 
@@ -2118,13 +2127,22 @@ def _pending_item_with_sell_decision_lineage(
     contract = dict(item.quantity_contract or decision.quantity_contract or {})
     if decision.source_decision_id and "source_decision_id" not in contract:
         contract["source_decision_id"] = decision.source_decision_id
+    if decision.position_campaign_id and "position_campaign_id" not in contract:
+        contract["position_campaign_id"] = decision.position_campaign_id
+    if decision.position_campaign_id and "campaign_id" not in contract:
+        contract["campaign_id"] = decision.position_campaign_id
+    campaign_id = first_text(item.position_campaign_id, contract.get("position_campaign_id"), decision.position_campaign_id)
     return replace(
         item,
         quantity_contract=contract,
+        source_decision_id=str(decision.source_decision_id or item.source_decision_id or ""),
         source_decision_type=str(decision.source_decision or ""),
         source_pm_decision_id=str(decision.source_decision_id or ""),
         source_pm_business_date=str(contract.get("business_date") or ""),
         source_position_symbol=str(decision.symbol or item.symbol),
+        order_plan_item_id=item.order_plan_item_id or item.pending_item_id,
+        position_campaign_id=campaign_id,
+        campaign_id=campaign_id,
     )
 
 
@@ -2253,6 +2271,9 @@ def _quantity_contract_decision(
         contract = {
             "quantity_contract_version": "runtime_v2_pm_exit_full_quantity_v1",
             "source_decision": "EXIT",
+            "source_decision_id": decision.source_decision_id,
+            "position_campaign_id": decision.position_campaign_id,
+            "campaign_id": decision.position_campaign_id,
             "position_quantity_before": position_quantity,
             "requested_sell_quantity": requested_quantity,
             "sellable_quantity": sellable_quantity,
@@ -2277,6 +2298,9 @@ def _quantity_contract_decision(
             quantity_contract={
                 "quantity_contract_version": REDUCE_QUANTITY_CONTRACT_VERSION,
                 "source_decision": source_decision,
+                "source_decision_id": decision.source_decision_id,
+                "position_campaign_id": decision.position_campaign_id,
+                "campaign_id": decision.position_campaign_id,
                 "status": "REVIEW_REQUIRED",
                 "reason": "REVIEW_REQUIRED_UNSUPPORTED_SELL_SOURCE_DECISION",
             },
@@ -2289,6 +2313,9 @@ def _quantity_contract_decision(
         reduce_intensity=decision.reduce_intensity,
         tradable_unit=DEFAULT_TRADABLE_UNIT,
     )
+    contract["source_decision_id"] = decision.source_decision_id
+    contract["position_campaign_id"] = decision.position_campaign_id
+    contract["campaign_id"] = decision.position_campaign_id
     return replace(
         decision,
         quantity=float(contract.get("final_sell_quantity") or 0.0),

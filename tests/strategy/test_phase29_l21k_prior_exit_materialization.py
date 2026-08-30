@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
+
+import pytest
 
 from ai_fund_lab_v2.strategy import portfolio_construction
 from ai_fund_lab_v2.strategy import shadow_runtime
@@ -10,6 +13,11 @@ from ai_fund_lab_v2.strategy import shadow_runtime
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
 def _summary(*rows: dict) -> dict:
@@ -82,6 +90,567 @@ def test_phase29_l21k_prior_same_symbol_exit_materializes_reentry_input(tmp_path
     assert semantic["semantic_buy_type"] == "REENTRY"
     assert semantic["business_days_since_exit"] == 1
     assert semantic["reentry_cooldown_status"] == "FAIL_CLOSED"
+
+
+def test_phase32_h_prior_exit_context_uses_strict_prior_pm_exit_detail(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    run_dir = tmp_path / "run"
+    campaign_id = "pc-phase32h-83060-0001"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "business_date": "2022-10-03",
+                "side": "BUY",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 641.5,
+                "position_campaign_id": campaign_id,
+                "campaign_id": campaign_id,
+            },
+            {
+                "business_date": "2022-10-04",
+                "side": "SELL",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 648,
+                "source_decision_type": "SELL_EXIT",
+                "source_pm_decision_id": "pm-2022-10-04-83060-exit",
+                "source_decision_id": "rp-2022-10-04-83060-sell-exit",
+            },
+        ],
+    )
+    _write_json(
+        run_dir / "daily" / "2022-10-04" / "position_management" / "pm_decisions.json",
+        {
+            "decisions": [
+                {
+                    "business_date": "2022-10-04",
+                    "symbol": "83060",
+                    "pm_decision_id": "pm-2022-10-04-83060-exit",
+                    "decision_type": "EXIT",
+                    "decision_status": "SELL_FULL_POSITION",
+                    "decision_reason": "trend_and_opportunity_broken",
+                    "reason_codes": ["trend_and_opportunity_broken"],
+                    "position_campaign_id": campaign_id,
+                }
+            ]
+        },
+    )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        run_dir=run_dir,
+        runtime_root=root,
+        business_date="2022-10-05",
+        candidate=_summary({"code": "83060"}),
+        opportunity=_summary(
+            {
+                "code": "83060",
+                "runtime_opportunity_score": 0.2,
+                "opportunity_buy_rank": 2,
+                "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+                "trend_close_over_ma_20d": 1.01,
+                "price_momentum_return_20d": 0.02,
+                "corporate_action_status": "NO_EVENT",
+            }
+        ),
+        current=_current(),
+    )
+
+    row = result["opportunity"]["rows"][0]
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-10-05", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(
+        row=row,
+        semantic=semantic,
+        capacity_ratio=0.01,
+        liquidity_status="WATCH",
+    )
+    eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+        row=row,
+        business_date="2022-10-05",
+        is_buy_new=True,
+        semantic=semantic,
+        recovery=recovery,
+        liquidity_status="WATCH",
+        target_membership=True,
+        normal_target_weight=0.05,
+        target_weight_reason="selected",
+        zero_weight_reason="",
+        review_reason="",
+    )
+
+    assert row["prior_exit_business_date"] == "2022-10-04"
+    assert row["prior_campaign_id"] == campaign_id
+    assert row["prior_exit_campaign_id"] == campaign_id
+    assert row["prior_exit_decision_type"] == "EXIT"
+    assert row["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert row["prior_exit_reason_codes"] == ["trend_and_opportunity_broken"]
+    assert row["source_pm_decision_id"] == "pm-2022-10-04-83060-exit"
+    assert row["source_decision_id"] == "rp-2022-10-04-83060-sell-exit"
+    assert row["prior_exit_provenance_status"] == "PASS"
+    assert semantic["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert semantic["prior_exit_context"]["prior_campaign_id"] == campaign_id
+    assert semantic["prior_exit_context"]["source_decision_id"] == "rp-2022-10-04-83060-sell-exit"
+    assert recovery["previous_exit_reason"] == "trend_and_opportunity_broken"
+    assert recovery["previous_exit_reason_class"] == "TREND_MOMENTUM"
+    assert recovery["reentry_recovery_reason"] != "insufficient_prior_exit_context"
+    assert eligibility["prior_exit_context_status"] == "PASS"
+    assert eligibility["prior_exit_reason_class"] == "TREND_MOMENTUM"
+    assert eligibility["prior_exit_context"]["source_pm_decision_id"] == "pm-2022-10-04-83060-exit"
+    assert eligibility["prior_exit_context"]["source_decision_id"] == "rp-2022-10-04-83060-sell-exit"
+
+
+def test_phase32_j_prior_exit_context_can_join_by_pm_decision_id_when_sell_campaign_missing(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    run_dir = tmp_path / "run"
+    campaign_id = "pc-phase32j-83060-0001"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "business_date": "2022-10-03",
+                "side": "BUY",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 641.5,
+                "position_campaign_id": campaign_id,
+                "campaign_id": campaign_id,
+            },
+            {
+                "business_date": "2022-10-04",
+                "side": "SELL",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 661.2,
+                "position_campaign_id": "",
+                "campaign_id": "",
+                "source_pm_decision_id": "pm-2022-10-04-83060-exit",
+                "source_decision_id": "rp-2022-10-04-83060-sell_exit-a53ae6445098bc4c",
+                "source_decision_type": "SELL_EXIT",
+            },
+        ],
+    )
+    _write_json(
+        run_dir / "daily" / "2022-10-04" / "position_management" / "pm_decisions.json",
+        {
+            "decisions": [
+                {
+                    "business_date": "2022-10-04",
+                    "symbol": "83060",
+                    "pm_decision_id": "pm-2022-10-04-83060-exit",
+                    "decision_type": "EXIT",
+                    "decision_status": "SELL_FULL_POSITION",
+                    "decision_reason": "trend_and_opportunity_broken",
+                    "reason_codes": ["trend_and_opportunity_broken"],
+                    "position_campaign_id": campaign_id,
+                }
+            ]
+        },
+    )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        run_dir=run_dir,
+        runtime_root=root,
+        business_date="2022-10-05",
+        candidate=_summary({"code": "83060"}),
+        opportunity=_summary({"code": "83060"}),
+        current=_current(),
+    )
+
+    row = result["opportunity"]["rows"][0]
+    assert row["prior_campaign_id"] == campaign_id
+    assert row["prior_exit_campaign_id"] == campaign_id
+    assert row["source_pm_decision_id"] == "pm-2022-10-04-83060-exit"
+    assert row["source_decision_id"] == "rp-2022-10-04-83060-sell_exit-a53ae6445098bc4c"
+    assert row["prior_exit_provenance_status"] == "PASS"
+    assert row["prior_exit_context"]["authority"] == "STRICT_PRIOR_PM_EXIT_DECISION_CONTEXT"
+    assert row["prior_exit_context"]["source_decision_id"] == "rp-2022-10-04-83060-sell_exit-a53ae6445098bc4c"
+
+
+def test_phase32_p_date_only_reentry_rows_are_enriched_with_canonical_prior_context(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    run_dir = tmp_path / "run"
+    campaign_33700 = "pc-878ea6968d1e7574-33700-0001"
+    campaign_76470 = "pc-ec3672c4e51adeca-76470-0001"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "business_date": "2022-10-03",
+                "side": "BUY",
+                "symbol": "33700",
+                "quantity": 100,
+                "price": 1798.0,
+                "position_campaign_id": campaign_33700,
+                "campaign_id": campaign_33700,
+            },
+            {
+                "business_date": "2022-10-05",
+                "side": "SELL",
+                "symbol": "33700",
+                "quantity": 100,
+                "price": 1767.0,
+                "position_campaign_id": campaign_33700,
+                "campaign_id": campaign_33700,
+                "source_pm_decision_id": "pm-2022-10-05-33700-reduce",
+                "source_decision_id": "rp-2022-10-05-33700-sell_exit-95bbd0210e1cda41",
+                "source_decision_type": "SELL_EXIT",
+            },
+            {
+                "business_date": "2022-10-11",
+                "side": "BUY",
+                "symbol": "76470",
+                "quantity": 100,
+                "price": 2112.0,
+                "position_campaign_id": campaign_76470,
+                "campaign_id": campaign_76470,
+            },
+            {
+                "business_date": "2022-10-14",
+                "side": "SELL",
+                "symbol": "76470",
+                "quantity": 100,
+                "price": 2054.0,
+                "position_campaign_id": campaign_76470,
+                "campaign_id": campaign_76470,
+                "source_pm_decision_id": "pm-2022-10-14-76470-exit",
+                "source_decision_id": "rp-2022-10-14-76470-sell_exit-084afc15fda747d9",
+                "source_decision_type": "SELL_EXIT",
+            },
+        ],
+    )
+    _write_json(
+        run_dir / "daily" / "2022-10-05" / "position_management" / "pm_decisions.json",
+        {
+            "decisions": [
+                {
+                    "business_date": "2022-10-05",
+                    "symbol": "33700",
+                    "pm_decision_id": "pm-2022-10-05-33700-reduce",
+                    "decision_type": "REDUCE",
+                    "decision_status": "SELL_FULL_POSITION",
+                    "decision_reason": "risk_increased_but_trend_not_broken",
+                    "reason_codes": ["risk_increased_but_trend_not_broken"],
+                    "position_campaign_id": campaign_33700,
+                }
+            ]
+        },
+    )
+    _write_json(
+        run_dir / "daily" / "2022-10-14" / "position_management" / "pm_decisions.json",
+        {
+            "decisions": [
+                {
+                    "business_date": "2022-10-14",
+                    "symbol": "76470",
+                    "pm_decision_id": "pm-2022-10-14-76470-exit",
+                    "decision_type": "EXIT",
+                    "decision_status": "SELL_FULL_POSITION",
+                    "decision_reason": "weak_hold_score",
+                    "reason_codes": ["weak_hold_score"],
+                    "position_campaign_id": campaign_76470,
+                }
+            ]
+        },
+    )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        run_dir=run_dir,
+        runtime_root=root,
+        business_date="2022-10-17",
+        candidate=_summary({"code": "33700"}, {"code": "76470"}),
+        opportunity=_summary(
+            {
+                "code": "33700",
+                "prior_exit_business_date": "2022-10-05",
+                "prior_exit_reason": "EXIT",
+                "prior_exit_reason_codes": ["risk_increased_but_trend_not_broken"],
+            },
+            {
+                "code": "76470",
+                "prior_exit_business_date": "2022-10-14",
+                "prior_exit_reason": "EXIT",
+                "prior_exit_reason_codes": ["weak_hold_score"],
+            },
+        ),
+        current=_current(),
+    )
+
+    rows = {row["code"]: row for row in result["opportunity"]["rows"]}
+    assert rows["33700"]["prior_campaign_id"] == campaign_33700
+    assert rows["33700"]["source_pm_decision_id"] == "pm-2022-10-05-33700-reduce"
+    assert rows["33700"]["source_decision_id"] == "rp-2022-10-05-33700-sell_exit-95bbd0210e1cda41"
+    assert rows["33700"]["prior_exit_provenance_status"] == "PASS"
+    assert rows["33700"]["prior_exit_context"]["authority"] == "STRICT_PRIOR_PM_EXIT_DECISION_CONTEXT"
+    assert rows["76470"]["prior_campaign_id"] == campaign_76470
+    assert rows["76470"]["source_pm_decision_id"] == "pm-2022-10-14-76470-exit"
+    assert rows["76470"]["source_decision_id"] == "rp-2022-10-14-76470-sell_exit-084afc15fda747d9"
+    assert rows["76470"]["prior_exit_provenance_status"] == "PASS"
+    assert result["evidence"]["opportunity_supplied_count"] == 2
+
+
+def test_phase32_p_actual_strategy_entrypoint_materializes_rejected_reentry_prior_context(tmp_path: Path) -> None:
+    source_run = Path("reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260830T032332732107Z")
+    runtime_root = Path(".runtime")
+    if not source_run.is_dir() or not runtime_root.is_dir():
+        pytest.skip("Phase32-O target run evidence or runtime root is not available")
+    if not (runtime_root / "runtime_state" / "buy_ai" / "2022-10-06" / "opportunity_rankings.json").is_file():
+        pytest.skip("Phase32-O 2022-10-06 buy_ai opportunity evidence is not available")
+    if not (runtime_root / "persistent_ledger" / "executions.jsonl").is_file():
+        pytest.skip("Phase32-O persistent ledger execution evidence is not available")
+
+    run_dir = tmp_path / source_run.name
+    shutil.copytree(source_run, run_dir, ignore=shutil.ignore_patterns("*.parquet"))
+    summary = shadow_runtime.generate_strategy_shadow_for_day(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
+        run_id=source_run.name,
+        profile_id="historical-extended-smoke",
+        business_date="2022-10-06",
+        feature_date="2022-10-06",
+        historical_evaluation_authority_path=str(source_run / "historical_evaluation_authority.json"),
+        artifact_subdir="strategy_phase32p_actual_path",
+        decision_timing="MORNING_FORMAL_PLANNING_AUTHORITY",
+        authority_role="FORMAL_PLANNING_AUTHORITY_INPUT",
+        materialization_role="PHASE32P_ACTUAL_PATH_TEST",
+    )
+    assert summary["runtime_mutation_performed"] is False
+
+    pc_path = run_dir / "daily" / "2022-10-06" / "strategy_phase32p_actual_path" / "portfolio_construction.json"
+    payload = json.loads(pc_path.read_text(encoding="utf-8"))
+    row = next(member for member in payload["portfolio_members"] if member.get("security_code") == "33700")
+
+    assert row["membership_intent"] == "EXCLUDE"
+    assert row["prior_exit_business_date"] == "2022-10-05"
+    assert row["prior_campaign_id"] == "pc-878ea6968d1e7574-33700-0001"
+    assert row["prior_exit_campaign_id"] == "pc-878ea6968d1e7574-33700-0001"
+    assert row["source_pm_decision_id"] == "pm-2022-10-05-33700-reduce"
+    assert row["source_decision_id"] == "rp-2022-10-05-33700-sell_exit-95bbd0210e1cda41"
+    assert row["prior_exit_provenance_status"] == "PASS"
+    assert row["prior_exit_context"]["provenance_status"] == "PASS"
+    assert row["reentry_semantic_status"] == "FAIL_CLOSED"
+
+
+def test_phase32_l_83060_actual_path_reentry_provenance_reaches_final_result(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    run_dir = tmp_path / "run"
+    prior_campaign = "pc-2109759b35be4a73-83060-0001"
+    reentry_campaign = "pc-1533c2a55c4c8bf5-83060-0001"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {
+                "business_date": "2022-10-03",
+                "side": "BUY",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 641.5,
+                "position_campaign_id": prior_campaign,
+                "campaign_id": prior_campaign,
+                "source_decision_id": "rp-2022-10-03-83060-buy_new-a1e4c3343d5177dc",
+                "source_decision_type": "BUY_NEW",
+            },
+            {
+                "business_date": "2022-10-04",
+                "side": "SELL",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 661.2,
+                "position_campaign_id": prior_campaign,
+                "campaign_id": prior_campaign,
+                "source_pm_decision_id": "pm-2022-10-04-83060-exit",
+                "source_decision_id": "rp-2022-10-04-83060-sell_exit-2310c155634662da",
+                "source_decision_type": "SELL_EXIT",
+            },
+            {
+                "business_date": "2022-10-26",
+                "side": "BUY",
+                "symbol": "83060",
+                "quantity": 100,
+                "price": 711.5,
+                "position_campaign_id": reentry_campaign,
+                "campaign_id": reentry_campaign,
+                "source_decision_id": "rp-2022-10-26-83060-buy_new-e7156d336f465694",
+                "source_decision_type": "BUY_NEW",
+            },
+        ],
+    )
+    _write_json(
+        run_dir / "daily" / "2022-10-04" / "position_management" / "pm_decisions.json",
+        {
+            "decisions": [
+                {
+                    "business_date": "2022-10-04",
+                    "symbol": "83060",
+                    "pm_decision_id": "pm-2022-10-04-83060-exit",
+                    "decision_type": "EXIT",
+                    "decision_status": "SELL_FULL_POSITION",
+                    "decision_reason": "trend_and_opportunity_broken",
+                    "reason_codes": ["trend_and_opportunity_broken"],
+                    "position_campaign_id": prior_campaign,
+                }
+            ]
+        },
+    )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        run_dir=run_dir,
+        runtime_root=root,
+        business_date="2022-10-26",
+        candidate=_summary({"code": "83060"}),
+        opportunity=_summary(
+            {
+                "code": "83060",
+                "runtime_opportunity_score": 0.2,
+                "opportunity_buy_rank": 9,
+                "quality_action": "REDUCED_ALLOCATION_ONLY",
+                "trend_close_over_ma_20d": 1.05,
+                "price_momentum_return_20d": 0.02,
+                "corporate_action_status": "NO_EVENT",
+                "broker_eligibility_status": "PASS",
+            }
+        ),
+        current=_current(),
+    )
+
+    row = result["opportunity"]["rows"][0]
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-10-26", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="NORMAL")
+    eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+        row=row,
+        business_date="2022-10-26",
+        is_buy_new=True,
+        semantic=semantic,
+        recovery=recovery,
+        liquidity_status="NORMAL",
+        target_membership=True,
+        normal_target_weight=0.04,
+        target_weight_reason="selected",
+        zero_weight_reason="",
+        review_reason="",
+    )
+
+    assert semantic["semantic_buy_type"] == "REENTRY"
+    assert eligibility["eligibility_status"] == "PASS"
+    assert eligibility["prior_campaign_id"] == prior_campaign
+    assert eligibility["source_pm_decision_id"] == "pm-2022-10-04-83060-exit"
+    assert eligibility["source_decision_id"] == "rp-2022-10-04-83060-sell_exit-2310c155634662da"
+    assert eligibility["prior_exit_provenance_status"] == "PASS"
+    assert eligibility["prior_exit_context"]["prior_campaign_id"] == prior_campaign
+    assert eligibility["safety_restriction_status"] == "PASS"
+    assert reentry_campaign != prior_campaign
+
+
+def test_phase32_h_missing_prior_exit_detail_stays_review_required(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {"business_date": "2022-08-23", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100},
+            {"business_date": "2022-08-26", "side": "SELL", "symbol": "11110", "quantity": 100, "price": 104, "source_decision_type": "SELL_EXIT"},
+        ],
+    )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        runtime_root=root,
+        business_date="2022-09-01",
+        candidate=_summary({"code": "11110"}),
+        opportunity=_summary(
+            {
+                "code": "11110",
+                "runtime_opportunity_score": 0.2,
+                "opportunity_buy_rank": 2,
+                "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+                "trend_close_over_ma_20d": 1.01,
+                "price_momentum_return_20d": 0.02,
+                "corporate_action_status": "NO_EVENT",
+            }
+        ),
+        current=_current(),
+    )
+
+    row = result["opportunity"]["rows"][0]
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
+
+    assert row["prior_exit_reason"] == "SELL_EXIT"
+    assert row["prior_exit_provenance_status"] == "REVIEW_REQUIRED"
+    assert semantic["prior_exit_context"]["provenance_status"] == "REVIEW_REQUIRED"
+    assert recovery["previous_exit_reason_class"] == "GENERIC"
+    assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
+    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+
+
+def test_phase32_h_multiple_campaigns_use_latest_matching_prior_campaign_context(tmp_path: Path) -> None:
+    root = tmp_path / ".runtime"
+    run_dir = tmp_path / "run"
+    old_campaign = "pc-phase32h-11110-0001"
+    latest_campaign = "pc-phase32h-11110-0002"
+    _write_jsonl(
+        root / "persistent_ledger" / "executions.jsonl",
+        [
+            {"business_date": "2022-08-10", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100, "position_campaign_id": old_campaign},
+            {
+                "business_date": "2022-08-12",
+                "side": "SELL",
+                "symbol": "11110",
+                "quantity": 100,
+                "price": 90,
+                "source_pm_decision_id": "pm-2022-08-12-11110-exit",
+                "source_decision_id": "rp-2022-08-12-11110-sell-exit",
+            },
+            {"business_date": "2022-08-22", "side": "BUY", "symbol": "11110", "quantity": 100, "price": 100, "position_campaign_id": latest_campaign},
+            {
+                "business_date": "2022-08-30",
+                "side": "SELL",
+                "symbol": "11110",
+                "quantity": 100,
+                "price": 95,
+                "source_pm_decision_id": "pm-2022-08-30-11110-exit",
+                "source_decision_id": "rp-2022-08-30-11110-sell-exit",
+            },
+        ],
+    )
+    for day, campaign_id, reason in (
+        ("2022-08-12", old_campaign, "hard_stop_current_return"),
+        ("2022-08-30", latest_campaign, "trend_and_opportunity_broken"),
+    ):
+        _write_json(
+            run_dir / "daily" / day / "position_management" / "pm_decisions.json",
+            {
+                "decisions": [
+                    {
+                        "business_date": day,
+                        "symbol": "11110",
+                        "pm_decision_id": f"pm-{day}-11110-exit",
+                        "decision_type": "EXIT",
+                        "decision_status": "SELL_FULL_POSITION",
+                        "decision_reason": reason,
+                        "reason_codes": [reason],
+                        "position_campaign_id": campaign_id,
+                    }
+                ]
+            },
+        )
+
+    result = shadow_runtime._supply_prior_exit_state(
+        run_dir=run_dir,
+        runtime_root=root,
+        business_date="2022-09-01",
+        candidate=_summary({"code": "11110"}),
+        opportunity=_summary({"code": "11110"}),
+        current=_current(),
+    )
+
+    row = result["opportunity"]["rows"][0]
+    assert row["prior_exit_business_date"] == "2022-08-30"
+    assert row["prior_campaign_id"] == latest_campaign
+    assert row["prior_exit_reason"] == "trend_and_opportunity_broken"
+    assert row["prior_exit_reason_codes"] == ["trend_and_opportunity_broken"]
+    assert row["source_pm_decision_id"] == "pm-2022-08-30-11110-exit"
+    assert row["source_decision_id"] == "rp-2022-08-30-11110-sell-exit"
+    assert row["prior_exit_provenance_status"] == "PASS"
+    assert "hard_stop_current_return" not in row["prior_exit_reason_codes"]
 
 
 def test_phase29_l21k_current_position_buy_add_is_not_marked_reentry(tmp_path: Path) -> None:
@@ -472,6 +1041,179 @@ def test_phase29_l21r_corporate_action_and_capacity_fail_closed_semantics() -> N
     assert missing_source["reentry_recovery_reason"] == "reentry_corporate_action_source_missing"
     assert missing_capacity["reentry_recovery_status"] == "REVIEW_REQUIRED"
     assert missing_capacity["reentry_recovery_reason"] == "reentry_capacity_unavailable"
+
+
+def test_phase32_j_reentry_recovery_failure_does_not_become_safety_block() -> None:
+    row = {
+        "code": "11110",
+        "prior_exit_business_date": "2022-08-26",
+        "prior_exit_reason": "EXIT_BY_TREND_AND_EDGE_BREAK",
+        "prior_exit_reason_codes": ["trend_and_opportunity_broken"],
+        "runtime_opportunity_score": 0.2,
+        "opportunity_buy_rank": 2,
+        "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+        "trend_close_over_ma_20d": 0.95,
+        "price_momentum_return_20d": 0.02,
+        "corporate_action_status": "NO_EVENT",
+        "broker_eligibility_status": "PASS",
+        "reason_codes": ["BROKER_PRODUCT_CATEGORY_SUPPORTED", "candidate_eligible"],
+    }
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
+    eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+        row=row,
+        business_date="2022-09-01",
+        is_buy_new=True,
+        semantic=semantic,
+        recovery=recovery,
+        liquidity_status="WATCH",
+        target_membership=True,
+        normal_target_weight=0.05,
+        target_weight_reason="selected",
+        zero_weight_reason="",
+        review_reason="",
+    )
+
+    assert recovery["reentry_recovery_status"] == "FAIL_CLOSED"
+    assert recovery["reentry_recovery_reason"] == "reentry_trend_recovery_not_satisfied"
+    assert eligibility["eligibility_status"] == "FAIL_CLOSED"
+    assert eligibility["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CURRENT_EVIDENCE"
+    assert eligibility["renewed_current_evidence_status"] == "FAIL_CLOSED"
+    assert eligibility["broker_eligibility_status"] == "PASS"
+    assert eligibility["corporate_action_status"] == "NO_EVENT"
+    assert eligibility["safety_restriction_status"] == "PASS"
+    assert "REENTRY_BLOCKED_SAFETY" not in eligibility["reason_codes"]
+
+
+def test_phase32_j_prior_context_insufficiency_does_not_become_safety_block() -> None:
+    row = {
+        "code": "11110",
+        "prior_exit_business_date": "2022-08-26",
+        "prior_exit_reason": "SELL_EXIT",
+        "runtime_opportunity_score": 0.2,
+        "opportunity_buy_rank": 2,
+        "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+        "trend_close_over_ma_20d": 1.01,
+        "price_momentum_return_20d": 0.02,
+        "corporate_action_status": "NO_EVENT",
+        "broker_eligibility_status": "PASS",
+        "reason_codes": ["BROKER_PRODUCT_CATEGORY_SUPPORTED", "candidate_eligible"],
+    }
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
+    eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+        row=row,
+        business_date="2022-09-01",
+        is_buy_new=True,
+        semantic=semantic,
+        recovery=recovery,
+        liquidity_status="WATCH",
+        target_membership=True,
+        normal_target_weight=0.05,
+        target_weight_reason="selected",
+        zero_weight_reason="",
+        review_reason="",
+    )
+
+    assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
+    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert eligibility["eligibility_status"] == "REVIEW_REQUIRED"
+    assert eligibility["reentry_semantic_state"] == "REENTRY_INSUFFICIENT_EVIDENCE"
+    assert eligibility["prior_exit_context_status"] == "REVIEW_REQUIRED"
+    assert eligibility["broker_eligibility_status"] == "PASS"
+    assert eligibility["corporate_action_status"] == "NO_EVENT"
+    assert eligibility["safety_restriction_status"] == "PASS"
+    assert "REENTRY_BLOCKED_SAFETY" not in eligibility["reason_codes"]
+
+
+def test_phase32_j_genuine_safety_block_remains_fail_closed() -> None:
+    row = {
+        "code": "11110",
+        "prior_exit_business_date": "2022-08-26",
+        "prior_exit_reason": "EXIT_BY_TREND_AND_EDGE_BREAK",
+        "runtime_opportunity_score": 0.2,
+        "opportunity_buy_rank": 2,
+        "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+        "trend_close_over_ma_20d": 1.01,
+        "price_momentum_return_20d": 0.02,
+        "corporate_action_status": "NO_EVENT",
+        "broker_eligibility_status": "PASS",
+        "genuine_safety_restriction_status": "FAIL_CLOSED",
+    }
+    semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
+    recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
+    eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+        row=row,
+        business_date="2022-09-01",
+        is_buy_new=True,
+        semantic=semantic,
+        recovery=recovery,
+        liquidity_status="WATCH",
+        target_membership=True,
+        normal_target_weight=0.05,
+        target_weight_reason="selected",
+        zero_weight_reason="",
+        review_reason="",
+    )
+
+    assert recovery["reentry_recovery_status"] == "PASS"
+    assert eligibility["broker_eligibility_status"] == "PASS"
+    assert eligibility["corporate_action_status"] == "NO_EVENT"
+    assert eligibility["eligibility_status"] == "FAIL_CLOSED"
+    assert eligibility["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_SAFETY"
+    assert eligibility["safety_restriction_status"] == "FAIL_CLOSED"
+    assert "REENTRY_BLOCKED_SAFETY" in eligibility["reason_codes"]
+
+
+def test_phase32_j_broker_and_corporate_statuses_stay_separate_from_safety() -> None:
+    broker_row = {
+        "code": "11110",
+        "prior_exit_business_date": "2022-08-26",
+        "prior_exit_reason": "EXIT_BY_TREND_AND_EDGE_BREAK",
+        "runtime_opportunity_score": 0.2,
+        "opportunity_buy_rank": 2,
+        "quality_action": "FULL_ALLOCATION_ELIGIBLE",
+        "trend_close_over_ma_20d": 1.01,
+        "price_momentum_return_20d": 0.02,
+        "corporate_action_status": "NO_EVENT",
+        "broker_eligibility_status": "FAIL_CLOSED",
+        "reason_codes": ["broker_eligibility_buy_new_excluded"],
+    }
+    corporate_row = {
+        **broker_row,
+        "broker_eligibility_status": "PASS",
+        "corporate_action_status": "EVENT_PRESENT",
+        "reason_codes": ["candidate_eligible"],
+    }
+
+    results = []
+    for row in (broker_row, corporate_row):
+        semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
+        recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
+        eligibility = portfolio_construction._canonical_reentry_semantic_eligibility(
+            row=row,
+            business_date="2022-09-01",
+            is_buy_new=True,
+            semantic=semantic,
+            recovery=recovery,
+            liquidity_status="WATCH",
+            target_membership=True,
+            normal_target_weight=0.05,
+            target_weight_reason="selected",
+            zero_weight_reason="",
+            review_reason="",
+        )
+        results.append((recovery, eligibility))
+        assert eligibility["safety_restriction_status"] == "PASS"
+
+    broker_recovery, broker_eligibility = results[0]
+    corporate_recovery, corporate_eligibility = results[1]
+    assert broker_recovery["reentry_recovery_status"] == "PASS"
+    assert broker_eligibility["broker_eligibility_status"] == "FAIL_CLOSED"
+    assert broker_eligibility["corporate_action_status"] == "NO_EVENT"
+    assert corporate_recovery["reentry_corporate_action_status"] == "EVENT_PRESENT"
+    assert corporate_eligibility["broker_eligibility_status"] == "PASS"
+    assert corporate_eligibility["corporate_action_status"] == "EVENT_PRESENT"
 
 
 def test_phase29_l21r_previous_exit_reason_controls_technical_recovery_requirement() -> None:

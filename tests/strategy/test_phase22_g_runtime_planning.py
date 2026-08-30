@@ -708,6 +708,47 @@ def test_phase29_l21f_runtime_planning_consumes_soft_cap_buy_add_positive_quanti
     assert validate_runtime_planning_artifact(result.payload)["status"] == "PASS"
 
 
+def test_phase32_f_runtime_does_not_resurrect_buy_wait_add_when_ps_delta_zero(tmp_path: Path) -> None:
+    result = _produce(
+        tmp_path,
+        pm_actions={"94320": "ADD"},
+        pc_members={"94320": ("RETAIN", True)},
+        current_codes=("94320",),
+        position_sizing_positions={
+            "94320": {
+                "sizing_status": "SIZED",
+                "pm_action": "ADD",
+                "current_position": True,
+                "target_weight": 0.030675,
+                "current_quantity": 200,
+                "target_quantity_candidate": 200,
+                "quantity_delta_candidate": 0,
+                "quantity_status": "RESOLVED_ZERO_DELTA",
+                "quality_action": "BUY_WAIT",
+                "quality_allocation_adjustment": 0.0,
+                "reference_price": 158.0,
+            }
+        },
+        current_position_rows=(
+            _runtime_owned_current_position_row(
+                "94320",
+                quantity=200,
+                as_of="2026-07-15",
+                source="runtime_owned_execution_ledger",
+            ),
+        ),
+    )
+    plan = result.payload["plans"][0]
+
+    assert plan["security_code"] == "94320"
+    assert plan["planning_intent"] == "NO_ACTION"
+    assert plan["planned_quantity"] == 0
+    assert plan["quality_action"] == "BUY_WAIT"
+    assert plan["quality_allocation_adjustment"] == 0.0
+    assert "current_position_zero_delta_maps_to_no_action" in plan["reason_codes"]
+    assert validate_runtime_planning_artifact(result.payload)["status"] == "PASS"
+
+
 def test_phase29_l21t_b_runtime_planning_consumes_one_lot_buy_new_soft_cap_quantity(tmp_path: Path) -> None:
     result = _produce(
         tmp_path,

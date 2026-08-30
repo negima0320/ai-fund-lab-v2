@@ -48,6 +48,7 @@ from ai_fund_lab_v2.runtime_v2.policy.capital_deployment import (
     load_capital_deployment_policy,
     missing_policy_manifest_fields,
 )
+from ai_fund_lab_v2.runtime_v2.provenance import pending_item_provenance
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalSubmitAdapter
 from ai_fund_lab_v2.runtime_v2.safety_decision import (
     RuntimeSafetyDecision,
@@ -1578,6 +1579,18 @@ def _ledger_order_record(
 ) -> LedgerOrderRecord:
     record_id = "ledger-order-submit-" + _short_hash(command.command_id)
     pending_item = next((item for item in pending.items if item.pending_item_id == command.pending_item_id), None)
+    provenance = (
+        pending_item_provenance(pending_item)
+        if pending_item is not None
+        else {
+            "source_decision_id": command.source_decision_id,
+            "source_decision_type": command.source_decision_type,
+            "source_pm_decision_id": command.source_pm_decision_id,
+            "order_plan_item_id": command.order_plan_item_id,
+            "position_campaign_id": command.position_campaign_id,
+            "campaign_id": command.campaign_id,
+        }
+    )
     return LedgerOrderRecord(
         record_id=record_id,
         record_type="order",
@@ -1598,10 +1611,14 @@ def _ledger_order_record(
         status=submit_result.status,
         issue_code_normalization=dict(submit_result.issue_code_normalization),
         response_classification=dict(submit_result.response_classification),
-        source_decision_type=str(pending_item.source_decision_type if pending_item is not None else ""),
-        source_pm_decision_id=str(pending_item.source_pm_decision_id if pending_item is not None else ""),
+        source_decision_id=str(provenance["source_decision_id"]),
+        source_decision_type=str(provenance["source_decision_type"]),
+        source_pm_decision_id=str(provenance["source_pm_decision_id"]),
         source_pm_business_date=str(pending_item.source_pm_business_date if pending_item is not None else ""),
         source_position_symbol=str(pending_item.source_position_symbol if pending_item is not None else ""),
+        order_plan_item_id=str(provenance["order_plan_item_id"]),
+        position_campaign_id=str(provenance["position_campaign_id"]),
+        campaign_id=str(provenance["campaign_id"]),
         add_candidate_signal=bool(pending_item.add_candidate_signal if pending_item is not None else False),
         capital_allocation_status=str(pending_item.capital_allocation_status if pending_item is not None else ""),
         capital_allocation_reason=str(pending_item.capital_allocation_reason if pending_item is not None else ""),

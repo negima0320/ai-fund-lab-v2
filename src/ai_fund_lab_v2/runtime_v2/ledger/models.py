@@ -39,10 +39,14 @@ class LedgerOrderRecord(LedgerRecordBase):
     status: str = ""
     issue_code_normalization: dict[str, Any] = field(default_factory=dict)
     response_classification: dict[str, Any] = field(default_factory=dict)
+    source_decision_id: str = ""
     source_decision_type: str = ""
     source_pm_decision_id: str = ""
     source_pm_business_date: str = ""
     source_position_symbol: str = ""
+    order_plan_item_id: str = ""
+    position_campaign_id: str = ""
+    campaign_id: str = ""
     add_candidate_signal: bool = False
     capital_allocation_status: str = ""
     capital_allocation_reason: str = ""
@@ -77,6 +81,14 @@ class LedgerExecutionRecord(LedgerRecordBase):
     source_broker_order_hash: str = ""
     source_position_record_id: str = ""
     source_position_hash: str = ""
+    pending_plan_id: str = ""
+    pending_item_id: str = ""
+    source_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_decision_id: str = ""
+    order_plan_item_id: str = ""
+    position_campaign_id: str = ""
+    campaign_id: str = ""
     evidence_refs: tuple[str, ...] = ()
     detail_required: bool = True
     detail_status: str = ""
@@ -91,6 +103,13 @@ class LedgerPositionRecord(LedgerRecordBase):
     average_price: float = 0.0
     market_value: float = 0.0
     as_of: str = ""
+    source_decision_id: str = ""
+    source_decision_type: str = ""
+    source_pm_decision_id: str = ""
+    order_plan_item_id: str = ""
+    pending_item_id: str = ""
+    position_campaign_id: str = ""
+    campaign_id: str = ""
 
 
 @dataclass(frozen=True)
