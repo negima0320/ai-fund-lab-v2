@@ -733,6 +733,8 @@ Design protections:
 - no SELL suppression because BUY state is Pending/Review,
 - no CQ evidence becoming PM action authority.
 
+Phase32-BQ preserves these protections while allowing one explicit production materialization exception. A PM `REDUCE` that is unexecutable specifically because of discrete-lot granularity may be reconsidered as `PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT` only when same-date PIT Strategy Intelligence plus market context reproduce the BO `SHADOW_FULL_EXIT` semantics. Profit cushion remains contextual profit-protection evidence: it can contribute to `PROFIT_AT_RISK` when continuation deteriorates, but it is not standalone HOLD authority and it does not create an automatic REDUCE-to-EXIT rule.
+
 ## 15. Capital Concentration
 
 Target behavior:
@@ -1672,3 +1674,116 @@ NEW / ADD / Cash competition remain separate authorities. Strong ADD can compete
 for capital but does not automatically win. PS may convert the PC continuous
 target into zero, one, or multiple 100-share lots under its existing discrete
 feasibility authority.
+
+## 38. Phase32-AR Accepted Graduation Baseline and Deferred Research Tracks
+
+Phase32-AR durably records the Phase32-AQ accepted current specification:
+
+```text
+CURRENT_SPEC_ACCEPTED_WITH_DEFERRED_IMPROVEMENT_RESEARCH
+```
+
+The accepted current graduation baseline is:
+
+```text
+persistent eligibility + PC/PS/G129 per-order authority
+```
+
+This means ADD does not require a mandatory fresh-event or Production
+Graduation Episode semantic. Persistent valid eligibility may remain observable,
+but every actual BUY_ADD still requires existing Portfolio Construction
+allocation authority, Position Sizing discrete quantity authority, and G129
+order-increment Runtime / Submit authority.
+
+Graduation consideration is not capital entitlement. Cash, NEW, Risk Pacing,
+Buy Quality, no-loss averaging, concentration / headroom, lot feasibility,
+prior ADD safeguards, Safety, broker, and corporate-action gates remain
+authoritative. This section does not introduce a new Production state named
+Graduation Episode and does not change Strategy, PM, SI, BQ, PC, PS, Runtime,
+thresholds, weights, caps, or accepted artifacts.
+
+Known current performance architecture limitation:
+
+```text
+REPLACE_HEAVY_HYBRID / WEAK_WINNER_GRADUATION / STARTER_SATURATION
+NO_CORRECTNESS_DEFECT_CONFIRMED
+```
+
+Evidence from the Phase32 AN-AQ audits:
+
+- many initial positions are one-lot / starter-sized;
+- most weak or non-durable starters correctly remain small;
+- durable winners are a small sample in the current 252BD evidence;
+- durable winners rarely grow materially;
+- existing architecture can graduate winners under valid conditions, including
+  `94340` and `76470`;
+- current evidence does not justify Production behavior changes.
+
+Deferred / open tracks:
+
+```text
+Model 2 - PM Position Lifecycle + PC ADD Consideration
+Status: DEFERRED / ON HOLD
+Rejected: NO
+Production activation: NOT AUTHORIZED
+Shadow: PARTIALLY_VALIDATED
+Scope: semantic / lifecycle clarity and PM/SI/PC ADD consideration routing
+Not proven to solve: Graduation Episode lifecycle, NEW/ADD/Cash marginal
+capital comparison, or Winner capitalization by itself
+```
+
+```text
+Starter-to-Winner Graduation Contract
+Status: OPEN / SHADOW_ONLY
+Rejected: NO
+Production activation: NOT AUTHORIZED
+Current conservative contract: PARTIAL
+Accepted finding: safe shadow graduation consideration is partially
+reconstructable, but deterministic Production-ready fresh / renewed episode
+boundary is not available from current PIT evidence. Mandatory freshness is not
+part of the current accepted baseline.
+```
+
+```text
+High-resolution NEW / ADD / Cash marginal capital comparison
+Status: DEFERRED
+Production comparator change: NOT AUTHORIZED
+Known concern: current NEW / ADD / Cash comparison is not fully expressed in
+one calibrated marginal-JPY value unit, and current evidence is insufficient to
+justify redesign.
+```
+
+Non-negotiable preservation constraints for any future research:
+
+- weak starters staying small;
+- no-loss averaging protection;
+- Cash optionality;
+- Risk Pacing;
+- BUY_NEW quality gates;
+- Winner retention improvements;
+- SELL independence;
+- concentration / headroom controls;
+- lot feasibility;
+- fail-closed behavior;
+- Portfolio Construction final capital allocation authority;
+- Position Sizing discrete quantity authority;
+- Runtime exact consumption;
+- G129 BUY_ADD order-increment semantics;
+- broker / corporate-action / Safety boundaries.
+
+Deferred Winner Graduation, Model 2, and marginal-comparator work may be
+revisited only when new independent evidence materially strengthens the case:
+longer Historical windows, multiple years, multiple regimes, larger
+durable-winner samples, repeated weak graduation across independent periods,
+repeated high fragmentation / starter saturation, or repeated Cash / NEW capital
+destination while valid incumbents remain undercapitalized. A single Historical
+window must not tune Production rules.
+
+Next operational step:
+
+```text
+LONG_HISTORICAL_EVIDENCE_ACCUMULATION_WITH_CURRENT_ACCEPTED_SPEC
+```
+
+No Strategy changes are authorized before that validation. Performance outcome
+alone must not retroactively redefine Production logic.

@@ -59,7 +59,12 @@ def materialize_corporate_action_adjustment_authority(
             "corporate_action_adjustment_authority_hash": "",
         }
     existing = _read_json(authority_path)
-    if existing:
+    if existing and _authority_matches_event(
+        existing,
+        event=event,
+        business_date=business_date,
+        symbol=symbol_text,
+    ):
         return {
             **existing,
             "corporate_action_adjustment_authority_path": str(authority_path),
@@ -192,10 +197,16 @@ def evaluate_corporate_action_adjustment_authority(
         reason_codes.append("corporate_action_effective_date_mismatch")
     if event_factor is not None and _optional_float(authority_payload.get("adjustment_factor")) != event_factor:
         reason_codes.append("corporate_action_adjustment_factor_mismatch")
+    event_source_path = str(event.get("corporate_action_artifact_path") or "")
+    if event_source_path and str(authority_payload.get("source_artifact_path") or "") != event_source_path:
+        reason_codes.append("corporate_action_source_artifact_mismatch")
     source_path = Path(str(authority_payload.get("source_artifact_path") or ""))
     expected_source_hash = _sha256_file(source_path) if source_path.is_file() else ""
     if expected_source_hash and str(authority_payload.get("source_artifact_hash") or "") != expected_source_hash:
         reason_codes.append("corporate_action_source_hash_mismatch")
+    event_source_hash = _sha256_file(Path(event_source_path)) if event_source_path else ""
+    if event_source_hash and str(authority_payload.get("source_artifact_hash") or "") != event_source_hash:
+        reason_codes.append("corporate_action_event_source_hash_mismatch")
     if str(authority_payload.get("pit_validation_status") or "") != "PASS":
         reason_codes.append("corporate_action_pit_validation_not_pass")
     if bool(authority_payload.get("future_data_used")):
@@ -260,6 +271,34 @@ def evaluate_corporate_action_adjustment_authority(
 
 def _authority_path(runtime_root: Path, business_date: str, symbol: str) -> Path:
     return runtime_root / "runtime_state" / "corporate_action_adjustments" / business_date / f"{symbol}.json"
+
+
+def _authority_matches_event(
+    payload: Mapping[str, Any],
+    *,
+    event: Mapping[str, Any],
+    business_date: str,
+    symbol: str,
+) -> bool:
+    if str(payload.get("schema_version") or "") != AUTHORITY_SCHEMA_VERSION:
+        return False
+    if str(payload.get("business_date") or "") != business_date:
+        return False
+    if str(payload.get("symbol") or "").strip() != symbol:
+        return False
+    event_source_path = str(event.get("corporate_action_artifact_path") or "")
+    if event_source_path and str(payload.get("source_artifact_path") or "") != event_source_path:
+        return False
+    event_source_hash = _sha256_file(Path(event_source_path)) if event_source_path else ""
+    if event_source_hash and str(payload.get("source_artifact_hash") or "") != event_source_hash:
+        return False
+    event_factor = _optional_float(event.get("corporate_action_adjustment_factor"))
+    if event_factor is not None and _optional_float(payload.get("adjustment_factor")) != event_factor:
+        return False
+    expected_effective_date = str(event.get("corporate_action_effective_date") or business_date)
+    if str(payload.get("effective_date") or "") != expected_effective_date:
+        return False
+    return True
 
 
 def _authority_fields(payload: Mapping[str, Any]) -> dict[str, Any]:

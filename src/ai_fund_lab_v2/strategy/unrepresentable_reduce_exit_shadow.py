@@ -12,6 +12,7 @@ SCHEMA_VERSION = "phase31_c0d_unrepresentable_reduce_exit_shadow.v1"
 PRODUCER = "strategy.unrepresentable_reduce_exit_shadow"
 AUTHORITY_TYPE = "PM_UNREPRESENTABLE_REDUCE_EXECUTABLE_REPRESENTATION_AUTHORITY_SHADOW"
 MODE = "NON_MUTATING_SHADOW"
+BINARY_MATERIALIZATION_CONTRACT_VERSION = "phase32_bl_lot_blocked_reduce_binary_materialization_shadow.v1"
 
 REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
 REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL = "REDUCE_UNEXECUTABLE_DUE_TO_MINIMUM_NOTIONAL"
@@ -29,6 +30,8 @@ def build_unrepresentable_reduce_exit_shadow_payload(
     prior_unrepresentable_reduce_events: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     source_artifacts: Mapping[str, Any] | None = None,
     source_hashes: Mapping[str, Any] | None = None,
+    run_id: str = "",
+    profile_id: str = "",
 ) -> dict[str, Any]:
     pm_rows = _rows(position_management_payload, "positions", "decisions", "items")
     ps_by_symbol = {_symbol(row): row for row in _rows(position_sizing_payload or {}, "positions", "items") if _symbol(row)}
@@ -46,6 +49,9 @@ def build_unrepresentable_reduce_exit_shadow_payload(
             strategy_intelligence=si_by_symbol.get(_symbol(pm_row), {}),
             market_context=market_context,
             prior_events=prior.get(_campaign_id(pm_row), []),
+            source_artifacts=source_artifacts or {},
+            run_id=run_id,
+            profile_id=profile_id,
         )
         for pm_row in pm_rows
         if _symbol(pm_row)
@@ -53,10 +59,14 @@ def build_unrepresentable_reduce_exit_shadow_payload(
     metrics = _metrics(decisions)
     payload = {
         "schema_version": SCHEMA_VERSION,
+        "binary_materialization_contract_version": BINARY_MATERIALIZATION_CONTRACT_VERSION,
         "business_date": business_date,
+        "run_id": run_id,
+        "profile_id": profile_id,
         "producer": PRODUCER,
         "authority_type": AUTHORITY_TYPE,
         "mode": MODE,
+        "shadow_only": True,
         "variant_support": {variant: True for variant in VARIANTS},
         "pit_status": "PIT_CURRENT_STRATEGY_EVIDENCE_ONLY",
         "future_information_used": False,
@@ -108,6 +118,9 @@ def materialize_unrepresentable_reduce_exit_shadow_for_day(
     output_subdir: str = "diagnostic_shadow",
 ) -> dict[str, Any]:
     run_root = Path(run_root)
+    run_state = _load_json(run_root / "run_state.json")
+    run_id = str(run_state.get("run_id") or run_root.name) if isinstance(run_state, Mapping) else run_root.name
+    profile_id = str(run_state.get("profile") or run_state.get("profile_id") or "") if isinstance(run_state, Mapping) else ""
     day_dir = run_root / "daily" / business_date
     strategy_dir = day_dir / "strategy"
     pm_path = strategy_dir / "position_management.json"
@@ -132,6 +145,8 @@ def materialize_unrepresentable_reduce_exit_shadow_for_day(
         prior_unrepresentable_reduce_events=prior_unrepresentable_reduce_events,
         source_artifacts={name: str(path) for name, path in paths.items()},
         source_hashes={name: _file_hash(path) for name, path in paths.items()},
+        run_id=run_id,
+        profile_id=profile_id,
     )
     output_path = day_dir / output_subdir / "unrepresentable_reduce_exit_shadow.json"
     write_unrepresentable_reduce_exit_shadow_artifact(payload, output_path)
@@ -198,16 +213,19 @@ def _shadow_decision(
     strategy_intelligence: Mapping[str, Any],
     market_context: Mapping[str, Any],
     prior_events: Sequence[Mapping[str, Any]],
+    source_artifacts: Mapping[str, Any],
+    run_id: str,
+    profile_id: str,
 ) -> dict[str, Any]:
     symbol = _symbol(pm_row)
     campaign_id = _campaign_id(pm_row)
     baseline_action = _state(pm_row, "action", "decision", "pm_action", default="UNKNOWN")
     reduce_intensity = _state(pm_row, "reduce_intensity", "intensity", default="")
-    target_ratio = _float_or_none(ps_row.get("target_reduce_ratio") or ps_row.get("reduce_fraction") or canonical_reduce_fraction(reduce_intensity))
-    current_quantity = _float_or_none(ps_row.get("current_quantity") or pm_row.get("current_quantity") or pm_row.get("runtime_position_quantity"))
-    tradable_unit = _float_or_none(ps_row.get("trading_unit") or ps_row.get("tradable_unit") or _nested(ps_row, "reduce_executability_evidence", "tradable_unit"))
-    raw_reduce_quantity = _float_or_none(ps_row.get("raw_reduce_quantity") or _nested(ps_row, "reduce_executability_evidence", "raw_reduce_quantity"))
-    rounded_reduce_quantity = _float_or_none(ps_row.get("rounded_reduce_quantity") or _nested(ps_row, "reduce_executability_evidence", "rounded_reduce_quantity"))
+    target_ratio = _float_or_none(_first_present(ps_row.get("target_reduce_ratio"), ps_row.get("reduce_fraction"), canonical_reduce_fraction(reduce_intensity)))
+    current_quantity = _float_or_none(_first_present(ps_row.get("current_quantity"), pm_row.get("current_quantity"), pm_row.get("runtime_position_quantity")))
+    tradable_unit = _float_or_none(_first_present(ps_row.get("trading_unit"), ps_row.get("tradable_unit"), _nested(ps_row, "reduce_executability_evidence", "tradable_unit")))
+    raw_reduce_quantity = _float_or_none(_first_present(ps_row.get("raw_reduce_quantity"), _nested(ps_row, "reduce_executability_evidence", "raw_reduce_quantity")))
+    rounded_reduce_quantity = _float_or_none(_first_present(ps_row.get("rounded_reduce_quantity"), _nested(ps_row, "reduce_executability_evidence", "rounded_reduce_quantity")))
     final_reduce_sell_quantity = _float_or_none(
         _first_present(
             ps_row.get("reduce_final_sell_quantity"),
@@ -256,7 +274,14 @@ def _shadow_decision(
     deterioration = _deterioration_evidence(pm_row, strategy_intelligence)
     recovery = _recovery_evidence(pm_row, strategy_intelligence, baseline_action)
     persistence = _persistence_evidence(prior_events, decision_business_date=business_date)
-    pit = _pit_proof(business_date=business_date, strategy_intelligence=strategy_intelligence, market_context=market_context)
+    pit = _pit_proof(
+        business_date=business_date,
+        strategy_intelligence=strategy_intelligence,
+        market_context=market_context,
+        source_artifacts=source_artifacts,
+        run_id=run_id,
+        profile_id=profile_id,
+    )
     state = _shadow_state(
         baseline_action=baseline_action,
         reduce_intensity=reduce_intensity,
@@ -278,11 +303,30 @@ def _shadow_decision(
         recovery=recovery,
         persistence=persistence,
     )
+    binary = _binary_materialization_decision(
+        baseline_action=baseline_action,
+        representability_family=representability_family,
+        discrete_lot_unrepresentable=discrete_lot_unrepresentable,
+        representable_reduce=representable_reduce,
+        current_quantity=current_quantity,
+        raw_reduce_quantity=raw_reduce_quantity,
+        rounded_reduce_quantity=rounded_reduce_quantity,
+        final_reduce_sell_quantity=final_reduce_sell_quantity,
+        campaign_id=campaign_id,
+        pm_row=pm_row,
+        strategy_intelligence=strategy_intelligence,
+        deterioration=deterioration,
+        recovery=recovery,
+        pit=pit,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
+        "binary_materialization_contract_version": BINARY_MATERIALIZATION_CONTRACT_VERSION,
         "producer": PRODUCER,
         "mode": MODE,
         "business_date": business_date,
+        "run_id": run_id,
+        "profile_id": profile_id,
         "symbol": symbol,
         "campaign_id": campaign_id,
         "baseline_pm_action": baseline_action,
@@ -358,6 +402,23 @@ def _shadow_decision(
         "campaign_scope_status": "PASS" if campaign_id else "EVIDENCE_INSUFFICIENT",
         "actual_trading_path_mutated": False,
         "canonical_pm_action_mutated": False,
+        "shadow_only": True,
+        "shadow_binary_decision": binary["shadow_binary_decision"],
+        "shadow_binary_eligibility_status": binary["shadow_binary_eligibility_status"],
+        "shadow_binary_eligibility_reason": binary["shadow_binary_eligibility_reason"],
+        "shadow_binary_authority_status": binary["shadow_binary_authority_status"],
+        "production_actual_action": binary["production_actual_action"],
+        "production_actual_quantity": binary["production_actual_quantity"],
+        "lot_block_reason": binary["lot_block_reason"],
+        "semantic_evidence_used": binary["semantic_evidence_used"],
+        "hold_side_evidence": binary["hold_side_evidence"],
+        "exit_side_evidence": binary["exit_side_evidence"],
+        "decisive_semantic_rationale": binary["decisive_semantic_rationale"],
+        "action_score_decisive_authority": False,
+        "historical_outcome_input_used": False,
+        "shadow_order_authority": False,
+        "shadow_submit_authority": False,
+        "shadow_execution_authority": False,
     }
 
 
@@ -413,6 +474,194 @@ def _state_result(
         "parameter_resolution_state": parameter_state,
         "evidence_sufficient": evidence_sufficient,
     }
+
+
+def _binary_materialization_decision(
+    *,
+    baseline_action: str,
+    representability_family: str,
+    discrete_lot_unrepresentable: bool,
+    representable_reduce: bool,
+    current_quantity: float | None,
+    raw_reduce_quantity: float | None,
+    rounded_reduce_quantity: float | None,
+    final_reduce_sell_quantity: float | None,
+    campaign_id: str,
+    pm_row: Mapping[str, Any],
+    strategy_intelligence: Mapping[str, Any],
+    deterioration: Mapping[str, Any],
+    recovery: Mapping[str, Any],
+    pit: Mapping[str, Any],
+) -> dict[str, Any]:
+    production_actual_action = "NO_ORDER" if discrete_lot_unrepresentable else "REDUCE" if representable_reduce else baseline_action
+    production_actual_quantity = final_reduce_sell_quantity if final_reduce_sell_quantity is not None else 0
+    base = {
+        "shadow_binary_decision": "SHADOW_NOT_APPLICABLE",
+        "shadow_binary_eligibility_status": "NOT_APPLICABLE",
+        "shadow_binary_eligibility_reason": "",
+        "shadow_binary_authority_status": "PASS",
+        "production_actual_action": production_actual_action,
+        "production_actual_quantity": production_actual_quantity,
+        "lot_block_reason": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT if discrete_lot_unrepresentable else "",
+        "semantic_evidence_used": {},
+        "hold_side_evidence": [],
+        "exit_side_evidence": [],
+        "decisive_semantic_rationale": "",
+    }
+    if baseline_action != "REDUCE":
+        return {**base, "shadow_binary_eligibility_reason": "PM_ACTION_NOT_REDUCE"}
+    if representable_reduce:
+        return {**base, "shadow_binary_eligibility_reason": "PARTIAL_REDUCE_EXECUTABLE"}
+    if representability_family != "DISCRETE_LOT" or not discrete_lot_unrepresentable:
+        return {**base, "shadow_binary_eligibility_reason": f"REPRESENTABILITY_FAMILY:{representability_family}"}
+    malformed_reasons: list[str] = []
+    if not campaign_id:
+        malformed_reasons.append("MISSING_CAMPAIGN_ID")
+    if current_quantity is None or current_quantity <= 0:
+        malformed_reasons.append("MISSING_OR_INVALID_CURRENT_QUANTITY")
+    if final_reduce_sell_quantity not in (0, 0.0) or rounded_reduce_quantity not in (0, 0.0):
+        malformed_reasons.append("EXECUTABLE_REDUCE_QUANTITY_NOT_ZERO")
+    if raw_reduce_quantity is None or raw_reduce_quantity <= 0:
+        malformed_reasons.append("MISSING_DESIRED_REDUCE_QUANTITY")
+    if str(pit.get("pit_validation_state") or "") != "PASS":
+        malformed_reasons.append(str(pit.get("pit_validation_state") or "PIT_EVIDENCE_INVALID"))
+    if malformed_reasons:
+        return {
+            **base,
+            "shadow_binary_decision": "SHADOW_INSUFFICIENT_EVIDENCE",
+            "shadow_binary_eligibility_status": "FAIL_CLOSED",
+            "shadow_binary_eligibility_reason": ",".join(malformed_reasons),
+            "shadow_binary_authority_status": "FAIL_CLOSED",
+            "decisive_semantic_rationale": "lot-blocked REDUCE binary shadow withheld because canonical PIT/provenance eligibility is incomplete",
+        }
+
+    continuation = _continuation_evidence(strategy_intelligence)
+    downside = _downside_evidence(strategy_intelligence)
+    expected_edge = _expected_edge_evidence(strategy_intelligence)
+    campaign_state = _campaign_state(strategy_intelligence)
+    current_return = _float_or_none(campaign_state.get("current_campaign_relative_return"))
+    action_score = _float_or_none(pm_row.get("action_score") or pm_row.get("confidence"))
+    reason_codes = [str(code) for code in (pm_row.get("reason_codes") or pm_row.get("decision_reason_codes") or [])]
+
+    hold_evidence: list[dict[str, Any]] = []
+    exit_evidence: list[dict[str, Any]] = []
+    contextual_evidence: list[dict[str, Any]] = []
+    if continuation.get("relative_strength_state") == "SUPPORTIVE":
+        hold_evidence.append({"signal": "relative_strength", "state": "SUPPORTIVE"})
+    if continuation.get("trend_health_state") == "SUPPORTIVE":
+        hold_evidence.append({"signal": "trend_health", "state": "SUPPORTIVE"})
+    if continuation.get("persistence_state") in {"SUPPORTIVE", "ADEQUATE"}:
+        hold_evidence.append({"signal": "persistence", "state": continuation.get("persistence_state")})
+    if continuation.get("exhaustion_risk_state") in {"MANAGEABLE", "LOW", "LOW_RISK"}:
+        hold_evidence.append({"signal": "exhaustion_risk", "state": continuation.get("exhaustion_risk_state")})
+    if continuation.get("strong_medium_term_structure") is True:
+        hold_evidence.append({"signal": "medium_term_structure", "state": "STRONG"})
+    if recovery.get("state") == "RECOVERY_PRESENT":
+        hold_evidence.append({"signal": "recovery", "state": "PRESENT"})
+
+    if expected_edge.get("state") in {"DETERIORATING", "INSUFFICIENT", "RISK_OVERRIDE"}:
+        exit_evidence.append({"signal": "expected_edge", "state": expected_edge.get("state")})
+    if continuation.get("relative_strength_state") in {"WEAK", "MIXED", "DETERIORATING"}:
+        exit_evidence.append({"signal": "relative_strength", "state": continuation.get("relative_strength_state")})
+    if continuation.get("trend_health_state") in {"WEAK", "MIXED", "DETERIORATING"}:
+        exit_evidence.append({"signal": "trend_health", "state": continuation.get("trend_health_state")})
+    if continuation.get("participation_quality_state") in {"WEAK", "DETERIORATING"}:
+        exit_evidence.append({"signal": "participation_quality", "state": continuation.get("participation_quality_state")})
+    if continuation.get("exhaustion_risk_state") in {"ELEVATED_RISK", "HIGH_RISK", "EXHAUSTED"}:
+        exit_evidence.append({"signal": "exhaustion_risk", "state": continuation.get("exhaustion_risk_state")})
+    if downside.get("participation_risk_state") in {"ELEVATED_RISK", "HIGH_RISK"}:
+        exit_evidence.append({"signal": "participation_risk", "state": downside.get("participation_risk_state")})
+    if downside.get("reversal_risk") in {"ELEVATED_RISK", "HIGH_RISK"}:
+        exit_evidence.append({"signal": "reversal_risk", "state": downside.get("reversal_risk")})
+    if deterioration.get("exit_grade_deterioration"):
+        exit_evidence.append({"signal": "pm_exit_grade_deterioration", "state": "PRESENT"})
+    if current_return is not None and current_return <= 0:
+        exit_evidence.append({"signal": "profit_cushion", "state": "ABSENT"})
+    structural_hold_count = len(hold_evidence)
+    profit_cushion_present = bool(current_return is not None and current_return > 0)
+    continuation_weakened = bool(
+        continuation.get("relative_strength_state") in {"WEAK", "MIXED", "DETERIORATING"}
+        or continuation.get("trend_health_state") in {"WEAK", "MIXED", "DETERIORATING"}
+        or continuation.get("participation_quality_state") in {"WEAK", "DETERIORATING"}
+    )
+    elevated_risk_present = bool(
+        continuation.get("exhaustion_risk_state") in {"ELEVATED_RISK", "HIGH_RISK", "EXHAUSTED"}
+        or downside.get("participation_risk_state") in {"ELEVATED_RISK", "HIGH_RISK"}
+        or downside.get("reversal_risk") in {"ELEVATED_RISK", "HIGH_RISK"}
+    )
+    if profit_cushion_present and structural_hold_count > 0 and not (continuation_weakened and elevated_risk_present):
+        hold_evidence.append({"signal": "profit_cushion", "state": "CONTEXTUAL_HOLD_SUPPORT"})
+        contextual_evidence.append({"signal": "profit_cushion", "state": "CONTEXTUAL_HOLD_SUPPORT", "standalone_action_authority": False})
+    elif profit_cushion_present and (continuation_weakened or elevated_risk_present):
+        contextual_evidence.append({"signal": "profit_cushion", "state": "PROFIT_AT_RISK", "standalone_action_authority": False})
+    elif profit_cushion_present:
+        contextual_evidence.append({"signal": "profit_cushion", "state": "PRESENT_CONTEXT_ONLY", "standalone_action_authority": False})
+
+    semantic_evidence = {
+        "pm_reason_codes": reason_codes,
+        "reason_family_context": _reason_family_context(reason_codes),
+        "expected_edge_state": expected_edge.get("state"),
+        "continuation": continuation,
+        "downside": downside,
+        "campaign_state": campaign_state,
+        "recovery_state": recovery.get("state"),
+        "profit_cushion_context": contextual_evidence,
+        "profit_cushion_standalone_hold_authority": False,
+        "pit_validation_state": pit.get("pit_validation_state"),
+        "action_score_diagnostic": {"value": action_score, "decisive_authority": False},
+        "future_information_used": False,
+        "later_pnl_used": False,
+        "final_campaign_outcome_used": False,
+    }
+    decisive_exit_deterioration = bool(
+        elevated_risk_present
+        or any(str(item.get("state") or "") in {"WEAK", "DETERIORATING", "HIGH_RISK", "ELEVATED_RISK", "ABSENT"} for item in exit_evidence)
+    )
+    profit_at_risk_exit_confirmation = bool(
+        profit_cushion_present
+        and continuation.get("relative_strength_state") in {"WEAK", "DETERIORATING"}
+        and continuation.get("trend_health_state") in {"WEAK", "DETERIORATING"}
+        and (
+            continuation.get("participation_quality_state") in {"WEAK", "DETERIORATING"}
+            or elevated_risk_present
+        )
+    )
+    non_profit_exit_confirmation = bool(not profit_cushion_present and decisive_exit_deterioration)
+    if (
+        len(exit_evidence) >= 2
+        and structural_hold_count == 0
+        and (profit_at_risk_exit_confirmation or non_profit_exit_confirmation)
+    ):
+        decision = "SHADOW_FULL_EXIT"
+        rationale = "multiple current PIT deterioration/risk dimensions agree and no structural HOLD-side continuation evidence is present"
+    elif len(hold_evidence) >= 2 and len(exit_evidence) <= 1:
+        decision = "SHADOW_HOLD"
+        rationale = "multiple current PIT continuation/recovery dimensions support retaining the one-lot campaign"
+    else:
+        decision = "SHADOW_INSUFFICIENT_EVIDENCE"
+        rationale = "current PIT evidence is mixed or insufficient for binary shadow materialization"
+    return {
+        **base,
+        "shadow_binary_decision": decision,
+        "shadow_binary_eligibility_status": "PASS",
+        "shadow_binary_eligibility_reason": "PM_REDUCE_DISCRETE_LOT_ZERO_EXECUTABLE_QUANTITY",
+        "semantic_evidence_used": semantic_evidence,
+        "hold_side_evidence": hold_evidence,
+        "exit_side_evidence": exit_evidence,
+        "decisive_semantic_rationale": rationale,
+    }
+
+
+def _reason_family_context(reason_codes: Sequence[str]) -> list[str]:
+    families: list[str] = []
+    joined = " ".join(code.lower() for code in reason_codes)
+    if "peak_drawdown" in joined or "profit_retention" in joined:
+        families.append("profit_retention_or_peak_drawdown_warning")
+    if "risk" in joined or "trend_not_broken" in joined:
+        families.append("risk_increased_but_trend_not_broken")
+    if "hard_stop" in joined or "trend_and_opportunity_broken" in joined:
+        families.append("exit_grade_deterioration")
+    return sorted(set(families))
 
 
 def _variant_results(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -539,22 +788,65 @@ def _persistence_evidence(prior_events: Sequence[Mapping[str, Any]], *, decision
     }
 
 
-def _pit_proof(*, business_date: str, strategy_intelligence: Mapping[str, Any], market_context: Mapping[str, Any]) -> dict[str, Any]:
+def _pit_proof(
+    *,
+    business_date: str,
+    strategy_intelligence: Mapping[str, Any],
+    market_context: Mapping[str, Any],
+    source_artifacts: Mapping[str, Any] | None = None,
+    run_id: str = "",
+    profile_id: str = "",
+) -> dict[str, Any]:
     feature_dates = []
     for payload in (strategy_intelligence, market_context):
         date = str(payload.get("feature_date") or payload.get("_artifact_feature_date") or payload.get("as_of_business_date") or payload.get("business_date") or "")
         if date:
             feature_dates.append(date)
     future_dates = [date for date in feature_dates if date > business_date]
-    source_artifacts: list[Any] = []
+    payload_source_artifacts = source_artifacts or {}
+    artifact_refs: list[Any] = []
     for payload in (strategy_intelligence, market_context):
-        source_artifacts.extend(list(payload.get("source_artifacts") or []))
-        source_artifacts.extend(list(payload.get("_artifact_source_artifacts") or []))
+        artifact_refs.extend(list(payload.get("source_artifacts") or []))
+        artifact_refs.extend(list(payload.get("_artifact_source_artifacts") or []))
+    for value in payload_source_artifacts.values():
+        if isinstance(value, (list, tuple)):
+            artifact_refs.extend(value)
+        else:
+            artifact_refs.append(value)
+    run_binding_failures: list[str] = []
+    profile_binding_failures: list[str] = []
+    if run_id:
+        for payload in (strategy_intelligence, market_context):
+            payload_run_id = str(payload.get("run_id") or payload.get("_artifact_run_id") or "")
+            if payload_run_id and payload_run_id != run_id:
+                run_binding_failures.append(payload_run_id)
+        for ref in artifact_refs:
+            text = str(ref)
+            for observed in _runtime_run_ids(text):
+                if observed != run_id:
+                    run_binding_failures.append(observed)
+    if profile_id:
+        for payload in (strategy_intelligence, market_context):
+            payload_profile = str(payload.get("profile") or payload.get("profile_id") or payload.get("_artifact_profile_id") or "")
+            if payload_profile and payload_profile != profile_id:
+                profile_binding_failures.append(payload_profile)
+    if future_dates:
+        state = "FAIL_FUTURE_DATED_EVIDENCE"
+    elif run_binding_failures:
+        state = "FAIL_STALE_OR_CROSS_RUN_EVIDENCE"
+    elif profile_binding_failures:
+        state = "FAIL_PROFILE_BINDING_MISMATCH"
+    else:
+        state = "PASS"
     return {
         "feature_dates": sorted(set(feature_dates)),
-        "source_artifacts": source_artifacts,
-        "pit_validation_state": "FAIL_FUTURE_DATED_EVIDENCE" if future_dates else "PASS",
+        "source_artifacts": artifact_refs,
+        "pit_validation_state": state,
         "future_dates": future_dates,
+        "run_id": run_id,
+        "profile_id": profile_id,
+        "run_binding_failures": sorted(set(run_binding_failures)),
+        "profile_binding_failures": sorted(set(profile_binding_failures)),
     }
 
 
@@ -603,12 +895,17 @@ def _expected_edge_evidence(strategy_intelligence: Mapping[str, Any]) -> dict[st
 
 def _continuation_evidence(strategy_intelligence: Mapping[str, Any]) -> dict[str, Any]:
     continuation = strategy_intelligence.get("continuation_quality") if isinstance(strategy_intelligence.get("continuation_quality"), Mapping) else {}
+    entry = strategy_intelligence.get("entry_admission") if isinstance(strategy_intelligence.get("entry_admission"), Mapping) else {}
+    consumed = entry.get("consumed_evidence") if isinstance(entry.get("consumed_evidence"), Mapping) else {}
     return {
         "status": str(continuation.get("status") or continuation.get("evidence_sufficiency") or "").upper(),
         "trend_health_state": _semantic_state(continuation.get("trend_health")),
         "persistence_state": _semantic_state(continuation.get("persistence")),
         "participation_quality_state": _semantic_state(continuation.get("participation_quality")),
         "relative_strength_state": _semantic_state(continuation.get("relative_strength")),
+        "exhaustion_risk_state": _semantic_state(continuation.get("exhaustion_risk")),
+        "strong_medium_term_structure": _bool_or_none(consumed.get("strong_medium_term_structure")),
+        "risk_vote_count": _int_or_none(consumed.get("risk_vote_count")),
         "future_information_used": bool(continuation.get("future_information_used", False)),
     }
 
@@ -686,6 +983,10 @@ def _metrics(decisions: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "shadow_hold_or_preserve_count": sum(
             1 for item in decisions if item["baseline_pm_action"] == "REDUCE" and item["alternative_g_shadow_action"] in {"PRESERVE", "BASELINE"}
         ),
+        "shadow_binary_full_exit_count": sum(1 for item in decisions if item.get("shadow_binary_decision") == "SHADOW_FULL_EXIT"),
+        "shadow_binary_hold_count": sum(1 for item in decisions if item.get("shadow_binary_decision") == "SHADOW_HOLD"),
+        "shadow_binary_insufficient_evidence_count": sum(1 for item in decisions if item.get("shadow_binary_decision") == "SHADOW_INSUFFICIENT_EVIDENCE"),
+        "shadow_binary_not_applicable_count": sum(1 for item in decisions if item.get("shadow_binary_decision") == "SHADOW_NOT_APPLICABLE"),
     }
 
 
@@ -710,6 +1011,10 @@ def _summary_metrics(*, run_root: Path, materialized: Sequence[Mapping[str, Any]
         "future_information_used_count": 0,
         "shadow_exit_count": 0,
         "shadow_hold_or_preserve_count": 0,
+        "shadow_binary_full_exit_count": 0,
+        "shadow_binary_hold_count": 0,
+        "shadow_binary_insufficient_evidence_count": 0,
+        "shadow_binary_not_applicable_count": 0,
     }
     mapping = {
         "shadow_evaluated_pm_decision_count": "evaluated_pm_decision_count",
@@ -749,11 +1054,35 @@ def _strategy_intelligence_by_symbol(payload: Mapping[str, Any]) -> dict[str, Ma
         artifact_fields = {
             "_artifact_business_date": payload.get("business_date"),
             "_artifact_feature_date": payload.get("feature_date") or payload.get("as_of_business_date") or payload.get("business_date"),
+            "_artifact_run_id": payload.get("run_id"),
+            "_artifact_profile_id": payload.get("profile") or payload.get("profile_id"),
             "_artifact_source_artifacts": list(payload.get("source_artifacts") or []),
         }
-        return {str(key): {**dict(value), **artifact_fields} for key, value in symbol_map.items() if isinstance(value, Mapping)}
+        return {
+            str(key): _merge_symbol_strategy_intelligence(str(key), dict(value), artifact_fields, payload)
+            for key, value in symbol_map.items()
+            if isinstance(value, Mapping)
+        }
     rows = _rows(payload, "positions", "items")
     return {_symbol(row): row for row in rows if _symbol(row)}
+
+
+def _merge_symbol_strategy_intelligence(
+    symbol: str,
+    value: dict[str, Any],
+    artifact_fields: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    merged = {**value, **artifact_fields}
+    comparison = payload.get("shadow_decision_comparison") if isinstance(payload.get("shadow_decision_comparison"), Mapping) else {}
+    by_symbol = comparison.get("by_symbol") if isinstance(comparison.get("by_symbol"), Mapping) else {}
+    symbol_comparison = by_symbol.get(symbol) if isinstance(by_symbol.get(symbol), Mapping) else {}
+    consumed = _nested(symbol_comparison, "entry_admission_summary", "consumed_evidence")
+    if isinstance(consumed, Mapping):
+        entry = dict(merged.get("entry_admission") or {}) if isinstance(merged.get("entry_admission"), Mapping) else {}
+        entry.setdefault("consumed_evidence", dict(consumed))
+        merged["entry_admission"] = entry
+    return merged
 
 
 def _rows(payload: Mapping[str, Any], *keys: str) -> list[Mapping[str, Any]]:
@@ -833,6 +1162,41 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value in (None, ""):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.strip().lower() in {"true", "yes", "1"}:
+            return True
+        if value.strip().lower() in {"false", "no", "0"}:
+            return False
+    return None
+
+
+def _runtime_run_ids(text: str) -> list[str]:
+    tokens: list[str] = []
+    marker = "runtime-test-"
+    start = 0
+    while True:
+        index = text.find(marker, start)
+        if index < 0:
+            return tokens
+        end = index
+        while end < len(text) and text[end] not in {"/", "\\", " ", "\"", "'", "\n", "\t", ":", ","}:
+            end += 1
+        tokens.append(text[index:end])
+        start = end
 
 
 def _first_present(*values: Any) -> Any:

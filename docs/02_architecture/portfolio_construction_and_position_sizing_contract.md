@@ -1108,3 +1108,37 @@ Existing HOLD capital is not merged into the current NEW_BUY / BUY_ADD / Cash
 execution frontier by this reference. Portfolio-wide rotation must remain a
 future staged capability that depends on high-resolution marginal capital value
 and PM-owned REDUCE / EXIT action authority.
+
+## 21. Phase32-AR Current ADD Graduation Baseline
+
+Phase32-AR records that the current accepted ADD / graduation execution baseline
+is:
+
+```text
+persistent eligibility + PC/PS/G129 per-order authority
+```
+
+Portfolio Construction may observe persistent ADD / incumbent strength
+eligibility, but that observation is not capital entitlement and is not a
+Production Graduation Episode state. Every actual BUY_ADD still requires:
+
+1. Portfolio Construction capital allocation authority;
+2. Position Sizing discrete executable quantity authority;
+3. Runtime / Submit consumption of the G129 order-increment authority.
+
+Persistent strength must not bypass Cash, NEW competition, Risk Pacing, Buy
+Quality, no-loss averaging, concentration / headroom, lot feasibility, prior
+ADD safeguards, Safety, broker, or corporate-action gates. Position Sizing must
+continue to emit discrete quantity from current PC authority only, and Runtime
+must not re-decide priority or quantity.
+
+Known current limitation:
+
+```text
+REPLACE_HEAVY_HYBRID / WEAK_WINNER_GRADUATION / STARTER_SATURATION
+NO_CORRECTNESS_DEFECT_CONFIRMED
+```
+
+This is a performance architecture limitation, not a correctness defect. It
+does not authorize changing BUY_NEW sizing, ADD/HOLD/REDUCE/EXIT, Cash, Risk
+Pacing, thresholds, weights, caps, PC, PS, Runtime, or accepted artifacts.

@@ -144,6 +144,48 @@ Authority rules:
 - BUY and SELL authorities remain independent.
 - This is common runtime behavior, not a Historical-only workaround.
 
+## Phase32-BQ Lot-Blocked REDUCE Reconsidered FULL EXIT Authority
+
+The default rule above remains authoritative: an unexecutable `REDUCE` does not silently become `EXIT`. Phase32-BQ adds one explicit Strategy-owned exception for durable-winner profit-protection cases accepted by the BO shadow evidence track.
+
+Canonical authority:
+
+```text
+PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT
+```
+
+Production promotion is allowed only at the Sell Planning materialization boundary, before ordinary executable SELL planning and before Pending publication, when all of the following are true:
+
+- source PM action is `REDUCE`;
+- canonical campaign and current-position authority exist and agree;
+- desired partial reduce quantity is positive;
+- final executable REDUCE quantity is exactly `0`;
+- the no-order semantic is specifically `REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT`;
+- same-business-date PIT Strategy Intelligence and market context evidence are complete and run/profile bound;
+- the BO semantic reconsideration result is `SHADOW_FULL_EXIT`;
+- no native PM `EXIT`, executable `REDUCE`, stale/cross-run/future evidence, or malformed provenance conflict exists.
+
+When the authority passes, Sell Planning materializes an ordinary downstream `SELL_EXIT` for the current full sellable position quantity. It must preserve the original PM `REDUCE` lineage in the quantity contract:
+
+```text
+source_pm_action = REDUCE
+source_pm_decision_id = <original PM decision id>
+original_source_decision = REDUCE
+reconsidered_action = FULL_EXIT
+reconsideration_reason = PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT
+runtime_invented_exit = false
+```
+
+Runtime, Submit, Execution, Ledger, and broker adapters must not invent this promotion. They consume the materialized order as an ordinary `SELL_EXIT`; there is no special broker-side order type.
+
+Explicit exclusions remain unchanged:
+
+- executable `REDUCE` remains partial `REDUCE`;
+- minimum-notional no-order remains no-order;
+- BO `SHADOW_HOLD` and `SHADOW_INSUFFICIENT_EVIDENCE` do not promote;
+- BUY, ADD, HOLD, native EXIT, ranking, threshold, weight, cash, and risk pacing semantics are unchanged;
+- stale same-symbol/campaign/date retry must either reuse the existing equivalent SELL Pending or fail closed.
+
 ## Fail-Closed Conditions
 
 Sell Planning must stop with `REVIEW_REQUIRED` instead of silently changing PM intent when quantity authority or calculation safety is uncertain:

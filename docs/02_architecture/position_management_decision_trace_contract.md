@@ -252,6 +252,39 @@ for this case. The canonical risk reason remains observability evidence and does
 
 Phase27-D6-E adoption review confirms that D6-D trace consumers must preserve this semantics with adoption status `ADOPTED_WITH_LIMITATIONS`. Same-context `EXIT -> HOLD` rows are valid only when decision-time position state is comparable and severe full-close evidence is absent. Cross-run path-dependent differences must not be reinterpreted as direct D6-D reason-code authority.
 
+## Phase32-BQ Lot-Blocked REDUCE Reconsidered FULL EXIT Trace Semantics
+
+Phase32-BQ defines a narrow production materialization path for PM `REDUCE` decisions whose partial quantity is unrepresentable only because of discrete-lot granularity. This path does not rewrite the PM decision trace as a native `EXIT`.
+
+Trace and downstream observability must distinguish:
+
+```text
+native PM EXIT
+```
+
+from:
+
+```text
+PM REDUCE
+-> REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT
+-> PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT
+-> ordinary downstream SELL_EXIT
+```
+
+Required BQ lineage fields:
+
+- `source_pm_action = REDUCE`;
+- `source_pm_decision_id`;
+- original PM reason and reduce intensity;
+- original REDUCE quantity contract;
+- `reconsidered_action = FULL_EXIT`;
+- `reconsideration_reason = PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT`;
+- BO PIT evidence provenance and artifact hash when materialized;
+- campaign / position campaign id;
+- `runtime_invented_exit = false`.
+
+This is a Strategy materialization authority, not a Runtime, Submit, Execution, Ledger, or broker authority. Reason codes remain explanatory unless this explicit BQ authority is present and passes. Profit cushion is contextual profit-protection evidence; it is not standalone HOLD or EXIT authority and does not introduce new thresholds, weights, models, features, or score formulas.
+
 ## Confidence Semantics
 
 The legacy `confidence` field is not a calibrated probability.

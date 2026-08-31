@@ -139,6 +139,51 @@ def test_ak9r27_reviewed_sell_is_true_batch_block():
     assert can_submit_pending_plan(plan, set()) is False
 
 
+def test_phase32_ax_mixed_sell_review_allows_independent_pass_sell_only():
+    plan = _plan_with_items(
+        state=PendingPlanState.REVIEW_REQUIRED,
+        approved_ids=("sell-pass",),
+        approved_sell_ids=("sell-pass",),
+        review_buy_ids=("buy-review",),
+        review_sell_ids=("sell-review",),
+        review_scope="MIXED_SELL_ITEM_SCOPED_REVIEW",
+        sell_continuation_allowed=True,
+        items=(
+            _item("sell-pass", side="SELL", approved=True, state="APPROVED"),
+            _item("buy-review", side="BUY", approved=False, state="REVIEW_REQUIRED"),
+            _item("sell-review", side="SELL", approved=False, state="REVIEW_REQUIRED"),
+        ),
+        feasibility_items=(
+            _feasibility("sell-pass", "SELL", "PASS"),
+            _feasibility("buy-review", "BUY", "REVIEW_REQUIRED", violated_policy="reserved_cash"),
+            _feasibility(
+                "sell-review",
+                "SELL",
+                "REVIEW_REQUIRED",
+                violated_policy="corporate_action_adjustment_authority",
+            ),
+        ),
+    )
+
+    authority = build_pending_review_scope_authority(plan)
+
+    assert authority.batch_blocked is False
+    assert authority.executable_item_ids == ("sell-pass",)
+    assert authority.executable_sell_item_ids == ("sell-pass",)
+    assert authority.executable_buy_item_ids == ()
+    assert authority.reviewed_buy_item_ids == ("buy-review",)
+    assert authority.reviewed_sell_item_ids == ("sell-review",)
+    assert pending_scope_allows_partial_submit(authority) is True
+    assert pending_scope_allows_sell_continuation(
+        authority,
+        business_date="2026-07-08",
+        mode="demo",
+        environment="demo",
+        readiness_scope="sell_planning",
+    )
+    assert can_submit_pending_plan(plan, set()) is True
+
+
 def test_ak9r27_aggregate_cash_remains_batch_blocked():
     plan = _plan_with_items(
         state=PendingPlanState.REVIEW_REQUIRED,

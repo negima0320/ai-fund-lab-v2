@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 from pathlib import Path
 
 from ai_fund_lab_v2.strategy.unrepresentable_reduce_exit_shadow import (
+    BINARY_MATERIALIZATION_CONTRACT_VERSION,
     MODE,
     PRODUCER,
     SCHEMA_VERSION,
@@ -13,9 +13,6 @@ from ai_fund_lab_v2.strategy.unrepresentable_reduce_exit_shadow import (
     materialize_unrepresentable_reduce_exit_shadow_for_day,
     write_unrepresentable_reduce_exit_shadow_artifact,
 )
-
-
-TARGET_RUN = Path("reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260818T015851711672Z")
 
 
 def test_phase31_c0d_one_lot_unrepresentable_reduce_shadow_non_mutating(tmp_path: Path) -> None:
@@ -41,6 +38,9 @@ def test_phase31_c0d_one_lot_unrepresentable_reduce_shadow_non_mutating(tmp_path
     assert decision["desired_reduction_fraction"] == 0.25
     assert decision["actual_reduction_fraction"] == 0.0
     assert decision["representation_error"] == 0.25
+    assert payload["binary_materialization_contract_version"] == BINARY_MATERIALIZATION_CONTRACT_VERSION
+    assert decision["shadow_only"] is True
+    assert decision["historical_outcome_input_used"] is False
     assert payload["actual_trading_path_mutated"] is False
     assert payload["canonical_pm_action_mutated"] is False
     assert (pm, ps, rp, si, mc) == originals
@@ -60,6 +60,8 @@ def test_phase31_c0d_representable_multi_lot_reduce_is_not_exit_candidate() -> N
     assert decision["reduce_representability_state"] == "REPRESENTABLE"
     assert decision["shadow_state"] == "REPRESENTABLE_REDUCE"
     assert decision["alternative_g_shadow_action"] == "REDUCE"
+    assert decision["shadow_binary_decision"] == "SHADOW_NOT_APPLICABLE"
+    assert decision["shadow_binary_eligibility_reason"] == "PARTIAL_REDUCE_EXECUTABLE"
     assert decision["branch"] == "NONE"
 
 
@@ -99,6 +101,8 @@ def test_phase31_f1a_minimum_notional_reduce_is_separate_unresolved_family() -> 
     assert decision["shadow_state"] == "PARAMETER_UNRESOLVED"
     assert decision["alternative_g_shadow_action"] == "PRESERVE"
     assert decision["parameter_resolution_state"] == "MINIMUM_NOTIONAL_POLICY_UNRESOLVED"
+    assert decision["shadow_binary_decision"] == "SHADOW_NOT_APPLICABLE"
+    assert decision["shadow_binary_eligibility_reason"] == "REPRESENTABILITY_FAMILY:MINIMUM_NOTIONAL"
 
 
 def test_phase31_c0d_immediate_branch_structural_candidate() -> None:
@@ -186,6 +190,7 @@ def test_phase31_c0d_existing_pm_exit_is_not_interfered_with() -> None:
     assert decision["baseline_pm_action"] == "EXIT"
     assert decision["shadow_state"] == "NOT_APPLICABLE"
     assert decision["alternative_g_shadow_action"] == "BASELINE"
+    assert decision["shadow_binary_decision"] == "SHADOW_NOT_APPLICABLE"
     assert payload["canonical_pm_action_mutated"] is False
 
 
@@ -204,15 +209,309 @@ def test_phase31_c0d_future_dated_evidence_fails_pit_proof() -> None:
     decision = payload["decisions"][0]
     assert decision["pit_validation_state"] == "FAIL_FUTURE_DATED_EVIDENCE"
     assert decision["shadow_state"] == "EVIDENCE_INSUFFICIENT"
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["shadow_binary_authority_status"] == "FAIL_CLOSED"
     assert decision["future_information_used"] is False
 
 
+def test_phase32_bl_lot_blocked_reduce_shadow_full_exit_from_current_pit_risk_evidence() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        run_id="runtime-test-current",
+        profile_id="historical-extended-smoke",
+        position_management_payload=_pm("62280", action="REDUCE", intensity="LIGHT", reason_codes=["risk_increased_but_trend_not_broken"]),
+        position_sizing_payload=_ps("62280", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("62280"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "62280",
+            expected_edge_status="DETERIORATING",
+            trend_state="MIXED",
+            relative_strength_state="MIXED",
+            participation_quality_state="WEAK",
+            exhaustion_risk_state="ELEVATED_RISK",
+            current_campaign_relative_return=-0.01,
+            run_id="runtime-test-current",
+            profile_id="historical-extended-smoke",
+        ),
+        market_context_payload=_market_context(),
+        source_artifacts={"strategy_intelligence": "reports/runtime_tests/runs/runtime-test-current/daily/2022-09-13/strategy/strategy_intelligence.json"},
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_FULL_EXIT"
+    assert decision["shadow_binary_eligibility_status"] == "PASS"
+    assert decision["production_actual_action"] == "NO_ORDER"
+    assert decision["production_actual_quantity"] == 0
+    assert decision["shadow_order_authority"] is False
+    assert decision["action_score_decisive_authority"] is False
+    assert decision["historical_outcome_input_used"] is False
+    assert any(item["signal"] == "exhaustion_risk" for item in decision["exit_side_evidence"])
+
+
+def test_phase32_bl_lot_blocked_reduce_shadow_hold_from_current_pit_continuation_evidence() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("67310", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("67310", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("67310"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "67310",
+            expected_edge_status="ADEQUATE",
+            trend_state="SUPPORTIVE",
+            relative_strength_state="SUPPORTIVE",
+            participation_quality_state="SUPPORTIVE",
+            exhaustion_risk_state="MANAGEABLE",
+            persistence_state="SUPPORTIVE",
+            strong_medium_term_structure=True,
+            current_campaign_relative_return=0.08,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_HOLD"
+    assert decision["shadow_binary_eligibility_status"] == "PASS"
+    assert decision["production_actual_action"] == "NO_ORDER"
+    assert any(item["signal"] == "relative_strength" for item in decision["hold_side_evidence"])
+    assert decision["decisive_semantic_rationale"].startswith("multiple current PIT continuation")
+
+
+def test_phase32_bl_lot_blocked_reduce_shadow_mixed_evidence_remains_insufficient() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("74270", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("74270", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("74270"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "74270",
+            expected_edge_status="DETERIORATING",
+            trend_state="SUPPORTIVE",
+            relative_strength_state="SUPPORTIVE",
+            exhaustion_risk_state="ELEVATED_RISK",
+            current_campaign_relative_return=0.03,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["shadow_binary_eligibility_status"] == "PASS"
+    assert decision["production_actual_action"] == "NO_ORDER"
+
+
+def test_phase32_bo_profit_alone_cannot_force_hold() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("62310", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("62310", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("62310"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "62310",
+            expected_edge_status="ADEQUATE",
+            trend_state="MIXED",
+            relative_strength_state="MIXED",
+            participation_quality_state="MIXED",
+            exhaustion_risk_state="MIXED",
+            participation_risk_state="MANAGEABLE",
+            current_campaign_relative_return=0.25,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert "profit_cushion" not in {item["signal"] for item in decision["hold_side_evidence"]}
+    assert decision["semantic_evidence_used"]["profit_cushion_standalone_hold_authority"] is False
+
+
+def test_phase32_bo_profit_alone_cannot_force_sell() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("74770", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("74770", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("74770"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "74770",
+            expected_edge_status="ADEQUATE",
+            trend_state="",
+            relative_strength_state="",
+            participation_quality_state="",
+            exhaustion_risk_state="",
+            participation_risk_state="MANAGEABLE",
+            current_campaign_relative_return=0.25,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["semantic_evidence_used"]["profit_cushion_context"][0]["state"] == "PRESENT_CONTEXT_ONLY"
+
+
+def test_phase32_bo_profit_plus_strong_continuation_supports_hold() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("62280", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("62280", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("62280"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "62280",
+            expected_edge_status="ADEQUATE",
+            trend_state="SUPPORTIVE",
+            relative_strength_state="SUPPORTIVE",
+            participation_quality_state="SUPPORTIVE",
+            exhaustion_risk_state="MANAGEABLE",
+            persistence_state="SUPPORTIVE",
+            strong_medium_term_structure=True,
+            current_campaign_relative_return=0.1,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_HOLD"
+    assert decision["semantic_evidence_used"]["profit_cushion_context"][0]["state"] == "CONTEXTUAL_HOLD_SUPPORT"
+
+
+def test_phase32_bo_profit_plus_deterioration_not_blocked_from_exit_by_profit() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("67310", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("67310", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("67310"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "67310",
+            expected_edge_status="ADEQUATE",
+            trend_state="WEAK",
+            relative_strength_state="WEAK",
+            participation_quality_state="WEAK",
+            exhaustion_risk_state="MIXED",
+            current_campaign_relative_return=0.5,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_FULL_EXIT"
+    assert "profit_cushion" not in {item["signal"] for item in decision["hold_side_evidence"]}
+    assert decision["semantic_evidence_used"]["profit_cushion_context"][0]["state"] == "PROFIT_AT_RISK"
+
+
+def test_phase32_bo_profit_plus_mixed_relative_does_not_full_exit_winner_control() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("74270", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("74270", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("74270"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "74270",
+            expected_edge_status="ADEQUATE",
+            trend_state="WEAK",
+            relative_strength_state="MIXED",
+            participation_quality_state="WEAK",
+            exhaustion_risk_state="MIXED",
+            participation_risk_state="ELEVATED_RISK",
+            current_campaign_relative_return=0.35,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["semantic_evidence_used"]["profit_cushion_context"][0]["state"] == "PROFIT_AT_RISK"
+    assert decision["semantic_evidence_used"]["profit_cushion_standalone_hold_authority"] is False
+
+
+def test_phase32_bo_profit_plus_mild_deterioration_does_not_full_exit_winner_control() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=_pm("83040", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("83040", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("83040"),
+        strategy_intelligence_payload=_strategy_intelligence(
+            "83040",
+            expected_edge_status="ADEQUATE",
+            trend_state="WEAK",
+            relative_strength_state="MIXED",
+            participation_quality_state="MIXED",
+            exhaustion_risk_state="MIXED",
+            participation_risk_state="MANAGEABLE",
+            current_campaign_relative_return=0.2,
+        ),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["semantic_evidence_used"]["profit_cushion_context"][0]["state"] == "PROFIT_AT_RISK"
+    assert decision["semantic_evidence_used"]["profit_cushion_standalone_hold_authority"] is False
+
+
+def test_phase32_bl_non_reduce_actions_do_not_invoke_binary_shadow() -> None:
+    for action in ("BUY", "HOLD", "EXIT"):
+        payload = build_unrepresentable_reduce_exit_shadow_payload(
+            business_date="2022-09-13",
+            position_management_payload=_pm("72140", action=action, intensity="NONE"),
+            position_sizing_payload=_ps("72140", quantity=100, ratio=0.25, rounded=0, final=0),
+            runtime_planning_payload=_rp("72140"),
+            strategy_intelligence_payload=_strategy_intelligence("72140"),
+            market_context_payload=_market_context(),
+        )
+        decision = payload["decisions"][0]
+        assert decision["shadow_binary_decision"] == "SHADOW_NOT_APPLICABLE"
+        assert decision["shadow_binary_eligibility_status"] == "NOT_APPLICABLE"
+
+
+def test_phase32_bl_missing_campaign_provenance_fails_closed_for_binary_shadow() -> None:
+    pm = _pm("83040", action="REDUCE", intensity="LIGHT", campaign_id="")
+    pm["positions"][0]["position_campaign_id"] = ""
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        position_management_payload=pm,
+        position_sizing_payload=_ps("83040", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("83040"),
+        strategy_intelligence_payload=_strategy_intelligence("83040"),
+        market_context_payload=_market_context(),
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["shadow_binary_authority_status"] == "FAIL_CLOSED"
+    assert "MISSING_CAMPAIGN_ID" in decision["shadow_binary_eligibility_reason"]
+
+
+def test_phase32_bl_cross_run_strategy_evidence_fails_closed() -> None:
+    payload = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date="2022-09-13",
+        run_id="runtime-test-current",
+        position_management_payload=_pm("69730", action="REDUCE", intensity="LIGHT"),
+        position_sizing_payload=_ps("69730", quantity=100, ratio=0.25, rounded=0, final=0),
+        runtime_planning_payload=_rp("69730"),
+        strategy_intelligence_payload=_strategy_intelligence("69730", run_id="runtime-test-other"),
+        market_context_payload=_market_context(),
+        source_artifacts={"strategy_intelligence": "reports/runtime_tests/runs/runtime-test-other/daily/2022-09-13/strategy/strategy_intelligence.json"},
+    )
+
+    decision = payload["decisions"][0]
+    assert decision["pit_validation_state"] == "FAIL_STALE_OR_CROSS_RUN_EVIDENCE"
+    assert decision["shadow_binary_decision"] == "SHADOW_INSUFFICIENT_EVIDENCE"
+    assert decision["shadow_binary_authority_status"] == "FAIL_CLOSED"
+
+
 def test_phase31_c0d_materialization_writes_only_diagnostic_shadow(tmp_path: Path) -> None:
-    source_day = TARGET_RUN / "daily" / "2022-09-13"
     run_root = tmp_path / "run"
     day_root = run_root / "daily" / "2022-09-13"
-    shutil.copytree(source_day / "strategy", day_root / "strategy")
-    (run_root / "run_state.json").write_text(json.dumps({"completed_business_days": ["2022-09-13"]}), encoding="utf-8")
+    strategy_root = day_root / "strategy"
+    strategy_root.mkdir(parents=True)
+    (strategy_root / "position_management.json").write_text(json.dumps(_pm("61750", action="REDUCE", intensity="LIGHT")), encoding="utf-8")
+    (strategy_root / "position_sizing.json").write_text(json.dumps(_ps("61750", quantity=100, ratio=0.25, rounded=0, final=0)), encoding="utf-8")
+    (strategy_root / "runtime_planning.json").write_text(json.dumps(_rp("61750")), encoding="utf-8")
+    (strategy_root / "strategy_intelligence.json").write_text(json.dumps(_strategy_intelligence("61750")), encoding="utf-8")
+    (strategy_root / "market_context.json").write_text(json.dumps(_market_context()), encoding="utf-8")
+    (run_root / "run_state.json").write_text(
+        json.dumps({"run_id": "run", "profile": "historical-extended-smoke", "completed_business_days": ["2022-09-13"]}),
+        encoding="utf-8",
+    )
     before = {
         "pm": (day_root / "strategy" / "position_management.json").read_bytes(),
         "ps": (day_root / "strategy" / "position_sizing.json").read_bytes(),
@@ -298,27 +597,46 @@ def _strategy_intelligence(
     entry_state: str = "CONTINUATION_WITH_CAUTION",
     admission_action: str = "ADD_REDUCED_ONLY",
     trend_state: str = "MIXED",
+    relative_strength_state: str = "MIXED",
+    participation_quality_state: str = "WEAK",
+    exhaustion_risk_state: str = "ELEVATED_RISK",
+    participation_risk_state: str = "ELEVATED_RISK",
+    persistence_state: str = "MIXED",
+    strong_medium_term_structure: bool | None = None,
+    current_campaign_relative_return: float | None = None,
+    run_id: str = "",
+    profile_id: str = "",
 ) -> dict:
     return {
         "business_date": "2022-09-13",
         "feature_date": "2022-09-13",
+        "run_id": run_id,
+        "profile_id": profile_id,
         "future_information_used": False,
         "symbol_intelligence": {
             symbol: {
                 "expected_edge": {"status": expected_edge_status, "future_information_used": False, "not_action_authority": True},
-                "entry_admission": {"entry_state": entry_state, "admission_action": admission_action, "future_information_used": False},
+                "entry_admission": {
+                    "entry_state": entry_state,
+                    "admission_action": admission_action,
+                    "future_information_used": False,
+                    "consumed_evidence": {"strong_medium_term_structure": strong_medium_term_structure},
+                },
                 "continuation_quality": {
                     "status": "PASS",
                     "trend_health": {"state": trend_state, "as_of_date": "2022-09-13"},
-                    "persistence": {"state": "MIXED", "as_of_date": "2022-09-13"},
-                    "participation_quality": {"state": "WEAK", "as_of_date": "2022-09-13"},
+                    "persistence": {"state": persistence_state, "as_of_date": "2022-09-13"},
+                    "participation_quality": {"state": participation_quality_state, "as_of_date": "2022-09-13"},
+                    "relative_strength": {"state": relative_strength_state, "as_of_date": "2022-09-13"},
+                    "exhaustion_risk": {"state": exhaustion_risk_state, "as_of_date": "2022-09-13"},
                     "future_information_used": False,
                 },
-                "downside_risk": {"status": "PASS", "participation_risk": {"state": "ELEVATED_RISK", "as_of_date": "2022-09-13"}},
+                "downside_risk": {"status": "PASS", "participation_risk": {"state": participation_risk_state, "as_of_date": "2022-09-13"}},
                 "lifecycle_context": {
                     "position_campaign_id": f"campaign-{symbol}",
                     "campaign_identity_authority_status": "COMPLETE",
                     "campaign_age_business_days": 10,
+                    "current_campaign_relative_return": current_campaign_relative_return,
                     "reduce_history_summary": {},
                 },
             }

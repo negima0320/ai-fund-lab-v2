@@ -53,6 +53,7 @@ from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import load_runtime_c
 from ai_fund_lab_v2.runtime_v2.provenance import first_text
 from ai_fund_lab_v2.runtime_v2.symbol_identity import same_symbol_identity
 from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
+from ai_fund_lab_v2.strategy.unrepresentable_reduce_exit_shadow import build_unrepresentable_reduce_exit_shadow_payload
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ REDUCE_QUANTITY_CONTRACT_VERSION = "runtime_v2_pm_reduce_quantity_v1"
 DEFAULT_TRADABLE_UNIT = 100.0
 REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY_REASON = "REDUCE_BELOW_MINIMUM_TRADABLE_QUANTITY"
 REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT = "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+LOT_BLOCKED_REDUCE_RECONSIDERATION_CONTRACT_VERSION = "phase32_bq_pm_reduce_lot_blocked_reconsidered_full_exit.v1"
+PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT = "PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT"
 
 
 @dataclass(frozen=True)
@@ -412,6 +415,28 @@ def run_sell_planning_pending_pipeline(
         )
         for decision in selected_decisions
     )
+    quantity_decisions, reconsideration_evidence, reconsideration_failures = _apply_lot_blocked_reduce_full_exit_reconsiderations(
+        quantity_decisions=quantity_decisions,
+        current_positions=current_positions,
+        runtime_root=runtime_root_path,
+        business_date=business_date,
+        mode=mode,
+        environment_capability_context=environment_capability_context,
+    )
+    if reconsideration_failures:
+        return _write_no_signal_pending(
+            runtime_root=runtime_root_path,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            environment=mode,
+            environment_capability_context=environment_capability_context,
+            reason=";".join(str(item.get("reason") or "lot_blocked_reduce_reconsideration_failed") for item in reconsideration_failures),
+            current_position_count=len(current_positions),
+            current_exposure=current_exposure,
+            status="REVIEW_REQUIRED",
+            safety_decision=runtime_safety_decision,
+            lot_blocked_reduce_reconsideration_evidence=reconsideration_failures,
+        )
     non_executable_decisions = tuple(
         decision for decision in quantity_decisions if _is_non_executable_reduce_quantity_contract(decision.quantity_contract)
     )
@@ -447,6 +472,7 @@ def run_sell_planning_pending_pipeline(
             status="PASS",
             safety_decision=runtime_safety_decision,
             non_executable_decisions=non_executable_decisions,
+            lot_blocked_reduce_reconsideration_evidence=reconsideration_evidence,
             existing_buy_pending=existing_buy_pending,
             existing_buy_pending_reason=existing_buy_pending_reason,
             add_result=add_result,
@@ -489,6 +515,8 @@ def run_sell_planning_pending_pipeline(
     order_plan_payload = _jsonable(planning_result.order_plan)
     if non_executable_decisions:
         order_plan_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
+    if reconsideration_evidence:
+        order_plan_payload["lot_blocked_reduce_reconsiderations"] = reconsideration_evidence
     if add_result.requested_count:
         order_plan_payload["pm_add_consumer"] = add_result.to_evidence()
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
@@ -542,6 +570,74 @@ def run_sell_planning_pending_pipeline(
         safety_decision=runtime_safety_decision,
         environment_capability_context=environment_capability_context,
     )
+    if (
+        pre_sell_active_pending is not None
+        and not add_result.accepted_items
+        and int(pre_sell_pending_snapshot.get("buy_item_count") or 0) == 0
+    ):
+        equivalence = _same_day_equivalent_sell_pending_evidence(
+            active_pending=pre_sell_active_pending,
+            current_positions=current_positions,
+            business_date=business_date,
+            target_session_date=target_session_date,
+            snapshot=pre_sell_pending_snapshot,
+        )
+        if equivalence["pending_equivalence_status"] == "EQUIVALENT":
+            evidence = {
+                **pre_sell_pending_snapshot,
+                **equivalence,
+                "classification": "IDEMPOTENT_EXISTING_PENDING",
+                "resolution_action": "REUSE_EXISTING_PENDING",
+                "reason_codes": [
+                    "SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                    "PENDING_PLAN_EXECUTABLE_SELL_DID_NOT_OVERWRITE_ACTIVE",
+                ],
+                "review_required": False,
+                "original_pending_preserved": True,
+                "duplicate_pending_created": False,
+                "pending_overwrite_prevented": True,
+                "opposite_side_preserved": False,
+            }
+            (artifact_dir / "same_day_sell_pending_equivalence_evidence.json").write_text(
+                _json_dumps(evidence),
+                encoding="utf-8",
+            )
+            _write_pending_continuity_evidence(
+                artifact_dir=artifact_dir,
+                reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                status="PASS",
+                evidence=evidence,
+            )
+            pending_path = runtime_root_path / "pending_order_plan" / "pending_order_plan.json"
+            reusable_sell_items = tuple(
+                item
+                for item in pre_sell_active_pending.items
+                if item.side.upper() == "SELL" and item.pending_item_id in set(pre_sell_active_pending.approved_item_ids)
+            )
+            return SellPlanningPipelineResult(
+                status="PASS",
+                reason="IDEMPOTENT_EXISTING_PENDING:SAME_DAY_EQUIVALENT_SELL_PENDING_REUSED",
+                current_position_count=len(current_positions),
+                selected_count=len(reusable_sell_items),
+                blocked_count=0,
+                pending_path=str(pending_path),
+                pending_plan_id=pre_sell_active_pending.pending_plan_id,
+                approval_artifact_path=str(approval_path),
+                order_plan_artifact_path=str(order_plan_path),
+                target_session_date=target_session_date,
+                selected_symbols=tuple(item.symbol for item in reusable_sell_items),
+                current_exposure=current_exposure,
+                pending_composition_model="SAME_DAY_EQUIVALENT_SELL_PENDING_IDEMPOTENCY",
+                pending_composition_status="PASS",
+                preserved_existing_buy_pending=False,
+                composite_pending=False,
+                add_consumer_status=add_result.status,
+                add_consumer_reason=add_result.reason,
+                add_accepted_count=add_result.accepted_count,
+                add_rejected_count=add_result.rejected_count,
+                pre_sell_pending_snapshot=pre_sell_pending_snapshot,
+                **_result_safety_fields(runtime_safety_decision),
+            )
     reconciliation = reconcile_with_existing_sell_pending(
         runtime_root=runtime_root_path,
         pending=pending,
@@ -793,6 +889,7 @@ def _write_no_signal_pending(
     add_result: AddConsumerResult | None = None,
     pre_sell_pending_snapshot: Mapping[str, Any] | None = None,
     current_positions: Mapping[str, CurrentAssetPosition] | None = None,
+    lot_blocked_reduce_reconsideration_evidence: list[dict[str, Any]] | None = None,
 ) -> SellPlanningPipelineResult:
     artifact_dir = _sell_artifact_dir(runtime_root, business_date)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -817,6 +914,8 @@ def _write_no_signal_pending(
     }
     if non_executable_decisions:
         order_plan_payload["non_executable_sell_decisions"] = _non_executable_decision_payload(non_executable_decisions)
+    if lot_blocked_reduce_reconsideration_evidence:
+        order_plan_payload["lot_blocked_reduce_reconsiderations"] = lot_blocked_reduce_reconsideration_evidence
     if add_result is not None:
         order_plan_payload["pm_add_consumer"] = add_result.to_evidence()
     order_plan_path.write_text(_json_dumps(order_plan_payload), encoding="utf-8")
@@ -1930,6 +2029,435 @@ def _pending_item_with_safety_context(*, item: PendingOrderItem, safety_context:
     )
 
 
+def _apply_lot_blocked_reduce_full_exit_reconsiderations(
+    *,
+    quantity_decisions: tuple[SellExitDecision, ...],
+    current_positions: Mapping[str, CurrentAssetPosition],
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> tuple[tuple[SellExitDecision, ...], list[dict[str, Any]], list[dict[str, Any]]]:
+    reconsidered: list[SellExitDecision] = []
+    evidence: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    seen_reconsideration_keys: set[tuple[str, str, str]] = set()
+    for decision in quantity_decisions:
+        if not _is_non_executable_reduce_quantity_contract(decision.quantity_contract):
+            reconsidered.append(decision)
+            continue
+        result = _lot_blocked_reduce_full_exit_reconsideration(
+            decision=decision,
+            current_positions=current_positions,
+            runtime_root=runtime_root,
+            business_date=business_date,
+            mode=mode,
+            environment_capability_context=environment_capability_context,
+        )
+        if result["status"] == "PROMOTED":
+            key = (
+                str(result.get("symbol") or decision.symbol),
+                str(result.get("campaign_id") or decision.position_campaign_id),
+                business_date,
+            )
+            if key in seen_reconsideration_keys:
+                failures.append(
+                    {
+                        **result,
+                        "status": "FAIL_CLOSED",
+                        "reason": "DUPLICATE_LOT_BLOCKED_REDUCE_RECONSIDERATION",
+                    }
+                )
+                continue
+            seen_reconsideration_keys.add(key)
+            promoted_decision = result.get("promoted_decision")
+            if isinstance(promoted_decision, SellExitDecision):
+                reconsidered.append(promoted_decision)
+                evidence.append({key: value for key, value in result.items() if key != "promoted_decision"})
+                continue
+        if result["status"] == "FAIL_CLOSED":
+            failures.append(result)
+            continue
+        reconsidered.append(decision)
+        if result["status"] != "NOT_APPLICABLE":
+            evidence.append(result)
+    return tuple(reconsidered), evidence, failures
+
+
+def _lot_blocked_reduce_full_exit_reconsideration(
+    *,
+    decision: SellExitDecision,
+    current_positions: Mapping[str, CurrentAssetPosition],
+    runtime_root: Path,
+    business_date: str,
+    mode: str,
+    environment_capability_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    contract = dict(decision.quantity_contract or {})
+    contract.setdefault("business_date", business_date)
+    symbol = str(decision.symbol or "").strip()
+    campaign_id = str(decision.position_campaign_id or contract.get("position_campaign_id") or contract.get("campaign_id") or "").strip()
+    context = dict(environment_capability_context or {})
+    sources = _lot_blocked_reduce_reconsideration_sources(
+        business_date=business_date,
+        context=context,
+    )
+    require_evidence = bool(context.get("require_lot_blocked_reduce_reconsideration_evidence"))
+    if sources["status"] != "PASS":
+        if require_evidence:
+            return _lot_blocked_reduce_reconsideration_result(
+                status="FAIL_CLOSED",
+                reason=str(sources.get("reason") or "LOT_BLOCKED_REDUCE_RECONSIDERATION_EVIDENCE_MISSING"),
+                decision=decision,
+                campaign_id=campaign_id,
+                contract=contract,
+                source_status=sources,
+            )
+        return _lot_blocked_reduce_reconsideration_result(
+            status="NOT_APPLICABLE",
+            reason=str(sources.get("reason") or "LOT_BLOCKED_REDUCE_RECONSIDERATION_EVIDENCE_NOT_AVAILABLE"),
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+        )
+    malformed = []
+    if not symbol:
+        malformed.append("MISSING_SYMBOL")
+    if not campaign_id:
+        malformed.append("MISSING_CAMPAIGN_ID")
+    if float(contract.get("raw_reduce_quantity") or 0.0) <= 0:
+        malformed.append("MISSING_DESIRED_REDUCE_QUANTITY")
+    if float(contract.get("final_sell_quantity") or 0.0) != 0.0:
+        malformed.append("EXECUTABLE_REDUCE_NOT_ELIGIBLE")
+    if str(contract.get("reduce_execution_semantic") or contract.get("execution_semantic") or "") != REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT:
+        malformed.append("NOT_DISCRETE_LOT_UNREPRESENTABLE")
+    position = _current_position_by_identity(current_positions, symbol)
+    if position is None or position.quantity <= 0:
+        malformed.append("CURRENT_POSITION_AUTHORITY_MISSING")
+    si_campaign_id = _strategy_intelligence_campaign_id(sources["strategy_intelligence_payload"], symbol)
+    if si_campaign_id and campaign_id and si_campaign_id != campaign_id:
+        malformed.append("CAMPAIGN_IDENTITY_MISMATCH")
+    if malformed:
+        return _lot_blocked_reduce_reconsideration_result(
+            status="FAIL_CLOSED",
+            reason=";".join(malformed),
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+        )
+    pm_payload = _reconsideration_pm_payload(decision=decision, contract=contract, business_date=business_date, campaign_id=campaign_id)
+    ps_payload = _reconsideration_ps_payload(decision=decision, contract=contract, business_date=business_date, campaign_id=campaign_id)
+    rp_payload = _reconsideration_runtime_planning_payload(
+        decision=decision,
+        contract=contract,
+        business_date=business_date,
+        campaign_id=campaign_id,
+    )
+    shadow = build_unrepresentable_reduce_exit_shadow_payload(
+        business_date=business_date,
+        position_management_payload=pm_payload,
+        position_sizing_payload=ps_payload,
+        runtime_planning_payload=rp_payload,
+        strategy_intelligence_payload=sources["strategy_intelligence_payload"],
+        market_context_payload=sources["market_context_payload"],
+        source_artifacts=sources.get("source_artifacts") or {},
+        source_hashes=sources.get("source_hashes") or {},
+        run_id=str(context.get("runtime_test_run_id") or sources.get("run_id") or ""),
+        profile_id=str(context.get("runtime_test_profile_id") or sources.get("profile_id") or ""),
+    )
+    shadow_decision = next((item for item in shadow.get("decisions", []) if same_symbol_identity(str(item.get("symbol") or ""), symbol)), None)
+    if not isinstance(shadow_decision, Mapping):
+        return _lot_blocked_reduce_reconsideration_result(
+            status="FAIL_CLOSED",
+            reason="BO_RECONSIDERATION_DECISION_MISSING",
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+            shadow_payload=shadow,
+        )
+    authority_status = str(shadow_decision.get("shadow_binary_authority_status") or "").upper()
+    eligibility_status = str(shadow_decision.get("shadow_binary_eligibility_status") or "").upper()
+    if authority_status == "FAIL_CLOSED" or eligibility_status == "FAIL_CLOSED":
+        return _lot_blocked_reduce_reconsideration_result(
+            status="FAIL_CLOSED",
+            reason=str(shadow_decision.get("shadow_binary_eligibility_reason") or "BO_RECONSIDERATION_FAIL_CLOSED"),
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+            shadow_decision=shadow_decision,
+        )
+    if str(shadow_decision.get("shadow_binary_decision") or "") != "SHADOW_FULL_EXIT":
+        return _lot_blocked_reduce_reconsideration_result(
+            status="NOT_PROMOTED",
+            reason=f"BO_DECISION_NOT_FULL_EXIT:{shadow_decision.get('shadow_binary_decision')}",
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+            shadow_decision=shadow_decision,
+        )
+    exit_seed = replace(
+        decision,
+        quantity=float(position.quantity),
+        reason=PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
+        source_decision="EXIT",
+    )
+    exit_decision = _quantity_contract_decision(
+        decision=exit_seed,
+        position=position,
+        runtime_root=runtime_root,
+        mode=mode,
+    )
+    exit_contract = dict(exit_decision.quantity_contract or {})
+    exit_contract.update(
+        {
+            "reconsideration_contract_version": LOT_BLOCKED_REDUCE_RECONSIDERATION_CONTRACT_VERSION,
+            "reconsideration_reason": PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
+            "reconsideration_status": "PASS",
+            "reconsidered_action": "FULL_EXIT",
+            "source_pm_action": "REDUCE",
+            "source_pm_decision_id": decision.source_decision_id,
+            "original_source_decision": "REDUCE",
+            "original_reduce_intensity": decision.reduce_intensity,
+            "original_pm_reason": decision.reason,
+            "original_reduce_quantity_contract": contract,
+            "lot_block_reason": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
+            "bo_shadow_binary_decision": "SHADOW_FULL_EXIT",
+            "bo_shadow_artifact_hash": shadow.get("artifact_hash"),
+            "bo_shadow_contract_version": shadow.get("binary_materialization_contract_version"),
+            "bo_pit_evidence": shadow_decision.get("semantic_evidence_used") or {},
+            "bo_hold_side_evidence": shadow_decision.get("hold_side_evidence") or [],
+            "bo_exit_side_evidence": shadow_decision.get("exit_side_evidence") or [],
+            "bo_decisive_semantic_rationale": shadow_decision.get("decisive_semantic_rationale") or "",
+            "runtime_invented_exit": False,
+        }
+    )
+    promoted = replace(
+        exit_decision,
+        reason=PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
+        source_decision="EXIT",
+        reduce_intensity=decision.reduce_intensity,
+        source_decision_artifact=decision.source_decision_artifact,
+        source_decision_id=decision.source_decision_id,
+        position_campaign_id=campaign_id,
+        quantity_contract=exit_contract,
+    )
+    return _lot_blocked_reduce_reconsideration_result(
+        status="PROMOTED",
+        reason=PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
+        decision=decision,
+        campaign_id=campaign_id,
+        contract=contract,
+        source_status=sources,
+        shadow_decision=shadow_decision,
+        promoted_decision=promoted,
+    )
+
+
+def _lot_blocked_reduce_reconsideration_result(
+    *,
+    status: str,
+    reason: str,
+    decision: SellExitDecision,
+    campaign_id: str,
+    contract: Mapping[str, Any],
+    source_status: Mapping[str, Any],
+    shadow_decision: Mapping[str, Any] | None = None,
+    shadow_payload: Mapping[str, Any] | None = None,
+    promoted_decision: SellExitDecision | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "contract_version": LOT_BLOCKED_REDUCE_RECONSIDERATION_CONTRACT_VERSION,
+        "authority_owner": "STRATEGY_MATERIALIZATION_ADAPTER_PM_DERIVED",
+        "status": status,
+        "reason": reason,
+        "symbol": decision.symbol,
+        "business_date": contract.get("business_date") or "",
+        "campaign_id": campaign_id,
+        "source_pm_action": "REDUCE",
+        "source_pm_decision_id": decision.source_decision_id,
+        "original_pm_reason": decision.reason,
+        "original_reduce_intensity": decision.reduce_intensity,
+        "lot_block_reason": REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT,
+        "source_status": _lot_blocked_reduce_source_status_public(source_status),
+        "runtime_invented_exit": False,
+        "shadow_order_authority": False,
+        "shadow_submit_authority": False,
+        "shadow_execution_authority": False,
+    }
+    if shadow_decision is not None:
+        payload.update(
+            {
+                "bo_shadow_binary_decision": shadow_decision.get("shadow_binary_decision"),
+                "bo_shadow_binary_authority_status": shadow_decision.get("shadow_binary_authority_status"),
+                "bo_shadow_binary_eligibility_status": shadow_decision.get("shadow_binary_eligibility_status"),
+                "bo_decisive_semantic_rationale": shadow_decision.get("decisive_semantic_rationale"),
+                "bo_pit_evidence": shadow_decision.get("semantic_evidence_used") or {},
+            }
+        )
+    if shadow_payload is not None:
+        payload["bo_shadow_artifact_hash"] = shadow_payload.get("artifact_hash")
+    if promoted_decision is not None:
+        payload["promoted_decision"] = promoted_decision
+        payload["reconsidered_action"] = "FULL_EXIT"
+        payload["downstream_source_decision"] = "EXIT"
+        payload["downstream_quantity"] = promoted_decision.quantity
+    return payload
+
+
+def _lot_blocked_reduce_source_status_public(source_status: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in dict(source_status).items()
+        if key not in {"strategy_intelligence_payload", "market_context_payload"}
+    }
+
+
+def _lot_blocked_reduce_reconsideration_sources(*, business_date: str, context: Mapping[str, Any]) -> dict[str, Any]:
+    direct_si = context.get("lot_blocked_reduce_reconsideration_strategy_intelligence_payload")
+    direct_market = context.get("lot_blocked_reduce_reconsideration_market_context_payload")
+    if isinstance(direct_si, Mapping) and isinstance(direct_market, Mapping):
+        return {
+            "status": "PASS",
+            "reason": "direct_lot_blocked_reduce_reconsideration_evidence",
+            "strategy_intelligence_payload": dict(direct_si),
+            "market_context_payload": dict(direct_market),
+            "source_artifacts": dict(context.get("lot_blocked_reduce_reconsideration_source_artifacts") or {}),
+            "source_hashes": dict(context.get("lot_blocked_reduce_reconsideration_source_hashes") or {}),
+            "run_id": str(context.get("runtime_test_run_id") or ""),
+            "profile_id": str(context.get("runtime_test_profile_id") or ""),
+        }
+    evidence_root = str(context.get("runtime_test_evidence_root") or "")
+    if not evidence_root:
+        return {"status": "MISSING", "reason": "LOT_BLOCKED_REDUCE_RECONSIDERATION_EVIDENCE_ROOT_MISSING"}
+    strategy_dir = Path(evidence_root) / "daily" / business_date / "strategy"
+    si_path = strategy_dir / "strategy_intelligence.json"
+    market_path = strategy_dir / "market_context.json"
+    if not si_path.is_file() or not market_path.is_file():
+        return {
+            "status": "MISSING",
+            "reason": "LOT_BLOCKED_REDUCE_RECONSIDERATION_STRATEGY_EVIDENCE_MISSING",
+            "strategy_intelligence_path": str(si_path),
+            "market_context_path": str(market_path),
+        }
+    return {
+        "status": "PASS",
+        "reason": "run_scoped_strategy_evidence",
+        "strategy_intelligence_payload": _read_json_object(si_path),
+        "market_context_payload": _read_json_object(market_path),
+        "source_artifacts": {
+            "strategy_intelligence": str(si_path),
+            "market_context": str(market_path),
+        },
+        "source_hashes": {
+            "strategy_intelligence": _file_sha256(si_path),
+            "market_context": _file_sha256(market_path),
+        },
+        "run_id": str(context.get("runtime_test_run_id") or ""),
+        "profile_id": str(context.get("runtime_test_profile_id") or ""),
+    }
+
+
+def _reconsideration_pm_payload(
+    *,
+    decision: SellExitDecision,
+    contract: Mapping[str, Any],
+    business_date: str,
+    campaign_id: str,
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "positions": [
+            {
+                "security_code": decision.symbol,
+                "symbol": decision.symbol,
+                "action": "REDUCE",
+                "decision": "REDUCE",
+                "intensity": decision.reduce_intensity,
+                "reduce_intensity": decision.reduce_intensity,
+                "reason": decision.reason,
+                "reason_codes": [decision.reason] if decision.reason else [],
+                "decision_id": decision.source_decision_id,
+                "source_pm_decision_id": decision.source_decision_id,
+                "position_campaign_id": campaign_id,
+                "campaign_id": campaign_id,
+                "current_quantity": contract.get("position_quantity_before"),
+            }
+        ],
+    }
+
+
+def _reconsideration_ps_payload(
+    *,
+    decision: SellExitDecision,
+    contract: Mapping[str, Any],
+    business_date: str,
+    campaign_id: str,
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "positions": [
+            {
+                "security_code": decision.symbol,
+                "symbol": decision.symbol,
+                "action": "REDUCE",
+                "position_campaign_id": campaign_id,
+                "campaign_id": campaign_id,
+                "current_quantity": contract.get("position_quantity_before"),
+                "target_reduce_ratio": contract.get("target_reduce_ratio"),
+                "reduce_fraction": contract.get("target_reduce_ratio"),
+                "raw_reduce_quantity": contract.get("raw_reduce_quantity"),
+                "rounded_reduce_quantity": contract.get("rounded_reduce_quantity"),
+                "final_sell_quantity": contract.get("final_sell_quantity"),
+                "reduce_final_sell_quantity": contract.get("final_sell_quantity"),
+                "trading_unit": contract.get("tradable_unit"),
+                "tradable_unit": contract.get("tradable_unit"),
+                "reduce_execution_semantic": contract.get("reduce_execution_semantic"),
+                "reduce_executability_evidence": dict(contract),
+            }
+        ],
+    }
+
+
+def _reconsideration_runtime_planning_payload(
+    *,
+    decision: SellExitDecision,
+    contract: Mapping[str, Any],
+    business_date: str,
+    campaign_id: str,
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "items": [
+            {
+                "security_code": decision.symbol,
+                "symbol": decision.symbol,
+                "source_decision": "REDUCE",
+                "position_campaign_id": campaign_id,
+                "campaign_id": campaign_id,
+                "no_order_reason": contract.get("reduce_execution_semantic") or contract.get("execution_semantic"),
+                "reduce_execution_semantic": contract.get("reduce_execution_semantic"),
+                "quantity_contract": dict(contract),
+            }
+        ],
+    }
+
+
+def _strategy_intelligence_campaign_id(strategy_intelligence_payload: Mapping[str, Any], symbol: str) -> str:
+    entries = strategy_intelligence_payload.get("symbol_intelligence")
+    if not isinstance(entries, Mapping):
+        return ""
+    for key, value in entries.items():
+        if same_symbol_identity(str(key), symbol) and isinstance(value, Mapping):
+            lifecycle = value.get("lifecycle_context") if isinstance(value.get("lifecycle_context"), Mapping) else {}
+            return str(lifecycle.get("position_campaign_id") or lifecycle.get("campaign_id") or "")
+    return ""
+
+
 def _ai_signal(decision: SellExitDecision, rank: int) -> AIPlanningSignal:
     source_decision = str(decision.source_decision or "EXIT").upper()
     return AIPlanningSignal(
@@ -2907,6 +3435,10 @@ def _reject_mode_rooted_runtime_root(root: Path) -> None:
 
 def _hash(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _jsonable(value: Any) -> Any:

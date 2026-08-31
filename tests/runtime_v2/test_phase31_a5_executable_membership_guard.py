@@ -360,6 +360,106 @@ def test_phase32_aa_buy_item_review_plus_pass_sell_preserves_partial_submission(
     assert "buy-ca" not in authority.executable_item_ids
 
 
+def test_phase32_ax_mixed_review_sell_scope_preserves_independent_pass_sell(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    business_date = "2023-10-11"
+    _write_current(
+        root,
+        business_date=business_date,
+        cash=816_580.0,
+        positions=[
+            {"symbol": "50280", "quantity": 100, "market_value": 46_100.0},
+            {"symbol": "92460", "quantity": 100, "market_value": 313_000.0},
+        ],
+    )
+    policy = _policy(tmp_path)
+    ca_sell = replace(
+        _sell_item("sell-ca-50280", symbol="50280"),
+        quantity_contract=_quantity_contract("50280")
+        | {
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+                "corporate_action_adjustment_authority_reason": "corporate_action_event_not_resolved",
+                "corporate_action_adjustment_authority_path": (
+                    "runtime_state/corporate_action_adjustments/2023-10-11/50280.json"
+                ),
+                "corporate_action_event_status": "IMPACT_DETECTED",
+                "corporate_action_adjustment_factor": 1.0 / 3.0,
+            },
+        },
+        listed_info={
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+                "corporate_action_adjustment_authority_reason": "corporate_action_event_not_resolved",
+                "corporate_action_adjustment_authority_path": (
+                    "runtime_state/corporate_action_adjustments/2023-10-11/50280.json"
+                ),
+                "corporate_action_event_status": "IMPACT_DETECTED",
+                "corporate_action_adjustment_factor": 1.0 / 3.0,
+            },
+        },
+    )
+    pass_sell = replace(
+        _sell_item("sell-pass-92460", symbol="92460"),
+        quantity_contract=_quantity_contract("92460")
+        | {
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "PASS",
+                "corporate_action_adjustment_authority_reason": "corporate_action_not_detected",
+                "corporate_action_event_status": "PASS",
+                "corporate_action_adjustment_factor": 1.0,
+            },
+        },
+        listed_info={
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "PASS",
+                "corporate_action_adjustment_authority_reason": "corporate_action_not_detected",
+                "corporate_action_event_status": "PASS",
+                "corporate_action_adjustment_factor": 1.0,
+            },
+        },
+    )
+    review_buy = replace(
+        _buy_item("buy-review-38560", symbol="38560"),
+        quantity=100.0,
+        estimated_price=10_000.0,
+        estimated_amount=1_000_000.0,
+        reserved_notional=1_000_000.0,
+    )
+    pending = _pending(
+        (review_buy, ca_sell, pass_sell),
+        policy=policy,
+        environment="historical",
+        business_date=business_date,
+    )
+
+    linked = attach_approval_link(
+        pending,
+        approval_path=f"approval_artifact/{business_date}/approval.json",
+        approval_hash="approval-hash",
+        approval_status="APPROVED",
+        approved_item_ids=("buy-review-38560", "sell-ca-50280", "sell-pass-92460"),
+        approval_expires_at=f"{business_date}T15:00:00+09:00",
+        planning_submit_feasibility_current=load_runtime_current_exposure(
+            root / "persistent_ledger" / "state.json",
+            business_date=business_date,
+        ),
+        planning_submit_feasibility_policy=policy,
+    )
+    authority = build_pending_review_scope_authority(linked)
+
+    assert linked.state == PendingPlanState.REVIEW_REQUIRED
+    assert linked.review_scope == "MIXED_SELL_ITEM_SCOPED_REVIEW"
+    assert linked.sell_continuation_allowed is True
+    assert linked.approved_sell_item_ids == ("sell-pass-92460",)
+    assert linked.approved_buy_item_ids == ()
+    assert linked.review_required_sell_item_ids == ("sell-ca-50280",)
+    assert "buy-review-38560" in linked.review_required_buy_item_ids
+    assert authority.executable_sell_item_ids == ("sell-pass-92460",)
+    assert authority.reviewed_sell_item_ids == ("sell-ca-50280",)
+    assert authority.batch_blocked is False
+
+
 def test_phase31_a5_submit_blocked_evidence_materializes_typed_guard_fields() -> None:
     cases = (
         ("aggregate_submit_feasibility", "aggregate_submit_feasibility_review_required", "BUY"),

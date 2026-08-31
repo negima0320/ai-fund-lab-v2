@@ -664,3 +664,62 @@ This SoT materializes accepted findings from:
 
 Phase reports are provenance. This document is the enduring architecture
 contract.
+
+## 26. Phase32-AR Deferred Marginal Comparator and Accepted Current Spec
+
+Phase32-AR records that the current accepted specification remains valid while
+high-resolution improvement research is deferred:
+
+```text
+CURRENT_SPEC_ACCEPTED_WITH_DEFERRED_IMPROVEMENT_RESEARCH
+```
+
+The current baseline for Winner Graduation / ADD capitalization is:
+
+```text
+persistent eligibility + PC/PS/G129 per-order authority
+```
+
+Mandatory fresh-event or Graduation Episode semantics are not part of the
+current accepted Production baseline. Existing successful graduation examples
+such as `94340` and `76470` are explained by persistent eligibility plus
+Portfolio Construction, Position Sizing, and G129 order-increment authority for
+each actual BUY_ADD.
+
+Known limitation:
+
+```text
+REPLACE_HEAVY_HYBRID / WEAK_WINNER_GRADUATION / STARTER_SATURATION
+NO_CORRECTNESS_DEFECT_CONFIRMED
+```
+
+This limitation remains a performance architecture concern. It does not prove a
+Strategy or Runtime correctness defect.
+
+Deferred comparator track:
+
+```text
+High-resolution NEW / ADD / Cash marginal capital comparison
+Status: DEFERRED
+Production comparator change: NOT AUTHORIZED
+```
+
+Known concern:
+
+- current NEW / ADD / Cash comparison is not fully expressed in one calibrated
+  marginal-JPY value unit;
+- direct comparable durable-winner NEW / ADD competitions were rare in the
+  current Phase32 evidence;
+- current evidence is insufficient to justify redesign or Production
+  activation.
+
+This document therefore continues to be an architecture SoT for future
+capability work only. It does not implement a comparator, schema, producer,
+consumer, threshold, weight, model, runtime behavior, or trading behavior.
+
+Future revisit requires independent evidence across longer Historical windows,
+multiple years and regimes, larger durable-winner samples, repeated weak
+graduation, repeated starter saturation, and repeated Cash / NEW allocation
+while valid incumbents remain undercapitalized. Historical performance outcome
+alone must not select features, weights, thresholds, ranking rules, comparator
+rules, or rotation rules.

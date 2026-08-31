@@ -8,7 +8,9 @@ PC, PS, broker, and valuation decisions.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
@@ -177,6 +179,7 @@ def evaluate_historical_pending_safety_authority(
     runtime_test_run_id: str,
     runtime_test_profile_id: str,
     runtime_test_evidence_root: str,
+    runtime_root: Path | None = None,
 ) -> dict[str, Any]:
     payload = dict(pending_payload.get("payload") or {})
     safety_context = dict(payload.get("safety_context") or {})
@@ -206,6 +209,7 @@ def evaluate_historical_pending_safety_authority(
             pending_payload=pending_payload,
             business_date=business_date,
             mode="historical",
+            runtime_root=runtime_root,
         )
     )
     pending_retry = same_day_failed_attempt_pending_retry_ineligible(
@@ -540,6 +544,7 @@ def pending_scope_current_valuation_adapter_ready(
     pending_payload: dict[str, Any],
     business_date: str,
     mode: str,
+    runtime_root: Path | None = None,
 ) -> bool:
     payload = dict(pending_payload.get("payload") or {})
     state = _pending_state(pending_payload)
@@ -561,7 +566,7 @@ def pending_scope_current_valuation_adapter_ready(
         item = by_id.get(item_id)
         if not item or str(item.get("state") or "").upper() != "CONSUMED":
             return False
-    for item_id in authority.reviewed_buy_item_ids:
+    for item_id in authority.reviewed_buy_item_ids + authority.reviewed_sell_item_ids:
         item = by_id.get(item_id)
         if not item or str(item.get("state") or "").upper() != "REVIEW_REQUIRED":
             return False
@@ -569,7 +574,115 @@ def pending_scope_current_valuation_adapter_ready(
             return False
         if str(item.get("batch_submit_status") or "") != "ITEM_REVIEW_REQUIRED":
             return False
+        if _pending_item_has_side_effect_identity(item):
+            return False
+    if authority.review_scope == "MIXED_SELL_ITEM_SCOPED_REVIEW" and not _mixed_sell_consumed_execution_ledger_authority_ready(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        pending_plan_id=authority.source_pending_plan_id,
+        consumed_item_ids=authority.executable_sell_item_ids,
+    ):
+        return False
     return True
+
+
+def _pending_item_has_side_effect_identity(item: dict[str, Any]) -> bool:
+    scalar_fields = (
+        "submitted_order_id",
+        "accepted_order_id",
+        "ledger_order_id",
+        "ledger_order_record_id",
+        "execution_id",
+        "execution_reference",
+        "fill_id",
+        "order_id",
+    )
+    collection_fields = (
+        "submitted_order_ids",
+        "accepted_order_ids",
+        "ledger_order_ids",
+        "ledger_order_record_ids",
+        "execution_ids",
+        "execution_references",
+        "fill_ids",
+        "order_ids",
+    )
+    return any(bool(item.get(field)) for field in scalar_fields) or any(
+        bool(item.get(field) or []) for field in collection_fields
+    )
+
+
+def _mixed_sell_consumed_execution_ledger_authority_ready(
+    *,
+    runtime_root: Path | None,
+    business_date: str,
+    pending_plan_id: str,
+    consumed_item_ids: tuple[str, ...],
+) -> bool:
+    if runtime_root is None or not consumed_item_ids:
+        return False
+    orders = _ledger_rows_for_business_date(runtime_root / "persistent_ledger" / "orders.jsonl", business_date)
+    executions = _ledger_rows_for_business_date(runtime_root / "persistent_ledger" / "executions.jsonl", business_date)
+    positions = _ledger_rows_for_business_date(runtime_root / "persistent_ledger" / "positions.jsonl", business_date)
+    cash = _ledger_rows_for_business_date(runtime_root / "persistent_ledger" / "cash.jsonl", business_date)
+    if len(cash) != 1:
+        return False
+    for item_id in consumed_item_ids:
+        order_rows = _rows_for_pending_item(orders, pending_plan_id=pending_plan_id, pending_item_id=item_id)
+        execution_rows = _rows_for_pending_item(executions, pending_plan_id=pending_plan_id, pending_item_id=item_id)
+        position_rows = _rows_for_pending_item(
+            positions,
+            pending_plan_id="",
+            pending_item_id=item_id,
+            require_pending_plan_id=False,
+        )
+        if len(order_rows) != 1 or len(execution_rows) != 1 or len(position_rows) != 1:
+            return False
+        order = order_rows[0]
+        execution = execution_rows[0]
+        if str(order.get("side") or "").upper() != "SELL":
+            return False
+        if str(execution.get("side") or "").upper() != "SELL":
+            return False
+        if str(order.get("symbol") or "") != str(execution.get("symbol") or ""):
+            return False
+        if float(order.get("quantity") or 0.0) <= 0.0:
+            return False
+        if float(execution.get("filled_quantity") or execution.get("quantity") or 0.0) <= 0.0:
+            return False
+    return True
+
+
+def _ledger_rows_for_business_date(path: Path, business_date: str) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return []
+        row_date = str(row.get("business_date") or row.get("as_of") or row.get("date") or "")
+        if row_date == business_date:
+            rows.append(row)
+    return rows
+
+
+def _rows_for_pending_item(
+    rows: list[dict[str, Any]],
+    *,
+    pending_plan_id: str,
+    pending_item_id: str,
+    require_pending_plan_id: bool = True,
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if str(row.get("pending_item_id") or "") == str(pending_item_id)
+        and (not require_pending_plan_id or str(row.get("pending_plan_id") or "") == str(pending_plan_id))
+    ]
 
 
 def historical_pending_item_safety_mismatches(

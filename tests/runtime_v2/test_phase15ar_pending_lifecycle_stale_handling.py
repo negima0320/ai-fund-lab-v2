@@ -435,6 +435,157 @@ def test_phase31_a2_mixed_buy_review_sell_continuation_reviewed_sell_does_not_te
     assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
 
 
+def test_phase32_bc_prior_day_mixed_sell_review_residual_expires_after_terminal_execution(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(runtime_root, target_date=TARGET_DATE)
+    original_pending = _load_json(pending_path)
+    _write_phase32_bc_mixed_sell_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_execution_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    slot = _load_json(pending_path)
+    history = _load_json(Path(result.manifest_fields["history_path"]))
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+
+    assert result.status == "EXPIRED"
+    assert result.reason == "MIXED_SELL_REVIEW_RESIDUAL_PRIOR_DAY_AUTHORITY_EXPIRED"
+    assert slot["state"] == "EMPTY"
+    assert slot["active_pending"] is False
+    assert history["pending_payload"]["items"] == original_pending["items"]
+    assert history["mixed_sell_review_residual_rollover"]["status"] == "PASS"
+    assert authority["status"] == "PASS"
+    assert authority["consumed_executable_sell_item_ids"] == ["approved-sell-92460"]
+    assert authority["expired_residual_review_sell_item_ids"] == ["review-sell-50280"]
+    assert authority["expired_residual_review_buy_item_ids"] == ["review-buy-38560", "review-buy-76920"]
+    assert authority["reviewed_items_submitted"] is False
+    assert authority["reviewed_items_carried_as_new_day_authority"] is False
+    assert authority["new_day_buy_sell_requires_fresh_authority"] is True
+    assert authority["checks"]["execution_fill_count_exact"] is True
+
+
+def test_phase32_bc_prior_day_mixed_sell_review_residual_unconsumed_sell_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        approved_sell_state="APPROVED",
+    )
+    _write_phase32_bc_mixed_sell_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_execution_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "mixed_sell_review_residual_rollover_checks_failed"
+    assert authority["checks"]["executable_items_terminal_consumed"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase32_bc_prior_day_mixed_sell_review_residual_missing_execution_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(runtime_root, target_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_submit_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["execution_manifest_present"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase32_bc_prior_day_mixed_sell_review_residual_duplicate_execution_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(runtime_root, target_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_execution_manifest(runtime_root, business_date=TARGET_DATE, count=2)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["execution_fill_count_exact"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase32_bc_prior_day_mixed_sell_review_residual_reviewed_item_submitted_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(
+        runtime_root,
+        target_date=TARGET_DATE,
+        reviewed_sell_submitted=True,
+    )
+    _write_phase32_bc_mixed_sell_submit_manifest(runtime_root, business_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_execution_manifest(runtime_root, business_date=TARGET_DATE)
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["reviewed_items_not_submitted_or_filled"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
+def test_phase32_bc_prior_day_mixed_sell_review_residual_mismatched_run_binding_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    pending_path = _write_phase32_bc_mixed_sell_review_residual_pending(runtime_root, target_date=TARGET_DATE)
+    _write_phase32_bc_mixed_sell_submit_manifest(
+        runtime_root,
+        business_date=TARGET_DATE,
+        runtime_test_run_id="runtime-test-a",
+    )
+    _write_phase32_bc_mixed_sell_execution_manifest(
+        runtime_root,
+        business_date=TARGET_DATE,
+        runtime_test_run_id="runtime-test-b",
+    )
+
+    result = run_pending_lifecycle_review(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        action="review",
+        now=_now(),
+    )
+
+    authority = result.manifest_fields["mixed_sell_review_residual_rollover"]
+    assert result.status == "REVIEW_REQUIRED"
+    assert authority["checks"]["runtime_test_binding_not_mismatched"] is False
+    assert _load_json(pending_path)["state"] == "REVIEW_REQUIRED"
+
+
 def test_phase31_f1z9_actual_shape_terminal_only_cross_day_closure_expires(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     pending_path = _write_phase31_f1z9_terminal_only_pending(
@@ -2188,6 +2339,217 @@ def _write_phase31_a2_sell_continuation_execution_manifest(root: Path, *, busine
                         "orders_count": 1,
                         "fill_count": 1,
                         "executions_count": 1,
+                        "execution_acceptance_status": "PASS",
+                        "reconcile_status": "PASS",
+                        "transaction_consistency_status": "PASS",
+                        "ledger_commit_status": "PASS",
+                        "current_apply_status": "APPLIED",
+                        "pending_terminalization_status": "NOT_REQUIRED",
+                        "pending_consumed": False,
+                        "pending_mutated": False,
+                        "pending_plan_present": True,
+                        "pending_item_count": 4,
+                        "pending_read_valid": True,
+                        "pending_classification": "VALID",
+                    },
+                }
+            ],
+        },
+    )
+
+
+def _write_phase32_bc_mixed_sell_review_residual_pending(
+    root: Path,
+    *,
+    target_date: str,
+    approved_sell_state: str = "CONSUMED",
+    reviewed_sell_submitted: bool = False,
+) -> Path:
+    path = _write_pending(
+        root,
+        pending_plan_id="pending-phase32-bc-mixed-sell-review-residual",
+        target_date=target_date,
+        mode="historical",
+        symbol="92460",
+        side="SELL",
+        quantity=100,
+    )
+    payload = _load_json(path)
+    reviewed_sell = {
+        "pending_item_id": "review-sell-50280",
+        "symbol": "50280",
+        "side": "SELL",
+        "quantity": 100,
+        "order_type": "MARKET",
+        "estimated_price": 1187,
+        "estimated_amount": 118700,
+        "approved": False,
+        "state": "REVIEW_REQUIRED",
+        "feasibility_status": "REVIEW_REQUIRED",
+        "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+        "item_review_reason": "corporate_action_event_not_resolved",
+    }
+    if reviewed_sell_submitted:
+        reviewed_sell["submitted_order_id"] = "unexpected-reviewed-sell-order"
+    payload.update(
+        {
+            "state": "REVIEW_REQUIRED",
+            "status": "REVIEW_REQUIRED",
+            "plan_overall_status": "MIXED_SELL_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SELL_SUBMISSION",
+            "buy_items_status": "REVIEW_REQUIRED",
+            "sell_items_status": "REVIEW_REQUIRED",
+            "approved_item_ids": ["approved-sell-92460"],
+            "approved_buy_item_ids": [],
+            "approved_sell_item_ids": ["approved-sell-92460"],
+            "review_required_buy_item_ids": ["review-buy-38560", "review-buy-76920"],
+            "review_required_sell_item_ids": ["review-sell-50280"],
+            "review_scope": "MIXED_SELL_ITEM_SCOPED_REVIEW",
+            "review_scope_reason": "corporate_action_event_not_resolved",
+            "review_scope_source": "phase32_ax_mixed_sell_review_contract",
+            "review_reason": "pending_state_review_required_requires_operator_review",
+            "sell_continuation_allowed": True,
+            "consume": {
+                "consumed": False,
+                "submitted_order_ids": ["submitted-92460"],
+                "ledger_order_record_ids": ["ledger-92460"],
+            },
+            "items": [
+                {
+                    "pending_item_id": "review-buy-38560",
+                    "symbol": "38560",
+                    "side": "BUY",
+                    "quantity": 100,
+                    "order_type": "MARKET",
+                    "estimated_price": 3080,
+                    "estimated_amount": 308000,
+                    "approved": False,
+                    "state": "REVIEW_REQUIRED",
+                    "feasibility_status": "REVIEW_REQUIRED",
+                    "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+                    "item_review_reason": "reserved notional exceeds dynamic cash capacity",
+                },
+                {
+                    "pending_item_id": "review-buy-76920",
+                    "symbol": "76920",
+                    "side": "BUY",
+                    "quantity": 100,
+                    "order_type": "MARKET",
+                    "estimated_price": 2245,
+                    "estimated_amount": 224500,
+                    "approved": False,
+                    "state": "REVIEW_REQUIRED",
+                    "feasibility_status": "REVIEW_REQUIRED",
+                    "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+                    "item_review_reason": "corporate_action_event_not_resolved",
+                },
+                reviewed_sell,
+                {
+                    "pending_item_id": "approved-sell-92460",
+                    "symbol": "92460",
+                    "side": "SELL",
+                    "quantity": 100,
+                    "order_type": "MARKET",
+                    "estimated_price": 3250,
+                    "estimated_amount": 325000,
+                    "approved": True,
+                    "state": approved_sell_state,
+                    "feasibility_status": "PASS",
+                    "batch_submit_status": "PASS_ITEM_SUBMITTABLE",
+                    "submitted_order_id": "submitted-92460",
+                    "ledger_order_record_id": "ledger-92460",
+                    "execution_reference": "execution-92460",
+                },
+            ],
+        }
+    )
+    payload["approval"]["approval_status"] = "APPROVED_WITH_MIXED_SELL_ITEM_SCOPED_REVIEW"
+    payload["approval"]["approved_item_ids"] = ["approved-sell-92460"]
+    _write_json(path, payload)
+    return path
+
+
+def _write_phase32_bc_mixed_sell_submit_manifest(
+    root: Path,
+    *,
+    business_date: str,
+    count: int = 1,
+    runtime_test_run_id: str = "",
+) -> None:
+    _write_json(
+        root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-submit-phase32-bc.json",
+        {
+            "schema_version": "1",
+            "job": "submit",
+            "business_date": business_date,
+            "exit_code": 0,
+            "final_state": "CURRENT_STATE_LOADED",
+            "pending_plan_id": "pending-phase32-bc-mixed-sell-review-residual",
+            "pending_read_valid": True,
+            "pending_classification": "VALID",
+            "pending_plan_present": True,
+            "pending_item_count": 4,
+            "submitted_count": count,
+            "submit_action": "SUBMIT",
+            "runtime_test_run_id": runtime_test_run_id,
+            "broker_write": False,
+            "external_delivery": False,
+            "prohibited_actions": {
+                "demo_submit_executed": False,
+                "production_order_executed": False,
+                "broker_write": False,
+                "external_delivery": False,
+            },
+            "stages": [
+                {
+                    "name": "runtime_v2_submit_pipeline",
+                    "status": "PASS",
+                    "details": {
+                        "reason": "pass_sell_items_submit_review_items_deferred",
+                        "pending_plan_id": "pending-phase32-bc-mixed-sell-review-residual",
+                        "submitted_count": count,
+                    },
+                }
+            ],
+        },
+    )
+
+
+def _write_phase32_bc_mixed_sell_execution_manifest(
+    root: Path,
+    *,
+    business_date: str,
+    count: int = 1,
+    runtime_test_run_id: str = "",
+) -> None:
+    _write_json(
+        root / "runtime_state" / "run_manifest" / business_date / "runtime-v2-execution-phase32-bc.json",
+        {
+            "schema_version": "1",
+            "job": "execution",
+            "business_date": business_date,
+            "exit_code": 0,
+            "final_state": "CURRENT_STATE_LOADED",
+            "runtime_test_run_id": runtime_test_run_id,
+            "broker_write": False,
+            "external_delivery": False,
+            "prohibited_actions": {
+                "demo_submit_executed": False,
+                "production_order_executed": False,
+                "broker_write": False,
+                "external_delivery": False,
+            },
+            "stages": [
+                {
+                    "name": "runtime_v2_execution_readonly_pipeline",
+                    "status": "PASS",
+                    "details": {
+                        "status": "PASS",
+                        "reason": "execution readonly ingestion completed",
+                        "execution_action": "EXECUTE",
+                        "submitted_order_count": count,
+                        "orders_count": count,
+                        "fill_count": count,
+                        "executions_count": count,
                         "execution_acceptance_status": "PASS",
                         "reconcile_status": "PASS",
                         "transaction_consistency_status": "PASS",

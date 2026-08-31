@@ -15,6 +15,7 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderPlan, PendingPl
 CONTRACT_ID = "pending_review_scope_authority"
 CONTRACT_VERSION = "phase30_ak9r27_v1"
 BUY_ITEM_SCOPED_REVIEW = "BUY_ITEM_SCOPED_REVIEW"
+MIXED_SELL_ITEM_SCOPED_REVIEW = "MIXED_SELL_ITEM_SCOPED_REVIEW"
 TRUE_BATCH_CASH_FAILURE = "TRUE_BATCH_CASH_FAILURE"
 REVIEWED_SELL_PRESENT = "REVIEWED_SELL_PRESENT"
 MALFORMED_PENDING_SCOPE = "MALFORMED_PENDING_SCOPE"
@@ -159,7 +160,7 @@ def build_pending_review_scope_authority(
         malformed.append("approved_sell_review_overlap")
     if not approved_review_disjoint:
         malformed.append("approved_review_overlap")
-    if reviewed_sell_ids:
+    if reviewed_sell_ids and str(payload.get("review_scope") or "") != MIXED_SELL_ITEM_SCOPED_REVIEW:
         batch_block_reason = REVIEWED_SELL_PRESENT
     else:
         batch_block_reason = _batch_block_reason(payload)
@@ -180,6 +181,18 @@ def build_pending_review_scope_authority(
         executable_ids = [
             item_id
             for item_id in approved_ids
+            if item_id in by_id and _feasibility_pass_or_absent(feasibility_by_id, item_id)
+        ]
+    elif (
+        state == PendingPlanState.REVIEW_REQUIRED.value
+        and str(payload.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW
+        and approved_review_disjoint
+        and reviewed_sell_ids
+        and batch_block_reason == ""
+    ):
+        executable_ids = [
+            item_id
+            for item_id in approved_sell_ids
             if item_id in by_id and _feasibility_pass_or_absent(feasibility_by_id, item_id)
         ]
     terminal_ids = tuple(
@@ -209,14 +222,29 @@ def build_pending_review_scope_authority(
         and approved_review_disjoint
         and batch_block_reason == ""
     )
-    sell_continuation_allowed = bool(
-        payload.get("sell_continuation_allowed")
-        and str(payload.get("review_scope") or "") == BUY_ITEM_SCOPED_REVIEW
-        and not reviewed_sell_ids
+    mixed_sell_partial_submit_allowed = bool(
+        structural_validity == "PASS"
+        and state == PendingPlanState.REVIEW_REQUIRED.value
+        and str(payload.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW
+        and bool(executable_sell_ids)
+        and bool(reviewed_sell_ids)
         and approved_review_disjoint
         and batch_block_reason == ""
     )
+    sell_continuation_allowed = bool(
+        payload.get("sell_continuation_allowed")
+        and str(payload.get("review_scope") or "") in {BUY_ITEM_SCOPED_REVIEW, MIXED_SELL_ITEM_SCOPED_REVIEW}
+        and (not reviewed_sell_ids or str(payload.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW)
+        and approved_review_disjoint
+        and batch_block_reason == ""
+        and (
+            str(payload.get("review_scope") or "") != MIXED_SELL_ITEM_SCOPED_REVIEW
+            or bool(executable_sell_ids)
+        )
+    )
     batch_blocked = bool(structural_validity != "PASS" or reviewed_sell_ids or batch_block_reason)
+    if str(payload.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW:
+        batch_blocked = bool(structural_validity != "PASS" or batch_block_reason or not executable_sell_ids)
     if structural_validity != "PASS" and not batch_block_reason:
         batch_block_reason = MALFORMED_PENDING_SCOPE
     return PendingReviewScopeAuthority(
@@ -247,7 +275,7 @@ def build_pending_review_scope_authority(
         approved_review_sets_disjoint=approved_review_disjoint,
         batch_blocked=batch_blocked,
         batch_block_reason=batch_block_reason,
-        partial_submit_allowed=partial_submit_allowed,
+        partial_submit_allowed=bool(partial_submit_allowed or mixed_sell_partial_submit_allowed),
         sell_continuation_allowed=sell_continuation_allowed,
         reviewed_items_must_not_submit=bool(reviewed_ids),
     )
@@ -271,11 +299,17 @@ def pending_scope_allows_sell_continuation(
         return False
     return bool(
         authority.lifecycle_state == PendingPlanState.REVIEW_REQUIRED.value
-        and authority.review_scope == BUY_ITEM_SCOPED_REVIEW
+        and authority.review_scope in {BUY_ITEM_SCOPED_REVIEW, MIXED_SELL_ITEM_SCOPED_REVIEW}
         and authority.target_session_date == business_date
         and authority.sell_continuation_allowed
-        and authority.reviewed_buy_item_ids
-        and not authority.reviewed_sell_item_ids
+        and (bool(authority.reviewed_buy_item_ids) or bool(authority.reviewed_sell_item_ids))
+        and (
+            not authority.reviewed_sell_item_ids
+            or (
+                authority.review_scope == MIXED_SELL_ITEM_SCOPED_REVIEW
+                and bool(authority.executable_sell_item_ids)
+            )
+        )
         and not authority.batch_blocked
     )
 
@@ -307,7 +341,15 @@ def pending_scope_allows_current_valuation_residual(
         and authority.reviewed_buy_item_ids
         and not authority.reviewed_sell_item_ids
     )
-    return bool(terminal_only_residual or buy_item_scoped_review_residual)
+    mixed_sell_post_execution_residual = bool(
+        authority.review_scope == MIXED_SELL_ITEM_SCOPED_REVIEW
+        and authority.reviewed_item_ids
+        and authority.reviewed_sell_item_ids
+        and authority.executable_sell_item_ids
+        and set(authority.executable_item_ids).issubset(set(authority.terminal_item_ids))
+        and not authority.non_terminal_item_ids
+    )
+    return bool(terminal_only_residual or buy_item_scoped_review_residual or mixed_sell_post_execution_residual)
 
 
 def pending_scope_no_submission_terminal_authority(authority: PendingReviewScopeAuthority) -> bool:

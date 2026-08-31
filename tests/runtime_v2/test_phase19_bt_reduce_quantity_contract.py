@@ -11,6 +11,7 @@ from ai_fund_lab_v2.runtime_v2.pending.models import PendingOrderItem, PendingPl
 from ai_fund_lab_v2.runtime_v2.pending.promotion import attach_approval_link, promote_order_plan_to_pending
 from ai_fund_lab_v2.runtime_v2.pending.writer import write_pending_order_plan
 from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
+    PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
     REDUCE_QUANTITY_CONTRACT_VERSION,
     SellExitDecision,
     calculate_reduce_quantity_contract,
@@ -103,6 +104,303 @@ def test_phase20_m_zero_rounded_reduce_generates_no_order_and_runtime_can_contin
     assert contract["position_quantity_after"] == 300
     assert contract["runtime_continuation_status"] == "PASS"
     assert contract["position_lifecycle_event"] == "REDUCE_NOT_EXECUTED_MINIMUM_TRADABLE_QUANTITY"
+
+
+def test_phase32_bq_bo_full_exit_promotes_lot_blocked_reduce_to_single_sell_exit(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("67310", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="67310",
+                quantity=0,
+                reason="risk_increased_but_trend_not_broken",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-67310-reduce",
+                position_campaign_id="pc-bq-67310",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+                "67310",
+                campaign_id="pc-bq-67310",
+                trend_state="WEAK",
+                relative_strength_state="WEAK",
+                participation_quality_state="WEAK",
+                participation_risk_state="ELEVATED_RISK",
+                current_campaign_relative_return=0.5,
+            ),
+            lot_blocked_reduce_reconsideration_market_context_payload=_market_context(),
+        ),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+    item = pending["items"][0]
+    contract = item["quantity_contract"]
+
+    assert result.status == "PASS"
+    assert result.selected_count == 1
+    assert item["side"] == "SELL"
+    assert item["quantity"] == 100
+    assert item["source_decision_id"] == "pm-2026-07-08-67310-reduce"
+    assert item["source_pm_decision_id"] == "pm-2026-07-08-67310-reduce"
+    assert item["position_campaign_id"] == "pc-bq-67310"
+    assert contract["source_decision"] == "EXIT"
+    assert contract["source_pm_action"] == "REDUCE"
+    assert contract["reconsidered_action"] == "FULL_EXIT"
+    assert contract["reconsideration_reason"] == PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT
+    assert contract["original_reduce_quantity_contract"]["reduce_execution_semantic"] == "REDUCE_UNEXECUTABLE_DUE_TO_DISCRETE_LOT"
+    assert contract["original_reduce_quantity_contract"]["final_sell_quantity"] == 0
+    assert contract["bo_shadow_binary_decision"] == "SHADOW_FULL_EXIT"
+    assert contract["runtime_invented_exit"] is False
+    assert len(order_plan["items"]) == 1
+    assert order_plan["lot_blocked_reduce_reconsiderations"][0]["status"] == "PROMOTED"
+    assert "non_executable_sell_decisions" not in order_plan
+
+
+def test_phase32_bq_bo_hold_does_not_promote_lot_blocked_reduce(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("69730", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="69730",
+                quantity=0,
+                reason="peak_drawdown_warning",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-69730-reduce",
+                position_campaign_id="pc-bq-69730",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+                "69730",
+                campaign_id="pc-bq-69730",
+                trend_state="SUPPORTIVE",
+                relative_strength_state="SUPPORTIVE",
+                participation_quality_state="SUPPORTIVE",
+                exhaustion_risk_state="MANAGEABLE",
+                persistence_state="SUPPORTIVE",
+                strong_medium_term_structure=True,
+                current_campaign_relative_return=0.08,
+            ),
+            lot_blocked_reduce_reconsideration_market_context_payload=_market_context(),
+        ),
+    )
+    pending = _load_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+
+    assert result.status == "PASS"
+    assert result.selected_count == 0
+    assert pending["items"] == []
+    assert pending["active_pending"] is False
+    assert order_plan["lot_blocked_reduce_reconsiderations"][0]["status"] == "NOT_PROMOTED"
+    assert "BO_DECISION_NOT_FULL_EXIT:SHADOW_HOLD" in order_plan["lot_blocked_reduce_reconsiderations"][0]["reason"]
+    assert order_plan["non_executable_sell_decisions"][0]["original_decision"] == "REDUCE"
+
+
+def test_phase32_bq_bo_insufficient_does_not_promote_lot_blocked_reduce(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("74270", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="74270",
+                quantity=0,
+                reason="weak_hold_score",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-74270-reduce",
+                position_campaign_id="pc-bq-74270",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+                "74270",
+                campaign_id="pc-bq-74270",
+                trend_state="WEAK",
+                relative_strength_state="MIXED",
+                participation_quality_state="WEAK",
+                participation_risk_state="ELEVATED_RISK",
+                current_campaign_relative_return=0.03,
+            ),
+            lot_blocked_reduce_reconsideration_market_context_payload=_market_context(),
+        ),
+    )
+    order_plan = _load_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+
+    assert result.status == "PASS"
+    assert result.selected_count == 0
+    assert order_plan["lot_blocked_reduce_reconsiderations"][0]["status"] == "NOT_PROMOTED"
+    assert "BO_DECISION_NOT_FULL_EXIT:SHADOW_INSUFFICIENT_EVIDENCE" in order_plan["lot_blocked_reduce_reconsiderations"][0]["reason"]
+
+
+def test_phase32_bq_stale_or_future_bo_evidence_fails_closed_when_required(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("67310", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="67310",
+                quantity=0,
+                reason="risk_increased_but_trend_not_broken",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-67310-reduce",
+                position_campaign_id="pc-bq-67310",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            runtime_test_run_id="runtime-test-current",
+            require_lot_blocked_reduce_reconsideration_evidence=True,
+            lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+                "67310",
+                campaign_id="pc-bq-67310",
+                run_id="runtime-test-other",
+                feature_date="2026-07-09",
+                trend_state="WEAK",
+                relative_strength_state="WEAK",
+                participation_quality_state="WEAK",
+                current_campaign_relative_return=0.5,
+            ),
+            lot_blocked_reduce_reconsideration_market_context_payload=_market_context(feature_date="2026-07-09"),
+        ),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "FAIL_FUTURE_DATED_EVIDENCE" in result.reason
+
+
+def test_phase32_bq_campaign_identity_mismatch_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("67310", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="67310",
+                quantity=0,
+                reason="risk_increased_but_trend_not_broken",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-67310-reduce",
+                position_campaign_id="pc-bq-67310",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            require_lot_blocked_reduce_reconsideration_evidence=True,
+            lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+                "67310",
+                campaign_id="pc-bq-other-campaign",
+                trend_state="WEAK",
+                relative_strength_state="WEAK",
+                participation_quality_state="WEAK",
+                current_campaign_relative_return=0.5,
+            ),
+            lot_blocked_reduce_reconsideration_market_context_payload=_market_context(),
+        ),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "CAMPAIGN_IDENTITY_MISMATCH" in result.reason
+
+
+def test_phase32_bq_missing_required_bo_evidence_fails_closed(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("67310", quantity=100, price=1000)])
+
+    result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(
+            SellExitDecision(
+                symbol="67310",
+                quantity=0,
+                reason="risk_increased_but_trend_not_broken",
+                source_decision="REDUCE",
+                reduce_intensity="LIGHT",
+                source_decision_id="pm-2026-07-08-67310-reduce",
+                position_campaign_id="pc-bq-67310",
+            ),
+        ),
+        environment_capability_context=_historical_context(
+            runtime_test_evidence_root="",
+            require_lot_blocked_reduce_reconsideration_evidence=True,
+        ),
+    )
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "LOT_BLOCKED_REDUCE_RECONSIDERATION_EVIDENCE_ROOT_MISSING" in result.reason
+
+
+def test_phase32_bq_reconsidered_full_exit_retry_reuses_existing_pending(tmp_path):
+    runtime_root = _runtime_root(tmp_path, mode="historical")
+    _write_current_state(runtime_root, mode="historical", positions=[_position("67310", quantity=100, price=1000)])
+    context = _historical_context(
+        lot_blocked_reduce_reconsideration_strategy_intelligence_payload=_strategy_intelligence(
+            "67310",
+            campaign_id="pc-bq-67310",
+            trend_state="WEAK",
+            relative_strength_state="WEAK",
+            participation_quality_state="WEAK",
+            participation_risk_state="ELEVATED_RISK",
+            current_campaign_relative_return=0.5,
+        ),
+        lot_blocked_reduce_reconsideration_market_context_payload=_market_context(),
+    )
+    decision = SellExitDecision(
+        symbol="67310",
+        quantity=0,
+        reason="risk_increased_but_trend_not_broken",
+        source_decision="REDUCE",
+        reduce_intensity="LIGHT",
+        source_decision_id="pm-2026-07-08-67310-reduce",
+        position_campaign_id="pc-bq-67310",
+    )
+
+    first = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(decision,),
+        environment_capability_context=context,
+    )
+    before = (runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8")
+    retry = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=(decision,),
+        environment_capability_context=context,
+    )
+    after = (runtime_root / "pending_order_plan" / "pending_order_plan.json").read_text(encoding="utf-8")
+
+    assert first.status == "PASS"
+    assert retry.status == "PASS"
+    assert retry.pending_composition_model == "SAME_DAY_EQUIVALENT_SELL_PENDING_IDEMPOTENCY"
+    assert before == after
 
 
 def test_phase20_m_reduce_boundary_and_invalid_quantity_contracts():
@@ -529,8 +827,8 @@ def _load_policy(path: Path):
     return load_capital_deployment_policy(path)
 
 
-def _historical_context() -> dict:
-    return {
+def _historical_context(**overrides) -> dict:
+    context = {
         "runtime_mode": "historical",
         "historical_replay": True,
         "broker_environment": "historical_simulated",
@@ -543,6 +841,73 @@ def _historical_context() -> dict:
         "runtime_test_run_id": "phase19bt-test",
         "runtime_test_profile_id": "historical-smoke",
         "runtime_test_evidence_root": "reports/runtime_tests/runs/phase19bt-test",
+    }
+    context.update(overrides)
+    return context
+
+
+def _strategy_intelligence(
+    symbol: str,
+    *,
+    campaign_id: str,
+    feature_date: str = BUSINESS_DATE,
+    run_id: str = "phase19bt-test",
+    trend_state: str = "MIXED",
+    relative_strength_state: str = "MIXED",
+    participation_quality_state: str = "WEAK",
+    exhaustion_risk_state: str = "MIXED",
+    participation_risk_state: str = "MANAGEABLE",
+    persistence_state: str = "MIXED",
+    strong_medium_term_structure: bool | None = None,
+    current_campaign_relative_return: float | None = None,
+) -> dict:
+    return {
+        "business_date": BUSINESS_DATE,
+        "feature_date": feature_date,
+        "run_id": run_id,
+        "profile_id": "historical-smoke",
+        "future_information_used": False,
+        "symbol_intelligence": {
+            symbol: {
+                "expected_edge": {"status": "ADEQUATE", "future_information_used": False},
+                "entry_admission": {
+                    "entry_state": "CONTINUATION_WITH_CAUTION",
+                    "admission_action": "ADD_REDUCED_ONLY",
+                    "future_information_used": False,
+                    "consumed_evidence": {"strong_medium_term_structure": strong_medium_term_structure},
+                },
+                "continuation_quality": {
+                    "status": "PASS",
+                    "trend_health": {"state": trend_state, "as_of_date": feature_date},
+                    "relative_strength": {"state": relative_strength_state, "as_of_date": feature_date},
+                    "participation_quality": {"state": participation_quality_state, "as_of_date": feature_date},
+                    "exhaustion_risk": {"state": exhaustion_risk_state, "as_of_date": feature_date},
+                    "persistence": {"state": persistence_state, "as_of_date": feature_date},
+                    "future_information_used": False,
+                },
+                "downside_risk": {
+                    "status": "PASS",
+                    "participation_risk": {"state": participation_risk_state, "as_of_date": feature_date},
+                },
+                "lifecycle_context": {
+                    "position_campaign_id": campaign_id,
+                    "campaign_identity_authority_status": "COMPLETE",
+                    "campaign_age_business_days": 20,
+                    "current_campaign_relative_return": current_campaign_relative_return,
+                },
+            }
+        },
+    }
+
+
+def _market_context(*, feature_date: str = BUSINESS_DATE) -> dict:
+    return {
+        "business_date": BUSINESS_DATE,
+        "feature_date": feature_date,
+        "run_id": "phase19bt-test",
+        "profile_id": "historical-smoke",
+        "trend_regime": "RECOVERY",
+        "regime_state": "RECOVERY",
     }
 
 

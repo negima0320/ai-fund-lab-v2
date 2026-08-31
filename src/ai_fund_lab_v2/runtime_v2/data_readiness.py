@@ -1829,6 +1829,7 @@ def _safety_readiness_payload(
             runtime_test_run_id=runtime_test_run_id,
             runtime_test_profile_id=runtime_test_profile_id,
             runtime_test_evidence_root=runtime_test_evidence_root,
+            runtime_root=root,
         )
         previous_empty_present = _previous_empty_pending_present(
             pending_payload=pending_payload,
@@ -2056,6 +2057,7 @@ def _pending_readiness_payload(
         runtime_test_run_id=runtime_test_run_id,
         runtime_test_profile_id=runtime_test_profile_id,
         runtime_test_evidence_root=runtime_test_evidence_root,
+        runtime_root=root,
     )
     pending_retry = _same_day_failed_attempt_pending_retry_ineligible(
         pending_payload={"payload": payload, "source_paths": {"pending": str(path)}, "slot_status": state, "active_pending": active_pending},
@@ -2113,6 +2115,7 @@ def _pending_readiness_payload(
                 },
                 business_date=business_date,
                 mode=mode,
+                runtime_root=root,
             )
         ):
             return {

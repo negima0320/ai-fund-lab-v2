@@ -7,6 +7,10 @@ from pathlib import Path
 import pandas as pd
 
 from ai_fund_lab_v2.runtime_v2.historical_support.environment import HistoricalSubmitAdapter
+from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
+    evaluate_corporate_action_adjustment_authority,
+    materialize_corporate_action_adjustment_authority,
+)
 from ai_fund_lab_v2.runtime_v2.submit.models import RuntimeV2SubmitCommand
 
 
@@ -149,6 +153,64 @@ def test_phase24_il_corporate_action_adjustment_authority_blocks_stale_pending_q
     assert result.status == "HALT"
     assert result.response_classification["corporate_action_adjustment_authority_status"] == "BLOCK"
     assert "corporate_action_submit_quantity_exceeds_adjusted_quantity" in result.response_classification["reason_codes"]
+
+
+def test_phase32_ax_corporate_action_authority_rejects_stale_cross_run_lineage(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    business_date = BUSINESS_DATE
+    symbol = "33500"
+    old_source = tmp_path / "runtime-test-old" / "raw_ohlcv.parquet"
+    new_source = tmp_path / "runtime-test-new" / "raw_ohlcv.parquet"
+    old_source.parent.mkdir(parents=True, exist_ok=True)
+    new_source.parent.mkdir(parents=True, exist_ok=True)
+    old_source.write_text("old-run-source", encoding="utf-8")
+    new_source.write_text("new-run-source", encoding="utf-8")
+    _write_adjustment_authority(
+        runtime_root,
+        raw_ohlcv_path=old_source,
+        symbol=symbol,
+        pre_quantity=100,
+        post_quantity=200,
+        factor=0.5,
+    )
+    event = {
+        "corporate_action_status": "IMPACT_DETECTED",
+        "corporate_action_type": "UNKNOWN_ADJFACTOR_IMPACT",
+        "corporate_action_type_authority": "not_available_from_adjfactor_only",
+        "corporate_action_effective_date": business_date,
+        "corporate_action_adjustment_factor": 0.5,
+        "corporate_action_artifact_path": str(new_source),
+        "corporate_action_source": "jquants_raw_equities_bars_daily_adjfactor",
+    }
+
+    materialized = materialize_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=symbol,
+        event_evidence=event,
+        current_quantity=100,
+        broker_available_quantity=100,
+        pending_quantity=100,
+        submit_quantity=100,
+    )
+    evaluated = evaluate_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        business_date=business_date,
+        symbol=symbol,
+        side="SELL",
+        submit_quantity=100,
+        pending_quantity=100,
+        current_quantity=100,
+        broker_available_quantity=100,
+        event_evidence=event,
+    )
+
+    assert materialized["source_artifact_path"] == str(new_source)
+    assert materialized["source_artifact_hash"] == _sha(new_source)
+    assert "runtime-test-old" not in materialized["source_artifact_path"]
+    assert evaluated["corporate_action_adjustment_authority_status"] == "REVIEW_REQUIRED"
+    assert "corporate_action_source_artifact_mismatch" not in evaluated["reason_codes"]
+    assert "corporate_action_event_source_hash_mismatch" not in evaluated["reason_codes"]
 
 
 def test_phase20_bu_corporate_action_authority_missing_fails_closed(tmp_path: Path) -> None:

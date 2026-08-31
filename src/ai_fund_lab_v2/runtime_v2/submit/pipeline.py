@@ -36,6 +36,8 @@ from ai_fund_lab_v2.runtime_v2.pending.composition import is_buy_item_scoped_rev
 from ai_fund_lab_v2.runtime_v2.pending.no_order_authority import validate_materialized_no_order_authority
 from ai_fund_lab_v2.runtime_v2.pending.reader import read_pending_order_plan_path
 from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    BUY_ITEM_SCOPED_REVIEW,
+    MIXED_SELL_ITEM_SCOPED_REVIEW,
     build_pending_review_scope_authority,
     pending_scope_allows_partial_submit,
     pending_scope_no_submission_terminal_authority,
@@ -388,14 +390,14 @@ def run_submit_pipeline(
     )
     item_results: list[SubmitItemResult] = []
     ledger_records: list[LedgerOrderRecord] = []
-    item_scoped_review_evidence = _buy_item_scoped_review_partial_submission_evidence(pending)
+    item_scoped_review_evidence = _item_scoped_review_partial_submission_evidence(pending)
     item_scoped_partial_submit = bool(item_scoped_review_evidence)
     existing_submitted_items = _existing_submitted_item_records(
         runtime_root_path,
         pending=pending,
         business_date=business_date,
     )
-    reviewed_item_results = _reviewed_buy_item_results(pending, item_scoped_review_evidence=item_scoped_review_evidence)
+    reviewed_item_results = _reviewed_item_results(pending, item_scoped_review_evidence=item_scoped_review_evidence)
     approved_items = tuple(
         item
         for approved_item_id in pending.approved_item_ids
@@ -831,7 +833,10 @@ def run_submit_pipeline(
     elif unsubmitted_review_present and terminal_non_executable_present:
         reason = "submitted_with_reviewed_and_terminal_non_executable_items_not_submitted"
     elif unsubmitted_review_present:
-        reason = "submitted_with_reviewed_buy_items_not_submitted"
+        if str(item_scoped_review_evidence.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW:
+            reason = "submitted_with_reviewed_items_not_submitted"
+        else:
+            reason = "submitted_with_reviewed_buy_items_not_submitted"
     elif terminal_non_executable_present:
         reason = "submitted_with_terminal_non_executable_items_not_submitted"
 
@@ -1276,29 +1281,42 @@ def _payload_item_count(payload: Mapping[str, Any] | None) -> int:
     return len(items) if isinstance(items, list) else 0
 
 
-def _buy_item_scoped_review_partial_submission_evidence(pending: PendingOrderPlan) -> dict[str, Any]:
+def _item_scoped_review_partial_submission_evidence(pending: PendingOrderPlan) -> dict[str, Any]:
     scope_authority = build_pending_review_scope_authority(pending)
     if not pending_scope_allows_partial_submit(scope_authority):
         return {}
     approved_ids = set(scope_authority.executable_item_ids)
-    reviewed_ids = set(scope_authority.reviewed_buy_item_ids)
+    reviewed_ids = set(scope_authority.reviewed_buy_item_ids) | set(scope_authority.reviewed_sell_item_ids)
     reviewed_items = tuple(item for item in pending.items if item.pending_item_id in reviewed_ids)
     submitted_items = tuple(item for item in pending.items if item.pending_item_id in approved_ids)
+    mixed_sell_scope = scope_authority.review_scope == MIXED_SELL_ITEM_SCOPED_REVIEW
     return {
-        "authority_type": "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION",
+        "authority_type": (
+            "MIXED_SELL_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SELL_SUBMISSION"
+            if mixed_sell_scope
+            else "BUY_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SUBMISSION"
+        ),
         "status": "PASS",
-        "reason": "pass_buy_items_submit_review_buy_items_deferred",
+        "reason": (
+            "pass_sell_items_submit_review_items_deferred"
+            if mixed_sell_scope
+            else "pass_buy_items_submit_review_buy_items_deferred"
+        ),
         "pending_plan_id": pending.pending_plan_id,
         "review_scope": scope_authority.review_scope,
         "review_scope_reason": pending.review_scope_reason,
         "pending_review_scope_authority": scope_authority.to_dict(),
         "item_review_does_not_escalate_to_batch_failure": True,
         "true_batch_failure_atomicity_preserved": True,
-        "partial_pass_buy_submission_allowed": True,
+        "partial_pass_buy_submission_allowed": scope_authority.review_scope == BUY_ITEM_SCOPED_REVIEW,
+        "partial_pass_sell_submission_allowed": mixed_sell_scope,
         "reviewed_buy_submitted": False,
+        "reviewed_sell_submitted": False,
         "reviewed_item_count": len(reviewed_items),
         "submitted_candidate_count": len(submitted_items),
         "review_required_buy_item_ids": list(scope_authority.reviewed_buy_item_ids),
+        "review_required_sell_item_ids": list(scope_authority.reviewed_sell_item_ids),
+        "approved_sell_item_ids": list(scope_authority.executable_sell_item_ids),
         "approved_item_ids": list(scope_authority.executable_item_ids),
         "items": [
             {
@@ -1314,7 +1332,11 @@ def _buy_item_scoped_review_partial_submission_evidence(pending: PendingOrderPla
                 if item.pending_item_id in reviewed_ids
                 else "",
                 "blocked_other_items": False if item.pending_item_id in reviewed_ids else None,
-                "batch_membership": "active_pending_buy_item_scoped_review_batch",
+                "batch_membership": (
+                    "active_pending_mixed_sell_item_scoped_review_batch"
+                    if mixed_sell_scope
+                    else "active_pending_buy_item_scoped_review_batch"
+                ),
             }
             for item in pending.items
             if item.pending_item_id in reviewed_ids or item.pending_item_id in approved_ids
@@ -1322,14 +1344,15 @@ def _buy_item_scoped_review_partial_submission_evidence(pending: PendingOrderPla
     }
 
 
-def _reviewed_buy_item_results(
+def _reviewed_item_results(
     pending: PendingOrderPlan,
     *,
     item_scoped_review_evidence: Mapping[str, Any],
 ) -> list[SubmitItemResult]:
     if not item_scoped_review_evidence:
         return []
-    reviewed_ids = set(pending.review_required_buy_item_ids)
+    reviewed_ids = set(pending.review_required_buy_item_ids) | set(pending.review_required_sell_item_ids)
+    mixed_sell_scope = str(item_scoped_review_evidence.get("review_scope") or "") == MIXED_SELL_ITEM_SCOPED_REVIEW
     results: list[SubmitItemResult] = []
     for item in pending.items:
         if item.pending_item_id not in reviewed_ids:
@@ -1357,7 +1380,11 @@ def _reviewed_buy_item_results(
                 configuration_diagnostic={},
                 next_action="defer until item authority is repaired or refreshed",
                 guard_evidence={
-                    "authority_type": "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED",
+                    "authority_type": (
+                        "MIXED_SELL_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+                        if mixed_sell_scope
+                        else "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+                    ),
                     "status": "PASS",
                     "symbol": item.symbol,
                     "side": item.side,
@@ -1367,7 +1394,11 @@ def _reviewed_buy_item_results(
                     "review_scope": pending.review_scope,
                     "review_reason": reason,
                     "not_submitted_reason": "item_scoped_review_required",
-                    "batch_membership": "active_pending_buy_item_scoped_review_batch",
+                    "batch_membership": (
+                        "active_pending_mixed_sell_item_scoped_review_batch"
+                        if mixed_sell_scope
+                        else "active_pending_buy_item_scoped_review_batch"
+                    ),
                     "blocked_other_items": False,
                 },
             )
@@ -1869,6 +1900,12 @@ def _is_deferred_item_scoped_review_result(
     item_scoped_review_evidence: Mapping[str, Any],
 ) -> bool:
     reviewed_ids = set(str(item_id) for item_id in item_scoped_review_evidence.get("review_required_buy_item_ids") or ())
+    reviewed_ids |= set(str(item_id) for item_id in item_scoped_review_evidence.get("review_required_sell_item_ids") or ())
+    review_scope = str(item_scoped_review_evidence.get("review_scope") or "")
+    allowed_authority_types = {
+        "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED",
+        "MIXED_SELL_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED",
+    }
     return bool(
         result.review_required
         and not result.submitted
@@ -1877,8 +1914,9 @@ def _is_deferred_item_scoped_review_result(
         and not result.unknown
         and not result.rejected
         and result.pending_item_id in reviewed_ids
-        and str(result.guard_evidence.get("authority_type") or "") == "BUY_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
-        and str(result.guard_evidence.get("review_scope") or "") == "BUY_ITEM_SCOPED_REVIEW"
+        and str(result.guard_evidence.get("authority_type") or "") in allowed_authority_types
+        and str(result.guard_evidence.get("review_scope") or "") == review_scope
+        and review_scope in {BUY_ITEM_SCOPED_REVIEW, MIXED_SELL_ITEM_SCOPED_REVIEW}
         and str(item_scoped_review_evidence.get("status") or "") == "PASS"
         and bool(item_scoped_review_evidence.get("item_review_does_not_escalate_to_batch_failure"))
         and not bool(result.guard_evidence.get("blocked_other_items"))

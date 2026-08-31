@@ -50,6 +50,13 @@ EVIDENCE_ROOT = "/tmp/runtime-test-phase30-ak9r28"
             "historical_pending_safety_authority_mismatch",
         ),
         (
+            "mixed_sell_item_scoped_review",
+            lambda: _mixed_sell_item_scoped_review_pending(),
+            "sell_planning",
+            "READY",
+            "historical_pending_safety_authority_ready",
+        ),
+        (
             "stale_prior_day_pending",
             lambda: _approved_pending(target_date=PREVIOUS_DATE),
             "submit",
@@ -155,6 +162,7 @@ def test_phase30_ak9r28_pending_scope_adapters_delegate_to_ak9r27_authority() ->
         reviewed_batch_status="ITEM_REVIEW_REQUIRED",
     )
     reviewed_sell = _buy_item_scoped_review_pending(include_reviewed_sell=True)
+    mixed_sell = _mixed_sell_item_scoped_review_pending()
 
     assert pending_scope_sell_continuation_adapter_ready(
         pending_payload=_wrap(sell_plan),
@@ -169,6 +177,12 @@ def test_phase30_ak9r28_pending_scope_adapters_delegate_to_ak9r27_authority() ->
     )
     assert not pending_scope_sell_continuation_adapter_ready(
         pending_payload=_wrap(reviewed_sell),
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        readiness_scope="sell_planning",
+    )
+    assert pending_scope_sell_continuation_adapter_ready(
+        pending_payload=_wrap(mixed_sell),
         business_date=BUSINESS_DATE,
         mode="historical",
         readiness_scope="sell_planning",
@@ -273,6 +287,50 @@ def _buy_item_scoped_review_pending(
                 approved=False,
                 batch_submit_status=reviewed_batch_status,
             ),
+        ],
+        "safety_context": _safety_context(safety_business_date=BUSINESS_DATE),
+    }
+
+
+def _mixed_sell_item_scoped_review_pending() -> dict:
+    return {
+        "pending_plan_id": "pending-mixed-sell-item-scoped",
+        "state": "REVIEW_REQUIRED",
+        "environment": "historical",
+        "target_session_date": BUSINESS_DATE,
+        "active_pending": True,
+        "review_scope": "MIXED_SELL_ITEM_SCOPED_REVIEW",
+        "review_scope_source": "planning_submit_feasibility",
+        "sell_continuation_allowed": True,
+        "approved_item_ids": ["sell-pass"],
+        "approved_buy_item_ids": [],
+        "approved_sell_item_ids": ["sell-pass"],
+        "review_required_buy_item_ids": ["buy-review"],
+        "review_required_sell_item_ids": ["sell-review"],
+        "planning_submit_feasibility": {
+            "status": "REVIEW_REQUIRED",
+            "items": [
+                {"pending_item_id": "sell-pass", "status": "PASS", "side": "SELL"},
+                {
+                    "pending_item_id": "buy-review",
+                    "status": "REVIEW_REQUIRED",
+                    "side": "BUY",
+                    "violated_policy": "reserved_cash",
+                    "violated_policy_source": "planning_submit_feasibility",
+                },
+                {
+                    "pending_item_id": "sell-review",
+                    "status": "REVIEW_REQUIRED",
+                    "side": "SELL",
+                    "violated_policy": "corporate_action_adjustment_authority",
+                    "violated_policy_source": "runtime_state/corporate_action_adjustments/2023-10-11/50280.json",
+                },
+            ],
+        },
+        "items": [
+            _item("sell-pass", side="SELL", state="APPROVED", approved=True),
+            _item("buy-review", side="BUY", state="REVIEW_REQUIRED", approved=False),
+            _item("sell-review", side="SELL", state="REVIEW_REQUIRED", approved=False),
         ],
         "safety_context": _safety_context(safety_business_date=BUSINESS_DATE),
     }

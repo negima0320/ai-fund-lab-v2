@@ -122,6 +122,79 @@ def test_phase30_ak9r6_post_submit_residual_buy_review_allows_current_valuation_
     assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
 
 
+def test_phase32_ba_mixed_sell_post_execution_residual_allows_current_valuation_readiness(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_mixed_sell_post_execution_residual(runtime_root, tmp_path)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+    pending_payload = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    item_states = {item["pending_item_id"]: item["state"] for item in pending_payload["items"]}
+
+    assert result.status == "READY"
+    assert result.payload["components"]["pending"]["post_submit_residual_buy_review_current_valuation_ready"] is True
+    assert result.payload["components"]["pending"]["historical_pending_safety_authority"]["pending_scope_compatible"] is True
+    assert pending_scope_current_valuation_adapter_ready(
+        pending_payload={"payload": pending_payload, "slot_status": "REVIEW_REQUIRED", "active_pending": True},
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        runtime_root=runtime_root,
+    )
+    assert item_states["approved-sell-92460"] == "CONSUMED"
+    assert item_states["review-sell-50280"] == "REVIEW_REQUIRED"
+    assert item_states["review-buy-38560"] == "REVIEW_REQUIRED"
+    assert item_states["review-buy-76920"] == "REVIEW_REQUIRED"
+    assert "pending_review_required" not in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" not in result.payload["review_reasons"]
+
+
+def test_phase32_ba_mixed_sell_unconsumed_pass_sell_blocks_current_valuation(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_mixed_sell_post_execution_residual(runtime_root, tmp_path, approved_sell_state="APPROVED")
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase32_ba_mixed_sell_missing_execution_evidence_blocks_current_valuation(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_mixed_sell_post_execution_residual(runtime_root, tmp_path, include_execution=False)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase32_ba_mixed_sell_duplicate_execution_evidence_blocks_current_valuation(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_mixed_sell_post_execution_residual(runtime_root, tmp_path, duplicate_execution=True)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+    assert "historical_safety_temporal_authority_missing" in result.payload["review_reasons"]
+
+
+def test_phase32_ba_mixed_sell_reviewed_item_marked_approved_blocks_current_valuation(tmp_path):
+    runtime_root = _runtime_root(tmp_path)
+    _write_mixed_sell_post_execution_residual(runtime_root, tmp_path, reviewed_sell_approved=True)
+    _write_stale_latest_safety(runtime_root)
+
+    result = _evaluate(runtime_root, tmp_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert "pending_review_required" in result.payload["review_reasons"]
+
+
 def test_phase31_f1z6_not_executable_terminal_pending_allows_current_valuation_readiness(tmp_path):
     runtime_root = _runtime_root(tmp_path)
     _write_terminal_not_executable_pending(runtime_root, tmp_path)
@@ -640,6 +713,163 @@ def _write_post_submit_residual_buy_review_pending(
             },
             "items": items,
         },
+    )
+
+
+def _write_mixed_sell_post_execution_residual(
+    runtime_root: Path,
+    tmp_path: Path,
+    *,
+    approved_sell_state: str = "CONSUMED",
+    include_execution: bool = True,
+    duplicate_execution: bool = False,
+    reviewed_sell_approved: bool = False,
+) -> None:
+    safety_context = _historical_safety_context(tmp_path)
+    approved_sell_id = "approved-sell-92460"
+    reviewed_sell_id = "review-sell-50280"
+    reviewed_buy_ids = ["review-buy-38560", "review-buy-76920"]
+    items = [
+        _pending_item(approved_sell_id, "92460", "SELL", approved_sell_state, True, "PASS_ITEM_SUBMITTABLE", safety_context),
+        _pending_item(
+            reviewed_sell_id,
+            "50280",
+            "SELL",
+            "REVIEW_REQUIRED",
+            reviewed_sell_approved,
+            "ITEM_REVIEW_REQUIRED",
+            safety_context,
+        ),
+        _pending_item(reviewed_buy_ids[0], "38560", "BUY", "REVIEW_REQUIRED", False, "ITEM_REVIEW_REQUIRED", safety_context),
+        _pending_item(reviewed_buy_ids[1], "76920", "BUY", "REVIEW_REQUIRED", False, "ITEM_REVIEW_REQUIRED", safety_context),
+    ]
+    _write_json(
+        runtime_root / "pending_order_plan" / "pending_order_plan.json",
+        {
+            "schema_version": "phase32_ba_fixture_v1",
+            "pending_plan_id": "pending-phase32-ba",
+            "state": "REVIEW_REQUIRED",
+            "environment": "historical",
+            "target_session_date": BUSINESS_DATE,
+            "plan_created_date": BUSINESS_DATE,
+            "review_reason": "pending_review_required",
+            "review_scope": "MIXED_SELL_ITEM_SCOPED_REVIEW",
+            "review_scope_source": "phase32_ba_fixture",
+            "sell_continuation_allowed": True,
+            "plan_overall_status": "MIXED_SELL_ITEM_SCOPED_REVIEW_PARTIAL_PASS_SELL_SUBMISSION",
+            "approved_item_ids": [approved_sell_id],
+            "approved_buy_item_ids": [],
+            "approved_sell_item_ids": [approved_sell_id],
+            "review_required_buy_item_ids": reviewed_buy_ids,
+            "review_required_sell_item_ids": [reviewed_sell_id],
+            "approval": {"approval_status": "APPROVED_WITH_MIXED_SELL_ITEM_SCOPED_REVIEW", "pending_policy_hash": "policy-hash"},
+            "consume": {
+                "consumed": False,
+                "submitted_order_ids": ["order-92460"],
+                "ledger_order_record_ids": ["ledger-order-92460"],
+            },
+            "safety_policy_version": "historical_replay_neutral_safety_v1",
+            "safety_context": safety_context,
+            "planning_submit_feasibility": {
+                "status": "REVIEW_REQUIRED",
+                "items": [
+                    {"pending_item_id": approved_sell_id, "symbol": "92460", "side": "SELL", "status": "PASS"},
+                    {
+                        "pending_item_id": reviewed_sell_id,
+                        "symbol": "50280",
+                        "side": "SELL",
+                        "status": "REVIEW_REQUIRED",
+                        "violated_policy": "corporate_action_adjustment_authority",
+                        "violated_policy_source": "runtime_state/corporate_action_adjustments/2026-07-06/50280.json",
+                    },
+                    {
+                        "pending_item_id": reviewed_buy_ids[0],
+                        "symbol": "38560",
+                        "side": "BUY",
+                        "status": "REVIEW_REQUIRED",
+                        "violated_policy": "reserved_cash",
+                        "violated_policy_source": "position_sizing_authority",
+                    },
+                    {
+                        "pending_item_id": reviewed_buy_ids[1],
+                        "symbol": "76920",
+                        "side": "BUY",
+                        "status": "REVIEW_REQUIRED",
+                        "violated_policy": "corporate_action_adjustment_authority",
+                        "violated_policy_source": "runtime_state/corporate_action_adjustments/2026-07-06/76920.json",
+                    },
+                ],
+            },
+            "items": items,
+        },
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "orders.jsonl",
+        [
+            {
+                "record_type": "order",
+                "business_date": BUSINESS_DATE,
+                "ledger_record_id": "ledger-order-92460",
+                "order_id": "order-92460",
+                "pending_plan_id": "pending-phase32-ba",
+                "pending_item_id": approved_sell_id,
+                "order_plan_item_id": approved_sell_id,
+                "side": "SELL",
+                "symbol": "92460",
+                "quantity": 100,
+            }
+        ],
+    )
+    execution_rows = []
+    if include_execution:
+        execution_rows.append(
+            {
+                "record_type": "execution",
+                "business_date": BUSINESS_DATE,
+                "ledger_record_id": "ledger-execution-92460",
+                "execution_id": "execution-92460",
+                "order_id": "order-92460",
+                "pending_plan_id": "pending-phase32-ba",
+                "pending_item_id": approved_sell_id,
+                "order_plan_item_id": approved_sell_id,
+                "side": "SELL",
+                "symbol": "92460",
+                "quantity": 100,
+                "filled_quantity": 100,
+            }
+        )
+    if duplicate_execution:
+        execution_rows.append({**execution_rows[0], "ledger_record_id": "ledger-execution-92460-duplicate"})
+    _write_jsonl(runtime_root / "persistent_ledger" / "executions.jsonl", execution_rows)
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "positions.jsonl",
+        [
+            {
+                "record_type": "position",
+                "as_of": BUSINESS_DATE,
+                "business_date": BUSINESS_DATE,
+                "ledger_record_id": "ledger-position-92460",
+                "pending_plan_id": "pending-phase32-ba",
+                "pending_item_id": approved_sell_id,
+                "order_plan_item_id": approved_sell_id,
+                "symbol": "92460",
+                "position_key": "92460",
+                "quantity": 0,
+            }
+        ],
+    )
+    _write_jsonl(
+        runtime_root / "persistent_ledger" / "cash.jsonl",
+        [
+            {
+                "record_type": "cash",
+                "as_of": BUSINESS_DATE,
+                "business_date": BUSINESS_DATE,
+                "ledger_record_id": "ledger-cash-92460",
+                "cash": 1_100_000,
+                "buying_power": 1_100_000,
+            }
+        ],
     )
 
 

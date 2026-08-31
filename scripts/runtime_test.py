@@ -8500,6 +8500,7 @@ def _resume_feature_date_checks(
     run_scoped: dict[str, Any],
     lifecycle_state: str,
 ) -> dict[str, bool]:
+    business_date = str(day.get("business_date") or "")
     expected = str(feature.get("profile_expected_selected_feature_date") or "")
     plan_selected = str(feature.get("selected_feature_date") or day.get("feature_date") or "")
     run_selected = str(run_scoped.get("selected_feature_date") or "")
@@ -8511,6 +8512,8 @@ def _resume_feature_date_checks(
         "run_scoped_selected_feature_date_present": bool(run_selected),
         "run_scoped_selected_matches_plan": bool(run_selected) and (not plan_selected or run_selected == plan_selected),
         "run_scoped_selected_matches_profile_expected": bool(run_selected) and (not expected or run_selected == expected),
+        "run_scoped_selected_not_future": bool(run_selected) and (not business_date or run_selected <= business_date),
+        "run_scoped_run_binding_current": str(run_scoped.get("runtime_test_run_binding_status") or "PASS") == "PASS",
         "plan_expectation_not_used_as_materialized_authority": str(feature.get("authority_status") or "") == "NOT_YET_MATERIALIZED"
         or str(feature.get("source") or "") == "runtime_test_plan_schedule_expectation",
     }
@@ -8519,6 +8522,7 @@ def _resume_feature_date_checks(
 def _run_scoped_feature_date_contract_evidence(*, run_dir: Path | None, business_date: str) -> dict[str, Any]:
     if run_dir is None or not business_date:
         return {}
+    expected_run_id = Path(run_dir).name
     daily_dir = Path(run_dir) / "daily" / business_date
     if not daily_dir.exists():
         return {}
@@ -8537,14 +8541,101 @@ def _run_scoped_feature_date_contract_evidence(*, run_dir: Path | None, business
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        evidence = _market_refresh_feature_date_contract_evidence(
+            payload=payload,
+            source_path=path,
+            business_date=business_date,
+            expected_run_id=expected_run_id,
+        )
+        if evidence:
+            evidence = dict(evidence)
+            evidence["run_scoped_evidence_path"] = str(path)
+            evidence.setdefault("contract_hash", semantic_hash(evidence))
+            evidence.setdefault("runtime_test_run_binding_status", "PASS")
+            return evidence
         evidence = _find_feature_date_contract_evidence(payload)
         if evidence:
             evidence = dict(evidence)
             evidence["run_scoped_evidence_path"] = str(path)
             evidence.setdefault("contract_hash", semantic_hash(evidence))
             evidence.setdefault("status", "PASS")
+            evidence.setdefault("runtime_test_run_binding_status", "PASS")
             return evidence
     return {}
+
+
+def _market_refresh_feature_date_contract_evidence(
+    *,
+    payload: dict[str, Any],
+    source_path: Path,
+    business_date: str,
+    expected_run_id: str,
+) -> dict[str, Any]:
+    if str(payload.get("job") or "") != "market_refresh":
+        return {}
+    details: dict[str, Any] = {}
+    for stage in payload.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("name") or "") == "runtime_v2_market_refresh_pipeline":
+            stage_details = stage.get("details")
+            details = stage_details if isinstance(stage_details, dict) else {}
+            break
+    if not details:
+        return {}
+    selected = str(details.get("selected_feature_date") or payload.get("selected_feature_date") or "")
+    requested = str(details.get("requested_feature_date") or business_date)
+    contract_path_text = str(
+        details.get("feature_date_contract_path")
+        or details.get("contract_artifact_path")
+        or payload.get("feature_date_contract_path")
+        or ""
+    )
+    if not selected or not contract_path_text:
+        return {}
+    contract_path = Path(contract_path_text)
+    if not contract_path.exists():
+        return {}
+    try:
+        contract_payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    contract_selected = str(contract_payload.get("selected_feature_date") or "")
+    contract_requested = str(contract_payload.get("requested_feature_date") or requested)
+    contract_status = str(contract_payload.get("status") or "")
+    run_id = str(payload.get("runtime_test_run_id") or "")
+    binding_status = "PASS"
+    if run_id and expected_run_id and run_id != expected_run_id:
+        binding_status = "MISMATCH"
+    status = contract_status or "UNKNOWN"
+    reason = str(contract_payload.get("reason") or "")
+    if contract_selected and selected != contract_selected:
+        status = "REVIEW_REQUIRED"
+        reason = "market_refresh_feature_date_selected_mismatch"
+    if contract_requested and contract_requested != business_date:
+        status = "REVIEW_REQUIRED"
+        reason = "market_refresh_feature_date_requested_mismatch"
+    if selected > business_date:
+        status = "REVIEW_REQUIRED"
+        reason = "market_refresh_feature_date_selected_future"
+    return {
+        **contract_payload,
+        "source": "runtime_test_run_scoped_market_refresh",
+        "feature_date_authority_source": "normal_feature_date_contract",
+        "contract_source": "materialized_feature_date_contract",
+        "status": status,
+        "reason": reason,
+        "requested_feature_date": contract_requested or requested,
+        "selected_feature_date": selected,
+        "contract_artifact_path": str(contract_path),
+        "market_refresh_manifest_path": str(source_path),
+        "market_refresh_stage": "runtime_v2_market_refresh_pipeline",
+        "runtime_test_run_id": run_id,
+        "runtime_test_profile_id": str(payload.get("runtime_test_profile_id") or ""),
+        "runtime_test_evidence_root": str(payload.get("runtime_test_evidence_root") or ""),
+        "runtime_test_run_binding_status": binding_status,
+        "plan_expectation_used_as_authority": False,
+    }
 
 
 def _find_feature_date_contract_evidence(value: Any) -> dict[str, Any]:

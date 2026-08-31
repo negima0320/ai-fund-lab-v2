@@ -20,6 +20,10 @@ from ai_fund_lab_v2.runtime_v2.pending.models import (
 from ai_fund_lab_v2.runtime_v2.pending.safety_authority import (
     materialize_historical_pending_safety_context,
 )
+from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
+    BUY_ITEM_SCOPED_REVIEW,
+    MIXED_SELL_ITEM_SCOPED_REVIEW,
+)
 from ai_fund_lab_v2.runtime_v2.planning_submit_feasibility import (
     RuntimeCurrentExposure,
     evaluate_planning_submit_feasibility,
@@ -228,8 +232,9 @@ def attach_approval_link(
                 buy_items_status=scope["buy_items_status"],
                 sell_items_status=scope["sell_items_status"],
                 plan_overall_status=(
-                    "APPROVED_WITH_BUY_ITEM_SCOPED_REVIEW"
-                    if approved_pass_ids and scope["review_scope"] == "BUY_ITEM_SCOPED_REVIEW"
+                    "APPROVED_WITH_ITEM_SCOPED_REVIEW"
+                    if approved_pass_ids
+                    and scope["review_scope"] in {BUY_ITEM_SCOPED_REVIEW, MIXED_SELL_ITEM_SCOPED_REVIEW}
                     else "REVIEW_REQUIRED"
                 ),
                 approved_buy_item_ids=tuple(
@@ -430,8 +435,22 @@ def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
         or not str(item.get("violated_policy_source") or "")
         for item in blocked
     )
+    pass_sell_ids = tuple(
+        str(item.get("pending_item_id") or "")
+        for item in items
+        if str(item.get("side") or "").upper() == "SELL"
+        and str(item.get("status") or "") == "PASS"
+        and str(item.get("pending_item_id") or "")
+    )
     buy_item_scoped = bool(blocked_buy_ids) and not blocked_sell_ids and not unknown_authority
-    review_scope = "BUY_ITEM_SCOPED_REVIEW" if buy_item_scoped else "AUTHORITY_UNKNOWN_REVIEW"
+    mixed_sell_item_scoped = bool(blocked_sell_ids) and bool(pass_sell_ids) and not unknown_authority
+    review_scope = (
+        BUY_ITEM_SCOPED_REVIEW
+        if buy_item_scoped
+        else MIXED_SELL_ITEM_SCOPED_REVIEW
+        if mixed_sell_item_scoped
+        else "AUTHORITY_UNKNOWN_REVIEW"
+    )
     return {
         "buy_items_status": "REVIEW_REQUIRED" if blocked_buy_ids else "PASS",
         "sell_items_status": "REVIEW_REQUIRED" if blocked_sell_ids else ("PASS" if sell_present else "NOT_PRESENT"),
@@ -440,7 +459,7 @@ def _review_scope_for_submit_feasibility(evidence: dict) -> dict:
         "review_scope": review_scope,
         "review_scope_source": str(evidence.get("contract_id") or "planning_submit_feasibility"),
         "review_scope_reason": str(evidence.get("reason") or ""),
-        "sell_continuation_allowed": buy_item_scoped,
+        "sell_continuation_allowed": bool(buy_item_scoped or mixed_sell_item_scoped),
     }
 
 
@@ -497,11 +516,19 @@ def _approved_pass_item_ids(
     feasibility_by_id: dict[str, dict],
     scope: dict,
 ) -> tuple[str, ...]:
-    if scope.get("review_scope") != "BUY_ITEM_SCOPED_REVIEW":
+    if scope.get("review_scope") not in {BUY_ITEM_SCOPED_REVIEW, MIXED_SELL_ITEM_SCOPED_REVIEW}:
         return ()
-    if _has_cash_review_item(feasibility_by_id, scope):
+    if scope.get("review_scope") == BUY_ITEM_SCOPED_REVIEW and _has_cash_review_item(feasibility_by_id, scope):
         return ()
     review_required_ids = set(scope["review_required_buy_item_ids"]) | set(scope["review_required_sell_item_ids"])
+    if scope.get("review_scope") == MIXED_SELL_ITEM_SCOPED_REVIEW:
+        return tuple(
+            item_id
+            for item_id in approved_tuple
+            if item_id not in review_required_ids
+            and str(feasibility_by_id.get(item_id, {}).get("side") or "").upper() == "SELL"
+            and str(feasibility_by_id.get(item_id, {}).get("status") or "") == "PASS"
+        )
     return tuple(
         item_id
         for item_id in approved_tuple

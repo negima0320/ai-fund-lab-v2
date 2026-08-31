@@ -149,6 +149,38 @@ def run_pending_lifecycle_review(
                 "mixed_buy_review_sell_continuation_terminalization": mixed_sell_continuation_terminal,
             },
         )
+    mixed_sell_residual_rollover = _mixed_sell_review_residual_rollover_authority(
+        root=root,
+        business_date=business_date,
+        payload=payload,
+    )
+    if mixed_sell_residual_rollover["status"] == "PASS":
+        return _transition_terminal(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            new_state="EXPIRED",
+            reason="MIXED_SELL_REVIEW_RESIDUAL_PRIOR_DAY_AUTHORITY_EXPIRED",
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "unknown_submit_risk": False,
+                "mixed_sell_review_residual_rollover": mixed_sell_residual_rollover,
+            },
+            empty_slot=True,
+        )
+    if mixed_sell_residual_rollover["status"] == "REVIEW_REQUIRED":
+        return _transition_to_review_required(
+            root=root,
+            pending_path=pending_path,
+            payload=payload,
+            reason=mixed_sell_residual_rollover["reason"],
+            transitioned_at=transitioned_at,
+            submit_evidence={
+                **submit_evidence,
+                "mixed_sell_review_residual_rollover": mixed_sell_residual_rollover,
+            },
+        )
     stale_residual_buy_review = _stale_partial_submitted_buy_review_expiration_authority(
         payload=payload,
         business_date=business_date,
@@ -475,6 +507,10 @@ def _write_history(
             "mixed_buy_review_sell_continuation_terminalization",
             {"status": "NOT_APPLICABLE"},
         ),
+        "mixed_sell_review_residual_rollover": submit_evidence.get(
+            "mixed_sell_review_residual_rollover",
+            {"status": "NOT_APPLICABLE"},
+        ),
         "terminal_only_cross_day_closure": submit_evidence.get(
             "terminal_only_cross_day_closure",
             {"status": "NOT_APPLICABLE"},
@@ -537,6 +573,10 @@ def _manifest_transition_fields(
         ),
         "mixed_buy_review_sell_continuation_terminalization": submit_evidence.get(
             "mixed_buy_review_sell_continuation_terminalization",
+            {"status": "NOT_APPLICABLE"},
+        ),
+        "mixed_sell_review_residual_rollover": submit_evidence.get(
+            "mixed_sell_review_residual_rollover",
             {"status": "NOT_APPLICABLE"},
         ),
         "terminal_only_cross_day_closure": submit_evidence.get(
@@ -944,6 +984,163 @@ def _stale_partial_submitted_buy_review_expiration_authority(
     }
 
 
+def _mixed_sell_review_residual_rollover_authority(
+    *,
+    root: Path,
+    business_date: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    authority = build_pending_review_scope_authority(payload)
+    target_session_date = authority.target_session_date
+    reviewed_items = _items_by_ids(payload, authority.reviewed_item_ids)
+    executable_sell_items = _items_by_ids(payload, authority.executable_sell_item_ids)
+    applicable = (
+        authority.lifecycle_state == "REVIEW_REQUIRED"
+        and authority.review_scope == "MIXED_SELL_ITEM_SCOPED_REVIEW"
+        and bool(target_session_date)
+        and target_session_date < business_date
+        and bool(authority.executable_sell_item_ids)
+        and bool(authority.reviewed_sell_item_ids)
+    )
+    base = {
+        "contract_id": "mixed_sell_review_residual_rollover_authority",
+        "contract_version": "phase32_bc_v1",
+        "producer": "runtime_v2.pending.lifecycle_runner",
+        "pending_plan_id": str(payload.get("pending_plan_id") or ""),
+        "business_date": business_date,
+        "original_target_session_date": target_session_date,
+        "pending_review_scope_authority": authority.to_dict(),
+        "consumed_executable_sell_item_ids": list(authority.executable_sell_item_ids),
+        "expired_residual_review_buy_item_ids": list(authority.reviewed_buy_item_ids),
+        "expired_residual_review_sell_item_ids": list(authority.reviewed_sell_item_ids),
+        "reviewed_items_auto_approved": False,
+        "reviewed_items_submitted": False,
+        "reviewed_items_filled": False,
+        "reviewed_items_carried_as_new_day_authority": False,
+        "new_day_buy_sell_requires_fresh_authority": True,
+        "prior_day_audit_evidence_preserved": True,
+    }
+    if not applicable:
+        return {
+            **base,
+            "status": "NOT_APPLICABLE",
+            "reason": "not_mixed_sell_review_residual_rollover",
+        }
+
+    submit = _latest_job_manifest(root=root, business_date=target_session_date, job="submit")
+    execution = _latest_job_manifest(root=root, business_date=target_session_date, job="execution")
+    submit_path: Path | None = None
+    execution_path: Path | None = None
+    submit_payload: dict[str, Any] = {}
+    execution_payload: dict[str, Any] = {}
+    submit_details: dict[str, Any] = {}
+    execution_details: dict[str, Any] = {}
+    if submit is not None:
+        submit_path, submit_payload = submit
+        submit_details = _manifest_stage_details(submit_payload, "runtime_v2_submit_pipeline")
+    if execution is not None:
+        execution_path, execution_payload = execution
+        execution_details = _manifest_stage_details(execution_payload, "runtime_v2_execution_readonly_pipeline")
+
+    sell_count = len(authority.executable_sell_item_ids)
+    submit_submitted_count = _max_int_from_sources(
+        submit_payload,
+        submit_details,
+        ("submitted_count", "submitted_order_count", "final_submitted_order_count"),
+    )
+    execution_submitted_count = _max_int_from_sources(
+        execution_payload,
+        execution_details,
+        ("submitted_order_count", "submitted_count", "orders_count"),
+    )
+    fill_count = _max_int_from_sources(
+        execution_payload,
+        execution_details,
+        ("fill_count", "fills_count", "executions_count"),
+    )
+    execution_terminal = _execution_terminal_reconciled(
+        execution_payload=execution_payload,
+        execution_details=execution_details,
+    )
+    review_set = set(authority.reviewed_item_ids)
+    terminal_set = set(authority.terminal_item_ids)
+    executable_set = set(authority.executable_item_ids)
+    checks = {
+        "pending_review_scope_structural_valid": authority.structural_validity == "PASS",
+        "review_scope_mixed_sell_item_scoped": authority.review_scope == "MIXED_SELL_ITEM_SCOPED_REVIEW",
+        "target_session_date_elapsed": bool(target_session_date) and target_session_date < business_date,
+        "executable_buy_items_absent": not authority.executable_buy_item_ids,
+        "executable_sell_items_present": bool(authority.executable_sell_item_ids),
+        "reviewed_items_present": bool(authority.reviewed_item_ids),
+        "reviewed_sell_items_present": bool(authority.reviewed_sell_item_ids),
+        "approved_review_sets_disjoint": authority.approved_review_sets_disjoint,
+        "non_terminal_items_absent": not authority.non_terminal_item_ids,
+        "executable_items_terminal_consumed": bool(authority.executable_item_ids)
+        and executable_set.issubset(terminal_set)
+        and all(str(item.get("state") or "").upper() == "CONSUMED" for item in executable_sell_items),
+        "reviewed_items_known": all(bool(item) for item in reviewed_items),
+        "reviewed_items_remain_review_required": bool(reviewed_items)
+        and all(
+            str(item.get("state") or "").upper() == "REVIEW_REQUIRED"
+            and item.get("approved") is not True
+            and str(item.get("pending_item_id") or "") in review_set
+            for item in reviewed_items
+        ),
+        "reviewed_items_not_submitted_or_filled": bool(reviewed_items)
+        and all(not _pending_item_has_submit_or_fill_evidence(item) for item in reviewed_items),
+        "submit_manifest_present": submit is not None,
+        "submit_exit_code_zero": _int_value(submit_payload.get("exit_code"), 0) == 0,
+        "submit_not_post_send_unknown": str(submit_payload.get("final_state") or "").upper() != "POST_SEND_UNKNOWN",
+        "submit_stage_pass": str(submit_details.get("status") or submit_payload.get("final_state") or "")
+        in {"PASS", "CURRENT_STATE_LOADED"},
+        "submit_pending_plan_matches": str(
+            submit_details.get("pending_plan_id") or submit_payload.get("pending_plan_id") or ""
+        )
+        == str(payload.get("pending_plan_id") or ""),
+        "submit_submitted_sell_count_exact": submit_submitted_count == sell_count,
+        "execution_manifest_present": execution is not None,
+        "execution_exit_code_zero": _int_value(execution_payload.get("exit_code"), 0) == 0,
+        "execution_final_state_loaded": str(execution_payload.get("final_state") or "") == "CURRENT_STATE_LOADED",
+        "execution_stage_pass": str(execution_details.get("status") or "") == "PASS",
+        "execution_submitted_sell_count_exact": execution_submitted_count == sell_count,
+        "execution_fill_count_exact": fill_count == sell_count,
+        "execution_terminal_reconciled": execution_terminal,
+        "runtime_test_binding_not_mismatched": _runtime_test_bindings_not_mismatched(
+            submit_payload,
+            execution_payload,
+        ),
+        "no_broker_write_uncertainty": not _broker_write_performed(submit_payload)
+        and not _broker_write_performed(execution_payload),
+        "no_unknown_submit_risk_after_execution_terminal": execution_terminal
+        and str(submit_payload.get("final_state") or "").upper() != "POST_SEND_UNKNOWN",
+        "pending_not_whole_plan_consumed": not _consumed(payload),
+    }
+    status = "PASS" if all(checks.values()) else "REVIEW_REQUIRED"
+    return {
+        **base,
+        "status": status,
+        "reason": "mixed_sell_review_residual_prior_day_authority_expired"
+        if status == "PASS"
+        else "mixed_sell_review_residual_rollover_checks_failed",
+        "checks": checks,
+        "submit_manifest_path": str(submit_path or ""),
+        "execution_manifest_path": str(execution_path or ""),
+        "submit_submitted_count": submit_submitted_count,
+        "execution_submitted_count": execution_submitted_count,
+        "execution_fill_count": fill_count,
+        "pending_lifecycle_terminal_status": "EXPIRED" if status == "PASS" else "",
+        "pending_lifecycle_terminal_reason": "MIXED_SELL_REVIEW_RESIDUAL_PRIOR_DAY_AUTHORITY_EXPIRED"
+        if status == "PASS"
+        else "",
+        "residual_review_lifecycle_invariant": (
+            "A prior-day MIXED_SELL_ITEM_SCOPED_REVIEW residual may expire before the next "
+            "session only when every executable item is already terminal/CONSUMED with matching "
+            "submit and execution evidence, every reviewed BUY/SELL item remains non-approved "
+            "and unsubmitted, and fresh current-day authority is required for any reconsidered action."
+        ),
+    }
+
+
 def _items_by_ids(payload: dict[str, Any], item_ids: tuple[str, ...]) -> list[dict[str, Any]]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     by_id = {
@@ -981,6 +1178,23 @@ def _execution_terminal_reconciled(*, execution_payload: dict[str, Any], executi
         and str(execution_details.get("status") or "") == "PASS"
         and explicit_pass
     )
+
+
+def _runtime_test_bindings_not_mismatched(*payloads: dict[str, Any]) -> bool:
+    fields = (
+        "runtime_test_run_id",
+        "runtime_test_profile_id",
+        "runtime_test_evidence_root",
+    )
+    for field in fields:
+        values = {
+            str(payload.get(field) or "")
+            for payload in payloads
+            if isinstance(payload, dict) and str(payload.get(field) or "")
+        }
+        if len(values) > 1:
+            return False
+    return True
 
 
 def _pending_item_has_submit_or_fill_evidence(item: dict[str, Any]) -> bool:

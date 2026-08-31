@@ -87,6 +87,45 @@ def test_phase31_f1w_partial_submit_reconciles_existing_items_and_submits_missin
     assert len(retry_orders) == 5
 
 
+def test_phase32_ax_mixed_sell_review_submits_only_independent_pass_sell(tmp_path):
+    runtime_root = _build_f1w_fixture(tmp_path)
+    _reduce_fixture_to_reviewed_buy_missing_sell_and_reviewed_sell(runtime_root)
+    adapter = RuntimeV2SubmitSimulationAdapter(scenario="SIMULATED_ACCEPTED")
+
+    result = run_submit_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="demo",
+        submit_enabled=True,
+        job="submit",
+        settings=_demo_settings(),
+        adapter=adapter,
+        capital_deployment_policy_path=runtime_root / "runtime_state" / "policy" / "capital_deployment.json",
+    )
+    pending = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    orders = _read_jsonl(runtime_root / "persistent_ledger" / "orders.jsonl")
+    by_id = {item.pending_item_id: item for item in result.item_results}
+
+    assert result.status == "PASS"
+    assert result.reason == "submitted_with_reviewed_items_not_submitted"
+    assert adapter.submit_calls == 1
+    assert adapter.request_payloads[0]["pending_item_id"] == MISSING_SELL_ITEM_ID
+    assert result.submitted_symbols == ("34940",)
+    assert by_id[MISSING_SELL_ITEM_ID].submitted is True
+    assert by_id[REVIEW_BUY_ITEM_ID].submitted is False
+    assert by_id[REVIEW_BUY_ITEM_ID].review_required is True
+    assert by_id["review-sell-50280"].submitted is False
+    assert by_id["review-sell-50280"].review_required is True
+    assert by_id["review-sell-50280"].guard_evidence["authority_type"] == (
+        "MIXED_SELL_ITEM_SCOPED_REVIEW_ITEM_NOT_SUBMITTED"
+    )
+    assert _item_state(pending, MISSING_SELL_ITEM_ID) == "CONSUMED"
+    assert _item_state(pending, REVIEW_BUY_ITEM_ID) == "REVIEW_REQUIRED"
+    assert _item_state(pending, "review-sell-50280") == "REVIEW_REQUIRED"
+    assert not any(order["pending_item_id"] == REVIEW_BUY_ITEM_ID for order in orders)
+    assert not any(order["pending_item_id"] == "review-sell-50280" for order in orders)
+
+
 def test_phase31_f1y_existing_sell_reconciliation_precedes_available_quantity_guard(tmp_path):
     runtime_root = _build_f1w_fixture(tmp_path)
     adapter = F1Y34940PreflightHaltAdapter()
@@ -466,6 +505,73 @@ def _reduce_fixture_to_reviewed_buy_and_missing_sell(runtime_root: Path) -> None
         item_id: condition
         for item_id, condition in pending["approval"]["approved_order_conditions"].items()
         if item_id == MISSING_SELL_ITEM_ID
+    }
+    _write_json(pending_path, pending)
+    (runtime_root / "persistent_ledger" / "orders.jsonl").write_text("", encoding="utf-8")
+
+
+def _reduce_fixture_to_reviewed_buy_missing_sell_and_reviewed_sell(runtime_root: Path) -> None:
+    pending_path = runtime_root / "pending_order_plan" / "pending_order_plan.json"
+    pending = _read_json(pending_path)
+    kept_ids = {REVIEW_BUY_ITEM_ID, MISSING_SELL_ITEM_ID}
+    pending["items"] = [item for item in pending["items"] if item["pending_item_id"] in kept_ids]
+    sell_template = next(item for item in pending["items"] if item["pending_item_id"] == MISSING_SELL_ITEM_ID)
+    reviewed_sell = {
+        **sell_template,
+        "pending_item_id": "review-sell-50280",
+        "symbol": "50280",
+        "approved": False,
+        "state": "REVIEW_REQUIRED",
+        "feasibility_status": "REVIEW_REQUIRED",
+        "batch_submit_status": "ITEM_REVIEW_REQUIRED",
+        "item_review_reason": "corporate_action_event_not_resolved",
+        "listed_info": {
+            **dict(sell_template.get("listed_info") or {}),
+            "corporate_action_adjustment_authority": {
+                "corporate_action_adjustment_authority_status": "REVIEW_REQUIRED",
+                "corporate_action_adjustment_authority_reason": "corporate_action_event_not_resolved",
+                "corporate_action_adjustment_authority_path": (
+                    "runtime_state/corporate_action_adjustments/2022-12-08/50280.json"
+                ),
+            },
+        },
+    }
+    pending["items"].append(reviewed_sell)
+    pending["approved_item_ids"] = [MISSING_SELL_ITEM_ID]
+    pending["approved_buy_item_ids"] = []
+    pending["approved_sell_item_ids"] = [MISSING_SELL_ITEM_ID]
+    pending["review_required_buy_item_ids"] = [REVIEW_BUY_ITEM_ID]
+    pending["review_required_sell_item_ids"] = ["review-sell-50280"]
+    pending["review_scope"] = "MIXED_SELL_ITEM_SCOPED_REVIEW"
+    pending["review_scope_reason"] = "corporate_action_event_not_resolved"
+    pending["sell_continuation_allowed"] = True
+    pending["approval"]["approved_item_ids"] = [MISSING_SELL_ITEM_ID]
+    pending["approval"]["approved_order_conditions"] = {
+        item_id: condition
+        for item_id, condition in pending["approval"]["approved_order_conditions"].items()
+        if item_id == MISSING_SELL_ITEM_ID
+    }
+    pending["planning_submit_feasibility"] = {
+        "status": "REVIEW_REQUIRED",
+        "items": [
+            {"pending_item_id": MISSING_SELL_ITEM_ID, "side": "SELL", "status": "PASS"},
+            {
+                "pending_item_id": REVIEW_BUY_ITEM_ID,
+                "side": "BUY",
+                "status": "REVIEW_REQUIRED",
+                "violated_policy": "reserved_cash",
+                "violated_policy_source": "phase32_ax_fixture",
+                "reason": "reserved notional exceeds dynamic cash capacity",
+            },
+            {
+                "pending_item_id": "review-sell-50280",
+                "side": "SELL",
+                "status": "REVIEW_REQUIRED",
+                "violated_policy": "corporate_action_adjustment_authority",
+                "violated_policy_source": "runtime_state/corporate_action_adjustments/2022-12-08/50280.json",
+                "reason": "corporate_action_event_not_resolved",
+            },
+        ],
     }
     _write_json(pending_path, pending)
     (runtime_root / "persistent_ledger" / "orders.jsonl").write_text("", encoding="utf-8")
