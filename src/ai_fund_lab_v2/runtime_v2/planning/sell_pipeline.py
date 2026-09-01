@@ -2096,7 +2096,10 @@ def _lot_blocked_reduce_full_exit_reconsideration(
     contract = dict(decision.quantity_contract or {})
     contract.setdefault("business_date", business_date)
     symbol = str(decision.symbol or "").strip()
-    campaign_id = str(decision.position_campaign_id or contract.get("position_campaign_id") or contract.get("campaign_id") or "").strip()
+    handoff_campaign_id = str(
+        decision.position_campaign_id or contract.get("position_campaign_id") or contract.get("campaign_id") or ""
+    ).strip()
+    campaign_id = handoff_campaign_id
     context = dict(environment_capability_context or {})
     sources = _lot_blocked_reduce_reconsideration_sources(
         business_date=business_date,
@@ -2121,6 +2124,12 @@ def _lot_blocked_reduce_full_exit_reconsideration(
             contract=contract,
             source_status=sources,
         )
+    si_campaign_id = _strategy_intelligence_campaign_id(sources["strategy_intelligence_payload"], symbol)
+    if not campaign_id and si_campaign_id:
+        campaign_id = si_campaign_id
+        contract.setdefault("position_campaign_id", campaign_id)
+        contract.setdefault("campaign_id", campaign_id)
+        contract.setdefault("campaign_identity_authority_source", "run_scoped_strategy_intelligence_lifecycle_context")
     malformed = []
     if not symbol:
         malformed.append("MISSING_SYMBOL")
@@ -2135,8 +2144,7 @@ def _lot_blocked_reduce_full_exit_reconsideration(
     position = _current_position_by_identity(current_positions, symbol)
     if position is None or position.quantity <= 0:
         malformed.append("CURRENT_POSITION_AUTHORITY_MISSING")
-    si_campaign_id = _strategy_intelligence_campaign_id(sources["strategy_intelligence_payload"], symbol)
-    if si_campaign_id and campaign_id and si_campaign_id != campaign_id:
+    if si_campaign_id and handoff_campaign_id and si_campaign_id != handoff_campaign_id:
         malformed.append("CAMPAIGN_IDENTITY_MISMATCH")
     if malformed:
         return _lot_blocked_reduce_reconsideration_result(
@@ -2194,6 +2202,19 @@ def _lot_blocked_reduce_full_exit_reconsideration(
         return _lot_blocked_reduce_reconsideration_result(
             status="NOT_PROMOTED",
             reason=f"BO_DECISION_NOT_FULL_EXIT:{shadow_decision.get('shadow_binary_decision')}",
+            decision=decision,
+            campaign_id=campaign_id,
+            contract=contract,
+            source_status=sources,
+            shadow_decision=shadow_decision,
+        )
+    promotion_malformed = []
+    if not handoff_campaign_id:
+        promotion_malformed.append("MISSING_CAMPAIGN_ID")
+    if promotion_malformed:
+        return _lot_blocked_reduce_reconsideration_result(
+            status="FAIL_CLOSED",
+            reason=";".join(promotion_malformed),
             decision=decision,
             campaign_id=campaign_id,
             contract=contract,

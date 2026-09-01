@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -12,6 +13,10 @@ from ai_fund_lab_v2.runtime_v2.cli.run_daily_operation import main
 from ai_fund_lab_v2.runtime_v2.artifact_lookup import RuntimeArtifactLookupHalt, RuntimeArtifactMember
 from ai_fund_lab_v2.runtime_v2.position_management import producer as pm_producer
 from ai_fund_lab_v2.runtime_v2.position_management.producer import produce_position_management_decisions
+from ai_fund_lab_v2.runtime_v2.planning.sell_pipeline import (
+    PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT,
+    run_sell_planning_pending_pipeline,
+)
 
 
 BUSINESS_DATE = "2026-07-09"
@@ -79,6 +84,171 @@ def test_phase15ap_valid_pm_input_contract_allows_pm_and_sell_planning(tmp_path)
     assert artifact["input_contract"]["pm_input_schema_status"] == "READY"
     assert artifact["defaulted_fields"] == []
     assert artifact["decision_count"] == 1
+
+
+def test_phase32_bv_pm_producer_propagates_run_scoped_campaign_to_bq_full_exit_actual_path(tmp_path, monkeypatch):
+    runtime_root = _runtime_root(
+        tmp_path,
+        positions=[_position("45750", quantity=100, average_price=1000, current_price=1000)],
+        current_as_of=BUSINESS_DATE,
+    )
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "phase32bv-test"
+    _write_position_campaigns(
+        evidence_root,
+        symbol="45750",
+        campaign_id="pc-1c231f87db41dc41-45750-0001",
+        run_id="phase32bv-test",
+        business_date=BUSINESS_DATE,
+    )
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("45750",), expected_edge=0.05, downside=0.6)
+
+    def _fake_pm_inference(**_kwargs):
+        return SimpleNamespace(
+            output=pd.DataFrame(
+                [
+                    {
+                        "target_date": BUSINESS_DATE,
+                        "code": "45750",
+                        "action": "REDUCE",
+                        "action_reason": "risk_increased_but_trend_not_broken",
+                        "continue_holding": False,
+                        "exit_candidate": False,
+                        "reduce_candidate": True,
+                        "add_candidate": False,
+                        "hold_score": 0.20,
+                        "exit_score": 0.30,
+                        "reduce_score": 0.70,
+                        "add_score": 0.10,
+                        "model_version": "fixture",
+                        "feature_version": "fixture",
+                        "created_at": BUSINESS_DATE + "T00:00:00Z",
+                    }
+                ]
+            ),
+            summary={"status": "OK"},
+        )
+
+    monkeypatch.setattr(pm_producer, "run_position_management_inference", _fake_pm_inference)
+
+    pm_result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+        runtime_test_evidence_root=evidence_root,
+        runtime_test_run_id="phase32bv-test",
+    )
+    pm_artifact = _read_json(pm_result.artifact_path)
+    sell_decision = pm_result.sell_exit_decisions[0]
+
+    assert pm_result.status == "PASS"
+    assert pm_artifact["decisions"][0]["decision"] == "REDUCE"
+    assert pm_artifact["decisions"][0]["position_campaign_id"] == "pc-1c231f87db41dc41-45750-0001"
+    assert pm_artifact["decisions"][0]["campaign_id"] == "pc-1c231f87db41dc41-45750-0001"
+    assert pm_artifact["decisions"][0]["campaign_identity_authority"]["status"] == "PASS"
+    assert sell_decision.source_decision == "REDUCE"
+    assert sell_decision.quantity == 0
+    assert sell_decision.position_campaign_id == "pc-1c231f87db41dc41-45750-0001"
+
+    sell_result = run_sell_planning_pending_pipeline(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        exit_decisions=pm_result.sell_exit_decisions,
+        environment_capability_context={
+            "runtime_mode": "historical",
+            "historical_replay": True,
+            "broker_environment": "historical_simulated",
+            "simulation": True,
+            "broker_write": False,
+            "external_delivery": False,
+            "tachibana_demo_write": False,
+            "tachibana_production_write": False,
+            "submit_enabled": False,
+            "runtime_test_run_id": "phase32bv-test",
+            "runtime_test_profile_id": "historical-smoke",
+            "runtime_test_evidence_root": str(evidence_root),
+            "lot_blocked_reduce_reconsideration_strategy_intelligence_payload": _strategy_intelligence(
+                "45750",
+                campaign_id="pc-1c231f87db41dc41-45750-0001",
+                run_id="phase32bv-test",
+                trend_state="WEAK",
+                relative_strength_state="WEAK",
+                participation_quality_state="WEAK",
+                participation_risk_state="ELEVATED_RISK",
+                current_campaign_relative_return=0.5,
+            ),
+            "lot_blocked_reduce_reconsideration_market_context_payload": _market_context(run_id="phase32bv-test"),
+        },
+    )
+    pending = _read_json(runtime_root / "pending_order_plan" / "pending_order_plan.json")
+    order_plan = _read_json(runtime_root / "runtime_state" / "sell_pipeline" / BUSINESS_DATE / "order_plan.json")
+
+    assert sell_result.status == "PASS"
+    assert pending["items"][0]["symbol"] == "45750"
+    assert pending["items"][0]["quantity"] == 100
+    assert pending["items"][0]["position_campaign_id"] == "pc-1c231f87db41dc41-45750-0001"
+    assert pending["items"][0]["quantity_contract"]["reconsideration_reason"] == PM_REDUCE_LOT_BLOCKED_RECONSIDERED_FULL_EXIT
+    assert pending["items"][0]["quantity_contract"]["source_pm_action"] == "REDUCE"
+    assert order_plan["lot_blocked_reduce_reconsiderations"][0]["status"] == "PROMOTED"
+
+
+def test_phase32_bv_pm_producer_rejects_stale_cross_run_campaign_authority(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("45750")])
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "phase32bv-test"
+    _write_position_campaigns(
+        evidence_root,
+        symbol="45750",
+        campaign_id="pc-1c231f87db41dc41-45750-0001",
+        run_id="other-run",
+        business_date=BUSINESS_DATE,
+    )
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("45750",), expected_edge=0.05, downside=0.6)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+        runtime_test_evidence_root=evidence_root,
+        runtime_test_run_id="phase32bv-test",
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_position_campaign_authority_review_required"
+    assert "POSITION_CAMPAIGN_AUTHORITY_RUN_ID_MISMATCH" in artifact["missing_fields"]
+
+
+def test_phase32_bv_pm_producer_rejects_ambiguous_open_campaign_authority(tmp_path):
+    runtime_root = _runtime_root(tmp_path, positions=[_position("45750")])
+    evidence_root = tmp_path / "reports" / "runtime_tests" / "runs" / "phase32bv-test"
+    _write_position_campaigns(
+        evidence_root,
+        symbol="45750",
+        campaign_id="pc-1c231f87db41dc41-45750-0001",
+        run_id="phase32bv-test",
+        business_date=BUSINESS_DATE,
+        extra_campaign_ids=("pc-ambiguous-45750-0002",),
+    )
+    opportunity_path, feature_path = _pm_inputs(tmp_path, symbols=("45750",), expected_edge=0.05, downside=0.6)
+
+    result = produce_position_management_decisions(
+        runtime_root=runtime_root,
+        business_date=BUSINESS_DATE,
+        mode="historical",
+        opportunity_path=opportunity_path,
+        feature_path=feature_path,
+        runtime_test_evidence_root=evidence_root,
+        runtime_test_run_id="phase32bv-test",
+    )
+    artifact = _read_json(result.artifact_path)
+
+    assert result.status == "REVIEW_REQUIRED"
+    assert result.reason == "pm_position_campaign_authority_review_required"
+    assert "POSITION_CAMPAIGN_AUTHORITY_MULTIPLE_OPEN_CAMPAIGNS" in artifact["missing_fields"]
 
 
 def test_phase20_s_pm_decision_trace_preserves_runtime_behavior_and_authority(tmp_path):
@@ -624,6 +794,106 @@ def _write_safety_decision(root: Path) -> None:
             "expires_at": "2026-07-10T00:00:00+09:00",
         },
     )
+
+
+def _write_position_campaigns(
+    evidence_root: Path,
+    *,
+    symbol: str,
+    campaign_id: str,
+    run_id: str,
+    business_date: str,
+    extra_campaign_ids: tuple[str, ...] = (),
+) -> None:
+    campaigns = [
+        {
+            "position_campaign_id": item_campaign_id,
+            "campaign_id": item_campaign_id,
+            "symbol": symbol,
+            "campaign_status": "OPEN",
+            "opened_business_date": "2026-07-01",
+            "current_quantity": 100,
+            "events": [{"business_date": "2026-07-01", "side": "BUY", "stage": "BUY"}],
+        }
+        for item_campaign_id in (campaign_id, *extra_campaign_ids)
+    ]
+    _write_json(
+        evidence_root / "daily" / business_date / "positions" / "position_campaigns.json",
+        {
+            "schema_version": "position_campaign_observability.v1",
+            "contract_version": "phase32_bv_run_scoped_campaign_authority_fixture.v1",
+            "business_date": business_date,
+            "run_id": run_id,
+            "authority": "CANONICAL_PRE_ACTION_POSITION_CAMPAIGN_LIFECYCLE",
+            "position_campaigns": campaigns,
+            "temporal_safety": {
+                "temporal_stage": "PRE_ACTION_DECISION_SNAPSHOT",
+                "same_day_eod_campaign_reconstruction_used": False,
+                "future_information_used": False,
+            },
+        },
+    )
+
+
+def _strategy_intelligence(
+    symbol: str,
+    *,
+    campaign_id: str,
+    run_id: str,
+    trend_state: str,
+    relative_strength_state: str,
+    participation_quality_state: str,
+    participation_risk_state: str,
+    current_campaign_relative_return: float,
+) -> dict[str, Any]:
+    return {
+        "business_date": BUSINESS_DATE,
+        "feature_date": BUSINESS_DATE,
+        "run_id": run_id,
+        "profile_id": "historical-smoke",
+        "future_information_used": False,
+        "symbol_intelligence": {
+            symbol: {
+                "expected_edge": {"status": "ADEQUATE", "future_information_used": False},
+                "entry_admission": {
+                    "entry_state": "CONTINUATION_WITH_CAUTION",
+                    "admission_action": "ADD_REDUCED_ONLY",
+                    "future_information_used": False,
+                    "consumed_evidence": {"strong_medium_term_structure": False},
+                },
+                "continuation_quality": {
+                    "status": "PASS",
+                    "trend_health": {"state": trend_state, "as_of_date": BUSINESS_DATE},
+                    "relative_strength": {"state": relative_strength_state, "as_of_date": BUSINESS_DATE},
+                    "participation_quality": {"state": participation_quality_state, "as_of_date": BUSINESS_DATE},
+                    "exhaustion_risk": {"state": "MIXED", "as_of_date": BUSINESS_DATE},
+                    "persistence": {"state": "MIXED", "as_of_date": BUSINESS_DATE},
+                    "future_information_used": False,
+                },
+                "downside_risk": {
+                    "status": "PASS",
+                    "participation_risk": {"state": participation_risk_state, "as_of_date": BUSINESS_DATE},
+                },
+                "lifecycle_context": {
+                    "position_campaign_id": campaign_id,
+                    "campaign_identity_authority_status": "COMPLETE",
+                    "campaign_age_business_days": 20,
+                    "current_campaign_relative_return": current_campaign_relative_return,
+                },
+            }
+        },
+    }
+
+
+def _market_context(*, run_id: str) -> dict[str, Any]:
+    return {
+        "business_date": BUSINESS_DATE,
+        "feature_date": BUSINESS_DATE,
+        "run_id": run_id,
+        "profile_id": "historical-smoke",
+        "trend_regime": "RECOVERY",
+        "regime_state": "RECOVERY",
+    }
 
 
 def _latest_manifest(runtime_root: Path) -> dict:

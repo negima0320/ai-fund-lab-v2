@@ -660,6 +660,8 @@ def main(argv: list[str] | None = None) -> int:
                 feature_date=args.feature_date,
                 opportunity_path=args.pm_opportunity_path,
                 feature_path=args.pm_feature_path,
+                runtime_test_evidence_root=args.runtime_test_evidence_root,
+                runtime_test_run_id=args.runtime_test_run_id,
                 now=evaluation_time,
             )
             position_management_manifest = {
@@ -791,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
                 feature_date=args.feature_date,
                 opportunity_path=args.pm_opportunity_path,
                 feature_path=args.pm_feature_path,
+                runtime_test_evidence_root=args.runtime_test_evidence_root,
+                runtime_test_run_id=args.runtime_test_run_id,
                 now=evaluation_time,
             )
             position_management_manifest = pm_result.to_manifest_fields()

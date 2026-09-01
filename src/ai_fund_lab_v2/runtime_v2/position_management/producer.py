@@ -201,6 +201,8 @@ def produce_position_management_decisions(
     feature_date: str | None = None,
     opportunity_path: Path | str | None = None,
     feature_path: Path | str | None = None,
+    runtime_test_evidence_root: Path | str | None = None,
+    runtime_test_run_id: str | None = None,
     now: datetime | None = None,
 ) -> PositionManagementRuntimeResult:
     root = Path(runtime_root)
@@ -264,6 +266,23 @@ def produce_position_management_decisions(
         opportunity_path=resolved_opportunity_path,
         feature_path=resolved_pm_feature_path,
     )
+    campaign_authority_by_symbol = _run_scoped_position_campaign_authority_by_symbol(
+        runtime_test_evidence_root=runtime_test_evidence_root,
+        runtime_test_run_id=runtime_test_run_id,
+        business_date=business_date,
+    )
+    contract["pm_position_campaign_authority"] = _position_campaign_authority_summary(campaign_authority_by_symbol)
+    campaign_authority_failures = sorted(
+        {
+            str(item.get("reason") or item.get("status") or "position_campaign_authority_review_required")
+            for item in campaign_authority_by_symbol.values()
+            if str(item.get("status") or "").upper() == "REVIEW_REQUIRED"
+        }
+    )
+    if campaign_authority_failures and contract.get("pm_input_schema_status") == "READY":
+        contract["pm_input_schema_status"] = "REVIEW_REQUIRED"
+        contract["pm_review_reason"] = "pm_position_campaign_authority_review_required"
+        contract["pm_missing_fields"] = sorted(set(list(contract.get("pm_missing_fields") or []) + campaign_authority_failures))
     contract["pm_runtime_adapter_authority_status"] = "PASS"
     contract["pm_runtime_adapter_authority"] = pm_runtime_adapter_authority
     if contract["pm_input_schema_status"] == "REVIEW_REQUIRED":
@@ -369,6 +388,7 @@ def produce_position_management_decisions(
             current=current,
             generated_at=generated_at,
             decision_trace=trace_by_symbol.get(str(row.get("code") or "")),
+            campaign_authority=campaign_authority_by_symbol.get(str(row.get("code") or "")),
         )
         for row in output.to_dict("records")
     )
@@ -563,6 +583,133 @@ def _sell_exit_decisions_from_artifact(payload: dict[str, Any]) -> tuple[SellExi
     return tuple(decisions)
 
 
+def _run_scoped_position_campaign_authority_by_symbol(
+    *,
+    runtime_test_evidence_root: Path | str | None,
+    runtime_test_run_id: str | None,
+    business_date: str,
+) -> dict[str, dict[str, Any]]:
+    if not runtime_test_evidence_root:
+        return {}
+    evidence_root = Path(runtime_test_evidence_root)
+    artifact_path = evidence_root / "daily" / business_date / "positions" / "position_campaigns.json"
+    if not artifact_path.is_file():
+        return {}
+    try:
+        payload = _read_json(artifact_path)
+    except Exception as exc:  # pragma: no cover - defensive corrupted evidence path
+        return {
+            "__artifact__": {
+                "status": "REVIEW_REQUIRED",
+                "reason": f"POSITION_CAMPAIGN_AUTHORITY_UNREADABLE:{exc}",
+                "artifact_path": str(artifact_path),
+            }
+        }
+    payload_business_date = str(payload.get("business_date") or "")
+    payload_run_id = str(payload.get("run_id") or "")
+    expected_run_id = str(runtime_test_run_id or "")
+    temporal_safety = payload.get("temporal_safety") if isinstance(payload.get("temporal_safety"), dict) else {}
+    artifact_failures: list[str] = []
+    if payload_business_date and payload_business_date != business_date:
+        artifact_failures.append("POSITION_CAMPAIGN_AUTHORITY_BUSINESS_DATE_MISMATCH")
+    if expected_run_id and payload_run_id and payload_run_id != expected_run_id:
+        artifact_failures.append("POSITION_CAMPAIGN_AUTHORITY_RUN_ID_MISMATCH")
+    if bool(temporal_safety.get("future_information_used")):
+        artifact_failures.append("POSITION_CAMPAIGN_AUTHORITY_FUTURE_INFORMATION")
+    campaigns = payload.get("position_campaigns") if isinstance(payload.get("position_campaigns"), list) else []
+    authority: dict[str, dict[str, Any]] = {}
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for item in campaigns:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or item.get("security_code") or item.get("code") or "").strip()
+        campaign_id = str(item.get("position_campaign_id") or item.get("campaign_id") or "").strip()
+        row_run_id = str(item.get("run_id") or payload_run_id or "")
+        status = str(item.get("campaign_status") or "").upper()
+        if not symbol or not campaign_id or status != "OPEN":
+            continue
+        if expected_run_id and row_run_id and row_run_id != expected_run_id:
+            authority[symbol] = {
+                "status": "REVIEW_REQUIRED",
+                "reason": "POSITION_CAMPAIGN_AUTHORITY_ROW_RUN_ID_MISMATCH",
+                "artifact_path": str(artifact_path),
+                "business_date": payload_business_date,
+                "run_id": row_run_id,
+                "expected_run_id": expected_run_id,
+                "campaign_ids": [campaign_id],
+            }
+            continue
+        by_symbol.setdefault(symbol, []).append(dict(item))
+    if artifact_failures:
+        authority["__artifact__"] = {
+            "status": "REVIEW_REQUIRED",
+            "reason": ";".join(artifact_failures),
+            "artifact_path": str(artifact_path),
+            "business_date": payload_business_date,
+            "run_id": payload_run_id,
+        }
+        return authority
+    for symbol, rows in by_symbol.items():
+        campaign_ids = sorted({str(row.get("position_campaign_id") or row.get("campaign_id") or "").strip() for row in rows})
+        if len(campaign_ids) != 1:
+            authority[symbol] = {
+                "status": "REVIEW_REQUIRED",
+                "reason": "POSITION_CAMPAIGN_AUTHORITY_MULTIPLE_OPEN_CAMPAIGNS",
+                "artifact_path": str(artifact_path),
+                "business_date": payload_business_date,
+                "run_id": payload_run_id,
+                "campaign_ids": campaign_ids,
+            }
+            continue
+        authority[symbol] = {
+            "status": "PASS",
+            "reason": "run_scoped_current_position_campaign_authority",
+            "artifact_path": str(artifact_path),
+            "business_date": payload_business_date or business_date,
+            "run_id": payload_run_id,
+            "position_campaign_id": campaign_ids[0],
+            "campaign_id": campaign_ids[0],
+            "authority": str(payload.get("authority") or "positions/position_campaigns.json"),
+            "contract_version": str(payload.get("contract_version") or ""),
+            "temporal_stage": str(temporal_safety.get("temporal_stage") or ""),
+            "future_information_used": False,
+        }
+    return authority
+
+
+def _position_campaign_authority_summary(authority_by_symbol: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not authority_by_symbol:
+        return {
+            "status": "NOT_PROVIDED",
+            "authority": "",
+            "symbols_with_campaign_authority": [],
+            "review_reasons": [],
+        }
+    review_reasons = sorted(
+        {
+            str(item.get("reason") or "")
+            for item in authority_by_symbol.values()
+            if str(item.get("status") or "").upper() == "REVIEW_REQUIRED"
+        }
+    )
+    pass_symbols = sorted(
+        symbol
+        for symbol, item in authority_by_symbol.items()
+        if symbol != "__artifact__" and str(item.get("status") or "").upper() == "PASS"
+    )
+    sample = next((item for item in authority_by_symbol.values() if str(item.get("artifact_path") or "")), {})
+    return {
+        "status": "REVIEW_REQUIRED" if review_reasons else "PASS",
+        "authority": "positions/position_campaigns.json",
+        "artifact_path": str(sample.get("artifact_path") or ""),
+        "business_date": str(sample.get("business_date") or ""),
+        "run_id": str(sample.get("run_id") or ""),
+        "symbols_with_campaign_authority": pass_symbols,
+        "review_reasons": review_reasons,
+        "campaign_count": len(pass_symbols),
+    }
+
+
 HOLDING_COLUMNS_FOR_OUTPUT = (
     "target_date",
     "code",
@@ -623,10 +770,17 @@ def _decision_payload(
     current: dict[str, Any],
     generated_at: str,
     decision_trace: dict[str, Any] | None = None,
+    campaign_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     symbol = str(row.get("code") or "")
     decision = str(row.get("action") or "HOLD").upper()
     position_quantity = _current_quantity(current, symbol)
+    campaign_authority_payload = dict(campaign_authority or {})
+    position_campaign_id = (
+        str(campaign_authority_payload.get("position_campaign_id") or campaign_authority_payload.get("campaign_id") or "").strip()
+        if str(campaign_authority_payload.get("status") or "").upper() == "PASS"
+        else ""
+    )
     confidence = _confidence(row, decision)
     reason = str(row.get("exit_reason") or row.get("action_reason") or decision)
     runtime_sell_quantity = position_quantity if decision == "EXIT" else 0.0
@@ -697,6 +851,9 @@ def _decision_payload(
         "model_version": str(row.get("model_version") or MODEL_VERSION),
         "feature_version": str(row.get("feature_version") or FEATURE_VERSION),
         "generated_at": generated_at,
+        "position_campaign_id": position_campaign_id,
+        "campaign_id": position_campaign_id,
+        "campaign_identity_authority": campaign_authority_payload,
         "runtime_position_quantity": position_quantity,
         "runtime_sell_quantity": runtime_sell_quantity,
         "runtime_action": runtime_action,
