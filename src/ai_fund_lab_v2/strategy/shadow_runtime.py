@@ -1518,7 +1518,12 @@ def _pm_exit_decision_context_event(
     ).strip()
     symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
     reason_codes = row.get("reason_codes") if isinstance(row.get("reason_codes"), list) else []
-    decision_reason = str(row.get("decision_reason") or row.get("dominant_cause") or decision_type or "").strip()
+    decision_reason = _semantic_prior_exit_reason(
+        row.get("decision_reason"),
+        row.get("dominant_cause"),
+        reason_codes,
+        decision_type,
+    )
     return {
         "schema_version": "phase32_h_prior_exit_context.v1",
         "prior_campaign_id": campaign_id,
@@ -1536,6 +1541,21 @@ def _pm_exit_decision_context_event(
         "temporal_selection_rule": "pm_exit_decision_business_date_strictly_less_than_reentry_decision_business_date",
         "future_information_used": False,
     }
+
+
+def _semantic_prior_exit_reason(*candidates: Any) -> str:
+    generic = {"", "EXIT", "SELL", "SELL_EXIT", "UNKNOWN"}
+    fallback = ""
+    for candidate in candidates:
+        values = candidate if isinstance(candidate, list) else [candidate]
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            fallback = fallback or text
+            if text.upper() not in generic:
+                return text
+    return fallback or "EXIT"
 
 
 def _pm_sell_decision_evidence_event(
@@ -2008,23 +2028,33 @@ def _resolve_prior_closed_campaigns_from_executions(
             )
             if pm_context:
                 campaign_id = str(pm_context.get("prior_campaign_id") or campaign_id).strip()
-            prior_exit_reason = str(
-                pm_context.get("prior_exit_reason")
-                or row.get("prior_exit_reason")
-                or row.get("previous_exit_reason")
-                or row.get("source_decision_reason")
-                or row.get("source_decision_type")
-                or row.get("decision_type")
-                or row.get("source_decision")
-                or "EXIT"
+            prior_exit_reason_codes = (
+                list(pm_context.get("prior_exit_reason_codes") or [])
+                if pm_context
+                else reason_codes
+                if isinstance(reason_codes, list)
+                else []
             )
-            prior_exit_reason_codes = list(pm_context.get("prior_exit_reason_codes") or []) if pm_context else reason_codes if isinstance(reason_codes, list) else []
+            prior_exit_reason = _semantic_prior_exit_reason(
+                pm_context.get("prior_exit_reason"),
+                row.get("prior_exit_reason"),
+                row.get("previous_exit_reason"),
+                row.get("source_decision_reason"),
+                prior_exit_reason_codes,
+                row.get("source_decision_type"),
+                row.get("decision_type"),
+                row.get("source_decision"),
+            )
             source_pm_decision_id = str(pm_context.get("source_pm_decision_id") or row.get("source_pm_decision_id") or "")
             source_decision_id = str(row.get("source_decision_id") or pm_context.get("source_decision_id") or "")
             prior_exit_context = dict(pm_context) if pm_context else {}
             if prior_exit_context:
                 prior_exit_context["source_pm_decision_id"] = source_pm_decision_id
                 prior_exit_context["source_decision_id"] = source_decision_id
+                prior_exit_context["prior_exit_reason"] = prior_exit_reason
+                prior_exit_context["prior_exit_reason_codes"] = prior_exit_reason_codes
+                prior_exit_context["previous_exit_reason"] = prior_exit_reason
+                prior_exit_context["previous_exit_reason_codes"] = prior_exit_reason_codes
             latest_closed[symbol] = {
                 "prior_exit_business_date": execution_date,
                 "prior_exit_campaign_id": campaign_id,
@@ -2032,6 +2062,8 @@ def _resolve_prior_closed_campaigns_from_executions(
                 "prior_exit_decision_type": str(pm_context.get("prior_exit_decision_type") or "EXIT"),
                 "prior_exit_reason": prior_exit_reason,
                 "prior_exit_reason_codes": prior_exit_reason_codes,
+                "previous_exit_reason": prior_exit_reason,
+                "previous_exit_reason_codes": prior_exit_reason_codes,
                 "source_pm_decision_id": source_pm_decision_id,
                 "source_decision_id": source_decision_id,
                 "prior_same_symbol_exit_count": closed_count,
@@ -2048,6 +2080,8 @@ def _resolve_prior_closed_campaigns_from_executions(
                     "prior_exit_decision_type": "EXIT",
                     "prior_exit_reason": prior_exit_reason,
                     "prior_exit_reason_codes": prior_exit_reason_codes,
+                    "previous_exit_reason": prior_exit_reason,
+                    "previous_exit_reason_codes": prior_exit_reason_codes,
                     "source_pm_decision_id": "",
                     "source_decision_id": str(row.get("source_decision_id") or ""),
                     "provenance_status": "REVIEW_REQUIRED",
