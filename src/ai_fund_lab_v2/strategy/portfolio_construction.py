@@ -2496,9 +2496,13 @@ def _reconcile_incremental_budget(
         elif current_position:
             baseline = original_target
         elif membership == "ADD_CANDIDATE":
-            request = original_target
-            requested_buy_new += request
-            participant_type = "BUY_NEW"
+            block_reason = _blocked_reentry_buy_new_reason(member)
+            if block_reason:
+                reason_codes.append(block_reason)
+            else:
+                request = original_target
+                requested_buy_new += request
+                participant_type = "BUY_NEW"
         baseline = round(baseline, TARGET_WEIGHT_DECIMALS)
         baseline_total += baseline
         prepared.append(
@@ -5935,10 +5939,53 @@ def _context_ratio(context: Mapping[str, Any], key: str, *, default: float | Non
     return round(max(value, 0.0), TARGET_WEIGHT_DECIMALS)
 
 
+def _blocked_reentry_buy_new_reason(member: Mapping[str, Any]) -> str:
+    semantic = str(member.get("semantic_buy_type") or "").upper()
+    semantic_result: Mapping[str, Any] = {}
+    if not semantic and isinstance(member.get("semantic_reentry_authority"), Mapping):
+        semantic_result = (member.get("semantic_reentry_authority") or {}).get("semantic_result")
+        if isinstance(semantic_result, Mapping):
+            semantic = str(semantic_result.get("semantic_buy_type") or "").upper()
+    if semantic != "REENTRY":
+        return ""
+
+    eligibility_source = member.get("reentry_semantic_eligibility")
+    eligibility_map = eligibility_source if isinstance(eligibility_source, Mapping) else {}
+    prior_campaign_id = str(member.get("prior_campaign_id") or eligibility_map.get("prior_campaign_id") or "")
+    prior_exit_business_date = str(member.get("prior_exit_business_date") or eligibility_map.get("prior_exit_business_date") or "")
+    if isinstance(member.get("semantic_reentry_authority"), Mapping):
+        if not semantic_result:
+            nested = (member.get("semantic_reentry_authority") or {}).get("semantic_result")
+            semantic_result = nested if isinstance(nested, Mapping) else {}
+        prior_campaign_id = prior_campaign_id or str(semantic_result.get("prior_campaign_id") or "")
+        prior_exit_business_date = prior_exit_business_date or str(semantic_result.get("prior_exit_business_date") or "")
+    if not prior_campaign_id and not prior_exit_business_date:
+        return ""
+
+    eligibility = str(member.get("reentry_semantic_status") or "").upper()
+    if not eligibility and isinstance(member.get("reentry_semantic_eligibility"), Mapping):
+        eligibility = str((member.get("reentry_semantic_eligibility") or {}).get("eligibility_status") or "").upper()
+    if not eligibility:
+        eligibility = str(member.get("reentry_recovery_status") or "").upper()
+    if not eligibility and isinstance(member.get("semantic_reentry_authority"), Mapping):
+        semantic_result = (member.get("semantic_reentry_authority") or {}).get("semantic_result")
+        if isinstance(semantic_result, Mapping):
+            eligibility = str(semantic_result.get("eligibility_status") or "").upper()
+
+    if eligibility == "PASS":
+        return ""
+    state = str(member.get("reentry_semantic_state") or "").upper()
+    if not state and isinstance(member.get("reentry_semantic_eligibility"), Mapping):
+        state = str((member.get("reentry_semantic_eligibility") or {}).get("reentry_semantic_state") or "").upper()
+    return "reentry_fail_closed_buy_new_bypass_blocked" if state != "REENTRY_ELIGIBLE" else "reentry_authority_missing_pass_status"
+
+
 def _capital_competitor_type(member: Mapping[str, Any]) -> str:
     if bool(member.get("current_position")) and str(member.get("pm_action") or "").upper() == "ADD":
         return "ADD"
     if not bool(member.get("current_position")) and str(member.get("membership_intent") or "").upper() == "ADD_CANDIDATE":
+        if _blocked_reentry_buy_new_reason(member):
+            return ""
         return "NEW_BUY"
     return ""
 
@@ -5947,6 +5994,8 @@ def _capital_competitor_requested_weight(member: Mapping[str, Any], *, competito
     if competitor_type == "ADD":
         value = max(float(member.get("requested_incremental_weight") or 0.0), float(member.get("lot_aware_accepted_incremental_weight") or 0.0))
     elif competitor_type == "NEW_BUY":
+        if _blocked_reentry_buy_new_reason(member):
+            return 0.0
         value = max(float(member.get("requested_buy_new_weight") or 0.0), float(member.get("target_weight") or 0.0))
     else:
         value = 0.0
@@ -5966,6 +6015,8 @@ def _capital_competitor_accepted_weight(
         else:
             value = float(member.get("accepted_incremental_weight") or 0.0)
     elif competitor_type == "NEW_BUY":
+        if _blocked_reentry_buy_new_reason(member):
+            return 0.0
         if lot_reallocation_present:
             value = float(member.get("lot_aware_accepted_buy_new_weight") or 0.0)
         else:
@@ -6787,16 +6838,21 @@ def apply_lot_aware_final_reallocation(
         elif current_position:
             baseline = target
         elif membership == "ADD_CANDIDATE":
-            requested_increment = round(
-                max(
-                    float(member.get("requested_buy_new_weight") or 0.0),
-                    float(member.get("accepted_buy_new_weight") or 0.0),
-                    target,
-                    0.0,
-                ),
-                TARGET_WEIGHT_DECIMALS,
-            )
-            participant_type = "BUY_NEW" if requested_increment > 0 else "NONE"
+            block_reason = _blocked_reentry_buy_new_reason(member)
+            if block_reason:
+                requested_increment = 0.0
+                reason_codes.append(block_reason)
+            else:
+                requested_increment = round(
+                    max(
+                        float(member.get("requested_buy_new_weight") or 0.0),
+                        float(member.get("accepted_buy_new_weight") or 0.0),
+                        target,
+                        0.0,
+                    ),
+                    TARGET_WEIGHT_DECIMALS,
+                )
+                participant_type = "BUY_NEW" if requested_increment > 0 else "NONE"
         baseline = round(baseline, TARGET_WEIGHT_DECIMALS)
         baseline_total += baseline
         prepared.append(
