@@ -59,7 +59,8 @@ def test_phase30_z_unknown_prior_exit_context_fails_safe_to_review() -> None:
 
     assert recovery["previous_exit_reason_class"] == "GENERIC"
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert recovery["reentry_recovery_reason"] == "recoverable_prior_exit_context_defect"
+    assert recovery["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
 
 
 def test_phase30_z_entry_admission_blocks_unresolved_reversal_or_overheated_reentry() -> None:

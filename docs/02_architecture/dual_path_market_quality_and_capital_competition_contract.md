@@ -644,6 +644,15 @@ Re-entry remains symbol-local eligibility. Once a symbol is eligible for
 re-entry, it enters the same current capital competition with no permanent
 discount or bonus merely because it is a re-entry.
 
+Phase32-CW narrows the meaning of eligibility: residual REENTRY protection
+checks lineage, prior EXIT context, short churn, repeated unresolved churn,
+prior-cause recovery, HARD_STOP recovery, and conservative UNKNOWN-prior-context
+independence. Current rank, Buy Quality, Entry Admission, Continuation Quality,
+downside, capacity, Safety, broker, corporate-action, PC, PS, and Runtime
+feasibility are ordinary current BUY authorities and must not be duplicated as
+broad REENTRY-only penalties. `REENTRY_UNKNOWN_PRIOR_CONTEXT` preserves
+prior-owned lineage and never becomes fake BUY_NEW.
+
 ```text
 RISK_PACING_FORCES_EXISTING_POSITION_EXIT = NO
 ADD_MARKET_CANDIDATE_INTERACTION_DEFINED = YES
@@ -914,6 +923,11 @@ ADD competes within the same budget envelope. It has no automatic priority and
 no automatic rejection. Eligible re-entry behaves as a normal `NEW_BUY`
 capital competitor without permanent special penalty. Existing strong holdings
 and SELL decisions remain independent of incremental BUY/ADD pacing.
+
+Eligibility here means residual REENTRY protection has passed; it does not mean
+historical ownership was erased. Recoverable prior EXIT provenance defects still
+fail closed, and genuinely unrecoverable old prior context must remain auditable
+as UNKNOWN lineage.
 
 ```text
 ADD_MULTI_ALLOCATION_SUPPORTED = YES
@@ -1339,3 +1353,22 @@ High-resolution value must not become a fixed full-investment rule, a BULL
 override, a second Candidate filter, or Historical-return-derived weighting.
 Portfolio Rotation is a future staged capability and must not force existing
 HOLD liquidation through the Risk Pacing or Runtime path.
+
+## 16. Phase32-DG Tick Reliability Boundary
+
+Phase32-DG adds tick-normalized trend and momentum confidence as opportunity
+quality evidence before capital allocation.
+
+This does not change the dual-path allocation boundary:
+
+- Candidate/BQ/Strategy Intelligence may qualify whether apparent trend and
+  momentum are robust to minimum-tick quantization.
+- PC still owns target capital allocation and applies existing caps, budget,
+  concentration, Cash, and lot-feasibility semantics.
+- PS still owns executable quantity materialization.
+- Runtime still consumes explicit upstream decisions without recomputing them.
+
+Tick qualification is not a market-quality exposure dial and not a price bucket
+rule. It prevents coarse one/few-tick price series from acting as clean
+independent confirmation while preserving legitimate low-price opportunities
+with acceptable or robust PIT tick structure.

@@ -22,6 +22,7 @@ from ai_fund_lab_v2.strategy.portfolio_construction import (
     validate_portfolio_construction_artifact,
     verify_source_hashes,
 )
+from ai_fund_lab_v2.strategy.minimum_tick_authority import resolve_minimum_tick
 from ai_fund_lab_v2.strategy.portfolio_policy import PortfolioPolicyConfig, PortfolioPolicyInputSummary
 from ai_fund_lab_v2.strategy.shadow_runtime import _ai_output_summary, _pc_summary
 
@@ -2929,11 +2930,11 @@ def test_phase29_l16_semantic_reentry_cooldown_and_recovery_hurdle(tmp_path: Pat
     assert by_code["22220"]["reentry_semantic_status"] == "PASS"
     assert by_code["22220"]["reentry_semantic_eligibility"]["owner"] == "PORTFOLIO_CONSTRUCTION"
     assert by_code["22220"]["target_weight"] == 0.05
-    assert by_code["33330"]["reentry_recovery_status"] == "FAIL_CLOSED"
-    assert by_code["33330"]["reentry_recovery_reason"] == "reentry_opportunity_not_requalified"
-    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CURRENT_EVIDENCE"
-    assert "REENTRY_BLOCKED_CURRENT_ELIGIBILITY" in by_code["33330"]["reentry_reason_codes"]
-    assert by_code["33330"]["target_weight"] == 0.0
+    assert by_code["33330"]["reentry_recovery_status"] == "PASS"
+    assert by_code["33330"]["reentry_recovery_reason"] == "reentry_recovery_qualified"
+    assert by_code["33330"]["reentry_opportunity_qualification_status"] == "CURRENT_BUY_AUTHORITY"
+    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_ELIGIBLE"
+    assert by_code["33330"]["target_weight"] > 0.0
 
 
 def test_phase31_g26_first_time_buy_new_has_non_reentry_semantic_contract(tmp_path: Path) -> None:
@@ -3041,8 +3042,9 @@ def test_phase29_l21r3_prior_exit_persists_when_buy_quality_temporarily_excludes
     assert member["prior_exit_business_date"] == "2026-07-09"
     assert member["semantic_buy_type"] == "REENTRY"
     assert member["reentry_cooldown_status"] == "PASS"
-    assert member["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CURRENT_EVIDENCE"
-    assert member["reentry_semantic_status"] == "FAIL_CLOSED"
+    assert member["reentry_semantic_state"] == "REENTRY_INSUFFICIENT_EVIDENCE"
+    assert member["reentry_semantic_status"] == "REVIEW_REQUIRED"
+    assert member["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
 
 
 def test_phase29_l21s_one_lot_fallback_allocates_positive_buy_new_below_normal_lot_rounding() -> None:
@@ -3403,6 +3405,7 @@ def test_phase32_f_reduced_existing_add_remains_positive_when_quality_authorizes
 
 
 def test_phase29_l16_canonical_add_is_not_reentry_and_remains_positive_when_low_price_capped(tmp_path: Path) -> None:
+    tick_authority = _minimum_tick_fixture("11110", price=10.0)
     payload = _build_d28_payload(
         tmp_path,
         current_rows=[{"position_id": "current-11110", "security_code": "11110", "current_weight": 0.02, "position_campaign_id": "campaign-11110", "reference_price": 10.0, "rolling_median_traded_value_20": 1_000_000_000}],
@@ -3419,6 +3422,15 @@ def test_phase29_l16_canonical_add_is_not_reentry_and_remains_positive_when_low_
                 incremental_investment_value_state="POSITIVE",
                 opportunity_cost_status="PASS",
                 reference_price=10.0,
+                minimum_tick=tick_authority["minimum_tick"],
+                minimum_tick_authority=tick_authority,
+                minimum_tick_authority_status=tick_authority["resolution_status"],
+                minimum_tick_authority_hash=tick_authority["authority_hash"],
+                minimum_tick_resolution={
+                    "status": tick_authority["resolution_status"],
+                    "resolved_value": tick_authority["minimum_tick"],
+                    "reason_codes": tick_authority["resolution_reason_codes"],
+                },
                 rolling_median_traded_value_20=1_000_000_000,
             )
         ],
@@ -3648,12 +3660,21 @@ def _build_l16_payload(
 
 
 def _l16_opportunity(code: str, rank: int, *, price: float, rolling_value: float | None, **extra: object) -> dict[str, object]:
+    tick_authority = _minimum_tick_fixture(code, price=price)
     row = _opportunity_row(
         code,
         rank,
         0.20,
         reference_price=price,
-        minimum_tick=1.0,
+        minimum_tick=tick_authority["minimum_tick"],
+        minimum_tick_authority=tick_authority,
+        minimum_tick_authority_status=tick_authority["resolution_status"],
+        minimum_tick_authority_hash=tick_authority["authority_hash"],
+        minimum_tick_resolution={
+            "status": tick_authority["resolution_status"],
+            "resolved_value": tick_authority["minimum_tick"],
+            "reason_codes": tick_authority["resolution_reason_codes"],
+        },
         trend_close_over_ma_20d=1.01,
         price_momentum_return_20d=0.01,
         corporate_action_status="PASS",
@@ -3662,6 +3683,26 @@ def _l16_opportunity(code: str, rank: int, *, price: float, rolling_value: float
     if rolling_value is not None:
         row["rolling_median_traded_value_20"] = rolling_value
     return row
+
+
+def _minimum_tick_fixture(code: str, *, price: float) -> dict[str, object]:
+    return resolve_minimum_tick(
+        symbol=code,
+        business_date="2026-07-15",
+        reference_price=price,
+        security_metadata={
+            "code": code,
+            "Date": "2026-07-15",
+            "ProdCat": "011",
+            "MktNm": "スタンダード",
+            "ScaleCat": "-",
+            "classification_source": "phase29_l16_fixture_listed_issues",
+        },
+        reference_price_source="phase29_l16_fixture_reference_price",
+        source_artifact_id="phase29_l16_fixture_listed_issues",
+        source_artifact_hash="1" * 64,
+        runtime_run_id="phase29_l16_fixture",
+    )
 
 
 def _l16_quality(code: str, action: str) -> dict[str, object]:

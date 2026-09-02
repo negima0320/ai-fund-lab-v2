@@ -11,6 +11,16 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
+from ai_fund_lab_v2.strategy.minimum_tick_authority import (
+    MINIMUM_TICK_AUTHORITY_SCHEMA_VERSION,
+    STATUS_KNOWN,
+    resolve_minimum_tick,
+)
+from ai_fund_lab_v2.strategy.tick_quantization import (
+    TICK_NORMALIZED_SCHEMA_VERSION,
+    build_tick_normalized_evidence,
+)
+
 
 PRICE_VOLATILITY_SCHEMA_VERSION = "strategy_price_volatility_materialization.v1"
 TECHNICAL_FEATURE_SCHEMA_VERSION = "strategy_pm_technical_feature_materialization.v1"
@@ -57,6 +67,8 @@ def produce_price_volatility_artifact(
     output_path: Path | str,
     symbols: Iterable[str] = (),
     as_of: str | None = None,
+    listed_issues_path: Path | str | None = None,
+    runtime_run_id: str = "",
 ) -> StrategyInputMaterializationResult:
     payload = _build_materialized_payload(
         schema_version=PRICE_VOLATILITY_SCHEMA_VERSION,
@@ -66,6 +78,8 @@ def produce_price_volatility_artifact(
         symbols=tuple(symbols),
         as_of=as_of,
         include_pm_features=False,
+        listed_issues_path=Path(listed_issues_path) if listed_issues_path is not None else None,
+        runtime_run_id=runtime_run_id,
     )
     return _write_result(output_path, payload)
 
@@ -78,6 +92,8 @@ def produce_pm_technical_feature_artifact(
     output_path: Path | str,
     symbols: Iterable[str] = (),
     as_of: str | None = None,
+    listed_issues_path: Path | str | None = None,
+    runtime_run_id: str = "",
 ) -> StrategyInputMaterializationResult:
     payload = _build_materialized_payload(
         schema_version=TECHNICAL_FEATURE_SCHEMA_VERSION,
@@ -87,6 +103,8 @@ def produce_pm_technical_feature_artifact(
         symbols=tuple(symbols),
         as_of=as_of,
         include_pm_features=True,
+        listed_issues_path=Path(listed_issues_path) if listed_issues_path is not None else None,
+        runtime_run_id=runtime_run_id,
     )
     return _write_result(output_path, payload)
 
@@ -100,6 +118,8 @@ def _build_materialized_payload(
     symbols: tuple[str, ...],
     as_of: str | None,
     include_pm_features: bool,
+    listed_issues_path: Path | None,
+    runtime_run_id: str,
 ) -> dict[str, Any]:
     as_of = as_of or datetime.now(timezone.utc).isoformat()
     source_hash = _file_hash(source_path)
@@ -110,6 +130,12 @@ def _build_materialized_payload(
     reason_codes: list[str] = []
     rows: list[dict[str, Any]] = []
     source_columns: list[str] = []
+    listed_issues_hash = _file_hash(listed_issues_path) if listed_issues_path is not None else ""
+    listed_issues_metadata = _security_metadata_by_symbol(
+        listed_issues_path,
+        feature_date=feature_date,
+        source_hash=listed_issues_hash,
+    )
     future_row_rejection_count = 0
     selected_source_row_count = 0
     requested_symbols = sorted({str(symbol) for symbol in symbols if str(symbol)})
@@ -146,6 +172,10 @@ def _build_materialized_payload(
                     include_pm_features=include_pm_features,
                     source_path=source_path,
                     source_hash=source_hash,
+                    security_metadata_by_symbol=listed_issues_metadata,
+                    security_metadata_source_path=listed_issues_path,
+                    security_metadata_source_hash=listed_issues_hash,
+                    runtime_run_id=runtime_run_id,
                 )
                 missing_rows = [row for row in rows if row["coverage_status"] != "AVAILABLE"]
                 if not rows:
@@ -193,6 +223,11 @@ def _build_materialized_payload(
         "source_path": str(source_path),
         "source_content_hash": source_hash,
         "source_columns": source_columns,
+        "minimum_tick_authority_schema_version": MINIMUM_TICK_AUTHORITY_SCHEMA_VERSION,
+        "minimum_tick_authority_source": str(listed_issues_path or ""),
+        "minimum_tick_authority_source_hash": listed_issues_hash,
+        "minimum_tick_authority_policy": "canonical_pit_security_metadata_jpx_tick_table_or_explicit_insufficient_evidence",
+        "tick_normalized_evidence_schema_version": TICK_NORMALIZED_SCHEMA_VERSION,
         "producer_result_status": status,
         "producer_calculation_completed": bool(rows),
         "validation_status": validation_status,
@@ -217,7 +252,12 @@ def _build_materialized_payload(
         "rows": rows,
         "row_count": len(rows),
         "symbol_count": len({row.get("symbol") for row in rows if row.get("symbol")}),
-        "upstream_hashes": [{"role": "market_quotes", "path": str(source_path), "sha256": source_hash}],
+        "upstream_hashes": _upstream_hashes(
+            source_path=source_path,
+            source_hash=source_hash,
+            listed_issues_path=listed_issues_path,
+            listed_issues_hash=listed_issues_hash,
+        ),
         "production_consumer_connected": False,
         "runtime_switch_performed": False,
     }
@@ -234,6 +274,10 @@ def _calculation_rows(
     include_pm_features: bool,
     source_path: Path,
     source_hash: str,
+    security_metadata_by_symbol: Mapping[str, Mapping[str, Any]],
+    security_metadata_source_path: Path | None,
+    security_metadata_source_hash: str,
+    runtime_run_id: str,
 ) -> list[dict[str, Any]]:
     symbols = requested_symbols or sorted(frame["code"].dropna().astype(str).unique().tolist())
     rows: list[dict[str, Any]] = []
@@ -286,6 +330,16 @@ def _calculation_rows(
             source_path=source_path,
             source_hash=source_hash,
         )
+        minimum_tick_payload = _minimum_tick_payload(
+            symbol=symbol,
+            feature_date=feature_date,
+            reference_price=reference_price,
+            reference_price_payload=reference_price_payload,
+            security_metadata=security_metadata_by_symbol.get(symbol) or {},
+            security_metadata_source_path=security_metadata_source_path,
+            security_metadata_source_hash=security_metadata_source_hash,
+            runtime_run_id=runtime_run_id,
+        )
         if vol20 is None or vol20 <= 0:
             rows.append(
                 {
@@ -293,6 +347,7 @@ def _calculation_rows(
                     "coverage_status": "INSUFFICIENT_OBSERVATIONS",
                     "volatility_value": None,
                     **reference_price_payload,
+                    **minimum_tick_payload,
                     "decision_resolution": "UNRESOLVED",
                     "missing_features": ["volatility_return_std_20d"],
                 }
@@ -304,6 +359,7 @@ def _calculation_rows(
             "volatility_value": round(vol20, 10),
             "volatility_return_std_20d": round(vol20, 10),
             **reference_price_payload,
+            **minimum_tick_payload,
             **_liquidity_capacity_payload(
                 symbol=symbol,
                 traded_value=traded_value,
@@ -323,6 +379,14 @@ def _calculation_rows(
             return_5d = _return_over(close, 5)
             return_10d = _return_over(close, 10)
             return_20d = _return_over(close, 20)
+            return_60d = _return_over(close, 60)
+            ma60 = _finite_or_none(close.tail(60).mean()) if len(close.dropna()) >= 60 else None
+            tick_evidence = _tick_normalized_payload(
+                symbol=symbol,
+                feature_date=feature_date,
+                close=close,
+                minimum_tick_payload=minimum_tick_payload,
+            )
             row.update(
                 {
                     "target_date": feature_date,
@@ -334,13 +398,16 @@ def _calculation_rows(
                     "price_momentum_return_5d": return_5d,
                     "price_momentum_return_10d": return_10d,
                     "price_momentum_return_20d": return_20d,
+                    "price_momentum_return_60d": return_60d,
                     "recent_move_volatility_z_1d": _volatility_z(return_1d, vol20, scale=1.0),
                     "recent_move_volatility_z_3d": _volatility_z(return_3d, vol20, scale=3.0**0.5),
                     "momentum_5d_vs_20d_delta": _difference_or_none(return_5d, return_20d),
                     "momentum_1d_vs_5d_delta": _difference_or_none(return_1d, return_5d),
                     "trend_close_over_ma_20d": _ratio_or_none(_finite_or_none(close.iloc[-1]), ma20),
                     "trend_ma_5_20_ratio": _ratio_or_none(ma5, ma20),
+                    "trend_ma_20_60_ratio": _ratio_or_none(ma20, ma60),
                     "volume_momentum_ratio_5d": _ratio_or_none(vol5, vol20_avg),
+                    **tick_evidence,
                 }
             )
             missing = [name for name in PM_TECHNICAL_REQUIRED_COLUMNS if row.get(name) is None]
@@ -350,6 +417,70 @@ def _calculation_rows(
                 row["decision_resolution"] = "UNRESOLVED"
         rows.append(row)
     return rows
+
+
+def _minimum_tick_payload(
+    *,
+    symbol: str,
+    feature_date: str,
+    reference_price: float | None,
+    reference_price_payload: Mapping[str, Any],
+    security_metadata: Mapping[str, Any],
+    security_metadata_source_path: Path | None,
+    security_metadata_source_hash: str,
+    runtime_run_id: str,
+) -> dict[str, Any]:
+    authority = resolve_minimum_tick(
+        symbol=symbol,
+        business_date=feature_date,
+        reference_price=reference_price,
+        security_metadata=security_metadata,
+        reference_price_source=str(reference_price_payload.get("reference_price_authority", {}).get("source_path") or ""),
+        source_artifact_id=str(security_metadata_source_path or ""),
+        source_artifact_hash=security_metadata_source_hash,
+        runtime_run_id=runtime_run_id,
+        producer="strategy_input_materialization.produce_pm_technical_feature_artifact",
+    )
+    status = str(authority.get("resolution_status") or "INSUFFICIENT_EVIDENCE")
+    return {
+        "minimum_tick": authority.get("minimum_tick") if status == STATUS_KNOWN else None,
+        "single_tick_pct": authority.get("single_tick_pct") if status == STATUS_KNOWN else None,
+        "minimum_tick_authority": authority,
+        "minimum_tick_authority_status": status,
+        "minimum_tick_authority_hash": str(authority.get("authority_hash") or ""),
+        "minimum_tick_authority_source": str(authority.get("source_artifact_id") or ""),
+        "minimum_tick_resolution": {
+            "status": status,
+            "reason_codes": list(authority.get("resolution_reason_codes") or []),
+            "resolved_value": authority.get("minimum_tick") if status == STATUS_KNOWN else None,
+            "tick_rule_version": str(authority.get("tick_rule_version") or ""),
+            "tick_table_class": str(authority.get("tick_table_class") or ""),
+            "review_reason": "" if status == STATUS_KNOWN else ",".join(authority.get("resolution_reason_codes") or []),
+        },
+    }
+
+
+def _tick_normalized_payload(
+    *,
+    symbol: str,
+    feature_date: str,
+    close: pd.Series,
+    minimum_tick_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    evidence = build_tick_normalized_evidence(
+        close_values=close.tolist(),
+        minimum_tick_authority_status=str(minimum_tick_payload.get("minimum_tick_authority_status") or ""),
+        minimum_tick=minimum_tick_payload.get("minimum_tick"),
+        single_tick_pct=minimum_tick_payload.get("single_tick_pct"),
+        business_date=feature_date,
+        symbol=symbol,
+        minimum_tick_authority_hash=str(minimum_tick_payload.get("minimum_tick_authority_hash") or ""),
+    )
+    return {
+        **evidence,
+        "tick_normalized_evidence": evidence,
+        "tick_quantization_reason_codes": list(evidence.get("reason_codes") or []),
+    }
 
 
 def _liquidity_capacity_payload(
@@ -478,6 +609,70 @@ def _normalize_price_frame(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result = result.dropna(subset=["target_date", "code", "close"])
     return result[result["close"] > 0]
+
+
+def _security_metadata_by_symbol(
+    listed_issues_path: Path | None,
+    *,
+    feature_date: str,
+    source_hash: str,
+) -> dict[str, dict[str, Any]]:
+    if listed_issues_path is None or not listed_issues_path.is_file():
+        return {}
+    try:
+        frame = pd.read_parquet(listed_issues_path)
+    except Exception:
+        return {}
+    code_col = _first_existing(frame, ("Code", "code", "symbol", "Symbol"))
+    date_col = _first_existing(frame, ("Date", "date", "as_of_date", "target_date"))
+    if not code_col:
+        return {}
+    if date_col:
+        frame = frame[frame[date_col].astype(str) <= feature_date].copy()
+    if frame.empty:
+        return {}
+    if date_col:
+        frame = frame.sort_values([code_col, date_col])
+    else:
+        frame = frame.sort_values([code_col])
+    result: dict[str, dict[str, Any]] = {}
+    for _, row in frame.drop_duplicates(code_col, keep="last").iterrows():
+        payload = {str(key): _jsonable(value) for key, value in row.to_dict().items()}
+        symbol = str(payload.get(code_col) or "").strip()
+        if not symbol:
+            continue
+        payload.setdefault("code", symbol)
+        payload.setdefault("security_type", payload.get("security_type") or payload.get("ProdCat") or payload.get("product_category") or "")
+        payload.setdefault("product_category", payload.get("product_category") or payload.get("ProdCat") or "")
+        payload.setdefault("market_name", payload.get("market_name") or payload.get("MktNm") or payload.get("market") or "")
+        payload["classification_source"] = str(listed_issues_path)
+        payload["classification_source_hash"] = source_hash
+        result[symbol] = payload
+    return result
+
+
+def _upstream_hashes(
+    *,
+    source_path: Path,
+    source_hash: str,
+    listed_issues_path: Path | None,
+    listed_issues_hash: str,
+) -> list[dict[str, str]]:
+    rows = [{"role": "market_quotes", "path": str(source_path), "sha256": source_hash}]
+    if listed_issues_path is not None:
+        rows.append({"role": "jquants_listed_issues", "path": str(listed_issues_path), "sha256": listed_issues_hash})
+    return rows
+
+
+def _jsonable(value: Any) -> Any:
+    if pd.isna(value):
+        return ""
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
 
 
 def _write_result(output_path: Path | str, payload: dict[str, Any]) -> StrategyInputMaterializationResult:

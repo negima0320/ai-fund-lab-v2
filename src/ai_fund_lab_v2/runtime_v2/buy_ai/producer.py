@@ -84,6 +84,43 @@ BUY_QUALITY_PROPAGATED_FEATURE_COLUMNS = (
     "volume_momentum_ratio_5d",
     "volume_momentum_ratio_1d_20d",
     "liquidity_avg_volume_20d",
+    "minimum_tick",
+    "single_tick_pct",
+    "minimum_tick_authority_status",
+    "minimum_tick_authority_hash",
+    "minimum_tick_resolution",
+    "tick_quantization_status",
+    "tick_normalized_trend_state",
+    "momentum_confidence_state",
+    "close_level_diversity_state",
+    "candidate_rank_tick_reliability",
+    "close_level_count_5d",
+    "close_level_count_10d",
+    "close_level_count_20d",
+    "close_level_count_60d",
+    "ticks_traversed_5d",
+    "ticks_traversed_20d",
+    "ticks_traversed_60d",
+    "net_tick_move_5d",
+    "net_tick_move_20d",
+    "net_tick_move_60d",
+    "directional_tick_persistence_5d",
+    "directional_tick_persistence_20d",
+    "directional_tick_persistence_60d",
+    "ma_separation_ticks_close_over_ma20",
+    "ma_separation_ticks_ma5_over_ma20",
+    "ma_separation_ticks_ma20_over_ma60",
+    "ma_separation_vs_single_tick_pct_close_over_ma20",
+    "ma_separation_vs_single_tick_pct_ma5_over_ma20",
+    "ma_separation_vs_single_tick_pct_ma20_over_ma60",
+    "return_vs_tick_resolution_5d",
+    "return_vs_tick_resolution_20d",
+    "return_vs_tick_resolution_60d",
+    "quantized_volatility_context",
+    "trend_robustness_authority",
+    "momentum_confidence_authority",
+    "tick_normalized_evidence",
+    "tick_quantization_reason_codes",
 )
 
 
@@ -1735,6 +1772,11 @@ def _with_candidate_pit_quality_surface(row: dict[str, Any]) -> dict[str, Any]:
         "candidate_pit_surface_reason_codes": surface["reason_codes"],
         "candidate_pit_surface_evidence_sufficiency": surface["evidence_sufficiency"],
         "candidate_pit_market_healthy_proxy": surface["market_healthy_proxy"],
+        "tick_quantization_status": surface.get("tick_quantization_status", str(row.get("tick_quantization_status") or "")),
+        "tick_normalized_trend_state": surface.get("tick_normalized_trend_state", str(row.get("tick_normalized_trend_state") or "")),
+        "momentum_confidence_state": surface.get("momentum_confidence_state", str(row.get("momentum_confidence_state") or "")),
+        "close_level_diversity_state": surface.get("close_level_diversity_state", str(row.get("close_level_diversity_state") or "")),
+        "candidate_rank_tick_reliability": surface.get("candidate_rank_tick_reliability", str(row.get("candidate_rank_tick_reliability") or "")),
         "candidate_pit_surface_not_buy_authority": True,
         "candidate_pit_surface_future_information_used": False,
     }
@@ -1755,15 +1797,20 @@ def _candidate_pit_quality_surface(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     raw = {key: _optional_float(row.get(key)) for key in required}
     missing = [key for key, value in raw.items() if value is None]
+    tick_evidence = _candidate_tick_quantization_evidence(row)
     if missing:
+        reason_codes = ["candidate_surface_missing_pit_evidence"]
+        if tick_evidence["status"] == "INSUFFICIENT_EVIDENCE":
+            reason_codes.append("candidate_tick_normalized_evidence_insufficient")
         return {
             "schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
             "surface_state": "INSUFFICIENT_SURFACE_EVIDENCE",
             "priority": 3,
-            "reason_codes": ["candidate_surface_missing_pit_evidence"],
+            "reason_codes": reason_codes,
             "evidence_sufficiency": "INSUFFICIENT",
             "missing_inputs": missing,
             "raw_pit_evidence": raw,
+            **tick_evidence["surface_fields"],
             "market_healthy_proxy": False,
             "not_buy_authority": True,
             "future_information_used": False,
@@ -1799,6 +1846,13 @@ def _candidate_pit_quality_surface(row: Mapping[str, Any]) -> dict[str, Any]:
         reason_codes.append("candidate_surface_elevated_volatility")
     if not liquidity_valid:
         reason_codes.append("candidate_surface_invalid_liquidity")
+    if tick_evidence["status"] == "INSUFFICIENT_EVIDENCE":
+        reason_codes.append("candidate_tick_normalized_evidence_insufficient")
+    elif tick_evidence["trend_state"] == "QUANTIZED_CAUTION" or tick_evidence["momentum_state"] == "LOW_CONFIDENCE_QUANTIZED":
+        reason_codes.append("candidate_tick_quantization_caution")
+        reason_codes.append("candidate_rank_score_not_independent_confirmation_under_tick_caution")
+    elif tick_evidence["trend_state"] in {"ROBUST", "ACCEPTABLE"}:
+        reason_codes.append("candidate_tick_normalized_trend_evidence_available")
     if trend_positive and ma_supportive and long_trend_supportive and acceleration_supportive and participation_supportive and volatility_controlled and liquidity_valid:
         state = "STRONG_CONTINUATION_SURFACE"
         priority = 0
@@ -1812,6 +1866,12 @@ def _candidate_pit_quality_surface(row: Mapping[str, Any]) -> dict[str, Any]:
             reason_codes.append("candidate_surface_trend_not_confirmed")
         if not ma_supportive:
             reason_codes.append("candidate_surface_ma_structure_not_confirmed")
+    if tick_evidence["status"] == "INSUFFICIENT_EVIDENCE":
+        state = "INSUFFICIENT_SURFACE_EVIDENCE"
+        priority = max(priority, 3)
+    elif tick_evidence["trend_state"] == "QUANTIZED_CAUTION" or tick_evidence["momentum_state"] == "LOW_CONFIDENCE_QUANTIZED":
+        state = "CAUTION_MOMENTUM_SURFACE"
+        priority = max(priority, 2)
     return {
         "schema_version": CANDIDATE_PIT_QUALITY_SURFACE_SCHEMA_VERSION,
         "surface_state": state,
@@ -1820,9 +1880,64 @@ def _candidate_pit_quality_surface(row: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_sufficiency": "SUFFICIENT",
         "missing_inputs": [],
         "raw_pit_evidence": raw,
+        **tick_evidence["surface_fields"],
         "market_healthy_proxy": market_healthy_proxy,
         "not_buy_authority": True,
         "future_information_used": False,
+    }
+
+
+def _candidate_tick_quantization_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
+    explicit = any(
+        key in row
+        for key in (
+            "tick_quantization_status",
+            "tick_normalized_trend_state",
+            "momentum_confidence_state",
+            "candidate_rank_tick_reliability",
+        )
+    )
+    if not explicit:
+        return {
+            "status": "NOT_AVAILABLE",
+            "trend_state": "",
+            "momentum_state": "",
+            "surface_fields": {
+                "tick_quantization_status": "",
+                "tick_normalized_trend_state": "",
+                "momentum_confidence_state": "",
+                "close_level_diversity_state": "",
+                "candidate_rank_tick_reliability": "",
+            },
+        }
+    status = str(row.get("tick_quantization_status") or "").upper()
+    trend_state = str(row.get("tick_normalized_trend_state") or "").upper()
+    momentum_state = str(row.get("momentum_confidence_state") or "").upper()
+    reliability = str(row.get("candidate_rank_tick_reliability") or "").upper()
+    if status != "PASS" or trend_state in {"", "INSUFFICIENT_EVIDENCE"} or momentum_state in {"", "INSUFFICIENT_EVIDENCE"}:
+        return {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "trend_state": trend_state or "INSUFFICIENT_EVIDENCE",
+            "momentum_state": momentum_state or "INSUFFICIENT_EVIDENCE",
+            "surface_fields": {
+                "tick_quantization_status": status or "INSUFFICIENT_EVIDENCE",
+                "tick_normalized_trend_state": trend_state or "INSUFFICIENT_EVIDENCE",
+                "momentum_confidence_state": momentum_state or "INSUFFICIENT_EVIDENCE",
+                "close_level_diversity_state": str(row.get("close_level_diversity_state") or ""),
+                "candidate_rank_tick_reliability": reliability or "INSUFFICIENT",
+            },
+        }
+    return {
+        "status": "PASS",
+        "trend_state": trend_state,
+        "momentum_state": momentum_state,
+        "surface_fields": {
+            "tick_quantization_status": status,
+            "tick_normalized_trend_state": trend_state,
+            "momentum_confidence_state": momentum_state,
+            "close_level_diversity_state": str(row.get("close_level_diversity_state") or ""),
+            "candidate_rank_tick_reliability": reliability or ("LOW_CONFIDENCE" if trend_state == "QUANTIZED_CAUTION" else "QUALIFIED"),
+        },
     }
 
 

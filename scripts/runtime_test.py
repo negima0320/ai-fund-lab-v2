@@ -46,6 +46,9 @@ from ai_fund_lab_v2.runtime_v2.accepted_generation_resolver import (
     resolve_accepted_generation,
     resolve_accepted_generation_for_evaluation,
 )
+from ai_fund_lab_v2.runtime_v2.corporate_action_adjustment import (
+    resolve_corporate_action_adjustment_authority,
+)
 from ai_fund_lab_v2.runtime_v2.system_status import (
     build_system_status_report,
     build_system_status_scoped_view,
@@ -395,6 +398,34 @@ def build_parser() -> argparse.ArgumentParser:
     ca_repair.add_argument("--business-date", required=True)
     ca_repair.add_argument("--job", default="submit")
 
+    ca_resolution = subparsers.add_parser("resolve-ca-adjustment-authority")
+    add_common(ca_resolution)
+    add_mutation_safety(ca_resolution)
+    ca_resolution.add_argument("--run-id", required=True)
+    ca_resolution.add_argument("--business-date", required=True)
+    ca_resolution.add_argument("--symbol", required=True)
+    ca_resolution.add_argument("--event-type", required=True)
+    ca_resolution.add_argument("--effective-date", required=True)
+    ca_resolution.add_argument("--adjustment-factor", type=float, required=True)
+    ca_resolution.add_argument("--pre-adjustment-quantity", type=float)
+    ca_resolution.add_argument("--post-adjustment-quantity", type=float, required=True)
+    ca_resolution.add_argument("--current-quantity", type=float, required=True)
+    ca_resolution.add_argument("--broker-available-quantity", type=float, required=True)
+    ca_resolution.add_argument("--pending-quantity", type=float, required=True)
+    ca_resolution.add_argument("--submit-quantity", type=float, required=True)
+    ca_resolution.add_argument("--price-basis-reconciliation-status", default="PASS")
+    ca_resolution.add_argument("--already-applied-status", default="CONFIRMED")
+    ca_resolution.add_argument("--ledger-adjustment-status", default="PASS")
+    ca_resolution.add_argument("--current-adjustment-status", default="PASS")
+    ca_resolution.add_argument("--pending-adjustment-status", default="PASS")
+    ca_resolution.add_argument("--price-series-adjusted", choices=("true", "false"), required=True)
+    ca_resolution.add_argument("--quantity-adjusted", choices=("true", "false"), required=True)
+    ca_resolution.add_argument("--adjustment-already-applied", choices=("true", "false"), required=True)
+    ca_resolution.add_argument("--reviewer", required=True)
+    ca_resolution.add_argument("--audit-id", required=True)
+    ca_resolution.add_argument("--resolution-reason", required=True)
+    ca_resolution.add_argument("--evidence-source", action="append", default=[])
+
     recovery = subparsers.add_parser("recover-failed-execution")
     add_common(recovery)
     add_mutation_safety(recovery)
@@ -520,6 +551,13 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return stop_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "repair-ca-quarantine-continuation":
         return repair_ca_quarantine_continuation_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
+    if args.subcommand == "resolve-ca-adjustment-authority":
+        return resolve_ca_adjustment_authority_command(
             args,
             profile=profile,
             runtime_root=runtime_root,
@@ -6998,6 +7036,122 @@ def repair_ca_quarantine_continuation_command(
             "resume_allowed": True,
             "next_job_after_repair": run_state["next_job"],
             "repair_evidence_path": str(run_dir / "ca_quarantine_continuation_repair.json"),
+            "state_hashes_after": state_hashes(runtime_root),
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def resolve_ca_adjustment_authority_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    run_id = str(args.run_id)
+    run_state = load_run_state(evidence_root, run_id)
+    business_date = str(args.business_date)
+    symbol = str(args.symbol).strip()
+    state_before = state_hashes(runtime_root)
+    result = resolve_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        run_id=run_id,
+        business_date=business_date,
+        symbol=symbol,
+        event_type=str(args.event_type),
+        effective_date=str(args.effective_date),
+        adjustment_factor=float(args.adjustment_factor),
+        pre_adjustment_quantity=args.pre_adjustment_quantity,
+        post_adjustment_quantity=float(args.post_adjustment_quantity),
+        current_quantity=float(args.current_quantity),
+        broker_available_quantity=float(args.broker_available_quantity),
+        pending_quantity=float(args.pending_quantity),
+        submit_quantity=float(args.submit_quantity),
+        price_basis_reconciliation_status=str(args.price_basis_reconciliation_status),
+        already_applied_status=str(args.already_applied_status),
+        ledger_adjustment_status=str(args.ledger_adjustment_status),
+        current_adjustment_status=str(args.current_adjustment_status),
+        pending_adjustment_status=str(args.pending_adjustment_status),
+        price_series_adjusted=str(args.price_series_adjusted).lower() == "true",
+        quantity_adjusted=str(args.quantity_adjusted).lower() == "true",
+        adjustment_already_applied=str(args.adjustment_already_applied).lower() == "true",
+        reviewer=str(args.reviewer),
+        audit_id=str(args.audit_id),
+        resolution_reason=str(args.resolution_reason),
+        evidence_sources=tuple(str(item) for item in (args.evidence_source or ())),
+        write=False,
+    )
+    payload = base_payload(
+        "resolve-ca-adjustment-authority",
+        "DRY_RUN" if args.dry_run else str(result.get("status") or "PRECONDITION_FAILURE"),
+    )
+    payload.update(
+        {
+            "run_id": run_id,
+            "profile_id": profile["profile_id"],
+            "business_date": business_date,
+            "symbol": symbol,
+            "current_run_status": run_state.get("status") or "",
+            "continuation_point": run_state.get("next_job") or "",
+            "dry_run_no_mutation": bool(args.dry_run),
+            "operator_explicit_confirmation_required": True,
+            "submit_reexecuted": False,
+            "broker_access": False,
+            "broker_write": False,
+            "external_delivery": False,
+            "ledger_mutated": False,
+            "cash_mutated": False,
+            "positions_mutated": False,
+            "pending_mutated": False,
+            "runtime_state_mutation_scope": "corporate_action_adjustment_authority_only",
+            "resolution": result,
+            "state_hashes_before": state_before,
+            "state_hashes_after": state_before,
+        }
+    )
+    if result.get("status") == "PRECONDITION_FAILURE":
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if args.dry_run:
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    applied = resolve_corporate_action_adjustment_authority(
+        runtime_root=runtime_root,
+        run_id=run_id,
+        business_date=business_date,
+        symbol=symbol,
+        event_type=str(args.event_type),
+        effective_date=str(args.effective_date),
+        adjustment_factor=float(args.adjustment_factor),
+        pre_adjustment_quantity=args.pre_adjustment_quantity,
+        post_adjustment_quantity=float(args.post_adjustment_quantity),
+        current_quantity=float(args.current_quantity),
+        broker_available_quantity=float(args.broker_available_quantity),
+        pending_quantity=float(args.pending_quantity),
+        submit_quantity=float(args.submit_quantity),
+        price_basis_reconciliation_status=str(args.price_basis_reconciliation_status),
+        already_applied_status=str(args.already_applied_status),
+        ledger_adjustment_status=str(args.ledger_adjustment_status),
+        current_adjustment_status=str(args.current_adjustment_status),
+        pending_adjustment_status=str(args.pending_adjustment_status),
+        price_series_adjusted=str(args.price_series_adjusted).lower() == "true",
+        quantity_adjusted=str(args.quantity_adjusted).lower() == "true",
+        adjustment_already_applied=str(args.adjustment_already_applied).lower() == "true",
+        reviewer=str(args.reviewer),
+        audit_id=str(args.audit_id),
+        resolution_reason=str(args.resolution_reason),
+        evidence_sources=tuple(str(item) for item in (args.evidence_source or ())),
+        write=True,
+    )
+    if applied.get("status") != "PASS":
+        payload["status"] = "PRECONDITION_FAILURE"
+        payload["resolution"] = applied
+        payload["state_hashes_after"] = state_hashes(runtime_root)
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    payload.update(
+        {
+            "status": "PASS",
+            "resolution": applied,
             "state_hashes_after": state_hashes(runtime_root),
         }
     )

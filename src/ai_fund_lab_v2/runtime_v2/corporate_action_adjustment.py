@@ -4,11 +4,206 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 
 AUTHORITY_SCHEMA_VERSION = "runtime_v2_corporate_action_adjustment_authority_v1"
+OPERATOR_RESOLUTION_SCHEMA_VERSION = "runtime_v2_corporate_action_operator_resolution_v1"
+
+
+def resolve_corporate_action_adjustment_authority(
+    *,
+    runtime_root: Path | str,
+    run_id: str,
+    business_date: str,
+    symbol: str,
+    event_type: str,
+    effective_date: str,
+    adjustment_factor: float,
+    pre_adjustment_quantity: float | None,
+    post_adjustment_quantity: float,
+    current_quantity: float,
+    broker_available_quantity: float,
+    pending_quantity: float,
+    submit_quantity: float,
+    price_basis_reconciliation_status: str,
+    already_applied_status: str,
+    ledger_adjustment_status: str,
+    current_adjustment_status: str,
+    pending_adjustment_status: str,
+    price_series_adjusted: bool,
+    quantity_adjusted: bool,
+    adjustment_already_applied: bool,
+    reviewer: str,
+    audit_id: str,
+    resolution_reason: str,
+    evidence_sources: tuple[str, ...] = (),
+    write: bool = False,
+) -> dict[str, Any]:
+    """Create the operator-reviewed CA adjustment authority using the canonical artifact path."""
+
+    runtime_root_path = Path(runtime_root)
+    symbol_text = str(symbol).strip()
+    authority_path = _authority_path(runtime_root_path, business_date, symbol_text)
+    original = _read_json(authority_path)
+    original_hash = _sha256_file(authority_path) if authority_path.is_file() else ""
+    requested = {
+        "event_type": event_type,
+        "effective_date": effective_date,
+        "adjustment_factor": adjustment_factor,
+        "post_adjustment_quantity": post_adjustment_quantity,
+        "current_quantity": current_quantity,
+        "broker_available_quantity": broker_available_quantity,
+        "pending_quantity": pending_quantity,
+        "submit_quantity": submit_quantity,
+        "price_basis_reconciliation_status": price_basis_reconciliation_status,
+        "already_applied_status": already_applied_status,
+        "ledger_adjustment_status": ledger_adjustment_status,
+        "current_adjustment_status": current_adjustment_status,
+        "pending_adjustment_status": pending_adjustment_status,
+        "price_series_adjusted": price_series_adjusted,
+        "quantity_adjusted": quantity_adjusted,
+        "adjustment_already_applied": adjustment_already_applied,
+        "reviewer": reviewer,
+        "audit_id": audit_id,
+        "resolution_reason": resolution_reason,
+        "evidence_sources": list(evidence_sources),
+    }
+    reason_codes = _operator_resolution_reason_codes(
+        original=original,
+        authority_path=authority_path,
+        run_id=run_id,
+        business_date=business_date,
+        symbol=symbol_text,
+        event_type=event_type,
+        effective_date=effective_date,
+        adjustment_factor=adjustment_factor,
+        post_adjustment_quantity=post_adjustment_quantity,
+        current_quantity=current_quantity,
+        broker_available_quantity=broker_available_quantity,
+        pending_quantity=pending_quantity,
+        submit_quantity=submit_quantity,
+        price_basis_reconciliation_status=price_basis_reconciliation_status,
+        already_applied_status=already_applied_status,
+        ledger_adjustment_status=ledger_adjustment_status,
+        current_adjustment_status=current_adjustment_status,
+        pending_adjustment_status=pending_adjustment_status,
+        price_series_adjusted=price_series_adjusted,
+        quantity_adjusted=quantity_adjusted,
+        adjustment_already_applied=adjustment_already_applied,
+        reviewer=reviewer,
+        audit_id=audit_id,
+        resolution_reason=resolution_reason,
+        evidence_sources=evidence_sources,
+    )
+    if reason_codes:
+        return {
+            "schema_version": OPERATOR_RESOLUTION_SCHEMA_VERSION,
+            "status": "PRECONDITION_FAILURE",
+            "business_date": business_date,
+            "symbol": symbol_text,
+            "run_id": run_id,
+            "authority_path": str(authority_path),
+            "original_authority_hash": original_hash,
+            "write_performed": False,
+            "reason": reason_codes[0],
+            "reason_codes": reason_codes,
+            "requested_resolution": requested,
+        }
+
+    reviewed_at = datetime.now(timezone.utc).isoformat()
+    payload = {
+        **original,
+        "schema_version": AUTHORITY_SCHEMA_VERSION,
+        "business_date": business_date,
+        "symbol": symbol_text,
+        "normalized_symbol": symbol_text,
+        "status": "PASS",
+        "event_status": "PASS",
+        "event_type": str(event_type).strip(),
+        "event_type_authority": "operator_reviewed_pit_corporate_action_resolution",
+        "effective_date": effective_date,
+        "source": str(original.get("source") or "jquants_raw_equities_bars_daily_adjfactor"),
+        "source_artifact_path": str(original.get("source_artifact_path") or ""),
+        "source_artifact_hash": str(original.get("source_artifact_hash") or ""),
+        "pit_validation_status": "PASS",
+        "future_data_used": False,
+        "adjustment_factor": float(adjustment_factor),
+        "price_adjustment_required": bool(price_series_adjusted),
+        "quantity_adjustment_required": bool(quantity_adjusted),
+        "pre_adjustment_quantity": pre_adjustment_quantity,
+        "post_adjustment_quantity": float(post_adjustment_quantity),
+        "adjusted_runtime_owned_quantity": float(post_adjustment_quantity),
+        "current_quantity": float(current_quantity),
+        "broker_available_quantity": float(broker_available_quantity),
+        "pending_quantity": float(pending_quantity),
+        "submit_quantity": float(submit_quantity),
+        "ledger_adjustment_status": str(ledger_adjustment_status).strip().upper(),
+        "current_adjustment_status": str(current_adjustment_status).strip().upper(),
+        "pending_adjustment_status": str(pending_adjustment_status).strip().upper(),
+        "already_applied_status": str(already_applied_status).strip().upper(),
+        "price_reconciliation_status": str(price_basis_reconciliation_status).strip().upper(),
+        "price_basis_reconciliation_status": str(price_basis_reconciliation_status).strip().upper(),
+        "quantity_reconciliation_status": "PASS",
+        "double_adjustment_detected": False,
+        "reason": "corporate_action_operator_resolution_confirmed",
+        "reason_codes": [],
+        "operator_resolution": {
+            "schema_version": OPERATOR_RESOLUTION_SCHEMA_VERSION,
+            "audit_id": str(audit_id).strip(),
+            "reviewer": str(reviewer).strip(),
+            "reviewed_at": reviewed_at,
+            "run_id": str(run_id).strip(),
+            "resolution_reason": str(resolution_reason).strip(),
+            "original_authority_path": str(authority_path),
+            "original_authority_hash": original_hash,
+            "manually_supplied_fields": sorted(requested.keys()),
+            "evidence_sources": list(evidence_sources),
+            "future_information_used": False,
+            "adjfactor_event_type_auto_inference": False,
+            "operator_explicit_confirmation_required": True,
+        },
+        "lineage": {
+            **dict(original.get("lineage") or {}),
+            "operator_resolution": {
+                "audit_id": str(audit_id).strip(),
+                "reviewer": str(reviewer).strip(),
+                "reviewed_at": reviewed_at,
+                "run_id": str(run_id).strip(),
+                "original_authority_hash": original_hash,
+            },
+        },
+    }
+    if not write:
+        return {
+            "schema_version": OPERATOR_RESOLUTION_SCHEMA_VERSION,
+            "status": "DRY_RUN_READY",
+            "business_date": business_date,
+            "symbol": symbol_text,
+            "run_id": run_id,
+            "authority_path": str(authority_path),
+            "original_authority_hash": original_hash,
+            "write_performed": False,
+            "reason": "corporate_action_operator_resolution_preconditions_pass",
+            "reason_codes": [],
+            "resolved_authority_preview": payload,
+        }
+    _write_json(authority_path, payload)
+    return {
+        "schema_version": OPERATOR_RESOLUTION_SCHEMA_VERSION,
+        "status": "PASS",
+        "business_date": business_date,
+        "symbol": symbol_text,
+        "run_id": run_id,
+        "authority_path": str(authority_path),
+        "original_authority_hash": original_hash,
+        "resolved_authority_hash": _sha256_file(authority_path),
+        "write_performed": True,
+        "reason": "corporate_action_operator_resolution_materialized",
+        "reason_codes": [],
+    }
 
 
 def materialize_corporate_action_adjustment_authority(
@@ -273,6 +468,105 @@ def _authority_path(runtime_root: Path, business_date: str, symbol: str) -> Path
     return runtime_root / "runtime_state" / "corporate_action_adjustments" / business_date / f"{symbol}.json"
 
 
+def _operator_resolution_reason_codes(
+    *,
+    original: Mapping[str, Any],
+    authority_path: Path,
+    run_id: str,
+    business_date: str,
+    symbol: str,
+    event_type: str,
+    effective_date: str,
+    adjustment_factor: float,
+    post_adjustment_quantity: float,
+    current_quantity: float,
+    broker_available_quantity: float,
+    pending_quantity: float,
+    submit_quantity: float,
+    price_basis_reconciliation_status: str,
+    already_applied_status: str,
+    ledger_adjustment_status: str,
+    current_adjustment_status: str,
+    pending_adjustment_status: str,
+    price_series_adjusted: bool,
+    quantity_adjusted: bool,
+    adjustment_already_applied: bool,
+    reviewer: str,
+    audit_id: str,
+    resolution_reason: str,
+    evidence_sources: tuple[str, ...],
+) -> list[str]:
+    reason_codes: list[str] = []
+    if not authority_path.is_file() or not original:
+        reason_codes.append("corporate_action_original_authority_missing")
+    if str(original.get("schema_version") or "") != AUTHORITY_SCHEMA_VERSION:
+        reason_codes.append("corporate_action_authority_schema_mismatch")
+    if str(original.get("business_date") or "") != business_date:
+        reason_codes.append("corporate_action_authority_business_date_mismatch")
+    if str(original.get("symbol") or "").strip() != symbol:
+        reason_codes.append("corporate_action_authority_symbol_mismatch")
+    source_path = str(original.get("source_artifact_path") or "")
+    if not source_path:
+        reason_codes.append("corporate_action_source_artifact_missing")
+    if source_path and str(run_id).strip() and f"/{str(run_id).strip()}/" not in source_path:
+        reason_codes.append("corporate_action_source_run_binding_mismatch")
+    expected_source_hash = _sha256_file(Path(source_path)) if source_path else ""
+    if not expected_source_hash:
+        reason_codes.append("corporate_action_source_hash_missing")
+    if expected_source_hash and str(original.get("source_artifact_hash") or "") != expected_source_hash:
+        reason_codes.append("corporate_action_source_hash_mismatch")
+    if str(original.get("pit_validation_status") or "") != "PASS":
+        reason_codes.append("corporate_action_pit_validation_not_pass")
+    if bool(original.get("future_data_used")):
+        reason_codes.append("corporate_action_future_snapshot_rejected")
+    cleaned_event_type = str(event_type).strip()
+    if not cleaned_event_type or cleaned_event_type.startswith("UNKNOWN") or cleaned_event_type == "NOT_DETECTED":
+        reason_codes.append("corporate_action_type_unresolved")
+    if str(effective_date or "") != str(original.get("effective_date") or business_date):
+        reason_codes.append("corporate_action_effective_date_mismatch")
+    original_factor = _optional_float(original.get("adjustment_factor"))
+    if original_factor is not None and float(adjustment_factor) != original_factor:
+        reason_codes.append("corporate_action_adjustment_factor_mismatch")
+    if float(post_adjustment_quantity) <= 0:
+        reason_codes.append("corporate_action_adjusted_quantity_missing")
+    if float(current_quantity) != float(post_adjustment_quantity):
+        reason_codes.append("corporate_action_current_quantity_mismatch")
+    if float(broker_available_quantity) > float(post_adjustment_quantity):
+        reason_codes.append("corporate_action_broker_quantity_mismatch")
+    if float(submit_quantity) > float(post_adjustment_quantity):
+        reason_codes.append("corporate_action_submit_quantity_exceeds_adjusted_quantity")
+    if float(submit_quantity) > float(broker_available_quantity):
+        reason_codes.append("corporate_action_submit_quantity_exceeds_adjusted_broker_available")
+    if float(pending_quantity) > float(post_adjustment_quantity):
+        reason_codes.append("corporate_action_pending_quantity_requires_regeneration")
+    for value, code in (
+        (price_basis_reconciliation_status, "corporate_action_price_reconciliation_not_pass"),
+        (ledger_adjustment_status, "corporate_action_ledger_adjustment_missing"),
+        (current_adjustment_status, "corporate_action_current_adjustment_missing"),
+        (pending_adjustment_status, "corporate_action_pending_quantity_stale"),
+        (already_applied_status, "corporate_action_already_applied_not_confirmed"),
+    ):
+        if str(value or "").strip().upper() not in {"PASS", "APPLIED", "CONFIRMED"}:
+            reason_codes.append(code)
+    if not bool(price_series_adjusted):
+        reason_codes.append("corporate_action_price_basis_not_reconciled")
+    if not bool(quantity_adjusted):
+        reason_codes.append("corporate_action_quantity_basis_not_reconciled")
+    if not bool(adjustment_already_applied):
+        reason_codes.append("corporate_action_already_applied_not_confirmed")
+    if bool(original.get("double_adjustment_detected")):
+        reason_codes.append("corporate_action_double_adjustment_risk")
+    if not str(reviewer).strip():
+        reason_codes.append("corporate_action_operator_reviewer_missing")
+    if not str(audit_id).strip():
+        reason_codes.append("corporate_action_operator_audit_id_missing")
+    if not str(resolution_reason).strip():
+        reason_codes.append("corporate_action_operator_resolution_reason_missing")
+    if not tuple(source for source in evidence_sources if str(source).strip()):
+        reason_codes.append("corporate_action_operator_evidence_source_missing")
+    return sorted(set(reason_codes))
+
+
 def _authority_matches_event(
     payload: Mapping[str, Any],
     *,
@@ -340,6 +634,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _sha256_file(path: Path) -> str:

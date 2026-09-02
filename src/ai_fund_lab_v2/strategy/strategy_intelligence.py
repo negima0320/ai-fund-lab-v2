@@ -671,14 +671,24 @@ def _continuation_quality(*, symbol: str, business_date: str, technical: Mapping
     missing = []
     optional_gaps = []
     trend = _trend_health(technical)
+    tick_trend = _tick_trend_robustness(technical, business_date=business_date)
+    tick_momentum = _tick_momentum_confidence(technical, business_date=business_date)
     persistence = _persistence(technical)
     acceleration = _acceleration(technical)
     exhaustion = _exhaustion(technical)
     participation = _participation(technical)
-    relative_strength = _relative_strength(technical=technical, market_context=market_context, business_date=business_date)
+    relative_strength = _relative_strength(
+        technical=technical,
+        market_context=market_context,
+        business_date=business_date,
+        tick_trend=tick_trend,
+        tick_momentum=tick_momentum,
+    )
     regime = _regime_compatibility(market_context, business_date=business_date)
     for name, item in (
         ("trend_health", trend),
+        ("tick_normalized_trend_robustness", tick_trend),
+        ("quantization_aware_momentum_confidence", tick_momentum),
         ("persistence", persistence),
         ("acceleration_state", acceleration),
         ("exhaustion_risk", exhaustion),
@@ -692,6 +702,8 @@ def _continuation_quality(*, symbol: str, business_date: str, technical: Mapping
     return {
         "status": "PASS" if not missing else "REVIEW_REQUIRED",
         "trend_health": trend,
+        "tick_normalized_trend_robustness": tick_trend,
+        "quantization_aware_momentum_confidence": tick_momentum,
         "persistence": persistence,
         "acceleration_state": acceleration,
         "exhaustion_risk": exhaustion,
@@ -859,7 +871,86 @@ def _participation(row: Mapping[str, Any]) -> dict[str, Any]:
     return _dimension("participation_quality", state, row, {"volume_momentum_ratio_5d": ratio, "rolling_median_traded_value_20": traded})
 
 
-def _relative_strength(*, technical: Mapping[str, Any], market_context: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+def _tick_trend_robustness(row: Mapping[str, Any], *, business_date: str) -> dict[str, Any]:
+    explicit = any(key in row for key in ("tick_quantization_status", "tick_normalized_trend_state", "trend_robustness_authority"))
+    if not explicit:
+        return {
+            "state": "NOT_MATERIALIZED",
+            "semantic_meaning": "tick-normalized trend authority is absent on this source row; legacy evidence path remains unchanged",
+            "evidence_sufficiency": "SUFFICIENT",
+            "missing_inputs": [],
+            "source_references": [_source_ref(row)] if row else [],
+            "as_of_date": business_date,
+            "authority_type": "TICK_NORMALIZED_TREND_ROBUSTNESS_AUTHORITY",
+            "production_evidence": False,
+            "future_information_used": False,
+        }
+    state = str(row.get("tick_normalized_trend_state") or "INSUFFICIENT_EVIDENCE").upper()
+    sufficiency = "INSUFFICIENT" if state == "INSUFFICIENT_EVIDENCE" or str(row.get("tick_quantization_status") or "").upper() != "PASS" else "SUFFICIENT"
+    return {
+        "state": state,
+        "semantic_meaning": "minimum-tick-normalized trend robustness qualifies raw percentage trend evidence",
+        "evidence_sufficiency": sufficiency,
+        "missing_inputs": ["canonical_tick_normalized_trend_robustness"] if sufficiency == "INSUFFICIENT" else [],
+        "source_references": [_source_ref(row)] if row else [],
+        "as_of_date": business_date,
+        "values": {
+            "single_tick_pct": row.get("single_tick_pct"),
+            "close_level_count_20d": row.get("close_level_count_20d"),
+            "ticks_traversed_20d": row.get("ticks_traversed_20d"),
+            "ma_separation_ticks_close_over_ma20": row.get("ma_separation_ticks_close_over_ma20"),
+        },
+        "authority": dict(row.get("trend_robustness_authority") or {}),
+        "authority_type": "TICK_NORMALIZED_TREND_ROBUSTNESS_AUTHORITY",
+        "production_evidence": True,
+        "future_information_used": False,
+    }
+
+
+def _tick_momentum_confidence(row: Mapping[str, Any], *, business_date: str) -> dict[str, Any]:
+    explicit = any(key in row for key in ("tick_quantization_status", "momentum_confidence_state", "momentum_confidence_authority"))
+    if not explicit:
+        return {
+            "state": "NOT_MATERIALIZED",
+            "semantic_meaning": "quantization-aware momentum confidence is absent on this source row; legacy evidence path remains unchanged",
+            "evidence_sufficiency": "SUFFICIENT",
+            "missing_inputs": [],
+            "source_references": [_source_ref(row)] if row else [],
+            "as_of_date": business_date,
+            "authority_type": "QUANTIZATION_AWARE_MOMENTUM_CONFIDENCE_AUTHORITY",
+            "production_evidence": False,
+            "future_information_used": False,
+        }
+    state = str(row.get("momentum_confidence_state") or "INSUFFICIENT_EVIDENCE").upper()
+    sufficiency = "INSUFFICIENT" if state == "INSUFFICIENT_EVIDENCE" or str(row.get("tick_quantization_status") or "").upper() != "PASS" else "SUFFICIENT"
+    return {
+        "state": state,
+        "semantic_meaning": "minimum-tick-normalized momentum confidence qualifies raw percentage momentum evidence",
+        "evidence_sufficiency": sufficiency,
+        "missing_inputs": ["canonical_quantization_aware_momentum_confidence"] if sufficiency == "INSUFFICIENT" else [],
+        "source_references": [_source_ref(row)] if row else [],
+        "as_of_date": business_date,
+        "values": {
+            "single_tick_pct": row.get("single_tick_pct"),
+            "net_tick_move_20d": row.get("net_tick_move_20d"),
+            "directional_tick_persistence_20d": row.get("directional_tick_persistence_20d"),
+            "return_vs_tick_resolution_20d": row.get("return_vs_tick_resolution_20d"),
+        },
+        "authority": dict(row.get("momentum_confidence_authority") or {}),
+        "authority_type": "QUANTIZATION_AWARE_MOMENTUM_CONFIDENCE_AUTHORITY",
+        "production_evidence": True,
+        "future_information_used": False,
+    }
+
+
+def _relative_strength(
+    *,
+    technical: Mapping[str, Any],
+    market_context: Mapping[str, Any],
+    business_date: str,
+    tick_trend: Mapping[str, Any],
+    tick_momentum: Mapping[str, Any],
+) -> dict[str, Any]:
     symbol_5d = _optional_float(technical.get("price_momentum_return_5d"))
     symbol_20d = _optional_float(technical.get("price_momentum_return_20d"))
     metrics = market_context.get("metrics") if isinstance(market_context.get("metrics"), Mapping) else {}
@@ -896,6 +987,12 @@ def _relative_strength(*, technical: Mapping[str, Any], market_context: Mapping[
             "future_information_used": False,
         }
     state = "SUPPORTIVE" if all(value >= 0 for value in comparisons) else "WEAK" if all(value < 0 for value in comparisons) else "MIXED"
+    tick_trend_state = str(tick_trend.get("state") or "").upper()
+    tick_momentum_state = str(tick_momentum.get("state") or "").upper()
+    if state == "SUPPORTIVE" and (
+        tick_trend_state == "QUANTIZED_CAUTION" or tick_momentum_state == "LOW_CONFIDENCE_QUANTIZED"
+    ):
+        state = "MIXED"
     return {
         "state": state,
         "semantic_meaning": "stock-vs-market PIT relative return is connected; stock-vs-sector and sector-vs-market remain explicit gaps",
@@ -905,6 +1002,9 @@ def _relative_strength(*, technical: Mapping[str, Any], market_context: Mapping[
         "source_references": [_source_ref(item) for item in (technical, market_context) if item],
         "as_of_date": business_date,
         "values": values,
+        "tick_normalized_trend_state": tick_trend_state,
+        "momentum_confidence_state": tick_momentum_state,
+        "rank_or_opportunity_score_confirms_tick_evidence": False,
         "rank_or_opportunity_score_used": False,
         "future_information_used": False,
     }
@@ -1421,6 +1521,8 @@ def _entry_admission(
     cq_states = _named_states(continuation_quality)
     risk_states = _named_states(downside_risk)
     trend = cq_states.get("trend_health")
+    tick_trend = cq_states.get("tick_normalized_trend_robustness")
+    tick_momentum = cq_states.get("quantization_aware_momentum_confidence")
     persistence = cq_states.get("persistence")
     acceleration = cq_states.get("acceleration_state")
     exhaustion = cq_states.get("exhaustion_risk")
@@ -1447,6 +1549,7 @@ def _entry_admission(
         for state in (reversal_risk, volatility_risk, exhaustion, participation_risk, regime_risk)
         if state in {"ELEVATED_RISK", "HIGH_RISK", "EVENT_COVERAGE_INCOMPLETE"}
     )
+    tick_caution = tick_trend == "QUANTIZED_CAUTION" or tick_momentum == "LOW_CONFIDENCE_QUANTIZED"
 
     if eligibility.get("status") != "PASS":
         entry_state = "INSUFFICIENT_ENTRY_EVIDENCE"
@@ -1464,6 +1567,10 @@ def _entry_admission(
         entry_state = "REVERSAL_RISK_ENTRY"
         action = "NO_ADD" if held else "BUY_WAIT"
         reason_codes.append("reversal_risk_entry_timing")
+    elif tick_caution:
+        entry_state = "CONTINUATION_WITH_CAUTION"
+        action = "ADD_REDUCED_ONLY" if held else "BUY_NEW_REDUCED_ONLY"
+        reason_codes.append("tick_quantization_caution_entry_reduced")
     elif risk_votes >= 2 or decelerating or short_reversal:
         entry_state = "CONTINUATION_WITH_CAUTION"
         action = "ADD_REDUCED_ONLY" if held else "BUY_NEW_REDUCED_ONLY"
@@ -1502,6 +1609,9 @@ def _entry_admission(
             "participation_quality": participation,
             "participation_risk": participation_risk,
             "relative_strength": relative,
+            "tick_normalized_trend_state": tick_trend,
+            "momentum_confidence_state": tick_momentum,
+            "tick_quantization_caution": tick_caution,
             "regime_compatibility": regime,
             "regime_risk": regime_risk,
             "strong_medium_term_structure": strong_medium,
@@ -1552,6 +1662,8 @@ def _selection_quality_comparator(
         reason_codes.append("selection_quality_evidence_insufficient")
 
     trend = cq_states.get("trend_health")
+    tick_trend = cq_states.get("tick_normalized_trend_robustness")
+    tick_momentum = cq_states.get("quantization_aware_momentum_confidence")
     persistence = cq_states.get("persistence")
     acceleration = cq_states.get("acceleration_state")
     participation = cq_states.get("participation_quality")
@@ -1575,6 +1687,7 @@ def _selection_quality_comparator(
         for state in (trend, persistence, participation, relative, regime)
         if state in {"SUPPORTIVE", "OBSERVED", "MIXED"}
     )
+    tick_caution = tick_trend == "QUANTIZED_CAUTION" or tick_momentum == "LOW_CONFIDENCE_QUANTIZED"
     market_healthy_proxy = _market_healthy_proxy(technical=technical, market_context=market_context)
     raw_trend_supportive = (
         _optional_float(technical.get("price_momentum_return_5d")) is not None
@@ -1599,9 +1712,12 @@ def _selection_quality_comparator(
     elif entry_action in {"BUY_WAIT", "NO_ADD"} or entry_state in {"REVERSAL_RISK_ENTRY", "OVERHEATED_DECELERATING_ENTRY"}:
         tier = "CAUTION_CONTINUATION"
         reason_codes.append("selection_quality_entry_wait_or_no_add")
-    elif entry_action in {"BUY_NEW_REDUCED_ONLY", "ADD_REDUCED_ONLY"} or risk_vote_count > 0:
+    elif tick_caution or entry_action in {"BUY_NEW_REDUCED_ONLY", "ADD_REDUCED_ONLY"} or risk_vote_count > 0:
         tier = "CAUTION_CONTINUATION"
         reason_codes.append("selection_quality_caution_continuation")
+        if tick_caution:
+            reason_codes.append("selection_quality_tick_quantization_caution")
+            reason_codes.append("rank_score_not_independent_tick_confirmation")
     elif (
         entry_action in {"BUY_NEW_ALLOWED", "ADD_ALLOWED"}
         and trend == "SUPPORTIVE"
@@ -1629,6 +1745,12 @@ def _selection_quality_comparator(
 
     runtime_score = _optional_float(opportunity.get("runtime_opportunity_score", opportunity.get("expected_edge_score")))
     rank = _optional_int(opportunity.get("buy_rank", opportunity.get("rank", opportunity.get("opportunity_rank"))))
+    candidate_rank_tick_reliability = str(
+        technical.get("candidate_rank_tick_reliability")
+        or candidate.get("candidate_rank_tick_reliability")
+        or buy_quality.get("candidate_rank_tick_reliability")
+        or ""
+    )
     return {
         "schema_version": SELECTION_QUALITY_COMPARATOR_SCHEMA_VERSION,
         "as_of_business_date": business_date,
@@ -1637,6 +1759,12 @@ def _selection_quality_comparator(
         "reason_codes": sorted(set(reason_codes)),
         "evidence_sufficiency": "SUFFICIENT" if evidence_sufficient else "INSUFFICIENT",
         "rank_score_role": "SUPPORTING_NOT_HARD_REJECTION_AUTHORITY",
+        "candidate_rank_tick_reliability": candidate_rank_tick_reliability,
+        "candidate_rank_confirmation_role": (
+            "SUPPORTING_ONLY_NOT_INDEPENDENT_CONFIRMATION"
+            if tick_caution
+            else "SUPPORTING_NOT_HARD_REJECTION_AUTHORITY"
+        ),
         "expected_edge_role": "UNCALIBRATED_SUPPORTING",
         "buy_rank": rank,
         "runtime_opportunity_score": runtime_score,
@@ -1648,6 +1776,12 @@ def _selection_quality_comparator(
             "candidate_order": candidate.get("candidate_order"),
             "buy_rank": rank,
             "runtime_opportunity_score": runtime_score,
+            "candidate_rank_tick_reliability": candidate_rank_tick_reliability,
+            "candidate_rank_confirmation_role": (
+                "SUPPORTING_ONLY_NOT_INDEPENDENT_CONFIRMATION"
+                if tick_caution
+                else "SUPPORTING_NOT_HARD_REJECTION_AUTHORITY"
+            ),
             "no_buy_reasons": sorted(no_buy_reasons),
             "entry_state": entry_state,
             "entry_action": entry_action,
@@ -1657,6 +1791,9 @@ def _selection_quality_comparator(
             "acceleration_state": acceleration,
             "participation_quality": participation,
             "relative_strength": relative,
+            "tick_normalized_trend_state": tick_trend,
+            "momentum_confidence_state": tick_momentum,
+            "tick_quantization_caution": tick_caution,
             "regime_compatibility": regime,
             "reversal_risk": reversal,
             "volatility_risk": volatility,

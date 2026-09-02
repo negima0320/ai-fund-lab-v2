@@ -27,6 +27,7 @@ from ai_fund_lab_v2.strategy import marginal_capital_value
 from ai_fund_lab_v2.strategy import strategy_intelligence
 from ai_fund_lab_v2.strategy.reduce_intensity_authority import resolve_reduce_intensity_authority
 from ai_fund_lab_v2.strategy.status_contract import compatibility_status_from_payload, status_contract_fields
+from ai_fund_lab_v2.strategy.minimum_tick_authority import STATUS_KNOWN
 from ai_fund_lab_v2.strategy.target_weight_precision import (
     TARGET_WEIGHT_ABSOLUTE_TOLERANCE,
     TARGET_WEIGHT_DECIMALS,
@@ -68,6 +69,7 @@ LOT_AWARE_ALLOCATION_TO_SIZING_COMPATIBILITY_SCHEMA_VERSION = (
 )
 MULTI_ALLOCATION_DEPLOYMENT_SET_AUTHORITY_STATUS = "SHADOW_NON_AUTHORITATIVE"
 REENTRY_COOLDOWN_BUSINESS_DAYS = 3
+REENTRY_GENERIC_PRIOR_EXIT_LABELS = {"", "UNKNOWN", "EXIT", "SELL", "SELL_EXIT"}
 DEFAULT_MINIMUM_TICK = 1.0
 LIQUIDITY_CAPACITY_TARGET_PARTICIPATION = 0.01
 PRICE_TICK_RISK_CAPS = {
@@ -1147,6 +1149,12 @@ def _phase29_l16_observable_fields(*rows: Mapping[str, Any] | None) -> dict[str,
         "reference_price_type",
         "reference_price_date",
         "minimum_tick",
+        "single_tick_pct",
+        "minimum_tick_authority",
+        "minimum_tick_authority_status",
+        "minimum_tick_authority_hash",
+        "minimum_tick_authority_source",
+        "minimum_tick_resolution",
         "rolling_median_traded_value_20",
         "rolling_median_traded_value_20_authority",
         "rolling_median_traded_value_20_resolution",
@@ -1202,8 +1210,8 @@ def _resolve_low_price_reentry_allocation_guard(
     is_buy_new = (not current_position) and membership == "ADD_CANDIDATE"
     is_buy_side_allocation = is_buy_new or is_buy_add
     reference_price = _positive_number_from_row(row, ("reference_price", "close", "Close", "C", "AdjC", "price"))
-    minimum_tick = _positive_number_from_row(row, ("minimum_tick", "tick_size", "price_tick")) or DEFAULT_MINIMUM_TICK
-    single_tick_pct = round(minimum_tick / reference_price, 8) if reference_price and minimum_tick > 0 else None
+    minimum_tick, minimum_tick_authority_status, minimum_tick_authority = _canonical_minimum_tick_from_row(row)
+    single_tick_pct = round(minimum_tick / reference_price, 8) if reference_price and minimum_tick is not None and minimum_tick > 0 else None
     price_tier = _price_tick_risk_tier(single_tick_pct)
     price_tick_cap = PRICE_TICK_RISK_CAPS.get(price_tier)
     rolling_value = _positive_number_from_row(
@@ -1343,6 +1351,10 @@ def _resolve_low_price_reentry_allocation_guard(
         "reentry_constraint_scope": reentry_eligibility["constraint_scope"],
         "single_tick_pct": single_tick_pct,
         "price_tick_risk_tier": price_tier,
+        "minimum_tick_authority_status": minimum_tick_authority_status,
+        "minimum_tick_authority": minimum_tick_authority,
+        "minimum_tick_authority_hash": str(row.get("minimum_tick_authority_hash") or minimum_tick_authority.get("authority_hash") or ""),
+        "minimum_tick_resolution": row.get("minimum_tick_resolution") or {},
         "rolling_median_traded_value_20": rolling_value,
         "rolling_median_traded_value_20_authority": row.get("rolling_median_traded_value_20_authority") or {},
         "rolling_median_traded_value_20_resolution": row.get("rolling_median_traded_value_20_resolution") or {},
@@ -1376,6 +1388,10 @@ def _resolve_low_price_reentry_allocation_guard(
             "single_tick_pct": single_tick_pct,
             "price_tick_risk_tier": price_tier,
             "price_tick_cap_weight": price_tick_cap,
+            "minimum_tick_authority_status": minimum_tick_authority_status,
+            "minimum_tick_authority": minimum_tick_authority,
+            "minimum_tick_authority_hash": str(row.get("minimum_tick_authority_hash") or minimum_tick_authority.get("authority_hash") or ""),
+            "minimum_tick_resolution": row.get("minimum_tick_resolution") or {},
             "rolling_median_traded_value_20": rolling_value,
             "rolling_median_traded_value_20_authority": row.get("rolling_median_traded_value_20_authority") or {},
             "rolling_median_traded_value_20_resolution": row.get("rolling_median_traded_value_20_resolution") or {},
@@ -1461,13 +1477,21 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     ca_status = ca_evidence["status"]
     previous_exit_reason = _previous_exit_reason(row)
     previous_exit_reason_class = _previous_exit_reason_class(previous_exit_reason, row.get("prior_exit_reason_codes") or row.get("previous_exit_reason_codes") or row.get("source_pm_reason_codes"))
+    context_classification = _reentry_prior_exit_context_classification(
+        row=row,
+        semantic=semantic,
+        previous_exit_reason=previous_exit_reason,
+        previous_exit_reason_class=previous_exit_reason_class,
+    )
     base = {
         "reentry_recovery_status": "NOT_APPLICABLE",
         "reentry_recovery_reason": "not_reentry",
+        "reentry_prior_exit_context_classification": context_classification["classification"],
+        "reentry_unknown_prior_context_status": "NOT_APPLICABLE",
         "reentry_rank": rank,
         "reentry_expected_edge": edge,
         "reentry_score_gate_status": "DIAGNOSTIC_ONLY",
-        "reentry_opportunity_qualification_status": "NOT_APPLICABLE",
+        "reentry_opportunity_qualification_status": "CURRENT_BUY_AUTHORITY",
         "reentry_buy_quality_action": quality_action,
         "reentry_trend_close_over_ma_20d": trend,
         "reentry_price_momentum_return_20d": momentum,
@@ -1490,17 +1514,10 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
         return base
     failures: list[str] = []
     unknowns: list[str] = []
-    insufficient_prior_context = previous_exit_reason_class == "GENERIC" or previous_exit_reason.upper() in {"", "UNKNOWN", "EXIT", "SELL"}
-    if insufficient_prior_context:
-        unknowns.append("insufficient_prior_exit_context")
-    if rank is None:
-        unknowns.append("reentry_rank_missing")
-    elif rank > 10:
-        failures.append("reentry_opportunity_not_requalified")
-    if not quality_action:
-        unknowns.append("reentry_buy_quality_action_missing")
-    elif quality_action not in {"REDUCED_ALLOCATION_ONLY", "FULL_ALLOCATION_ELIGIBLE"}:
-        failures.append("reentry_buy_quality_not_requalified")
+    context_class = context_classification["classification"]
+    insufficient_prior_context = context_class in {"RECOVERABLE_PROVENANCE_DEFECT", "REENTRY_UNKNOWN_PRIOR_CONTEXT"}
+    if context_class == "RECOVERABLE_PROVENANCE_DEFECT":
+        unknowns.append("recoverable_prior_exit_context_defect")
     if ca_status == "UNKNOWN":
         unknowns.append("reentry_corporate_action_source_missing")
     elif ca_status not in {"PASS", "RESOLVED", "NO_BLOCKING_EVENT", "NO_EVENT"}:
@@ -1534,10 +1551,43 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
             failures.append("reentry_trend_recovery_not_satisfied")
         elif not momentum_pass:
             failures.append("reentry_momentum_recovery_not_satisfied")
-    if previous_exit_reason_class == "HARD_STOP" and quality_action != "FULL_ALLOCATION_ELIGIBLE":
+    if previous_exit_reason_class == "HARD_STOP" and not _reentry_strong_current_evidence(
+        rank=rank,
+        quality_action=quality_action,
+        trend_pass=trend_pass,
+        momentum_pass=momentum_pass,
+        entry_action=entry_action,
+        entry_state=entry_state,
+        entry_sufficiency=entry_sufficiency,
+        cq_status=cq_status,
+        downside_status=downside_status,
+        ca_status=ca_status,
+        capacity_ratio=capacity_ratio,
+        liquidity_status=liquidity_status,
+        require_full_quality=True,
+    ):
         failures.append("reentry_hard_stop_new_thesis_not_sufficient")
-    if previous_exit_reason_class == "PORTFOLIO_COMPETITION" and rank is not None and rank > 5:
-        failures.append("reentry_opportunity_recovery_not_sufficient")
+    unknown_context_status = "NOT_APPLICABLE"
+    if context_class == "REENTRY_UNKNOWN_PRIOR_CONTEXT":
+        if _reentry_strong_current_evidence(
+            rank=rank,
+            quality_action=quality_action,
+            trend_pass=trend_pass,
+            momentum_pass=momentum_pass,
+            entry_action=entry_action,
+            entry_state=entry_state,
+            entry_sufficiency=entry_sufficiency,
+            cq_status=cq_status,
+            downside_status=downside_status,
+            ca_status=ca_status,
+            capacity_ratio=capacity_ratio,
+            liquidity_status=liquidity_status,
+            require_full_quality=True,
+        ):
+            unknown_context_status = "PASS"
+        else:
+            unknown_context_status = "REVIEW_REQUIRED"
+            unknowns.append("reentry_unknown_prior_context_independence_not_established")
     if "REVERSAL" in previous_exit_reason.upper():
         if entry_state != "HEALTHY_CONTINUATION_ENTRY" or entry_action in {"BUY_WAIT", "REJECT", "REVIEW_REQUIRED", "NO_ADD"}:
             failures.append("reentry_reversal_not_normalized")
@@ -1546,7 +1596,9 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     qualified = not failures and not unknowns
     resolved_base = {
         **base,
-        "reentry_opportunity_qualification_status": "PASS" if rank is not None and rank <= 10 else ("UNKNOWN" if rank is None else "FAIL"),
+        "reentry_prior_exit_context_classification": context_class,
+        "reentry_unknown_prior_context_status": unknown_context_status,
+        "reentry_opportunity_qualification_status": "CURRENT_BUY_AUTHORITY",
         "reentry_trend_recovery_status": trend_status,
         "reentry_momentum_recovery_status": momentum_status,
         "reentry_entry_admission_status": (
@@ -1560,6 +1612,75 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
     if unknowns:
         return {**resolved_base, "reentry_recovery_status": "REVIEW_REQUIRED", "reentry_recovery_reason": unknowns[0]}
     return {**resolved_base, "reentry_recovery_status": "PASS", "reentry_recovery_reason": "reentry_recovery_qualified" if qualified else "reentry_recovery_hurdle_passed"}
+
+
+def _reentry_prior_exit_context_classification(
+    *,
+    row: Mapping[str, Any],
+    semantic: Mapping[str, Any],
+    previous_exit_reason: str,
+    previous_exit_reason_class: str,
+) -> dict[str, str]:
+    if semantic.get("semantic_buy_type") != "REENTRY":
+        return {"classification": "NOT_APPLICABLE", "reason": "not_reentry"}
+    explicit = str(row.get("reentry_prior_exit_context_classification") or row.get("prior_exit_context_classification") or "").upper()
+    if explicit in {"COMPLETE_AUTHORITATIVE_CONTEXT", "RECOVERABLE_PROVENANCE_DEFECT", "REENTRY_UNKNOWN_PRIOR_CONTEXT"}:
+        return {"classification": explicit, "reason": "explicit_classification"}
+    provenance_status = str(semantic.get("prior_exit_provenance_status") or row.get("prior_exit_provenance_status") or "").upper()
+    if provenance_status in {"MISSING", "STALE", "HASH_MISMATCH", "AUTHORITY_CONFLICT", "FAIL_CLOSED", "BLOCK", "BLOCKED"}:
+        return {"classification": "RECOVERABLE_PROVENANCE_DEFECT", "reason": "provenance_status_not_usable"}
+    if bool(row.get("recoverable_prior_exit_context_defect")):
+        return {"classification": "RECOVERABLE_PROVENANCE_DEFECT", "reason": "explicit_recoverable_defect"}
+    reason = str(previous_exit_reason or "").strip().upper()
+    if reason in REENTRY_GENERIC_PRIOR_EXIT_LABELS:
+        return {"classification": "RECOVERABLE_PROVENANCE_DEFECT", "reason": "generic_action_label_not_authoritative"}
+    if previous_exit_reason_class == "GENERIC":
+        return {"classification": "REENTRY_UNKNOWN_PRIOR_CONTEXT", "reason": "genuinely_unresolved_prior_context"}
+    return {"classification": "COMPLETE_AUTHORITATIVE_CONTEXT", "reason": "non_generic_prior_exit_context"}
+
+
+def _reentry_strong_current_evidence(
+    *,
+    rank: int | None,
+    quality_action: str,
+    trend_pass: bool,
+    momentum_pass: bool,
+    entry_action: str,
+    entry_state: str,
+    entry_sufficiency: str,
+    cq_status: str,
+    downside_status: str,
+    ca_status: str,
+    capacity_ratio: float | None,
+    liquidity_status: str,
+    require_full_quality: bool,
+) -> bool:
+    if rank is None or rank > 10:
+        return False
+    if require_full_quality:
+        if quality_action != "FULL_ALLOCATION_ELIGIBLE":
+            return False
+    elif quality_action not in {"REDUCED_ALLOCATION_ONLY", "FULL_ALLOCATION_ELIGIBLE"}:
+        return False
+    if not (trend_pass and momentum_pass):
+        return False
+    if entry_sufficiency == "INSUFFICIENT":
+        return False
+    if entry_action in {"BUY_WAIT", "REJECT", "REVIEW_REQUIRED", "NO_ADD"}:
+        return False
+    if entry_state in {"OVERHEATED_DECELERATING_ENTRY", "REVERSAL_RISK_ENTRY", "INSUFFICIENT_ENTRY_EVIDENCE"}:
+        return False
+    if cq_status and cq_status not in {"PASS", "OK", "ACCEPTABLE"}:
+        return False
+    if downside_status and downside_status not in {"PASS", "OK", "ACCEPTABLE"}:
+        return False
+    if ca_status not in {"PASS", "RESOLVED", "NO_BLOCKING_EVENT", "NO_EVENT"}:
+        return False
+    if capacity_ratio is None:
+        return False
+    if liquidity_status == "SEVERE" or capacity_ratio > 0.03:
+        return False
+    return True
 
 
 def _canonical_reentry_semantic_eligibility(
@@ -1769,6 +1890,8 @@ def _reentry_semantic_result(
         "business_days_since_exit": semantic.get("business_days_since_exit"),
         "prior_exit_context_status": prior_exit_context_status,
         "prior_exit_reason_class": str(recovery.get("previous_exit_reason_class") or ""),
+        "prior_exit_context_classification": str(recovery.get("reentry_prior_exit_context_classification") or ""),
+        "unknown_prior_context_status": str(recovery.get("reentry_unknown_prior_context_status") or ""),
         "churn_protection_status": churn_status,
         "cooldown_threshold_business_days": semantic.get("reentry_cooldown_threshold_bd"),
         "renewed_current_evidence_status": renewed_status,
@@ -1902,6 +2025,26 @@ def _positive_number_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -
         if value is not None and value > 0:
             return value
     return None
+
+
+def _canonical_minimum_tick_from_row(row: Mapping[str, Any]) -> tuple[float | None, str, dict[str, Any]]:
+    authority = row.get("minimum_tick_authority")
+    authority_payload = dict(authority) if isinstance(authority, Mapping) else {}
+    resolution = row.get("minimum_tick_resolution")
+    resolution_status = resolution.get("status") if isinstance(resolution, Mapping) else ""
+    status = str(row.get("minimum_tick_authority_status") or resolution_status or "").strip()
+    if not status:
+        status = str(authority_payload.get("resolution_status") or "").strip()
+    if status == STATUS_KNOWN:
+        value = _finite_number(authority_payload.get("minimum_tick"))
+        if value is None:
+            value = _positive_number_from_row(row, ("minimum_tick",))
+        if value is not None and value > 0:
+            return value, status, authority_payload
+        return None, "INSUFFICIENT_EVIDENCE", authority_payload
+    if any(field in row for field in ("minimum_tick", "tick_size", "price_tick")):
+        return None, status or "LEGACY_NON_AUTHORITATIVE", authority_payload
+    return None, status or "INSUFFICIENT_EVIDENCE", authority_payload
 
 
 def _positive_number_source_field(row: Mapping[str, Any], fields: tuple[str, ...]) -> str:
@@ -9121,6 +9264,8 @@ def _strategy_intelligence_member_fields(
     lifecycle = evidence.get("lifecycle_context") if isinstance(evidence.get("lifecycle_context"), Mapping) else {}
     profit = evidence.get("profit_protection_evidence") if isinstance(evidence.get("profit_protection_evidence"), Mapping) else {}
     relative = cq.get("relative_strength") if isinstance(cq.get("relative_strength"), Mapping) else {}
+    tick_trend = cq.get("tick_normalized_trend_robustness") if isinstance(cq.get("tick_normalized_trend_robustness"), Mapping) else {}
+    tick_momentum = cq.get("quantization_aware_momentum_confidence") if isinstance(cq.get("quantization_aware_momentum_confidence"), Mapping) else {}
     add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
     reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
     add_worthiness = _campaign_aware_add_worthiness_state(
@@ -9165,6 +9310,22 @@ def _strategy_intelligence_member_fields(
         "selection_quality_not_action_authority": bool(selection_quality.get("not_action_authority", True)),
         "selection_quality_score_only_hard_rejection_retired": bool(selection_quality.get("score_only_hard_rejection_retired", False)),
         "selection_quality_below_top20_only_hard_rejection_retired": bool(selection_quality.get("below_top20_only_hard_rejection_retired", False)),
+        "tick_quantization_status": (
+            "PASS"
+            if str(tick_trend.get("evidence_sufficiency") or "") == "SUFFICIENT"
+            and bool(tick_trend.get("production_evidence"))
+            else (
+                "INSUFFICIENT_EVIDENCE"
+                if str(tick_trend.get("evidence_sufficiency") or "") == "INSUFFICIENT"
+                else ""
+            )
+        ),
+        "tick_normalized_trend_state": str(tick_trend.get("state") or ""),
+        "momentum_confidence_state": str(tick_momentum.get("state") or ""),
+        "close_level_diversity_state": str(
+            ((tick_trend.get("values") if isinstance(tick_trend.get("values"), Mapping) else {}) or {}).get("close_level_diversity_state") or ""
+        ),
+        "candidate_rank_tick_reliability": str(selection_quality.get("candidate_rank_tick_reliability") or ""),
         "strategy_intelligence_not_action_authority": True,
         "strategy_intelligence_production_evidence": True,
         "strategy_intelligence_future_information_used": bool(
@@ -9244,6 +9405,14 @@ def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstruct
         "momentum_trajectory_reason_codes": list(decision.get("momentum_trajectory_reason_codes") or []),
         "momentum_trajectory_feature_snapshot": dict(decision.get("momentum_trajectory_feature_snapshot") or {}),
         "momentum_trajectory_authority": dict(decision.get("momentum_trajectory_authority") or {}),
+        "tick_quantization_status": str(decision.get("tick_quantization_status") or ""),
+        "tick_normalized_trend_state": str(decision.get("tick_normalized_trend_state") or ""),
+        "momentum_confidence_state": str(decision.get("momentum_confidence_state") or ""),
+        "close_level_diversity_state": str(decision.get("close_level_diversity_state") or ""),
+        "candidate_rank_tick_reliability": str(decision.get("candidate_rank_tick_reliability") or ""),
+        "tick_quantization_validation": dict(decision.get("tick_quantization_validation") or {}),
+        "tick_trend_robustness_authority": dict(decision.get("tick_trend_robustness_authority") or {}),
+        "tick_momentum_confidence_authority": dict(decision.get("tick_momentum_confidence_authority") or {}),
         "source_candidate_id": str(decision.get("source_candidate_id") or ""),
         "source_opportunity_id": str(decision.get("source_opportunity_id") or ""),
         "buy_quality_artifact_path": summary.source_ref,
@@ -9257,6 +9426,9 @@ def _buy_quality_fields(decision: Mapping[str, Any], summary: PortfolioConstruct
             "quality_score": decision.get("quality_score"),
             "momentum_trajectory_classification": str(decision.get("momentum_trajectory_classification") or ""),
             "momentum_trajectory_action": str(decision.get("momentum_trajectory_action") or ""),
+            "tick_normalized_trend_state": str(decision.get("tick_normalized_trend_state") or ""),
+            "momentum_confidence_state": str(decision.get("momentum_confidence_state") or ""),
+            "candidate_rank_tick_reliability": str(decision.get("candidate_rank_tick_reliability") or ""),
             "source_artifact_path": summary.source_ref,
             "source_artifact_hash": _strip_sha256(summary.source_hash),
             "PIT_status": str(decision.get("PIT_status") or ""),

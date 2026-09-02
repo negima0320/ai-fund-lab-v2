@@ -456,10 +456,11 @@ def test_phase32_co_genuine_generic_exit_remains_review_required(tmp_path: Path)
     assert row["prior_exit_reason_codes"] == []
     assert recovery["previous_exit_reason_class"] == "GENERIC"
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert recovery["reentry_recovery_reason"] == "recoverable_prior_exit_context_defect"
+    assert recovery["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
 
 
-def test_phase32_co_active_churn_and_weak_rank_remain_blocked() -> None:
+def test_phase32_cw_active_churn_remains_blocked_and_rank_penalty_removed() -> None:
     churn_row = {
         "code": "73590",
         "prior_exit_business_date": "2022-10-13",
@@ -479,8 +480,9 @@ def test_phase32_co_active_churn_and_weak_rank_remain_blocked() -> None:
     weak_recovery = portfolio_construction._reentry_recovery_evidence(row=weak_row, semantic=weak_semantic, capacity_ratio=0.01, liquidity_status="WATCH")
 
     assert churn_semantic["reentry_cooldown_status"] == "FAIL_CLOSED"
-    assert weak_recovery["reentry_recovery_status"] == "FAIL_CLOSED"
-    assert weak_recovery["reentry_recovery_reason"] == "reentry_opportunity_not_requalified"
+    assert weak_recovery["reentry_recovery_status"] == "PASS"
+    assert weak_recovery["reentry_recovery_reason"] == "reentry_recovery_qualified"
+    assert weak_recovery["reentry_opportunity_qualification_status"] == "CURRENT_BUY_AUTHORITY"
 
 
 def test_phase32_j_prior_exit_context_can_join_by_pm_decision_id_when_sell_campaign_missing(tmp_path: Path) -> None:
@@ -861,7 +863,8 @@ def test_phase32_h_missing_prior_exit_detail_stays_review_required(tmp_path: Pat
     assert semantic["prior_exit_context"]["provenance_status"] == "REVIEW_REQUIRED"
     assert recovery["previous_exit_reason_class"] == "GENERIC"
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert recovery["reentry_recovery_reason"] == "recoverable_prior_exit_context_defect"
+    assert recovery["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
 
 
 def test_phase32_h_multiple_campaigns_use_latest_matching_prior_campaign_context(tmp_path: Path) -> None:
@@ -1049,7 +1052,8 @@ def test_phase29_l21k_23880_reproduction_reaches_existing_l16_reentry_contract(t
     assert semantic["business_days_since_exit"] == 1
     assert recovery["reentry_score_gate_status"] == "DIAGNOSTIC_ONLY"
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert recovery["reentry_recovery_reason"] == "recoverable_prior_exit_context_defect"
+    assert recovery["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
 
 
 def test_phase29_l21r3_23880_prior_exit_persists_through_temporary_exclude_then_reentry(tmp_path: Path) -> None:
@@ -1268,7 +1272,7 @@ def test_phase29_l21r_low_score_reentry_can_pass_when_relative_and_recovery_evid
     assert recovery["reentry_recovery_status"] == "PASS"
 
 
-def test_phase29_l21r_weak_relative_rank_blocks_reentry_even_with_high_score(tmp_path: Path) -> None:
+def test_phase32_cw_weak_relative_rank_no_longer_blocks_reentry_recovery(tmp_path: Path) -> None:
     row = {
         "code": "11110",
         "prior_exit_business_date": "2022-08-26",
@@ -1283,8 +1287,9 @@ def test_phase29_l21r_weak_relative_rank_blocks_reentry_even_with_high_score(tmp
     semantic = portfolio_construction._semantic_reentry_evidence(row=row, business_date="2022-09-01", is_buy_new=True)
     recovery = portfolio_construction._reentry_recovery_evidence(row=row, semantic=semantic, capacity_ratio=0.01, liquidity_status="WATCH")
 
-    assert recovery["reentry_recovery_status"] == "FAIL_CLOSED"
-    assert recovery["reentry_recovery_reason"] == "reentry_opportunity_not_requalified"
+    assert recovery["reentry_recovery_status"] == "PASS"
+    assert recovery["reentry_recovery_reason"] == "reentry_recovery_qualified"
+    assert recovery["reentry_opportunity_qualification_status"] == "CURRENT_BUY_AUTHORITY"
 
 
 def test_phase29_l21r_corporate_action_and_capacity_fail_closed_semantics() -> None:
@@ -1399,7 +1404,8 @@ def test_phase32_j_prior_context_insufficiency_does_not_become_safety_block() ->
     )
 
     assert recovery["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert recovery["reentry_recovery_reason"] == "insufficient_prior_exit_context"
+    assert recovery["reentry_recovery_reason"] == "recoverable_prior_exit_context_defect"
+    assert recovery["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
     assert eligibility["eligibility_status"] == "REVIEW_REQUIRED"
     assert eligibility["reentry_semantic_state"] == "REENTRY_INSUFFICIENT_EVIDENCE"
     assert eligibility["prior_exit_context_status"] == "REVIEW_REQUIRED"

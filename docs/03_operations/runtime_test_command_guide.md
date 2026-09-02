@@ -580,6 +580,65 @@ Production prohibition:
 
 `run --auto-prepare` is deprecated. It is not a formal alias and now fails with guidance to use `fresh-run`, because Backup / Reset / Validate / Close orchestration must not be an ambiguous no-op.
 
+## Resolve Corporate Action Adjustment Authority
+
+Dry run:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py resolve-ca-adjustment-authority \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --symbol <CODE> \
+  --event-type <OPERATOR_REVIEWED_EVENT_TYPE> \
+  --effective-date <YYYY-MM-DD> \
+  --adjustment-factor <FACTOR> \
+  --pre-adjustment-quantity <QTY_BEFORE> \
+  --post-adjustment-quantity <QTY_AFTER> \
+  --current-quantity <QTY_AFTER> \
+  --broker-available-quantity <QTY_AFTER> \
+  --pending-quantity <PENDING_SELL_QTY> \
+  --submit-quantity <SUBMIT_SELL_QTY> \
+  --price-series-adjusted true \
+  --quantity-adjusted true \
+  --adjustment-already-applied true \
+  --reviewer <OPERATOR_ID> \
+  --audit-id <AUDIT_ID> \
+  --resolution-reason <REASON> \
+  --evidence-source <PATH> \
+  --dry-run
+```
+
+Actual resolution:
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py resolve-ca-adjustment-authority \
+  --run-id <RUN_ID> \
+  --business-date <YYYY-MM-DD> \
+  --symbol <CODE> \
+  --event-type <OPERATOR_REVIEWED_EVENT_TYPE> \
+  --effective-date <YYYY-MM-DD> \
+  --adjustment-factor <FACTOR> \
+  --pre-adjustment-quantity <QTY_BEFORE> \
+  --post-adjustment-quantity <QTY_AFTER> \
+  --current-quantity <QTY_AFTER> \
+  --broker-available-quantity <QTY_AFTER> \
+  --pending-quantity <PENDING_SELL_QTY> \
+  --submit-quantity <SUBMIT_SELL_QTY> \
+  --price-series-adjusted true \
+  --quantity-adjusted true \
+  --adjustment-already-applied true \
+  --reviewer <OPERATOR_ID> \
+  --audit-id <AUDIT_ID> \
+  --resolution-reason <REASON> \
+  --evidence-source <PATH> \
+  --confirm \
+  --yes-i-understand-this-mutates-trading-state
+```
+
+`resolve-ca-adjustment-authority` is the canonical operator path for resolving one run/date/symbol Corporate Action Adjustment Authority after PIT evidence proves impact but not event type, adjusted quantity, or already-applied state. It writes only `.runtime/runtime_state/corporate_action_adjustments/<business_date>/<symbol>.json`, preserves the original unresolved artifact hash in the audit trail, and never submits orders, regenerates Pending, mutates Ledger/Current, or resumes a run.
+
+The command rejects plan-expectation-only evidence, unknown event types, source hash/run-binding mismatches, future data, missing reviewer/audit id, unconfirmed already-applied status, unresolved price or quantity basis, double-adjustment risk, and stale Pending/Submit quantities that exceed the adjusted owned or broker-available quantity. `AdjFactor` remains an impact signal only; the operator supplies the event type and quantity reconciliation explicitly.
+
 ## 5BD Run
 
 Dry run:
@@ -993,6 +1052,7 @@ Phase20-H implemented the Phase20-G recommendations for `run-status` and `summar
 | `validate` | Is the current run state and evidence consistent enough to accept? | Read-only validation | Current state, pending, runtime state, external effects, run state presence | Read-only | No | Runtime root, optional run state | runner payload | None | `0`, `40` | `validate_command` | default emit / runner schema | `test_phase17_k_runtime_test_runner.py`, `test_phase18v_runtime_test_fresh_run.py` | Documented | `close` internal validation | Keep |
 | `resume` | Can a halted compatible run continue from remaining jobs? | Resume incomplete job sequence | Original plan, run state, baseline consistency | Mutating unless `--dry-run` | Yes for actual | Existing run state, original plan, current baseline | `runtime_test_run_state_v1` updates | `reports/runtime_tests/runs/<run_id>/` | `0`, `30`, `60`, `70`, `80`, `90` | `resume_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py`, `test_phase19_bj_runtime_test_abandon.py` | Documented | `run` execution loop | Keep |
 | `stop` | Should a RUNNING run be formally stopped before resume or abandon? | Operator stop lifecycle transition | Run-scoped `run_state.json` only | Evidence mutation only; no Trading State mutation | Yes for actual | Existing RUNNING/HALT run state | `runtime_test_run_state_v1` operator stop HALT record | `reports/runtime_tests/runs/<run_id>/run_state.json` | `0`, `60`, `70` | `stop_command` | default emit / run state schema | `test_phase17_k_runtime_test_runner.py` Phase29-L21T-AE tests | Documented | `resume`, `abandon`, `run-status`, `show` | Keep; no separate STOPPED top-level status |
+| `resolve-ca-adjustment-authority` | Can an operator-reviewed PIT Corporate Action adjustment become canonical authority? | Per-symbol Corporate Action Adjustment Authority resolution | One run/date/symbol adjustment authority artifact | Mutates only `.runtime/runtime_state/corporate_action_adjustments/<date>/<symbol>.json` unless `--dry-run` | Yes for actual | Existing unresolved CA authority, PIT source hash, run/date/symbol binding, reviewer/audit id, quantity/price/idempotency proof | `runtime_v2_corporate_action_adjustment_authority_v1` plus `runtime_v2_corporate_action_operator_resolution_v1` audit trail | Runtime state authority artifact only | `0`, `60`, `70` | `resolve_ca_adjustment_authority_command` | default emit / operator resolution payload | `test_phase32_dl_ca_operator_resolution_and_sell_campaign_identity.py` | Documented | `resume`, `sell_planning`, `submit` | Keep; no order submit, Pending regeneration, Ledger/Current mutation, or AdjFactor event-type inference |
 | `recover-failed-execution` | Can a failed execution or submit-only precommit halt be rewound for scoped replay? | Scoped failed execution recovery | Target-day failed Ledger/Pending/Broker evidence and run_state rewind | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:execution`, consumed failed-attempt Pending, target-date failed rows | `runtime_test_scoped_failed_execution_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_failed_execution_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` Q3B/Q1B recovery tests | Documented | `rollback`, `resume`, `recover-stale-pending` | Keep; do not use for stale REVIEW_REQUIRED Pending |
 | `recover-partial-submit` | Can a partial submit HALT preserve accepted orders and rewind unresolved items for scoped replay? | Scoped partial submit recovery | Mixed Pending, accepted target-date orders, broker evidence, run_state rewind | Mutating unless `--dry-run` | Yes for actual | HALT run at `<date>:submit`, REVIEW_REQUIRED mixed Pending, accepted order rows, no execution/current rows | `runtime_test_scoped_partial_submit_recovery_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<recovery_id>/` | `0`, `60`, `70` | `recover_partial_submit_command` | default emit / recovery evidence schema | `test_phase17_k_runtime_test_runner.py` Phase32-AC tests | Documented | `recover-failed-execution`, `recover-stale-pending`, `resume` | Keep separate; preserves accepted order evidence and relies on Submit reconciliation during replay |
 | `finalize-partial-submit-day` | Can an already recovered partial-submit day be finalized from preserved accepted orders only? | Accepted-items-only partial submit finalization | Preserved accepted order rows, historical broker evidence, execution/current projection, Pending terminalization, day completion | Mutating unless `--dry-run` | Yes for actual | Applied scoped partial submit recovery, regenerated same-day REVIEW_REQUIRED Pending, preserved accepted order rows, no target-date execution rows | `runtime_test_partial_submit_day_finalization_plan_v1` | `reports/runtime_tests/runs/<run_id>/recovery/<finalization_id>/` | `0`, `30`, `60`, `70` | `finalize_partial_submit_day_command` | default emit / finalization evidence schema | `test_phase17_k_runtime_test_runner.py` Phase32-AE tests | Documented | `recover-partial-submit`, `replay-recovered-day`, `resume` | Dedicated path for replay gap; never resubmits accepted items or executes reviewed regenerated items |

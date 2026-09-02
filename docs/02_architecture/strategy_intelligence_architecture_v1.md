@@ -656,6 +656,35 @@ churn / unresolved continuation
 Cooldown and recovery hurdle remain. Continuation Quality refines recovery
 confirmation; it does not erase semantic REENTRY.
 
+Phase32-CW clarifies the residual REENTRY protection contract:
+
+- REENTRY is a lifecycle / provenance classification for a currently flat symbol
+  with a strict-prior closed same-symbol campaign.
+- Prior ownership alone must not create a long-lived rank, Buy Quality, time, or
+  capital allocation penalty.
+- Authoritative prior campaign id, full EXIT date, EXIT semantic reason, reason
+  codes, and source decision provenance remain part of the REENTRY authority.
+- Generic action labels such as `EXIT`, `SELL`, `SELL_EXIT`, empty, or `UNKNOWN`
+  are not sufficient semantic prior EXIT authority when a recoverable upstream
+  reason should exist; this remains fail-closed / REVIEW_REQUIRED.
+- Genuinely unrecoverable old prior context is represented as
+  `REENTRY_UNKNOWN_PRIOR_CONTEXT`; it preserves REENTRY lineage and never becomes
+  fake BUY_NEW.
+- Unknown prior context is not a permanent ban, but it requires conservative
+  current PIT independence evidence before neutral capital competition.
+- Existing short churn protection and repeated unresolved churn protection
+  remain.
+- Prior-cause recovery remains reason-specific. TREND / MOMENTUM exits require
+  current trend and momentum recovery; HARD_STOP keeps enhanced renewed-thesis
+  evidence.
+- Once residual REENTRY protection passes, ordinary current BUY authority owns
+  current rank, Buy Quality, Entry Admission, Continuation Quality, downside,
+  capacity, PC/PS feasibility, Safety, broker, corporate-action, and capital
+  competition.
+- Eligible REENTRY receives no capital bonus or discount solely from prior
+  ownership.
+- BUY_ADD / G129 semantics are unchanged; an active-position ADD is not REENTRY.
+
 ### HOLD
 
 HOLD means:
@@ -1787,3 +1816,54 @@ LONG_HISTORICAL_EVIDENCE_ACCUMULATION_WITH_CURRENT_ACCEPTED_SPEC
 
 No Strategy changes are authorized before that validation. Performance outcome
 alone must not retroactively redefine Production logic.
+
+## Phase32-DG Tick-Normalized Trend / Momentum Confidence Production Contract
+
+Phase32-DG promotes the Phase32-DC tick-quantization SHADOW contract into the
+Production evidence path using the Phase32-DF canonical PIT minimum-tick
+authority.
+
+Production principle:
+
+```text
+low price != bad
+large percentage movement != automatically strong momentum
+apparent momentum/trend must be qualified by tick-normalized robustness
+```
+
+Authority ownership:
+
+- Technical Features owns PIT tick-normalized facts derived from OHLCV closes
+  plus `minimum_tick_authority.v1`.
+- Strategy Intelligence owns semantic interpretation:
+  `TICK_NORMALIZED_TREND_ROBUSTNESS_AUTHORITY` with states `ROBUST`,
+  `ACCEPTABLE`, `QUANTIZED_CAUTION`, and `INSUFFICIENT_EVIDENCE`.
+- Strategy Intelligence also owns
+  `QUANTIZATION_AWARE_MOMENTUM_CONFIDENCE_AUTHORITY` with states
+  `HIGH_CONFIDENCE`, `MODERATE_CONFIDENCE`,
+  `LOW_CONFIDENCE_QUANTIZED`, and `INSUFFICIENT_EVIDENCE`.
+- Candidate and BUY Quality consume these states as reliability evidence.
+- Phase32-DI clarifies that Buy Quality consumes the current-run Technical
+  Features tick-normalized evidence through the Strategy materialization
+  surface. Empty Candidate or Opportunity placeholder tick fields are not
+  authority and must not shadow a valid Technical Features row. Missing, stale,
+  future-dated, cross-run, schema-incompatible, or explicitly insufficient
+  Technical Features evidence remains fail-closed/review-required.
+- PC remains capital allocation owner; PS remains discrete quantity owner.
+
+Production constraints:
+
+- No hard minimum price rule.
+- No symbol blacklist.
+- No generic low-price penalty.
+- No Historical-PnL-derived threshold.
+- Raw rank, score, and percentage momentum remain observable.
+- When tick evidence is `QUANTIZED_CAUTION` or
+  `LOW_CONFIDENCE_QUANTIZED`, rank/score cannot act as independent
+  confirmation of the same quantized trend.
+- Genuine low-price securities remain eligible when PIT evidence shows
+  acceptable or robust multi-tick structure.
+
+Missing canonical tick evidence is item-scoped insufficient evidence. It must
+not be silently replaced by a default tick, and it must not create a global
+Runtime bypass.

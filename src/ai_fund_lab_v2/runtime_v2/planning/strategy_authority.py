@@ -692,7 +692,17 @@ def _pending_item_from_strategy_plan(
         symbol=symbol,
         business_date=business_date,
         source_decision_id=source_decision_id,
+        runtime_planning_path=runtime_planning_path,
     )
+    campaign_validation = _validate_sell_position_campaign_identity(
+        plan=plan,
+        symbol=symbol,
+        side=side,
+        position_campaign_id=position_campaign_id,
+        runtime_planning_path=runtime_planning_path,
+    )
+    if campaign_validation["status"] != "PASS":
+        return None, f"{campaign_validation['reason']}:{symbol}"
     listed_info, listed_info_reason = _listed_info_for_strategy_pending(
         symbol=symbol,
         business_date=business_date,
@@ -1071,6 +1081,7 @@ def _planning_quantity_contract(
             symbol=symbol,
             business_date=business_date,
             source_decision_id=str(plan.get("planning_id") or ""),
+            runtime_planning_path=runtime_planning_path,
         ),
         "source_position_sizing_reference": str(sizing.get("position_reference") or ""),
         "planned_quantity": planned_quantity,
@@ -1118,6 +1129,7 @@ def _runtime_planning_position_campaign_id(
     symbol: str,
     business_date: str,
     source_decision_id: str,
+    runtime_planning_path: Path | None = None,
 ) -> str:
     existing_campaign_id = first_text(
         plan.get("position_campaign_id"),
@@ -1133,7 +1145,72 @@ def _runtime_planning_position_campaign_id(
     if intent == "BUY_NEW":
         seed = first_text(source_decision_id, plan.get("planning_id"), f"{business_date}|{symbol}|BUY_NEW")
         return f"pc-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}-{symbol}-0001"
+    if existing_campaign_id:
+        return existing_campaign_id
+    if intent in {"SELL_EXIT", "SELL_REDUCE"} or str(plan.get("order_side_intent") or "").upper() == "SELL":
+        return _run_scoped_open_position_campaign_id(runtime_planning_path=runtime_planning_path, symbol=symbol)
     return existing_campaign_id
+
+
+def _validate_sell_position_campaign_identity(
+    *,
+    plan: Mapping[str, Any],
+    symbol: str,
+    side: str,
+    position_campaign_id: str,
+    runtime_planning_path: Path,
+) -> dict[str, str]:
+    if str(side).upper() != "SELL":
+        return {"status": "PASS", "reason": ""}
+    artifact_campaign_id = _run_scoped_open_position_campaign_id(
+        runtime_planning_path=runtime_planning_path,
+        symbol=symbol,
+    )
+    if not position_campaign_id:
+        return {"status": "REVIEW_REQUIRED", "reason": "sell_position_campaign_identity_missing"}
+    if artifact_campaign_id and artifact_campaign_id != position_campaign_id:
+        return {"status": "REVIEW_REQUIRED", "reason": "sell_position_campaign_identity_mismatch"}
+    explicit = first_text(plan.get("position_campaign_id"), plan.get("campaign_id"))
+    if explicit and explicit != position_campaign_id:
+        return {"status": "REVIEW_REQUIRED", "reason": "sell_position_campaign_explicit_identity_mismatch"}
+    return {"status": "PASS", "reason": ""}
+
+
+def _run_scoped_open_position_campaign_id(*, runtime_planning_path: Path | None, symbol: str) -> str:
+    if runtime_planning_path is None:
+        return ""
+    path = runtime_planning_path.parent.parent / "positions" / "position_campaigns.json"
+    payload = _read_json(path) if path.is_file() else {}
+    rows = payload.get("campaigns") or payload.get("position_campaigns") or payload.get("rows") or []
+    matches: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        row_symbol = first_text(row.get("symbol"), row.get("security_code"), row.get("code"))
+        if row_symbol != symbol:
+            continue
+        status = str(row.get("status") or row.get("campaign_status") or "").upper()
+        quantity = _optional_float_value(row.get("current_quantity"), row.get("quantity"), row.get("shares"))
+        closed_date = str(row.get("closed_at") or row.get("closed_date") or row.get("exit_business_date") or "")
+        if status in {"CLOSED", "EXITED"} or closed_date:
+            continue
+        if quantity is not None and quantity <= 0:
+            continue
+        campaign_id = first_text(row.get("position_campaign_id"), row.get("campaign_id"))
+        if campaign_id:
+            matches.append(campaign_id)
+    return matches[0] if len(set(matches)) == 1 else ""
+
+
+def _optional_float_value(*values: Any) -> float | None:
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _position_market_value(current: RuntimeCurrentExposure, symbol: str) -> float:

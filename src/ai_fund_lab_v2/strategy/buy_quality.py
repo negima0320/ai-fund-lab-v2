@@ -9,6 +9,7 @@ from statistics import median
 from typing import Any, Mapping
 
 from ai_fund_lab_v2.strategy.status_contract import status_contract_fields
+from ai_fund_lab_v2.strategy.tick_quantization import tick_evidence_from_row
 
 
 SCHEMA_VERSION = "buy_quality_decision.v1"
@@ -359,6 +360,12 @@ def _decision_for_row(
     execution = _execution_feasibility(opportunity=opportunity, price_volatility=price_volatility, corporate_payload=corporate_payload)
     fit = _portfolio_fit(symbol=symbol, current=current, pending_symbols=pending_symbols, policy_payload=policy_payload)
     trajectory = _momentum_trajectory_quality(opportunity=opportunity, candidate=candidate, business_date=business_date, symbol=symbol)
+    tick_validation = _tick_quantization_buy_quality_validation(
+        opportunity=opportunity,
+        candidate=candidate,
+        business_date=business_date,
+        symbol=symbol,
+    )
     components = {
         "relative_opportunity_quality": relative,
         "market_context_quality_modifier": market,
@@ -386,6 +393,9 @@ def _decision_for_row(
         reason_codes.append("uncalibrated_relative_score_non_positive_not_economic_gate")
     elif not score_contract["economic_units_available"]:
         reason_codes.append("uncalibrated_relative_score_eligible")
+    if tick_validation["status"] == "REVIEW_REQUIRED":
+        critical_review.append("signal_reliability")
+        reason_codes.extend(tick_validation["reason_codes"])
     if score_contract["status"] == "PASS" and not score_contract["economic_units_available"] and float(component_scores["relative_opportunity_quality"]) < 0.20:
         critical_review.append("relative_opportunity_quality")
         reason_codes.append("uncalibrated_relative_score_weak")
@@ -420,6 +430,13 @@ def _decision_for_row(
                 reason_codes.append("relative_quality_prevents_full_allocation")
         else:
             quality_action = "REJECT"
+        if tick_validation["allocation_cap"] == "REDUCED_ALLOCATION_ONLY" and quality_action in SUBMITTABLE_ACTIONS:
+            reason_codes.extend(tick_validation["reason_codes"])
+            if quality_action == "FULL_ALLOCATION_ELIGIBLE":
+                quality_action = "REDUCED_ALLOCATION_ONLY"
+                reason_codes.append("tick_quantization_prevents_full_allocation")
+            else:
+                reason_codes.append("tick_quantization_preserves_reduced_allocation")
         quality_status = "PASS" if quality_action in SUBMITTABLE_ACTIONS else "REJECTED"
         allocation_adjustment = quality_allocation_adjustment({"quality_score": quality_score, "quality_action": quality_action})
     decision_id = "bq-" + hashlib.sha256(f"{business_date}|{symbol}|{source_opportunity_id}|{row_hash}".encode("utf-8")).hexdigest()[:24]
@@ -452,6 +469,14 @@ def _decision_for_row(
         "momentum_trajectory_authority": trajectory["authority"],
         "momentum_trajectory_pit_status": trajectory["authority"]["PIT_status"],
         "momentum_trajectory_temporal_validation_status": trajectory["authority"]["temporal_validation_status"],
+        "tick_quantization_validation": tick_validation,
+        "tick_quantization_status": tick_validation["tick_quantization_status"],
+        "tick_normalized_trend_state": tick_validation["trend_state"],
+        "momentum_confidence_state": tick_validation["momentum_state"],
+        "close_level_diversity_state": tick_validation["close_level_diversity_state"],
+        "candidate_rank_tick_reliability": tick_validation["rank_reliability"],
+        "tick_trend_robustness_authority": tick_validation["trend_robustness_authority"],
+        "tick_momentum_confidence_authority": tick_validation["momentum_confidence_authority"],
         "input_authority_refs": {
             "opportunity": opportunity_source.source_ref,
             "candidate": candidate_source.source_ref,
@@ -849,6 +874,142 @@ def _momentum_trajectory_quality(
         },
         "component": _component(score, status, reasons),
     }
+
+
+def _tick_quantization_buy_quality_validation(
+    *,
+    opportunity: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    business_date: str,
+    symbol: str,
+) -> dict[str, Any]:
+    source = _tick_quantization_source_row(opportunity, candidate)
+    if source is None:
+        placeholder_present = _has_tick_quantization_placeholder_keys(opportunity) or _has_tick_quantization_placeholder_keys(candidate)
+        if placeholder_present:
+            return {
+                "schema_version": "buy_quality_tick_quantization_validation.v1",
+                "status": "REVIEW_REQUIRED",
+                "business_date": business_date,
+                "symbol": symbol,
+                "tick_quantization_status": "INSUFFICIENT_EVIDENCE",
+                "trend_state": "INSUFFICIENT_EVIDENCE",
+                "momentum_state": "INSUFFICIENT_EVIDENCE",
+                "close_level_diversity_state": "",
+                "rank_reliability": "INSUFFICIENT",
+                "allocation_cap": "BUY_WAIT_OR_REVIEW",
+                "candidate_rank_confirmation_role": "NOT_INDEPENDENT_CONFIRMATION",
+                "reason_codes": [
+                    "tick_normalized_evidence_insufficient_review_required",
+                    "tick_normalized_evidence_placeholder_without_authority",
+                ],
+                "trend_robustness_authority": {},
+                "momentum_confidence_authority": {},
+                "minimum_tick_authority_hash": "",
+                "single_tick_pct": None,
+                "future_information_used": False,
+                "historical_result_input_used": False,
+                "hard_min_price_filter_used": False,
+                "low_price_blacklist_used": False,
+            }
+        return {
+            "schema_version": "buy_quality_tick_quantization_validation.v1",
+            "status": "NOT_APPLICABLE",
+            "business_date": business_date,
+            "symbol": symbol,
+            "tick_quantization_status": "NOT_MATERIALIZED",
+            "trend_state": "",
+            "momentum_state": "",
+            "close_level_diversity_state": "",
+            "rank_reliability": "",
+            "allocation_cap": "NONE",
+            "candidate_rank_confirmation_role": "UNCHANGED",
+            "reason_codes": ["tick_normalized_evidence_not_materialized_legacy_path"],
+            "trend_robustness_authority": {},
+            "momentum_confidence_authority": {},
+            "future_information_used": False,
+            "historical_result_input_used": False,
+            "hard_min_price_filter_used": False,
+            "low_price_blacklist_used": False,
+        }
+    evidence = tick_evidence_from_row(source)
+    trend_state = str(evidence.get("trend_state") or "")
+    momentum_state = str(evidence.get("momentum_state") or "")
+    status = "PASS"
+    allocation_cap = "NONE"
+    rank_role = "SUPPORTING_INDEPENDENT_CONFIRMATION_ALLOWED"
+    reasons = list(evidence.get("reason_codes") or [])
+    if evidence["status"] == "INSUFFICIENT_EVIDENCE":
+        status = "REVIEW_REQUIRED"
+        allocation_cap = "BUY_WAIT_OR_REVIEW"
+        rank_role = "NOT_INDEPENDENT_CONFIRMATION"
+        reasons.append("tick_normalized_evidence_insufficient_review_required")
+    elif trend_state == "QUANTIZED_CAUTION" or momentum_state == "LOW_CONFIDENCE_QUANTIZED":
+        allocation_cap = "REDUCED_ALLOCATION_ONLY"
+        rank_role = "SUPPORTING_ONLY_NOT_INDEPENDENT_CONFIRMATION"
+        reasons.append("tick_quantization_caution_caps_full_allocation")
+        reasons.append("candidate_rank_score_not_independent_confirmation_under_tick_caution")
+    else:
+        reasons.append("tick_normalized_evidence_preserves_normal_buy_quality_semantics")
+    return {
+        "schema_version": "buy_quality_tick_quantization_validation.v1",
+        "status": status,
+        "business_date": business_date,
+        "symbol": symbol,
+        "tick_quantization_status": str(source.get("tick_quantization_status") or evidence["status"]),
+        "trend_state": trend_state,
+        "momentum_state": momentum_state,
+        "close_level_diversity_state": str(source.get("close_level_diversity_state") or ""),
+        "rank_reliability": str(evidence.get("rank_reliability") or ""),
+        "allocation_cap": allocation_cap,
+        "candidate_rank_confirmation_role": rank_role,
+        "reason_codes": sorted(set(str(reason) for reason in reasons)),
+        "trend_robustness_authority": dict(source.get("trend_robustness_authority") or {}),
+        "momentum_confidence_authority": dict(source.get("momentum_confidence_authority") or {}),
+        "minimum_tick_authority_hash": str(source.get("minimum_tick_authority_hash") or ""),
+        "single_tick_pct": source.get("single_tick_pct"),
+        "close_level_count_20d": source.get("close_level_count_20d"),
+        "future_information_used": bool(source.get("future_information_used", False)),
+        "historical_result_input_used": bool(source.get("historical_result_input_used", False)),
+        "hard_min_price_filter_used": bool(source.get("hard_min_price_filter_used", False)),
+        "low_price_blacklist_used": bool(source.get("low_price_blacklist_used", False)),
+    }
+
+
+def _tick_quantization_source_row(*rows: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for row in rows:
+        if _has_materialized_tick_quantization_evidence(row):
+            return row
+    return None
+
+
+def _has_tick_quantization_placeholder_keys(row: Mapping[str, Any]) -> bool:
+    return any(
+        key in row
+        for key in (
+            "tick_quantization_status",
+            "tick_normalized_trend_state",
+            "momentum_confidence_state",
+            "candidate_rank_tick_reliability",
+        )
+    )
+
+
+def _has_materialized_tick_quantization_evidence(row: Mapping[str, Any]) -> bool:
+    status = str(row.get("tick_quantization_status") or "").strip().upper()
+    trend_state = str(row.get("tick_normalized_trend_state") or "").strip().upper()
+    momentum_state = str(row.get("momentum_confidence_state") or "").strip().upper()
+    reliability = str(row.get("candidate_rank_tick_reliability") or "").strip().upper()
+    return any(
+        (
+            status,
+            trend_state,
+            momentum_state,
+            reliability,
+            isinstance(row.get("trend_robustness_authority"), Mapping) and bool(row.get("trend_robustness_authority")),
+            isinstance(row.get("momentum_confidence_authority"), Mapping) and bool(row.get("momentum_confidence_authority")),
+        )
+    )
 
 
 def _first_finite(primary: Mapping[str, Any], secondary: Mapping[str, Any], field: str) -> float | None:
