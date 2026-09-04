@@ -228,6 +228,30 @@ For Strategy scope, `summarize --scope strategy --json` includes source-resoluti
 
 `show --artifact strategy --business-date <DATE> --json` returns the daily Strategy shadow summary and embeds the same day's `source_manifest` when present. Without `--business-date`, it returns the run-level Strategy shadow summary.
 
+## Marginal Capital SHADOW Backfill
+
+```bash
+PYTHONPATH=src python3 scripts/runtime_test.py shadow-backfill-marginal-capital \
+  --source-run-id <RUN_ID> \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output-root reports/runtime_tests/analysis/<BACKFILL_ID> \
+  --dry-run \
+  --json
+
+PYTHONPATH=src python3 scripts/runtime_test.py shadow-backfill-marginal-capital \
+  --source-run-id <RUN_ID> \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output-root reports/runtime_tests/analysis/<BACKFILL_ID> \
+  --confirm \
+  --json
+```
+
+`shadow-backfill-marginal-capital` is a non-Runtime-mutating analysis command for applying the current `unified_marginal_capital_shadow.v1` evaluator to immutable historical Portfolio Construction PIT artifacts. It reads only `reports/runtime_tests/runs/<RUN_ID>/daily/<date>/strategy/portfolio_construction.json` for each requested date, does not invoke full Portfolio Construction, does not recompute Candidate / Opportunity / BQ / Entry / SI / PM, does not read live `.runtime` state, and writes only isolated analysis output under `reports/runtime_tests/analysis/<BACKFILL_ID>/`.
+
+The command records dual provenance: original Production run/source/artifact identity and current DQ evaluator/source identity. It fails closed on missing daily PC artifacts, missing required DQ inputs, date mismatch, non-analysis output roots, or attempts to write inside the source run or `.runtime`. It must not be used as Production allocation authority; it is SHADOW analysis only.
+
 For the current canonical source inventory, the first 5BD operator-ready Strategy source window is `2026-07-06` through `2026-07-10`. The user-operated command is:
 
 ```bash
@@ -1041,6 +1065,7 @@ Phase20-H implemented the Phase20-G recommendations for `run-status` and `summar
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `status` | Is a Runtime Test runner active and what is the local runner state? | Runner state summary | Active run, current root summaries, latest backup | Read-only | No | Profile, runtime root, evidence root | `runtime_test_runner_v1` payload | None | `0`, error codes | `status` | default emit / runner schema | `test_phase17_k_runtime_test_runner.py`, `test_phase19_bj_runtime_test_abandon.py` | Documented | `system-status` naming | Future canonical `run-status`; keep `status` compatibility alias after implementation phase |
 | `summarize` | What happened in this completed or closed run? | Run-scoped post-run summary | Run evidence, performance summary, PM counts, trading, reduce/exit, attribution, lifecycle | Read-only, optional evidence write | No | `reports/runtime_tests/runs/<run_id>/`, final-state hash match for current root reads | `runtime_test_summary_v1` | `reports/runtime_tests/summaries/<summary_id>/` with `--write-evidence` | `0`, `10`, `20`, error codes | `summarize_command` | `_format_runtime_test_summary` / inline schema | `test_phase19_bv_runtime_test_summarize.py`, Phase19-BY authority correction tests | Documented | Future performance / position lifecycle views | Extend with future `--scope overview|performance|positions|lifecycle|full`; do not create `diagnose` yet |
+| `shadow-backfill-marginal-capital` | Can current DQ marginal-capital SHADOW be applied to immutable historical PC PIT artifacts? | Isolated marginal-capital SHADOW analysis backfill | Source run daily PC artifacts only, date window, dual provenance, summary | Analysis artifact write only; no Runtime state mutation | `--confirm` for actual artifact creation; no trading mutation flag | `reports/runtime_tests/runs/<run_id>/daily/<date>/strategy/portfolio_construction.json` | `runtime_test_marginal_capital_shadow_backfill_*` | `reports/runtime_tests/analysis/<backfill_id>/` | `0`, `60`, `70`, `90` | `shadow_backfill_marginal_capital_command` | default emit / backfill manifest, daily shadow, summary schemas | `test_phase32_dt_shadow_backfill_marginal_capital.py` | Documented | `summarize --scope strategy` | Keep as specialist non-mutating analysis generator; never promote to Production authority directly |
 | `ai-status` | Are AI artifacts, Accepted Generation, and AI Runtime authority healthy? | Focused AI artifact inspection | Candidate AI, Opportunity AI, calibration, lineage, freshness, readiness option | Read-only, optional evidence write | No | Accepted Generation resolver, AI artifacts, runtime root | `runtime_test_ai_status_report.v1` | `reports/runtime_tests/ai_status/<run_id>/` | `0`, `10`, `20`, `30` | `ai_status_command`, `build_ai_status_report` | AI human summary / `schemas/runtime_test/ai_status_report.schema.json` | `test_phase19_av_ai_status.py` | Documented | `system-status --scope ai` | Keep as specialist command; `system-status --scope ai` remains overview |
 | `system-status` | Is the whole system ready or healthy for the selected inspection scope? | Whole-system operational inspection | `overview`, `data`, `ai`, `runtime`, `broker`, `readiness`, `lineage`, `components`, `full` | Read-only, optional evidence write | No | Profile, runtime root, latest compatible closed run context | `runtime_test_system_status_v2` plus legacy full report | `reports/runtime_tests/system_status/<run_id>/` | `0`, `10`, `20` | `system_status_command`, `build_system_status_report` | scoped human summary / `schemas/runtime_test/system_status_report.schema.json` | `test_phase19_ax_system_status.py`, `test_phase19_bw_system_status_scoped_output.py`, `test_phase19_bo_post_run_system_status_context.py` | Documented | `status`, `ai-status` | Keep canonical system inspection command |
 | `prepare-isolated` | Can a historical isolated root be materialized for Day1? | Isolated historical runtime root preparation | Historical pre-run root materialization and temporal preflight | Mutates isolated test root and optional evidence only; shared runtime read-only | No special mutation flag in current CLI | Historical profile, shared runtime root, Accepted Generation references | runner payload plus prepare isolated evidence | `reports/runtime_tests/prepare_isolated/<run_id>/` with `--write-evidence` | `0`, `20`, `60` | `prepare_isolated_command` | default emit / prepare isolated result files | `test_phase19_bb_isolated_runtime_root.py` | Now documented here | `fresh-run` preparation | Keep separate pre-run preparation command |

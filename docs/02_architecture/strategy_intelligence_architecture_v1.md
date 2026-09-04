@@ -637,52 +637,70 @@ ADD decision matrix:
 | strong but high risk | elevated | attractive | possible small ADD only if PC/sizing confirms; shadow first |
 | weak/breaking | high | any | no ADD; PM deterioration evidence |
 
-### REENTRY
+### REENTRY / Recent Exit Guard
 
-REENTRY is preserved. It is not blanket-banned.
-
-REENTRY should distinguish:
-
-```text
-genuine recovery
-```
-
-from:
+Phase32-EW removes REENTRY as a permanent current-decision investment semantic.
+Prior ownership is retained as audit lineage, not as indefinite current BUY
+authority.
 
 ```text
-churn / unresolved continuation
+old prior EXIT
+-> retained lineage pointer
+-> ordinary current BUY_NEW evaluation
 ```
 
-Cooldown and recovery hurdle remain. Continuation Quality refines recovery
-confirmation; it does not erase semantic REENTRY.
+Only a bounded recent-exit guard may alter current BUY treatment:
+
+```text
+recent/material full EXIT
+-> RECENT_EXIT_CHURN_GUARD
+-> block/review while unresolved
+-> release on current PIT requalification or expiry
+```
+
+Phase32-EZ defines the connected Production materialization boundary:
+
+```text
+committed SELL_EXIT / EXIT execution
+-> compact run-scoped recent_exit_guard index
+-> next decision-day candidate/opportunity annotation
+-> PC / MCV guard consumption
+```
+
+The index is bounded runtime state, not full historical REENTRY authority. It
+must carry only minimal lineage pointers, reject stale cross-run rows when the
+run id is known, compact expired guard rows, and avoid whole-run
+`executions.jsonl` or strict-prior PM EXIT scans in the current BUY hot path.
+The current BUY action type remains `BUY_NEW`; active guard status is the only
+temporary blocker/release surface.
+
+This replaces the old model:
+
+```text
+old EXIT -> REENTRY -> stricter recovery branch -> target suppression
+```
 
 Phase32-CW clarifies the residual REENTRY protection contract:
 
-- REENTRY is a lifecycle / provenance classification for a currently flat symbol
-  with a strict-prior closed same-symbol campaign.
+- legacy REENTRY lineage is a provenance/audit classification for a currently
+  flat symbol with a strict-prior closed same-symbol campaign.
 - Prior ownership alone must not create a long-lived rank, Buy Quality, time, or
   capital allocation penalty.
 - Authoritative prior campaign id, full EXIT date, EXIT semantic reason, reason
-  codes, and source decision provenance remain part of the REENTRY authority.
+  codes, and source decision provenance remain canonical audit evidence.
 - Generic action labels such as `EXIT`, `SELL`, `SELL_EXIT`, empty, or `UNKNOWN`
-  are not sufficient semantic prior EXIT authority when a recoverable upstream
-  reason should exist; this remains fail-closed / REVIEW_REQUIRED.
-- Genuinely unrecoverable old prior context is represented as
-  `REENTRY_UNKNOWN_PRIOR_CONTEXT`; it preserves REENTRY lineage and never becomes
-  fake BUY_NEW.
-- Unknown prior context is not a permanent ban, but it requires conservative
-  current PIT independence evidence before neutral capital competition.
-- Existing short churn protection and repeated unresolved churn protection
-  remain.
-- Prior-cause recovery remains reason-specific. TREND / MOMENTUM exits require
-  current trend and momentum recovery; HARD_STOP keeps enhanced renewed-thesis
-  evidence.
-- Once residual REENTRY protection passes, ordinary current BUY authority owns
-  current rank, Buy Quality, Entry Admission, Continuation Quality, downside,
-  capacity, PC/PS feasibility, Safety, broker, corporate-action, and capital
-  competition.
-- Eligible REENTRY receives no capital bonus or discount solely from prior
-  ownership.
+  remain weak audit labels, but old unknown context must not become a permanent
+  current BUY block after the guard is inactive.
+- Existing short churn protection remains as `RECENT_EXIT_CHURN_GUARD`.
+- While the guard is active, current PIT trend, momentum, Entry Admission, Buy
+  Quality, Continuation Quality, downside, Safety, broker, corporate action,
+  capacity, and capital competition determine whether requalification is safe.
+- After the guard is inactive, ordinary current BUY authority owns rank, target,
+  PC/PS feasibility, Safety, broker, corporate-action, and capital competition.
+- Old prior ownership receives no capital bonus or discount.
+- Audit/replay may reconstruct full lineage from Ledger, PM EXIT artifacts, and
+  campaign artifacts, but daily runtime artifacts should carry only bounded
+  guard state or minimal lineage pointers needed for current validation.
 - BUY_ADD / G129 semantics are unchanged; an active-position ADD is not REENTRY.
 
 ### HOLD

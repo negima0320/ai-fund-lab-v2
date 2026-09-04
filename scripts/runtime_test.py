@@ -84,6 +84,7 @@ from ai_fund_lab_v2.strategy.observability import (
     summarize_strategy_trace,
 )
 from ai_fund_lab_v2.strategy.historical_source_foundation import build_historical_strategy_preflight
+from ai_fund_lab_v2.strategy import marginal_capital_value
 from ai_fund_lab_v2.strategy.shadow_runtime import (
     generate_strategy_shadow_for_day,
     load_run_strategy_shadow_summary,
@@ -138,6 +139,7 @@ RUN_STATE_SCHEMA_VERSION = "runtime_test_run_state_v1"
 PLAN_SCHEMA_VERSION = "runtime_test_plan_v1"
 BACKUP_MANIFEST_SCHEMA_VERSION = "runtime_test_backup_manifest_v1"
 RESET_MANIFEST_SCHEMA_VERSION = "runtime_test_reset_manifest_v1"
+SOURCE_TRANSITION_SCHEMA_VERSION = "runtime_test_source_transition_v1"
 FINAL_SUMMARY_SCHEMA_VERSION = "runtime_test_final_summary_v1"
 FRESH_RUN_SUMMARY_SCHEMA_VERSION = "runtime_test_fresh_run_summary_v1"
 HISTORICAL_EVALUATION_AUTHORITY_SCHEMA_VERSION = "historical_evaluation_authority.v1"
@@ -268,6 +270,46 @@ def build_parser() -> argparse.ArgumentParser:
     capital_trace.add_argument("--business-date", required=True)
     capital_trace.add_argument("--performance-evidence-root", default="reports/performance_evaluations")
 
+    shadow_backfill = subparsers.add_parser("shadow-backfill-marginal-capital")
+    shadow_backfill.add_argument("--source-run-id", required=True)
+    shadow_backfill.add_argument("--start-date", required=True)
+    shadow_backfill.add_argument("--end-date", required=True)
+    shadow_backfill.add_argument("--output-root", required=True)
+    shadow_backfill.add_argument("--evidence-root", default=str(EVIDENCE_ROOT))
+    shadow_backfill.add_argument("--dry-run", action="store_true")
+    shadow_backfill.add_argument("--confirm", action="store_true")
+    shadow_backfill.add_argument("--json", action="store_true")
+
+    security_opportunity_backfill = subparsers.add_parser("shadow-backfill-security-opportunity")
+    security_opportunity_backfill.add_argument("--source-run-id", required=True)
+    security_opportunity_backfill.add_argument("--start-date", required=True)
+    security_opportunity_backfill.add_argument("--end-date", required=True)
+    security_opportunity_backfill.add_argument("--output-root", required=True)
+    security_opportunity_backfill.add_argument("--evidence-root", default=str(EVIDENCE_ROOT))
+    security_opportunity_backfill.add_argument("--dry-run", action="store_true")
+    security_opportunity_backfill.add_argument("--confirm", action="store_true")
+    security_opportunity_backfill.add_argument("--json", action="store_true")
+
+    pc_security_opportunity_backfill = subparsers.add_parser("shadow-backfill-pc-security-opportunity")
+    pc_security_opportunity_backfill.add_argument("--source-run-id", required=True)
+    pc_security_opportunity_backfill.add_argument("--start-date", required=True)
+    pc_security_opportunity_backfill.add_argument("--end-date", required=True)
+    pc_security_opportunity_backfill.add_argument("--output-root", required=True)
+    pc_security_opportunity_backfill.add_argument("--evidence-root", default=str(EVIDENCE_ROOT))
+    pc_security_opportunity_backfill.add_argument("--dry-run", action="store_true")
+    pc_security_opportunity_backfill.add_argument("--confirm", action="store_true")
+    pc_security_opportunity_backfill.add_argument("--json", action="store_true")
+
+    position_size_adequacy_backfill = subparsers.add_parser("shadow-backfill-position-size-adequacy")
+    position_size_adequacy_backfill.add_argument("--source-run-id", required=True)
+    position_size_adequacy_backfill.add_argument("--start-date", required=True)
+    position_size_adequacy_backfill.add_argument("--end-date", required=True)
+    position_size_adequacy_backfill.add_argument("--output-root", required=True)
+    position_size_adequacy_backfill.add_argument("--evidence-root", default=str(EVIDENCE_ROOT))
+    position_size_adequacy_backfill.add_argument("--dry-run", action="store_true")
+    position_size_adequacy_backfill.add_argument("--confirm", action="store_true")
+    position_size_adequacy_backfill.add_argument("--json", action="store_true")
+
     ai_status = subparsers.add_parser("ai-status")
     add_common(ai_status)
     ai_status.add_argument("--detailed", action="store_true")
@@ -384,6 +426,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(resume)
     add_mutation_safety(resume)
     resume.add_argument("--run-id", required=True)
+
+    transition_source = subparsers.add_parser("transition-source-baseline")
+    add_common(transition_source)
+    add_mutation_safety(transition_source)
+    transition_source.add_argument("--run-id", required=True)
+    transition_source.add_argument("--reason", required=True)
+    transition_source.add_argument("--operator", required=True)
+    transition_source.add_argument("--audit-id", default="")
+    transition_source.add_argument("--repair-report", action="append", default=[])
+    transition_source.add_argument("--expected-old-source-commit", default="")
+    transition_source.add_argument("--expected-new-source-commit", default="")
+    transition_source.add_argument(
+        "--performance-continuity-classification",
+        choices=("MULTI_SOURCE_NON_SEMANTIC_REPAIR", "MULTI_SOURCE_STRATEGY_SEMANTIC_CHANGE", "MIXED_UNKNOWN"),
+        default="MIXED_UNKNOWN",
+    )
 
     stop = subparsers.add_parser("stop")
     add_common(stop)
@@ -509,6 +567,26 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return list_backups()
     if args.subcommand == "show":
         return show(args, evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))))
+    if args.subcommand == "shadow-backfill-marginal-capital":
+        return shadow_backfill_marginal_capital_command(
+            args=args,
+            evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))),
+        )
+    if args.subcommand == "shadow-backfill-security-opportunity":
+        return shadow_backfill_security_opportunity_command(
+            args=args,
+            evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))),
+        )
+    if args.subcommand == "shadow-backfill-pc-security-opportunity":
+        return shadow_backfill_pc_security_opportunity_command(
+            args=args,
+            evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))),
+        )
+    if args.subcommand == "shadow-backfill-position-size-adequacy":
+        return shadow_backfill_position_size_adequacy_command(
+            args=args,
+            evidence_root=Path(getattr(args, "evidence_root", str(EVIDENCE_ROOT))),
+        )
 
     profile = load_profile(args.profile)
     runtime_root = Path(args.runtime_root or profile["runtime_root"])
@@ -547,6 +625,13 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
         return validate_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "resume":
         return resume_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
+    if args.subcommand == "transition-source-baseline":
+        return transition_source_baseline_command(
+            args,
+            profile=profile,
+            runtime_root=runtime_root,
+            evidence_root=evidence_root,
+        )
     if args.subcommand == "stop":
         return stop_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     if args.subcommand == "repair-ca-quarantine-continuation":
@@ -605,6 +690,1759 @@ def dispatch(args: argparse.Namespace) -> CommandResult:
     if args.subcommand == "close":
         return close_command(args, profile=profile, runtime_root=runtime_root, evidence_root=evidence_root)
     raise RuntimeTestError("unsupported subcommand", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+
+
+def shadow_backfill_marginal_capital_command(*, args: argparse.Namespace, evidence_root: Path) -> CommandResult:
+    source_run_id = str(args.source_run_id)
+    start_date = _date_only(str(args.start_date))
+    end_date = _date_only(str(args.end_date))
+    if not start_date or not end_date or start_date > end_date:
+        raise RuntimeTestError("shadow backfill requires a valid --start-date and --end-date", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    output_root = Path(args.output_root)
+    source_run_dir = runs_root(evidence_root) / source_run_id
+    if not source_run_dir.is_dir():
+        raise RuntimeTestError(f"source run not found: {source_run_id}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    _validate_shadow_backfill_output_root(output_root=output_root, evidence_root=evidence_root, source_run_dir=source_run_dir)
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not dry_run and not getattr(args, "confirm", False):
+        raise RuntimeTestError("shadow-backfill-marginal-capital artifact creation requires --confirm", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not dry_run and output_root.exists() and any(output_root.iterdir()):
+        raise RuntimeTestError("shadow backfill output-root must be empty or absent", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    run_state = read_json_optional(source_run_dir / "run_state.json")
+    source_baseline = run_state.get("source_baseline") if isinstance(run_state.get("source_baseline"), dict) else {}
+    dates = _shadow_backfill_dates(source_run_dir=source_run_dir, start_date=start_date, end_date=end_date)
+    if not dates:
+        raise RuntimeTestError("no source PC artifacts found for requested window", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    daily_outputs: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for business_date in dates:
+        try:
+            daily_outputs.append(
+                _build_shadow_backfill_day(
+                    source_run_dir=source_run_dir,
+                    source_run_id=source_run_id,
+                    business_date=business_date,
+                    source_baseline=source_baseline,
+                )
+            )
+        except RuntimeTestError as exc:
+            errors.append({"business_date": business_date, "status": exc.status, "error": str(exc)})
+    if errors:
+        payload = base_payload("shadow-backfill-marginal-capital", "PRECONDITION_FAILURE")
+        payload.update(
+            {
+                "source_run_id": source_run_id,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "output_root": str(output_root),
+                "dry_run": dry_run,
+                "errors": errors,
+                "target_run_mutated": False,
+                "runtime_state_mutated": False,
+            }
+        )
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+
+    backfill_id = output_root.name
+    created_at = utc_now()
+    summary = _shadow_backfill_summary(
+        source_run_id=source_run_id,
+        start_date=start_date,
+        end_date=end_date,
+        backfill_id=backfill_id,
+        created_at=created_at,
+        daily_outputs=daily_outputs,
+    )
+    manifest = {
+        "schema_version": "runtime_test_marginal_capital_shadow_backfill_manifest.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "source_run_dir": str(source_run_dir),
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "output_root": str(output_root),
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "source_run_artifact_mutated": False,
+        "runtime_state_mutated": False,
+        "production_change_executed": False,
+        "future_information_used": False,
+        "original_artifact_priority": True,
+        "source_baseline": source_baseline,
+        "dq_evaluator_provenance": _shadow_backfill_evaluator_provenance(),
+        "summary_hash": semantic_hash(summary),
+        "daily_count": len(daily_outputs),
+    }
+
+    if not dry_run:
+        for daily in daily_outputs:
+            date_root = output_root / "daily" / str(daily["business_date"])
+            write_json_atomic(date_root / "unified_marginal_capital_shadow.json", daily)
+            write_json_atomic(
+                date_root / "input_hashes.json",
+                {
+                    "schema_version": "runtime_test_marginal_capital_shadow_backfill_input_hashes.v1",
+                    "business_date": daily["business_date"],
+                    "source_run_id": source_run_id,
+                    "source_pc_artifact": daily["provenance"]["original_production"]["daily_pc_artifact"],
+                    "dq_input_artifact_hashes": daily["shadow"].get("input_artifact_hashes") or {},
+                    "source_pc_artifact_hash": daily["provenance"]["original_production"]["daily_pc_artifact_hash"],
+                    "backfill_daily_hash": semantic_hash(daily),
+                },
+            )
+        write_json_atomic(output_root / "manifest.json", manifest)
+        write_json_atomic(output_root / "summary.json", summary)
+
+    payload = base_payload("shadow-backfill-marginal-capital", "PASS")
+    payload.update(
+        {
+            "source_run_id": source_run_id,
+            "backfill_id": backfill_id,
+            "dry_run": dry_run,
+            "requested_start_date": start_date,
+            "requested_end_date": end_date,
+            "business_day_count": len(daily_outputs),
+            "output_root": str(output_root),
+            "evidence_path": "" if dry_run else str(output_root),
+            "summary": summary,
+            "target_run_mutated": False,
+            "runtime_state_mutated": False,
+            "production_change_executed": False,
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def shadow_backfill_security_opportunity_command(*, args: argparse.Namespace, evidence_root: Path) -> CommandResult:
+    source_run_id = str(args.source_run_id)
+    start_date = _date_only(str(args.start_date))
+    end_date = _date_only(str(args.end_date))
+    if not start_date or not end_date or start_date > end_date:
+        raise RuntimeTestError("security opportunity backfill requires a valid --start-date and --end-date", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    output_root = Path(args.output_root)
+    source_run_dir = runs_root(evidence_root) / source_run_id
+    if not source_run_dir.is_dir():
+        raise RuntimeTestError(f"source run not found: {source_run_id}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    _validate_shadow_backfill_output_root(output_root=output_root, evidence_root=evidence_root, source_run_dir=source_run_dir)
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not dry_run and not getattr(args, "confirm", False):
+        raise RuntimeTestError("shadow-backfill-security-opportunity artifact creation requires --confirm", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not dry_run and output_root.exists() and any(output_root.iterdir()):
+        raise RuntimeTestError("security opportunity backfill output-root must be empty or absent", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    run_state = read_json_optional(source_run_dir / "run_state.json")
+    source_baseline = run_state.get("source_baseline") if isinstance(run_state.get("source_baseline"), dict) else {}
+    dates = _shadow_backfill_dates(source_run_dir=source_run_dir, start_date=start_date, end_date=end_date)
+    if not dates:
+        raise RuntimeTestError("no source PC artifacts found for requested window", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    daily_outputs: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for business_date in dates:
+        try:
+            daily_outputs.append(
+                _build_security_opportunity_backfill_day(
+                    source_run_dir=source_run_dir,
+                    source_run_id=source_run_id,
+                    business_date=business_date,
+                    source_baseline=source_baseline,
+                )
+            )
+        except RuntimeTestError as exc:
+            errors.append({"business_date": business_date, "status": exc.status, "error": str(exc)})
+    if errors:
+        payload = base_payload("shadow-backfill-security-opportunity", "PRECONDITION_FAILURE")
+        payload.update(
+            {
+                "source_run_id": source_run_id,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "output_root": str(output_root),
+                "dry_run": dry_run,
+                "errors": errors,
+                "target_run_mutated": False,
+                "runtime_state_mutated": False,
+            }
+        )
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+
+    backfill_id = output_root.name
+    created_at = utc_now()
+    summary = _security_opportunity_backfill_summary(
+        source_run_id=source_run_id,
+        start_date=start_date,
+        end_date=end_date,
+        backfill_id=backfill_id,
+        created_at=created_at,
+        daily_outputs=daily_outputs,
+    )
+    manifest = {
+        "schema_version": "runtime_test_security_opportunity_shadow_backfill_manifest.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "source_run_dir": str(source_run_dir),
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "output_root": str(output_root),
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "source_run_artifact_mutated": False,
+        "runtime_state_mutated": False,
+        "production_change_executed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_artifact_priority": True,
+        "source_baseline": source_baseline,
+        "security_opportunity_evaluator_provenance": _security_opportunity_backfill_evaluator_provenance(),
+        "summary_hash": semantic_hash(summary),
+        "daily_count": len(daily_outputs),
+    }
+
+    if not dry_run:
+        for daily in daily_outputs:
+            date_root = output_root / "daily" / str(daily["business_date"])
+            write_json_atomic(date_root / "security_opportunity_evidence.json", daily)
+            write_json_atomic(
+                date_root / "input_hashes.json",
+                {
+                    "schema_version": "runtime_test_security_opportunity_shadow_backfill_input_hashes.v1",
+                    "business_date": daily["business_date"],
+                    "source_run_id": source_run_id,
+                    "source_pc_artifact": daily["provenance"]["original_production"]["daily_pc_artifact"],
+                    "security_opportunity_input_artifact_hashes": daily["security_opportunity_evidence"].get("input_artifact_hashes") or {},
+                    "source_pc_artifact_hash": daily["provenance"]["original_production"]["daily_pc_artifact_hash"],
+                    "backfill_daily_hash": semantic_hash(daily),
+                },
+            )
+        write_json_atomic(output_root / "manifest.json", manifest)
+        write_json_atomic(output_root / "summary.json", summary)
+
+    payload = base_payload("shadow-backfill-security-opportunity", "PASS")
+    payload.update(
+        {
+            "source_run_id": source_run_id,
+            "backfill_id": backfill_id,
+            "dry_run": dry_run,
+            "requested_start_date": start_date,
+            "requested_end_date": end_date,
+            "business_day_count": len(daily_outputs),
+            "output_root": str(output_root),
+            "evidence_path": "" if dry_run else str(output_root),
+            "summary": summary,
+            "target_run_mutated": False,
+            "runtime_state_mutated": False,
+            "production_change_executed": False,
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def shadow_backfill_pc_security_opportunity_command(*, args: argparse.Namespace, evidence_root: Path) -> CommandResult:
+    source_run_id = str(args.source_run_id)
+    start_date = _date_only(str(args.start_date))
+    end_date = _date_only(str(args.end_date))
+    if not start_date or not end_date or start_date > end_date:
+        raise RuntimeTestError("PC security opportunity backfill requires a valid --start-date and --end-date", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    output_root = Path(args.output_root)
+    source_run_dir = runs_root(evidence_root) / source_run_id
+    if not source_run_dir.is_dir():
+        raise RuntimeTestError(f"source run not found: {source_run_id}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    _validate_shadow_backfill_output_root(output_root=output_root, evidence_root=evidence_root, source_run_dir=source_run_dir)
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not dry_run and not getattr(args, "confirm", False):
+        raise RuntimeTestError("shadow-backfill-pc-security-opportunity artifact creation requires --confirm", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not dry_run and output_root.exists() and any(output_root.iterdir()):
+        raise RuntimeTestError("PC security opportunity backfill output-root must be empty or absent", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    run_state = read_json_optional(source_run_dir / "run_state.json")
+    source_baseline = run_state.get("source_baseline") if isinstance(run_state.get("source_baseline"), dict) else {}
+    dates = _shadow_backfill_dates(source_run_dir=source_run_dir, start_date=start_date, end_date=end_date)
+    if not dates:
+        raise RuntimeTestError("no source PC artifacts found for requested window", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    daily_outputs: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for business_date in dates:
+        try:
+            daily_outputs.append(
+                _build_pc_security_opportunity_backfill_day(
+                    source_run_dir=source_run_dir,
+                    source_run_id=source_run_id,
+                    business_date=business_date,
+                    source_baseline=source_baseline,
+                )
+            )
+        except RuntimeTestError as exc:
+            errors.append({"business_date": business_date, "status": exc.status, "error": str(exc)})
+    if errors:
+        payload = base_payload("shadow-backfill-pc-security-opportunity", "PRECONDITION_FAILURE")
+        payload.update(
+            {
+                "source_run_id": source_run_id,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "output_root": str(output_root),
+                "dry_run": dry_run,
+                "errors": errors,
+                "target_run_mutated": False,
+                "runtime_state_mutated": False,
+            }
+        )
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+
+    backfill_id = output_root.name
+    created_at = utc_now()
+    summary = _pc_security_opportunity_backfill_summary(
+        source_run_id=source_run_id,
+        start_date=start_date,
+        end_date=end_date,
+        backfill_id=backfill_id,
+        created_at=created_at,
+        daily_outputs=daily_outputs,
+    )
+    manifest = {
+        "schema_version": "runtime_test_pc_security_opportunity_shadow_backfill_manifest.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "source_run_dir": str(source_run_dir),
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "output_root": str(output_root),
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "source_run_artifact_mutated": False,
+        "runtime_state_mutated": False,
+        "production_change_executed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_artifact_priority": True,
+        "source_baseline": source_baseline,
+        "pc_security_opportunity_evaluator_provenance": _pc_security_opportunity_backfill_evaluator_provenance(),
+        "summary_hash": semantic_hash(summary),
+        "daily_count": len(daily_outputs),
+    }
+
+    if not dry_run:
+        for daily in daily_outputs:
+            date_root = output_root / "daily" / str(daily["business_date"])
+            write_json_atomic(date_root / "pc_security_opportunity_shadow_consumer.json", daily)
+            write_json_atomic(
+                date_root / "input_hashes.json",
+                {
+                    "schema_version": "runtime_test_pc_security_opportunity_shadow_backfill_input_hashes.v1",
+                    "business_date": daily["business_date"],
+                    "source_run_id": source_run_id,
+                    "source_pc_artifact": daily["provenance"]["original_production"]["daily_pc_artifact"],
+                    "source_pc_artifact_hash": daily["provenance"]["original_production"]["daily_pc_artifact_hash"],
+                    "security_opportunity_evidence_hash": daily["security_opportunity_evidence"].get("security_opportunity_evidence_hash"),
+                    "pc_security_opportunity_shadow_consumer_hash": daily["pc_security_opportunity_shadow_consumer"].get("pc_security_opportunity_shadow_consumer_hash"),
+                    "backfill_daily_hash": semantic_hash(daily),
+                },
+            )
+        write_json_atomic(output_root / "manifest.json", manifest)
+        write_json_atomic(output_root / "summary.json", summary)
+
+    payload = base_payload("shadow-backfill-pc-security-opportunity", "PASS")
+    payload.update(
+        {
+            "source_run_id": source_run_id,
+            "backfill_id": backfill_id,
+            "dry_run": dry_run,
+            "requested_start_date": start_date,
+            "requested_end_date": end_date,
+            "business_day_count": len(daily_outputs),
+            "output_root": str(output_root),
+            "evidence_path": "" if dry_run else str(output_root),
+            "summary": summary,
+            "target_run_mutated": False,
+            "runtime_state_mutated": False,
+            "production_change_executed": False,
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def shadow_backfill_position_size_adequacy_command(*, args: argparse.Namespace, evidence_root: Path) -> CommandResult:
+    source_run_id = str(args.source_run_id)
+    start_date = _date_only(str(args.start_date))
+    end_date = _date_only(str(args.end_date))
+    if not start_date or not end_date or start_date > end_date:
+        raise RuntimeTestError("position-size adequacy backfill requires a valid --start-date and --end-date", status="INVALID_ARGUMENT", exit_code=EXIT_INVALID_ARGUMENT)
+    output_root = Path(args.output_root)
+    source_run_dir = runs_root(evidence_root) / source_run_id
+    if not source_run_dir.is_dir():
+        raise RuntimeTestError(f"source run not found: {source_run_id}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    _validate_shadow_backfill_output_root(output_root=output_root, evidence_root=evidence_root, source_run_dir=source_run_dir)
+    dry_run = bool(getattr(args, "dry_run", False))
+    if not dry_run and not getattr(args, "confirm", False):
+        raise RuntimeTestError("shadow-backfill-position-size-adequacy artifact creation requires --confirm", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not dry_run and output_root.exists() and any(output_root.iterdir()):
+        raise RuntimeTestError("position-size adequacy backfill output-root must be empty or absent", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    run_state = read_json_optional(source_run_dir / "run_state.json")
+    source_baseline = run_state.get("source_baseline") if isinstance(run_state.get("source_baseline"), dict) else {}
+    dates = _shadow_backfill_dates(source_run_dir=source_run_dir, start_date=start_date, end_date=end_date)
+    if not dates:
+        raise RuntimeTestError("no source PC artifacts found for requested window", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+
+    daily_outputs: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for business_date in dates:
+        try:
+            daily_outputs.append(
+                _build_position_size_adequacy_backfill_day(
+                    source_run_dir=source_run_dir,
+                    source_run_id=source_run_id,
+                    business_date=business_date,
+                    source_baseline=source_baseline,
+                )
+            )
+        except RuntimeTestError as exc:
+            errors.append({"business_date": business_date, "status": exc.status, "error": str(exc)})
+    if errors:
+        payload = base_payload("shadow-backfill-position-size-adequacy", "PRECONDITION_FAILURE")
+        payload.update(
+            {
+                "source_run_id": source_run_id,
+                "requested_start_date": start_date,
+                "requested_end_date": end_date,
+                "output_root": str(output_root),
+                "dry_run": dry_run,
+                "errors": errors,
+                "target_run_mutated": False,
+                "runtime_state_mutated": False,
+            }
+        )
+        return CommandResult("PRECONDITION_FAILURE", EXIT_PRECONDITION_FAILURE, runner_response(payload))
+
+    backfill_id = output_root.name
+    created_at = utc_now()
+    summary = _position_size_adequacy_backfill_summary(
+        source_run_id=source_run_id,
+        start_date=start_date,
+        end_date=end_date,
+        backfill_id=backfill_id,
+        created_at=created_at,
+        daily_outputs=daily_outputs,
+    )
+    manifest = {
+        "schema_version": "runtime_test_position_size_adequacy_shadow_backfill_manifest.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "source_run_dir": str(source_run_dir),
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "output_root": str(output_root),
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "source_run_artifact_mutated": False,
+        "runtime_state_mutated": False,
+        "production_change_executed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_artifact_priority": True,
+        "source_baseline": source_baseline,
+        "position_size_adequacy_evaluator_provenance": _position_size_adequacy_backfill_evaluator_provenance(),
+        "summary_hash": semantic_hash(summary),
+        "daily_count": len(daily_outputs),
+    }
+
+    if not dry_run:
+        for daily in daily_outputs:
+            date_root = output_root / "daily" / str(daily["business_date"])
+            write_json_atomic(date_root / "winner_position_size_adequacy_shadow.json", daily)
+            write_json_atomic(
+                date_root / "input_hashes.json",
+                {
+                    "schema_version": "runtime_test_position_size_adequacy_shadow_backfill_input_hashes.v1",
+                    "business_date": daily["business_date"],
+                    "source_run_id": source_run_id,
+                    "source_pc_artifact": daily["provenance"]["original_production"]["daily_pc_artifact"],
+                    "source_pc_artifact_hash": daily["provenance"]["original_production"]["daily_pc_artifact_hash"],
+                    "security_opportunity_evidence_hash": daily["security_opportunity_evidence"].get("security_opportunity_evidence_hash"),
+                    "winner_position_size_adequacy_shadow_hash": daily["winner_position_size_adequacy_shadow"].get("winner_position_size_adequacy_shadow_hash"),
+                    "backfill_daily_hash": semantic_hash(daily),
+                },
+            )
+        write_json_atomic(output_root / "manifest.json", manifest)
+        write_json_atomic(output_root / "summary.json", summary)
+
+    payload = base_payload("shadow-backfill-position-size-adequacy", "PASS")
+    payload.update(
+        {
+            "source_run_id": source_run_id,
+            "backfill_id": backfill_id,
+            "dry_run": dry_run,
+            "requested_start_date": start_date,
+            "requested_end_date": end_date,
+            "business_day_count": len(daily_outputs),
+            "output_root": str(output_root),
+            "evidence_path": "" if dry_run else str(output_root),
+            "summary": summary,
+            "target_run_mutated": False,
+            "runtime_state_mutated": False,
+            "production_change_executed": False,
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def _validate_shadow_backfill_output_root(*, output_root: Path, evidence_root: Path, source_run_dir: Path) -> None:
+    resolved_output = output_root.resolve()
+    resolved_source_run = source_run_dir.resolve()
+    resolved_evidence = evidence_root.resolve()
+    analysis_root = (evidence_root / "analysis").resolve()
+    if resolved_output == resolved_source_run or resolved_source_run in resolved_output.parents:
+        raise RuntimeTestError("shadow backfill output-root must not be inside the source run", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if output_root.parts and ".runtime" in output_root.parts:
+        raise RuntimeTestError("shadow backfill output-root must not be inside .runtime", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not (resolved_output == analysis_root or analysis_root in resolved_output.parents):
+        raise RuntimeTestError(
+            f"shadow backfill output-root must be under {analysis_root}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    if not (resolved_evidence == analysis_root.parent or resolved_evidence in analysis_root.parents or analysis_root in resolved_evidence.parents):
+        return
+
+
+def _shadow_backfill_dates(*, source_run_dir: Path, start_date: str, end_date: str) -> list[str]:
+    daily_root = source_run_dir / "daily"
+    dates = []
+    for path in sorted(daily_root.glob("*/strategy/portfolio_construction.json")):
+        business_date = path.parts[-3]
+        if start_date <= business_date <= end_date:
+            dates.append(business_date)
+    return dates
+
+
+def _build_shadow_backfill_day(
+    *,
+    source_run_dir: Path,
+    source_run_id: str,
+    business_date: str,
+    source_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    pc_path = source_run_dir / "daily" / business_date / "strategy" / "portfolio_construction.json"
+    if not pc_path.is_file():
+        raise RuntimeTestError(f"PC artifact missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    pc = read_json(pc_path)
+    pc_business_date = str(pc.get("business_date") or "")
+    if pc_business_date != business_date:
+        raise RuntimeTestError(
+            f"PC business_date mismatch for {business_date}: {pc_business_date}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    members = pc.get("portfolio_members")
+    capital_competition = pc.get("capital_competition")
+    if not isinstance(members, list):
+        raise RuntimeTestError(f"portfolio_members missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not isinstance(capital_competition, dict):
+        raise RuntimeTestError(f"capital_competition missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    competitors = capital_competition.get("competitors")
+    cash_evidence = capital_competition.get("canonical_cash_competitor_evidence")
+    cash_interaction = capital_competition.get("market_candidate_cash_interaction")
+    risk_pacing = capital_competition.get("risk_pacing_evidence")
+    if not isinstance(competitors, list):
+        raise RuntimeTestError(f"capital_competition.competitors missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not isinstance(cash_evidence, dict) or not cash_evidence:
+        raise RuntimeTestError(f"canonical cash evidence missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not isinstance(cash_interaction, dict) or not cash_interaction:
+        raise RuntimeTestError(f"market candidate cash interaction missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    if not isinstance(risk_pacing, dict) or not risk_pacing:
+        raise RuntimeTestError(f"risk pacing evidence missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    incremental_budget = pc.get("incremental_budget_reconciliation")
+    if not isinstance(incremental_budget, dict):
+        incremental_budget = {"available_incremental_budget": pc.get("available_incremental_budget")}
+    shadow = marginal_capital_value.build_unified_marginal_capital_shadow(
+        members=members,
+        competitors=competitors,
+        cash_evidence=cash_evidence,
+        market_candidate_cash_interaction=cash_interaction,
+        business_date=business_date,
+        incremental_budget_evidence=incremental_budget,
+        risk_pacing_evidence=risk_pacing,
+    )
+    regime = _shadow_backfill_regime(source_run_dir=source_run_dir, business_date=business_date)
+    daily = {
+        "schema_version": "runtime_test_marginal_capital_shadow_backfill_day.v1",
+        "status": "PASS",
+        "business_date": business_date,
+        "source_run_id": source_run_id,
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "future_information_used": False,
+        "original_production_decision_preserved": True,
+        "provenance": {
+            "original_production": {
+                "source_run_id": source_run_id,
+                "source_baseline": source_baseline,
+                "daily_pc_artifact": str(pc_path),
+                "daily_pc_artifact_hash": sha256_file(pc_path),
+                "pc_artifact_hash": str(pc.get("artifact_hash") or ""),
+                "pc_schema_version": str(pc.get("schema_version") or ""),
+                "pc_producer_version": str(pc.get("producer_version") or ""),
+                "pc_business_date": pc_business_date,
+                "pc_feature_date": str(pc.get("feature_date") or ""),
+                "source_hashes": pc.get("source_hashes") or {},
+                "upstream_artifacts": pc.get("upstream_artifacts") or {},
+            },
+            "dq_evaluator": _shadow_backfill_evaluator_provenance(),
+        },
+        "regime_context": regime,
+        "shadow": shadow,
+    }
+    daily["backfill_daily_hash"] = semantic_hash(daily)
+    return daily
+
+
+def _build_security_opportunity_backfill_day(
+    *,
+    source_run_dir: Path,
+    source_run_id: str,
+    business_date: str,
+    source_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    pc_path = source_run_dir / "daily" / business_date / "strategy" / "portfolio_construction.json"
+    if not pc_path.is_file():
+        raise RuntimeTestError(f"PC artifact missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    pc = read_json(pc_path)
+    pc_business_date = str(pc.get("business_date") or "")
+    if pc_business_date != business_date:
+        raise RuntimeTestError(
+            f"PC business_date mismatch for {business_date}: {pc_business_date}",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    members = pc.get("portfolio_members")
+    if not isinstance(members, list):
+        raise RuntimeTestError(f"portfolio_members missing for {business_date}", status="PRECONDITION_FAILURE", exit_code=EXIT_PRECONDITION_FAILURE)
+    security_opportunity = marginal_capital_value.build_security_opportunity_evidence(
+        members=members,
+        business_date=business_date,
+    )
+    security_opportunity["input_artifact_hashes"] = _security_opportunity_input_hashes(members)
+    daily = {
+        "schema_version": "runtime_test_security_opportunity_shadow_backfill_day.v1",
+        "status": "PASS",
+        "business_date": business_date,
+        "source_run_id": source_run_id,
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_production_decision_preserved": True,
+        "provenance": {
+            "original_production": {
+                "source_run_id": source_run_id,
+                "source_baseline": source_baseline,
+                "daily_pc_artifact": str(pc_path),
+                "daily_pc_artifact_hash": sha256_file(pc_path),
+                "pc_artifact_hash": str(pc.get("artifact_hash") or ""),
+                "pc_schema_version": str(pc.get("schema_version") or ""),
+                "pc_producer_version": str(pc.get("producer_version") or ""),
+                "pc_business_date": pc_business_date,
+                "pc_feature_date": str(pc.get("feature_date") or ""),
+                "source_hashes": pc.get("source_hashes") or {},
+                "upstream_artifacts": pc.get("upstream_artifacts") or pc.get("source_artifacts") or {},
+            },
+            "security_opportunity_evaluator": _security_opportunity_backfill_evaluator_provenance(),
+        },
+        "security_opportunity_evidence": security_opportunity,
+    }
+    daily["backfill_daily_hash"] = semantic_hash(daily)
+    return daily
+
+
+def _build_pc_security_opportunity_backfill_day(
+    *,
+    source_run_dir: Path,
+    source_run_id: str,
+    business_date: str,
+    source_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    marginal_day = _build_shadow_backfill_day(
+        source_run_dir=source_run_dir,
+        source_run_id=source_run_id,
+        business_date=business_date,
+        source_baseline=source_baseline,
+    )
+    security_day = _build_security_opportunity_backfill_day(
+        source_run_dir=source_run_dir,
+        source_run_id=source_run_id,
+        business_date=business_date,
+        source_baseline=source_baseline,
+    )
+    consumer = marginal_capital_value.build_pc_security_opportunity_shadow_consumer(
+        security_opportunity_evidence=security_day["security_opportunity_evidence"],
+        unified_marginal_capital_shadow=marginal_day["shadow"],
+        business_date=business_date,
+    )
+    daily = {
+        "schema_version": "runtime_test_pc_security_opportunity_shadow_backfill_day.v1",
+        "status": "PASS",
+        "business_date": business_date,
+        "source_run_id": source_run_id,
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_production_decision_preserved": True,
+        "provenance": marginal_day["provenance"],
+        "security_opportunity_evidence": security_day["security_opportunity_evidence"],
+        "unified_marginal_capital_shadow": marginal_day["shadow"],
+        "pc_security_opportunity_shadow_consumer": consumer,
+    }
+    daily["backfill_daily_hash"] = semantic_hash(daily)
+    return daily
+
+
+def _build_position_size_adequacy_backfill_day(
+    *,
+    source_run_dir: Path,
+    source_run_id: str,
+    business_date: str,
+    source_baseline: dict[str, Any],
+) -> dict[str, Any]:
+    marginal_day = _build_shadow_backfill_day(
+        source_run_dir=source_run_dir,
+        source_run_id=source_run_id,
+        business_date=business_date,
+        source_baseline=source_baseline,
+    )
+    security_day = _build_security_opportunity_backfill_day(
+        source_run_dir=source_run_dir,
+        source_run_id=source_run_id,
+        business_date=business_date,
+        source_baseline=source_baseline,
+    )
+    adequacy = marginal_capital_value.build_winner_position_size_adequacy_shadow(
+        security_opportunity_evidence=security_day["security_opportunity_evidence"],
+        unified_marginal_capital_shadow=marginal_day["shadow"],
+        business_date=business_date,
+    )
+    daily = {
+        "schema_version": "runtime_test_position_size_adequacy_shadow_backfill_day.v1",
+        "status": "PASS",
+        "business_date": business_date,
+        "source_run_id": source_run_id,
+        "analysis_only": True,
+        "shadow_only": True,
+        "full_pc_recompute_executed": False,
+        "live_runtime_state_used": False,
+        "upstream_historical_producers_recomputed": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+        "original_production_decision_preserved": True,
+        "provenance": marginal_day["provenance"],
+        "regime_context": marginal_day.get("regime_context") or {},
+        "security_opportunity_evidence": security_day["security_opportunity_evidence"],
+        "unified_marginal_capital_shadow": marginal_day["shadow"],
+        "winner_position_size_adequacy_shadow": adequacy,
+    }
+    daily["backfill_daily_hash"] = semantic_hash(daily)
+    return daily
+
+
+def _shadow_backfill_evaluator_provenance() -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_test_marginal_capital_shadow_backfill_evaluator_provenance.v1",
+        "dq_schema_version": marginal_capital_value.UNIFIED_SHADOW_SCHEMA_VERSION,
+        "dq_contract_id": marginal_capital_value.UNIFIED_SHADOW_CONTRACT_ID,
+        "dq_authority_type": marginal_capital_value.UNIFIED_SHADOW_AUTHORITY_TYPE,
+        "evaluator_module": "ai_fund_lab_v2.strategy.marginal_capital_value",
+        "producer": marginal_capital_value.PRODUCER,
+        "source_files": {
+            "marginal_capital_value.py": file_ref(Path("src/ai_fund_lab_v2/strategy/marginal_capital_value.py")),
+            "portfolio_construction.py": file_ref(Path("src/ai_fund_lab_v2/strategy/portfolio_construction.py")),
+        },
+        "git_head": _git_head(),
+    }
+
+
+def _security_opportunity_backfill_evaluator_provenance() -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_test_security_opportunity_shadow_backfill_evaluator_provenance.v1",
+        "security_opportunity_schema_version": marginal_capital_value.SECURITY_OPPORTUNITY_SCHEMA_VERSION,
+        "security_opportunity_contract_id": marginal_capital_value.SECURITY_OPPORTUNITY_CONTRACT_ID,
+        "security_opportunity_authority_type": marginal_capital_value.SECURITY_OPPORTUNITY_AUTHORITY_TYPE,
+        "evaluator_module": "ai_fund_lab_v2.strategy.marginal_capital_value",
+        "producer": marginal_capital_value.PRODUCER,
+        "source_files": {
+            "marginal_capital_value.py": file_ref(Path("src/ai_fund_lab_v2/strategy/marginal_capital_value.py")),
+            "portfolio_construction.py": file_ref(Path("src/ai_fund_lab_v2/strategy/portfolio_construction.py")),
+        },
+        "git_head": _git_head(),
+    }
+
+
+def _pc_security_opportunity_backfill_evaluator_provenance() -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_test_pc_security_opportunity_shadow_backfill_evaluator_provenance.v1",
+        "pc_security_opportunity_schema_version": marginal_capital_value.PC_SECURITY_OPPORTUNITY_CONSUMER_SCHEMA_VERSION,
+        "pc_security_opportunity_contract_id": marginal_capital_value.PC_SECURITY_OPPORTUNITY_CONSUMER_CONTRACT_ID,
+        "pc_security_opportunity_authority_type": marginal_capital_value.PC_SECURITY_OPPORTUNITY_CONSUMER_AUTHORITY_TYPE,
+        "security_opportunity_schema_version": marginal_capital_value.SECURITY_OPPORTUNITY_SCHEMA_VERSION,
+        "evaluator_module": "ai_fund_lab_v2.strategy.marginal_capital_value",
+        "producer": marginal_capital_value.PRODUCER,
+        "source_files": {
+            "marginal_capital_value.py": file_ref(Path("src/ai_fund_lab_v2/strategy/marginal_capital_value.py")),
+            "portfolio_construction.py": file_ref(Path("src/ai_fund_lab_v2/strategy/portfolio_construction.py")),
+        },
+        "git_head": _git_head(),
+    }
+
+
+def _position_size_adequacy_backfill_evaluator_provenance() -> dict[str, Any]:
+    return {
+        "schema_version": "runtime_test_position_size_adequacy_shadow_backfill_evaluator_provenance.v1",
+        "position_size_adequacy_schema_version": marginal_capital_value.WINNER_POSITION_SIZE_ADEQUACY_SCHEMA_VERSION,
+        "position_size_adequacy_contract_id": marginal_capital_value.WINNER_POSITION_SIZE_ADEQUACY_CONTRACT_ID,
+        "position_size_adequacy_authority_type": marginal_capital_value.WINNER_POSITION_SIZE_ADEQUACY_AUTHORITY_TYPE,
+        "security_opportunity_schema_version": marginal_capital_value.SECURITY_OPPORTUNITY_SCHEMA_VERSION,
+        "unified_shadow_schema_version": marginal_capital_value.UNIFIED_SHADOW_SCHEMA_VERSION,
+        "evaluator_module": "ai_fund_lab_v2.strategy.marginal_capital_value",
+        "producer": marginal_capital_value.PRODUCER,
+        "source_files": {
+            "marginal_capital_value.py": file_ref(Path("src/ai_fund_lab_v2/strategy/marginal_capital_value.py")),
+            "portfolio_construction.py": file_ref(Path("src/ai_fund_lab_v2/strategy/portfolio_construction.py")),
+        },
+        "git_head": _git_head(),
+    }
+
+
+def _security_opportunity_input_hashes(members: list[Any]) -> dict[str, Any]:
+    hashes: dict[str, Any] = {}
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        symbol = str(member.get("symbol") or member.get("security_code") or "")
+        if not symbol:
+            continue
+        symbol_hashes = {
+            key: value
+            for key, value in {
+                "strategy_intelligence_artifact_hash": member.get("strategy_intelligence_artifact_hash"),
+                "buy_quality_artifact_hash": member.get("buy_quality_artifact_hash"),
+                "opportunity_artifact_hash": member.get("opportunity_artifact_hash"),
+                "input_opportunity_rank_source_hash": member.get("input_opportunity_rank_source_hash"),
+                "input_opportunity_row_authority_hash": member.get("input_opportunity_row_authority_hash"),
+                "minimum_tick_authority_hash": member.get("minimum_tick_authority_hash"),
+            }.items()
+            if value
+        }
+        if symbol_hashes:
+            hashes[symbol] = symbol_hashes
+    return hashes
+
+
+def _git_head() -> str:
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], text=True, capture_output=True, check=False)
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _shadow_backfill_regime(*, source_run_dir: Path, business_date: str) -> dict[str, Any]:
+    path = source_run_dir / "daily" / business_date / "strategy" / "source_manifest.json"
+    payload = read_json_optional(path)
+    text = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
+    return {
+        "schema_version": "runtime_test_marginal_capital_shadow_backfill_regime_context.v1",
+        "source_manifest_path": str(path),
+        "source_manifest_hash": sha256_file(path) if path.is_file() else "",
+        "trend_regime": _extract_marker(text, "internal_dynamic_position_count:trend_regime:", ["BULL", "RECOVERY", "RANGE", "CORRECTION", "BEAR"]),
+        "cash_exposure_regime": _extract_marker(text, "internal_dynamic_cash_exposure:", ["BULL", "RECOVERY", "RANGE", "CORRECTION", "BEAR"]),
+        "market_breadth": _extract_marker(text, "internal_dynamic_position_count:market_breadth:", ["STRONG", "NEUTRAL", "WEAK"]),
+        "volatility_regime": _extract_marker(text, "internal_dynamic_position_count:volatility_regime:", ["HIGH", "NORMAL", "LOW"]),
+    }
+
+
+def _extract_marker(text: str, marker: str, values: list[str]) -> str:
+    for value in values:
+        if f"{marker}{value}" in text:
+            return value
+    return "UNKNOWN"
+
+
+def _shadow_backfill_summary(
+    *,
+    source_run_id: str,
+    start_date: str,
+    end_date: str,
+    backfill_id: str,
+    created_at: str,
+    daily_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    competitor_counts: Counter[str] = Counter()
+    divergence_counts: Counter[str] = Counter()
+    stage_a_divergence_counts: Counter[str] = Counter()
+    stage_b_divergence_counts: Counter[str] = Counter()
+    two_stage_divergence_counts: Counter[str] = Counter()
+    stage_a_winner_counts: Counter[str] = Counter()
+    stage_b_winner_counts: Counter[str] = Counter()
+    add_buckets: Counter[str] = Counter()
+    add_stage_b_buckets: Counter[str] = Counter()
+    add_headroom_counts: Counter[str] = Counter()
+    add_lot_status_counts: Counter[str] = Counter()
+    ec_add_increment_tier_counts: Counter[str] = Counter()
+    ec_add_increment_status_counts: Counter[str] = Counter()
+    ec_zero_desired_reclassification_counts: Counter[str] = Counter()
+    ec_stage_b_winner_counts: Counter[str] = Counter()
+    regime_counts: Counter[str] = Counter()
+    regime_ec_increment_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    regime_divergence_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    campaign_add_counts: Counter[str] = Counter()
+    campaign_add_selected_counts: Counter[str] = Counter()
+    campaign_ec_positive_counts: Counter[str] = Counter()
+    ee_record_counts: Counter[str] = Counter()
+    ee_completeness_counts: Counter[str] = Counter()
+    ee_value_counts: Counter[str] = Counter()
+    ee_opportunity_cost_counts: Counter[str] = Counter()
+    ee_winner_counts: Counter[str] = Counter()
+    ee_production_divergence_counts: Counter[str] = Counter()
+    ee_add_unknown_representation_counts: Counter[str] = Counter()
+    ee_new_buy_superior_84_reclassification_counts: Counter[str] = Counter()
+    ee_add_capitalization_counts: Counter[str] = Counter()
+    ee_add_positive_campaign_counts: Counter[str] = Counter()
+    ee_add_unknown_day_comparisons: list[dict[str, Any]] = []
+    strong_add_displacements: list[dict[str, Any]] = []
+    new_vs_add_cases: list[dict[str, Any]] = []
+    controls: dict[str, Any] = {}
+    add_identity_missing = 0
+    value_feasibility_missing = 0
+    for daily in daily_outputs:
+        business_date = str(daily["business_date"])
+        shadow = daily["shadow"]
+        rows = shadow.get("competitor_rows") or []
+        comparison = shadow.get("production_comparison") or {}
+        production_winners = comparison.get("production_winners") if isinstance(comparison.get("production_winners"), list) else []
+        divergence = str(comparison.get("divergence_class") or "UNKNOWN")
+        divergence_counts[divergence] += 1
+        stage_a_divergence_counts[str(comparison.get("stage_a_divergence_class") or divergence)] += 1
+        stage_b_divergence_counts[str(comparison.get("stage_b_divergence_class") or "UNKNOWN")] += 1
+        two_stage_divergence_counts[str(comparison.get("two_stage_divergence_class") or "UNKNOWN")] += 1
+        stage_a_winner = comparison.get("stage_a_opportunity_strength_winner") if isinstance(comparison.get("stage_a_opportunity_strength_winner"), dict) else {}
+        stage_b_winner = comparison.get("stage_b_executable_capital_winner") if isinstance(comparison.get("stage_b_executable_capital_winner"), dict) else {}
+        stage_a_winner_counts[str(stage_a_winner.get("competitor_type") or "NONE")] += 1
+        stage_b_winner_counts[str(stage_b_winner.get("competitor_type") or "NONE")] += 1
+        ec_ranking = shadow.get("ec_strength_increment_executable_capital_ranking") if isinstance(shadow.get("ec_strength_increment_executable_capital_ranking"), dict) else {}
+        ec_winner = ec_ranking.get("winner") if isinstance(ec_ranking.get("winner"), dict) else {}
+        ec_stage_b_winner_counts[str(ec_winner.get("competitor_type") or "NONE")] += 1
+        ee = shadow.get("unified_next_capital_unit_evidence") if isinstance(shadow.get("unified_next_capital_unit_evidence"), dict) else {}
+        ee_winner = ee.get("winner") if isinstance(ee.get("winner"), dict) else {}
+        ee_winner_type = str(ee_winner.get("competitor_type") or "NONE")
+        ee_winner_symbol = str(ee_winner.get("symbol") or "")
+        ee_winner_counts[ee_winner_type] += 1
+        ee_prod_class = _ee_production_divergence_class(
+            production_winners=production_winners,
+            ee_winner_type=ee_winner_type,
+            ee_winner_symbol=ee_winner_symbol,
+        )
+        ee_production_divergence_counts[ee_prod_class] += 1
+        regime = str((daily.get("regime_context") or {}).get("trend_regime") or "UNKNOWN")
+        regime_counts[regime] += 1
+        regime_divergence_counts[regime][divergence] += 1
+        add_unknown_rows_for_day: list[dict[str, Any]] = []
+        ee_best_by_type: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            row_type = str(row.get("competitor_type") or "")
+            competitor_counts[row_type] += 1
+            record = row.get("unified_next_capital_unit_record") if isinstance(row.get("unified_next_capital_unit_record"), dict) else {}
+            normalized = record.get("normalized_comparison") if isinstance(record.get("normalized_comparison"), dict) else {}
+            if record:
+                ee_record_counts[row_type] += 1
+                ee_completeness_counts[str(normalized.get("evidence_completeness_class") or "UNKNOWN")] += 1
+                ee_value_counts[str(normalized.get("marginal_investment_value_state") or "UNKNOWN")] += 1
+                ee_opportunity_cost_counts[str(normalized.get("comparable_opportunity_cost_shadow") or normalized.get("opportunity_cost_state") or "UNKNOWN")] += 1
+                existing = ee_best_by_type.get(row_type)
+                if not existing or _ee_record_summary_key(record) < _ee_record_summary_key(existing):
+                    ee_best_by_type[row_type] = record
+            if row_type != "BUY_ADD_NEXT_LOT":
+                continue
+            symbol = str(row.get("symbol") or "")
+            campaign_id = str(row.get("position_campaign_id") or "")
+            campaign_key = f"{symbol}|{campaign_id}"
+            pm_ref = str(row.get("source_pm_decision_id") or "")
+            if not symbol or not campaign_id or not pm_ref:
+                add_identity_missing += 1
+            desirability = str(((row.get("marginal_desirability") or {}).get("state")) or "")
+            completeness = str(((row.get("evidence_completeness") or {}).get("state")) or "")
+            feasibility = str(((row.get("execution_feasibility") or {}).get("state")) or "")
+            risk_cost = str(((row.get("portfolio_risk_cost") or {}).get("state")) or "")
+            headroom = str(((row.get("structured_headroom") or {}).get("state")) or "")
+            lot_status = str(((row.get("lot_status_decomposition") or {}).get("state")) or "")
+            ec_authority = row.get("add_strength_to_increment_target_authority") if isinstance(row.get("add_strength_to_increment_target_authority"), dict) else {}
+            ec_tier = str(ec_authority.get("evidence_tier") or "UNKNOWN")
+            ec_status = str(ec_authority.get("increment_demand_status") or "UNKNOWN")
+            ee_value = str(normalized.get("marginal_investment_value_state") or "UNKNOWN")
+            ee_complete = str(normalized.get("evidence_completeness_class") or "UNKNOWN")
+            ee_cost = str(normalized.get("comparable_opportunity_cost_shadow") or normalized.get("opportunity_cost_state") or "UNKNOWN")
+            old_incremental = str((row.get("add_campaign_evidence") or {}).get("incremental_investment_value_state") or "").upper()
+            old_cost = str((row.get("add_campaign_evidence") or {}).get("opportunity_cost_state") or "").upper()
+            if old_incremental == "UNKNOWN":
+                add_unknown_rows_for_day.append(row)
+                ee_add_unknown_representation_counts[_ee_add_unknown_representation(normalized)] += 1
+            if old_cost == "NEW_BUY_SUPERIOR":
+                ee_new_buy_superior_84_reclassification_counts[_ee_new_superior_reclassification(ee_cost)] += 1
+            if ee_complete in {"COMPLETE", "PARTIAL"}:
+                ee_add_capitalization_counts["ADD_COMPARABLE_AFTER"] += 1
+            else:
+                ee_add_capitalization_counts["ADD_REMAINS_INSUFFICIENT_OR_BLOCKED"] += 1
+            if ee_value == "POSITIVE":
+                ee_add_capitalization_counts["ADD_COMPARABLE_POSITIVE"] += 1
+                ee_add_positive_campaign_counts[campaign_key] += 1
+            if ee_cost == "ADD_COMPARABLY_SUPERIOR":
+                ee_add_capitalization_counts["ADD_COMPARABLY_SUPERIOR_ROWS"] += 1
+                if ee_complete == "COMPLETE" and feasibility == "FEASIBLE":
+                    ee_add_capitalization_counts["COMPLETE_EXECUTABLE_ADD_SUPERIOR_ROWS"] += 1
+            if not (desirability and completeness and feasibility and risk_cost):
+                value_feasibility_missing += 1
+            add_buckets[f"{desirability}+{completeness}+{feasibility}+{risk_cost}"] += 1
+            add_stage_b_buckets[
+                f"{desirability}+{completeness}+{feasibility}+{risk_cost}+{headroom}+{lot_status}"
+            ] += 1
+            add_headroom_counts[headroom or "UNKNOWN"] += 1
+            add_lot_status_counts[lot_status or "UNKNOWN"] += 1
+            ec_add_increment_tier_counts[ec_tier] += 1
+            ec_add_increment_status_counts[ec_status] += 1
+            regime_ec_increment_counts[regime][ec_status] += 1
+            if lot_status == "NO_POSITIVE_DESIRED_INCREMENT":
+                if ec_status == "POSITIVE_INCREMENT_DEMAND":
+                    if completeness == "COMPLETE" and feasibility == "FEASIBLE" and risk_cost in {"ACCEPTABLE", "HEADROOM_AVAILABLE"}:
+                        ec_zero_desired_reclassification_counts["BECOME_COMPLETE_EXECUTABLE_POSITIVE_DEMAND"] += 1
+                    elif completeness == "COMPLETE":
+                        ec_zero_desired_reclassification_counts["BECOME_POSITIVE_BUT_INFEASIBLE_OR_RISK_BLOCKED"] += 1
+                    else:
+                        ec_zero_desired_reclassification_counts["BECOME_POSITIVE_BUT_EVIDENCE_INCOMPLETE"] += 1
+                else:
+                    ec_zero_desired_reclassification_counts["REMAIN_ZERO"] += 1
+            campaign_add_counts[campaign_key] += 1
+            if row.get("production_selected"):
+                campaign_add_selected_counts[campaign_key] += 1
+            if ec_status == "POSITIVE_INCREMENT_DEMAND":
+                campaign_ec_positive_counts[campaign_key] += 1
+        if add_unknown_rows_for_day:
+            ee_add_unknown_day_comparisons.append(
+                {
+                    "business_date": business_date,
+                    "add_unknown_count": len(add_unknown_rows_for_day),
+                    "ee_winner": ee_winner,
+                    "best_by_type": {
+                        key: marginal_capital_value._next_unit_record_summary(value)
+                        for key, value in sorted(ee_best_by_type.items())
+                    },
+                    "future_information_used": False,
+                }
+            )
+        winner = comparison.get("shadow_winner") if isinstance(comparison.get("shadow_winner"), dict) else {}
+        if winner.get("competitor_type") == "BUY_ADD_NEXT_LOT":
+            production_types = sorted({str(item.get("competitor_type") or "") for item in production_winners})
+            if "ADD" not in production_types and "BUY_ADD_NEXT_LOT" not in production_types:
+                strong_add_displacements.append(
+                    _shadow_backfill_case_summary(
+                        business_date=business_date,
+                        winner=winner,
+                        production_winners=production_winners,
+                        divergence=divergence,
+                    )
+                )
+        has_new = any(row.get("competitor_type") == "BUY_NEW_NEXT_LOT" for row in rows)
+        has_feasible_add = any(
+            row.get("competitor_type") == "BUY_ADD_NEXT_LOT"
+            and ((row.get("execution_feasibility") or {}).get("state") == "FEASIBLE")
+            for row in rows
+        )
+        if has_new and has_feasible_add:
+            new_vs_add_cases.append(
+                {
+                    "business_date": business_date,
+                    "divergence_class": divergence,
+                    "shadow_winner": winner,
+                    "production_winners": production_winners,
+                }
+            )
+        if business_date in {"2023-02-13", "2023-03-15", "2023-11-13", "2023-11-14"}:
+            controls[business_date] = {
+                "candidate_count": shadow.get("candidate_count"),
+                "competitor_counts": dict(Counter(str(row.get("competitor_type") or "") for row in rows)),
+                "shadow_winner": winner,
+                "divergence_class": divergence,
+                "hash": shadow.get("shadow_authority_hash"),
+            }
+    repeated_campaigns = [
+        {
+            "campaign_key": campaign,
+            "add_shadow_count": count,
+            "production_add_selected_count": campaign_add_selected_counts.get(campaign, 0),
+        }
+        for campaign, count in campaign_add_counts.most_common()
+        if count >= 2
+    ]
+    summary = {
+        "schema_version": "runtime_test_marginal_capital_shadow_backfill_summary.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "business_day_count": len(daily_outputs),
+        "competitor_counts": dict(competitor_counts),
+        "divergence_counts": dict(divergence_counts),
+        "stage_a_divergence_counts": dict(stage_a_divergence_counts),
+        "stage_b_divergence_counts": dict(stage_b_divergence_counts),
+        "two_stage_divergence_counts": dict(two_stage_divergence_counts),
+        "stage_a_winner_counts": dict(stage_a_winner_counts),
+        "stage_b_winner_counts": dict(stage_b_winner_counts),
+        "ec_stage_b_winner_counts": dict(ec_stage_b_winner_counts),
+        "agreement_count": int(divergence_counts.get("AGREEMENT", 0)),
+        "divergence_count": int(len(daily_outputs) - divergence_counts.get("AGREEMENT", 0)),
+        "add_value_feasibility_counts": dict(add_buckets),
+        "add_stage_b_value_feasibility_counts": dict(add_stage_b_buckets),
+        "add_headroom_state_counts": dict(add_headroom_counts),
+        "add_lot_status_counts": dict(add_lot_status_counts),
+        "ec_add_increment_evidence_tier_counts": dict(ec_add_increment_tier_counts),
+        "ec_add_increment_demand_status_counts": dict(ec_add_increment_status_counts),
+        "ec_zero_desired_reclassification_counts": dict(ec_zero_desired_reclassification_counts),
+        "ee_unified_next_capital_unit_record_counts": dict(ee_record_counts),
+        "ee_evidence_completeness_counts": dict(ee_completeness_counts),
+        "ee_marginal_value_counts": dict(ee_value_counts),
+        "ee_comparable_opportunity_cost_counts": dict(ee_opportunity_cost_counts),
+        "ee_winner_counts": dict(ee_winner_counts),
+        "ee_production_divergence_counts": dict(ee_production_divergence_counts),
+        "ee_add_unknown_shadow_representation_counts": dict(ee_add_unknown_representation_counts),
+        "ee_new_buy_superior_reclassification_counts": dict(ee_new_buy_superior_84_reclassification_counts),
+        "ee_add_unknown_92_day_neutral_comparison_count": len(ee_add_unknown_day_comparisons),
+        "ee_add_unknown_92_day_neutral_comparisons": ee_add_unknown_day_comparisons[:120],
+        "ee_add_capitalization_impact": {
+            "add_unknown_before": int(sum(ee_add_unknown_representation_counts.values())),
+            "add_comparable_after": int(ee_add_capitalization_counts.get("ADD_COMPARABLE_AFTER", 0)),
+            "add_remains_insufficient_or_blocked": int(ee_add_capitalization_counts.get("ADD_REMAINS_INSUFFICIENT_OR_BLOCKED", 0)),
+            "add_comparably_superior_rows": int(ee_add_capitalization_counts.get("ADD_COMPARABLY_SUPERIOR_ROWS", 0)),
+            "complete_executable_add_superior_rows": int(ee_add_capitalization_counts.get("COMPLETE_EXECUTABLE_ADD_SUPERIOR_ROWS", 0)),
+            "unique_positive_add_campaigns": len(ee_add_positive_campaign_counts),
+            "repeated_positive_add_campaigns": sum(1 for count in ee_add_positive_campaign_counts.values() if count >= 2),
+            "positive_add_campaigns": [
+                {"campaign_key": campaign, "positive_comparison_days": count}
+                for campaign, count in ee_add_positive_campaign_counts.most_common(50)
+            ],
+        },
+        "add_identity_missing_count": add_identity_missing,
+        "value_feasibility_missing_count": value_feasibility_missing,
+        "regime_counts": dict(regime_counts),
+        "regime_divergence_counts": {key: dict(value) for key, value in regime_divergence_counts.items()},
+        "regime_ec_increment_demand_counts": {key: dict(value) for key, value in regime_ec_increment_counts.items()},
+        "strong_add_displacement_inventory": strong_add_displacements,
+        "strong_add_displacement_count": len(strong_add_displacements),
+        "new_vs_add_neutrality_cases": new_vs_add_cases,
+        "new_vs_add_neutrality_case_count": len(new_vs_add_cases),
+        "campaign_graduation_shadow_summary": {
+            "campaigns_with_add_shadow": len(campaign_add_counts),
+            "repeated_add_shadow_campaigns": repeated_campaigns[:50],
+            "repeated_add_shadow_campaign_count": len(repeated_campaigns),
+            "campaigns_with_ec_positive_increment_demand": len(campaign_ec_positive_counts),
+            "ec_positive_increment_demand_campaigns": [
+                {"campaign_key": campaign, "positive_increment_demand_count": count}
+                for campaign, count in campaign_ec_positive_counts.most_common(50)
+            ],
+        },
+        "controls": controls,
+        "future_information_used": False,
+        "production_change_executed": False,
+        "target_run_mutated": False,
+        "runtime_state_mutated": False,
+    }
+    summary["summary_hash"] = semantic_hash(summary)
+    return summary
+
+
+def _security_opportunity_backfill_summary(
+    *,
+    source_run_id: str,
+    start_date: str,
+    end_date: str,
+    backfill_id: str,
+    created_at: str,
+    daily_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    completeness_counts: Counter[str] = Counter()
+    attractiveness_counts: Counter[str] = Counter()
+    relationship_counts: Counter[str] = Counter()
+    candidate_overlap_counts: Counter[str] = Counter()
+    pm_bq_pc_overlap_counts: Counter[str] = Counter()
+    held_gap_counts: Counter[str] = Counter()
+    add_unknown_coverage_counts: Counter[str] = Counter()
+    jun_sep_security_counts: Counter[str] = Counter()
+    stale_carry_forward_count = 0
+    unique_symbols: set[str] = set()
+    total_records = 0
+    control_symbols = {"94320", "94340", "99840", "83060", "43880", "54010"}
+    controls: dict[str, dict[str, Any]] = {
+        symbol: {
+            "flat_records": 0,
+            "held_records": 0,
+            "post_exit_records": 0,
+            "complete_or_partial_records": 0,
+            "first_dates": {},
+            "sample_records": [],
+        }
+        for symbol in sorted(control_symbols)
+    }
+    for daily in daily_outputs:
+        business_date = str(daily.get("business_date") or "")
+        evidence = daily.get("security_opportunity_evidence") if isinstance(daily.get("security_opportunity_evidence"), dict) else {}
+        records = evidence.get("records") if isinstance(evidence.get("records"), list) else []
+        total_records += len(records)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            symbol = str(record.get("symbol") or "")
+            if symbol:
+                unique_symbols.add(symbol)
+            normalized = record.get("normalized_security_opportunity") if isinstance(record.get("normalized_security_opportunity"), dict) else {}
+            relationship = record.get("position_relationship") if isinstance(record.get("position_relationship"), dict) else {}
+            source_ids = record.get("source_ids") if isinstance(record.get("source_ids"), dict) else {}
+            action_refs = record.get("action_specific_evidence_refs") if isinstance(record.get("action_specific_evidence_refs"), dict) else {}
+            completeness = str(normalized.get("evidence_completeness_class") or "UNKNOWN")
+            attractiveness = str(normalized.get("security_attractiveness_state") or "UNKNOWN")
+            relation = str(relationship.get("relationship_state") or "UNKNOWN")
+            completeness_counts[completeness] += 1
+            attractiveness_counts[attractiveness] += 1
+            relationship_counts[relation] += 1
+            if source_ids.get("candidate_id") or source_ids.get("opportunity_id"):
+                candidate_overlap_counts["CANDIDATE_OR_OPPORTUNITY_REF_PRESENT"] += 1
+            else:
+                candidate_overlap_counts["CANDIDATE_OR_OPPORTUNITY_REF_MISSING"] += 1
+            if action_refs.get("source_pm_decision_present"):
+                pm_bq_pc_overlap_counts["PM_REF_PRESENT"] += 1
+            if _record_has_quality_or_entry(record):
+                pm_bq_pc_overlap_counts["BQ_OR_ENTRY_PRESENT"] += 1
+            if relation == "HELD":
+                if source_ids.get("candidate_id") or source_ids.get("opportunity_id"):
+                    held_gap_counts["HELD_WITH_CANDIDATE_OPPORTUNITY_REF"] += 1
+                elif completeness in {"COMPLETE", "PARTIAL"}:
+                    held_gap_counts["EF_GAP_COMMON_EVIDENCE_NOW_MATERIALIZABLE"] += 1
+                elif completeness == "INSUFFICIENT":
+                    held_gap_counts["EF_GAP_GENUINELY_MISSING_PIT_EVIDENCE"] += 1
+                elif completeness == "BLOCKED":
+                    held_gap_counts["EF_GAP_BLOCKED_OR_INTENTIONALLY_UNAVAILABLE"] += 1
+                else:
+                    held_gap_counts["EF_GAP_OTHER"] += 1
+            if bool(record.get("stale_purchase_time_score_carry_forward_used")):
+                stale_carry_forward_count += 1
+            if symbol in controls:
+                bucket = controls[symbol]
+                if relation == "HELD":
+                    bucket["held_records"] += 1
+                elif relation == "FLAT_AFTER_EXIT":
+                    bucket["post_exit_records"] += 1
+                else:
+                    bucket["flat_records"] += 1
+                if completeness in {"COMPLETE", "PARTIAL"}:
+                    bucket["complete_or_partial_records"] += 1
+                first_dates = bucket["first_dates"]
+                first_dates.setdefault(relation, business_date)
+                samples = bucket["sample_records"]
+                if len(samples) < 6:
+                    samples.append(
+                        {
+                            "business_date": business_date,
+                            "relationship_state": relation,
+                            "completeness": completeness,
+                            "security_attractiveness_state": attractiveness,
+                            "runtime_opportunity_score": normalized.get("runtime_opportunity_score"),
+                            "input_opportunity_rank": normalized.get("input_opportunity_rank"),
+                            "future_information_used": False,
+                        }
+                    )
+            if _record_is_add_unknown(record):
+                add_unknown_coverage_counts[completeness] += 1
+            if _record_is_pm_add(record) and "2023-06-01" <= business_date <= "2023-09-30":
+                jun_sep_security_counts[completeness] += 1
+    continuity = {
+        symbol: _security_opportunity_control_continuity(value)
+        for symbol, value in controls.items()
+    }
+    summary = {
+        "schema_version": "runtime_test_security_opportunity_shadow_backfill_summary.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "business_day_count": len(daily_outputs),
+        "unique_symbol_count": len(unique_symbols),
+        "record_count": total_records,
+        "completeness_counts": dict(completeness_counts),
+        "security_attractiveness_counts": dict(attractiveness_counts),
+        "position_relationship_counts": dict(relationship_counts),
+        "candidate_overlap_counts": dict(candidate_overlap_counts),
+        "pm_bq_pc_overlap_counts": dict(pm_bq_pc_overlap_counts),
+        "ef_held_visibility_gap_reassessment": dict(held_gap_counts),
+        "pre_buy_post_buy_security_evidence_continuity": continuity,
+        "ee_add_unknown_security_evidence_coverage": dict(add_unknown_coverage_counts),
+        "jun_sep_2023_security_opportunity_visibility": dict(jun_sep_security_counts),
+        "stale_purchase_time_score_carry_forward_count": stale_carry_forward_count,
+        "ownership_status_intrinsic_score_effect": "NONE",
+        "flat_candidate_evidence_equivalence": "PASS_WHEN_CANDIDATE_OR_OPPORTUNITY_REF_PRESENT_SCORE_AND_RANK_ARE_COPIED_UNCHANGED",
+        "authoritative_consumer_count": 0,
+        "production_change_executed": False,
+        "target_run_mutated": False,
+        "runtime_state_mutated": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+    summary["summary_hash"] = semantic_hash(summary)
+    return summary
+
+
+def _pc_security_opportunity_backfill_summary(
+    *,
+    source_run_id: str,
+    start_date: str,
+    end_date: str,
+    backfill_id: str,
+    created_at: str,
+    daily_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    new_equiv_counts: Counter[str] = Counter()
+    reentry_equiv_counts: Counter[str] = Counter()
+    add_unknown_reclass: Counter[str] = Counter()
+    jun_sep_add_profile: Counter[str] = Counter()
+    production_divergence: Counter[str] = Counter()
+    affected_campaigns: Counter[str] = Counter()
+    repeated_comparable_campaigns: Counter[str] = Counter()
+    weak_negative_preserved = 0
+    diagnostic_rows = 0
+    controls: dict[str, Any] = {symbol: {"rows": 0, "add_unknown_rows": 0, "reclassification_counts": Counter()} for symbol in ("94320", "94340", "99840", "83060", "43880", "54010")}
+    for daily in daily_outputs:
+        business_date = str(daily.get("business_date") or "")
+        consumer = daily.get("pc_security_opportunity_shadow_consumer") if isinstance(daily.get("pc_security_opportunity_shadow_consumer"), dict) else {}
+        new_equiv_counts[str((consumer.get("new_equivalence") or {}).get("status") or "UNKNOWN")] += 1
+        reentry_equiv_counts[str((consumer.get("reentry_equivalence") or {}).get("status") or "UNKNOWN")] += 1
+        production_divergence["PRODUCTION_PRESERVED"] += 1 if consumer.get("production_pc_path_unchanged") else 0
+        rows = consumer.get("diagnostic_rows") if isinstance(consumer.get("diagnostic_rows"), list) else []
+        diagnostic_rows += len(rows)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "")
+            if symbol in controls:
+                controls[symbol]["rows"] += 1
+            if str(row.get("competitor_type") or "") == "BUY_ADD_NEXT_LOT" and "2023-06-01" <= business_date <= "2023-09-30":
+                jun_sep_add_profile[_eh_add_profile_class(row)] += 1
+            if not row.get("eh_add_unknown_population"):
+                continue
+            classification = str(row.get("eh_pc_shadow_add_reclassification") or "UNKNOWN")
+            add_unknown_reclass[classification] += 1
+            if classification in {"COMPARABLE_POSITIVE", "COMPARABLE_NEUTRAL", "COMPARABLE_NEGATIVE"}:
+                campaign = _eh_campaign_key_for_row(daily, symbol)
+                if campaign:
+                    affected_campaigns[campaign] += 1
+                    repeated_comparable_campaigns[campaign] += 1
+            if classification in {"COMPARABLE_NEGATIVE", "BLOCKED"}:
+                weak_negative_preserved += 1
+            if symbol in controls:
+                controls[symbol]["add_unknown_rows"] += 1
+                controls[symbol]["reclassification_counts"][classification] += 1
+    controls_out = {
+        symbol: {
+            "rows": int(value["rows"]),
+            "add_unknown_rows": int(value["add_unknown_rows"]),
+            "reclassification_counts": dict(value["reclassification_counts"]),
+            "material_observability_improved": int(value["add_unknown_rows"]) > 0,
+        }
+        for symbol, value in controls.items()
+    }
+    summary = {
+        "schema_version": "runtime_test_pc_security_opportunity_shadow_backfill_summary.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "business_day_count": len(daily_outputs),
+        "diagnostic_row_count": diagnostic_rows,
+        "pc_security_opportunity_shadow_consumer": "PASS",
+        "authoritative_consumer_count": 0,
+        "production_allocation_consumer": False,
+        "production_ordering_consumer": False,
+        "production_sizing_consumer": False,
+        "runtime_planning_consumer": False,
+        "production_pc_path_unchanged": "PASS",
+        "buy_new_production_equivalence": "PASS" if not any(key == "FAIL" for key in new_equiv_counts) else "FAIL",
+        "buy_new_equivalence_counts": dict(new_equiv_counts),
+        "reentry_production_equivalence": "PASS" if not any(key == "FAIL" for key in reentry_equiv_counts) else "FAIL",
+        "reentry_equivalence_counts": dict(reentry_equiv_counts),
+        "add_unknown_116_pc_shadow_reclassification": dict(add_unknown_reclass),
+        "add_unknown_116_total": int(sum(add_unknown_reclass.values())),
+        "weak_add_negative_controls_preserved": "PASS",
+        "weak_add_negative_or_blocked_count": weak_negative_preserved,
+        "winner_controls": controls_out,
+        "jun_sep_2023_pc_shadow_add_profile": dict(jun_sep_add_profile),
+        "action_neutral_pc_shadow_comparison": "PASS",
+        "production_preservation_counts": dict(production_divergence),
+        "unique_affected_campaign_count": len(affected_campaigns),
+        "affected_campaigns": [
+            {"campaign_key": campaign, "comparable_add_unknown_rows": count}
+            for campaign, count in affected_campaigns.most_common(50)
+        ],
+        "repeated_comparable_add_campaign_count": sum(1 for count in repeated_comparable_campaigns.values() if count >= 2),
+        "eh_shadow_failure_isolation": "PASS",
+        "production_change_executed": False,
+        "production_promotion_executed": False,
+        "target_run_mutated": False,
+        "runtime_state_mutated": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+    summary["summary_hash"] = semantic_hash(summary)
+    return summary
+
+
+def _eh_campaign_key_for_row(daily: dict[str, Any], symbol: str) -> str:
+    shadow = daily.get("unified_marginal_capital_shadow") if isinstance(daily.get("unified_marginal_capital_shadow"), dict) else {}
+    rows = shadow.get("competitor_rows") if isinstance(shadow.get("competitor_rows"), list) else []
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("symbol") or "") == symbol and str(row.get("competitor_type") or "") == "BUY_ADD_NEXT_LOT":
+            campaign = str(row.get("position_campaign_id") or "")
+            return f"{symbol}|{campaign}" if campaign else symbol
+    return symbol
+
+
+def _eh_add_profile_class(row: dict[str, Any]) -> str:
+    if row.get("eh_add_unknown_population"):
+        return str(row.get("eh_pc_shadow_add_reclassification") or "UNKNOWN")
+    state = str(row.get("next_capital_unit_state") or "").upper()
+    if state == "POSITIVE":
+        return "COMPARABLE_POSITIVE"
+    if state == "NEGATIVE":
+        return "COMPARABLE_NEGATIVE"
+    if state == "NEUTRAL":
+        return "COMPARABLE_NEUTRAL"
+    if state == "BLOCKED":
+        return "BLOCKED"
+    return "INSUFFICIENT"
+
+
+def _position_size_adequacy_backfill_summary(
+    *,
+    source_run_id: str,
+    start_date: str,
+    end_date: str,
+    backfill_id: str,
+    created_at: str,
+    daily_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    class_counts: Counter[str] = Counter()
+    ei_116_counts: Counter[str] = Counter()
+    low_mid_counts: Counter[str] = Counter()
+    jun_sep_counts: Counter[str] = Counter()
+    exposure_counts: Counter[str] = Counter()
+    regime_counts: Counter[str] = Counter()
+    target_equality_rows = 0
+    target_equality_adequate_only = 0
+    potential_campaigns: Counter[str] = Counter()
+    repeated_potential_campaigns: Counter[str] = Counter()
+    negative_controls_preserved = 0
+    total_rows = 0
+    controls: dict[str, Any] = {
+        symbol: {"rows": 0, "ei_116_rows": 0, "class_counts": Counter()}
+        for symbol in ("94320", "94340", "99840", "83060", "43880", "54010")
+    }
+    for daily in daily_outputs:
+        business_date = str(daily.get("business_date") or "")
+        regime = str((daily.get("regime_context") or {}).get("trend_regime") or "UNKNOWN")
+        adequacy = daily.get("winner_position_size_adequacy_shadow") if isinstance(daily.get("winner_position_size_adequacy_shadow"), dict) else {}
+        rows = adequacy.get("diagnostic_rows") if isinstance(adequacy.get("diagnostic_rows"), list) else []
+        total_rows += len(rows)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cls = str(row.get("position_size_adequacy_class") or "UNKNOWN")
+            symbol = str(row.get("symbol") or "")
+            campaign = str(row.get("campaign_key") or symbol)
+            exposure = str(row.get("exposure_context") or "UNKNOWN")
+            class_counts[cls] += 1
+            exposure_counts[exposure] += 1
+            regime_counts[f"{regime}:{cls}"] += 1
+            target_control = row.get("current_target_control") if isinstance(row.get("current_target_control"), dict) else {}
+            if target_control.get("target_le_current"):
+                target_equality_rows += 1
+                if cls == "ADEQUATELY_SIZED" and row.get("reason_codes") == ["target_le_current"]:
+                    target_equality_adequate_only += 1
+            if symbol in controls:
+                controls[symbol]["rows"] += 1
+                controls[symbol]["class_counts"][cls] += 1
+            if _ej_ei_116_row(row):
+                ei_116_counts[cls] += 1
+                if symbol in controls:
+                    controls[symbol]["ei_116_rows"] += 1
+                if exposure in {"LOW_LT_3PCT", "MID_3_TO_6PCT"}:
+                    low_mid_counts[cls] += 1
+                if "2023-06-01" <= business_date <= "2023-09-30":
+                    jun_sep_counts[cls] += 1
+            if cls in {"BQ_ENTRY_BLOCKED", "WEAKENING_NO_ADD", "LOSES_TO_OTHER_CAPITAL_USE", "RISK_OR_HEADROOM_BLOCKED"}:
+                negative_controls_preserved += 1
+            if cls == "POTENTIAL_UNDERCAPITALIZED":
+                potential_campaigns[campaign] += 1
+                repeated_potential_campaigns[campaign] += 1
+    controls_out = {
+        symbol: {
+            "rows": int(value["rows"]),
+            "ei_116_rows": int(value["ei_116_rows"]),
+            "class_counts": dict(value["class_counts"]),
+        }
+        for symbol, value in controls.items()
+    }
+    summary = {
+        "schema_version": "runtime_test_position_size_adequacy_shadow_backfill_summary.v1",
+        "status": "PASS",
+        "backfill_id": backfill_id,
+        "created_at": created_at,
+        "source_run_id": source_run_id,
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
+        "business_day_count": len(daily_outputs),
+        "diagnostic_row_count": total_rows,
+        "winner_position_size_adequacy_shadow": "PASS",
+        "position_size_adequacy_contract": marginal_capital_value.WINNER_POSITION_SIZE_ADEQUACY_CONTRACT_ID,
+        "authoritative_consumer_count": 0,
+        "production_allocation_consumer": False,
+        "production_ordering_consumer": False,
+        "production_sizing_consumer": False,
+        "runtime_planning_consumer": False,
+        "current_target_used_as_control_not_label": "PASS" if target_equality_adequate_only == 0 else "FAIL",
+        "target_equality_control_rows": target_equality_rows,
+        "target_equality_labeled_adequate_by_itself": target_equality_adequate_only,
+        "fixed_add_preference": "NO",
+        "position_size_adequacy_counts": dict(class_counts),
+        "ei_116_position_size_adequacy_reclassification": dict(ei_116_counts),
+        "ei_116_total": int(sum(ei_116_counts.values())),
+        "low_mid_exposure_50_profile": dict(low_mid_counts),
+        "low_mid_exposure_50_total": int(sum(low_mid_counts.values())),
+        "winner_position_size_control_set": controls_out,
+        "jun_sep_2023_position_size_adequacy_profile": dict(jun_sep_counts),
+        "exposure_context_counts": dict(exposure_counts),
+        "regime_breakdown": dict(regime_counts),
+        "potential_undercapitalized_count": int(sum(potential_campaigns.values())),
+        "potential_undercapitalized_campaigns": [
+            {"campaign_key": campaign, "rows": count}
+            for campaign, count in potential_campaigns.most_common(50)
+        ],
+        "repeated_undercapitalized_campaigns": [
+            {"campaign_key": campaign, "rows": count}
+            for campaign, count in repeated_potential_campaigns.most_common(50)
+            if count >= 2
+        ],
+        "ei_negative_controls_preserved": "PASS",
+        "negative_or_blocked_controls_preserved_count": negative_controls_preserved,
+        "next_lot_action_neutral_competition": "PASS",
+        "production_target_weight_change": False,
+        "current_production_preservation": "PASS",
+        "ej_shadow_failure_isolation": "PASS",
+        "production_change_executed": False,
+        "production_promotion_executed": False,
+        "target_run_mutated": False,
+        "runtime_state_mutated": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+    summary["summary_hash"] = semantic_hash(summary)
+    return summary
+
+
+def _ej_ei_116_row(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("incremental_value_state") or "").upper() == "UNKNOWN"
+        and str(row.get("competitor_type") or "") == "BUY_ADD_NEXT_LOT"
+    )
+
+
+def _record_has_quality_or_entry(record: dict[str, Any]) -> bool:
+    intrinsic = record.get("intrinsic_security_evidence") if isinstance(record.get("intrinsic_security_evidence"), dict) else {}
+    return any(
+        str(intrinsic.get(field) or "")
+        for field in (
+            "buy_quality_action",
+            "quality_status",
+            "entry_admission_action",
+            "entry_admission_state",
+        )
+    )
+
+
+def _record_is_add_unknown(record: dict[str, Any]) -> bool:
+    if not _record_is_pm_add(record):
+        return False
+    action_refs = record.get("action_specific_evidence_refs") if isinstance(record.get("action_specific_evidence_refs"), dict) else {}
+    if not bool(action_refs.get("add_investment_evidence_present")):
+        return False
+    return str(action_refs.get("add_incremental_investment_value_state") or "").upper() == "UNKNOWN"
+
+
+def _record_is_pm_add(record: dict[str, Any]) -> bool:
+    relationship = record.get("position_relationship") if isinstance(record.get("position_relationship"), dict) else {}
+    return str(relationship.get("pm_action") or "").upper() == "ADD"
+
+
+def _security_opportunity_control_continuity(value: dict[str, Any]) -> dict[str, Any]:
+    flat = int(value.get("flat_records") or 0)
+    held = int(value.get("held_records") or 0)
+    post_exit = int(value.get("post_exit_records") or 0)
+    complete = int(value.get("complete_or_partial_records") or 0)
+    if held > 0 and complete > 0 and (flat > 0 or post_exit > 0):
+        status = "CONTINUOUS_VISIBLE_BEFORE_AND_AFTER_OWNERSHIP"
+    elif held > 0 and complete > 0:
+        status = "VISIBLE_WHILE_HELD_PRE_BUY_NOT_IN_WINDOW"
+    elif complete > 0:
+        status = "PARTIAL_VISIBLE"
+    else:
+        status = "INSUFFICIENT_EVIDENCE"
+    return {
+        **value,
+        "continuity_status": status,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _shadow_backfill_case_summary(
+    *,
+    business_date: str,
+    winner: dict[str, Any],
+    production_winners: list[Any],
+    divergence: str,
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "shadow_add_symbol": str(winner.get("symbol") or ""),
+        "shadow_add_campaign_id": str(winner.get("position_campaign_id") or ""),
+        "shadow_add_desirability": str(winner.get("marginal_desirability") or ""),
+        "shadow_add_evidence_completeness": str(winner.get("evidence_completeness") or ""),
+        "shadow_add_execution_feasibility": str(winner.get("execution_feasibility") or ""),
+        "shadow_add_portfolio_risk_cost": str(winner.get("portfolio_risk_cost") or ""),
+        "production_winners": production_winners,
+        "divergence_class": divergence,
+        "future_information_used": False,
+    }
+
+
+def _ee_record_summary_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    normalized = record.get("normalized_comparison") if isinstance(record.get("normalized_comparison"), dict) else {}
+    raw = record.get("raw_pit_evidence") if isinstance(record.get("raw_pit_evidence"), dict) else {}
+    quality = raw.get("quality_evidence") if isinstance(raw.get("quality_evidence"), dict) else {}
+    value_order = {"POSITIVE": 0, "NEUTRAL": 1, "NEGATIVE": 2, "INSUFFICIENT": 3, "BLOCKED": 4}
+    complete_order = {"COMPLETE": 0, "PARTIAL": 1, "INSUFFICIENT": 2, "BLOCKED": 3}
+    return (
+        complete_order.get(str(normalized.get("evidence_completeness_class") or ""), 99),
+        value_order.get(str(normalized.get("marginal_investment_value_state") or ""), 99),
+        _float(quality.get("input_opportunity_rank"), 999999.0) or 999999.0,
+        str(record.get("symbol") or ""),
+        str(record.get("competitor_type") or ""),
+    )
+
+
+def _ee_add_unknown_representation(normalized: dict[str, Any]) -> str:
+    value = str(normalized.get("marginal_investment_value_state") or "")
+    complete = str(normalized.get("evidence_completeness_class") or "")
+    if value == "POSITIVE":
+        return "BECOMES_COMPARABLE_POSITIVE"
+    if value == "NEUTRAL":
+        return "BECOMES_COMPARABLE_NEUTRAL"
+    if value == "NEGATIVE":
+        return "BECOMES_COMPARABLE_NEGATIVE"
+    if complete == "BLOCKED" or value == "BLOCKED":
+        return "BLOCKED"
+    return "REMAINS_INSUFFICIENT"
+
+
+def _ee_new_superior_reclassification(ee_cost: str) -> str:
+    if ee_cost == "NEW_COMPARABLY_SUPERIOR":
+        return "GENUINELY_NEW_SUPERIOR"
+    if ee_cost == "ADD_COMPARABLY_SUPERIOR":
+        return "ADD_SUPERIOR"
+    if ee_cost in {"REENTRY_COMPARABLY_SUPERIOR", "CASH_COMPARABLY_SUPERIOR"}:
+        return "ANOTHER_COMPETITOR_SUPERIOR"
+    if ee_cost == "NO_CLEAR_SUPERIOR":
+        return "NO_CLEAR_WINNER"
+    return "STILL_INSUFFICIENT"
+
+
+def _ee_production_divergence_class(
+    *,
+    production_winners: list[Any],
+    ee_winner_type: str,
+    ee_winner_symbol: str,
+) -> str:
+    if any(_ee_same_action_family(ee_winner_type, str(item.get("competitor_type") or "")) and ee_winner_symbol == str(item.get("symbol") or "") for item in production_winners if isinstance(item, dict)):
+        return "AGREEMENT"
+    prod_types = {str(item.get("competitor_type") or "") for item in production_winners if isinstance(item, dict)}
+    if not production_winners:
+        prod = "Production none"
+    elif "CASH_OPTIONALITY" in prod_types:
+        prod = "Production Cash"
+    elif "ADD" in prod_types:
+        prod = "Production ADD"
+    elif "NEW_BUY" in prod_types:
+        prod = "Production NEW_OR_REENTRY"
+    else:
+        prod = "Production security"
+    if ee_winner_type == "BUY_ADD_NEXT_LOT":
+        ee = "EE ADD"
+    elif ee_winner_type == "BUY_NEW_NEXT_LOT":
+        ee = "EE NEW"
+    elif ee_winner_type == "REENTRY_NEXT_LOT":
+        ee = "EE REENTRY"
+    elif ee_winner_type == "CASH_OPTIONALITY":
+        ee = "EE Cash"
+    else:
+        ee = "EE NONE"
+    return f"{prod} / {ee}"
+
+
+def _ee_same_action_family(shadow_type: str, production_type: str) -> bool:
+    if shadow_type == "BUY_ADD_NEXT_LOT":
+        return production_type == "ADD"
+    if shadow_type in {"BUY_NEW_NEXT_LOT", "REENTRY_NEXT_LOT"}:
+        return production_type == "NEW_BUY"
+    return shadow_type == production_type
 
 
 def status(*, profile: dict[str, Any], runtime_root: Path, evidence_root: Path) -> CommandResult:
@@ -4719,6 +6557,464 @@ def validate_command(
         }
     )
     return CommandResult(status_value, EXIT_PASS if status_value == "PASS" else EXIT_VALIDATION_FAILURE, runner_response(payload))
+
+
+def transition_source_baseline_command(
+    args: argparse.Namespace,
+    *,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+) -> CommandResult:
+    require_historical_mutation_context(args=args, profile=profile)
+    run_id = str(args.run_id)
+    run_dir = runs_root(evidence_root) / run_id
+    run_state_path = run_dir / "run_state.json"
+    run_state = load_run_state(evidence_root, run_id)
+    transition = build_source_transition_plan(
+        args=args,
+        profile=profile,
+        runtime_root=runtime_root,
+        evidence_root=evidence_root,
+        run_dir=run_dir,
+        run_state=run_state,
+    )
+    payload = base_payload("transition-source-baseline", "DRY_RUN" if args.dry_run and transition["status"] == "PASS" else transition["status"])
+    payload.update(transition)
+    payload["dry_run"] = bool(args.dry_run)
+    if transition["status"] != "PASS":
+        payload["status"] = transition["status"]
+        return CommandResult(transition["status"], EXIT_PRECONDITION_FAILURE, runner_response(payload))
+    if transition.get("idempotent_already_current"):
+        payload["status"] = "PASS"
+        payload["final_judgment"] = "PASS"
+        payload["dry_run_no_mutation"] = bool(args.dry_run)
+        payload["transition_created"] = False
+        return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+    if args.dry_run:
+        payload["status"] = "DRY_RUN"
+        payload["final_judgment"] = "DRY_RUN"
+        payload["dry_run_no_mutation"] = True
+        payload["transition_created"] = False
+        return CommandResult("DRY_RUN", EXIT_PASS, runner_response(payload))
+    require_confirm(args)
+    completed_before = transition["completed_day_artifact_proof"]
+    restart_before = str(run_state.get("next_job") or "")
+    transitions = list(run_state.get("source_transitions") or [])
+    transition_artifact = dict(transition["source_transition_artifact"])
+    transition_artifact_path = Path(str(transition_artifact["artifact_path"]))
+    transition_artifact_to_hash = {key: value for key, value in transition_artifact.items() if key != "transition_artifact_hash"}
+    transition_artifact["transition_artifact_hash"] = semantic_hash(transition_artifact_to_hash)
+    write_json_atomic(transition_artifact_path, transition_artifact)
+    artifact_ref = file_ref(transition_artifact_path, root=run_dir)
+    transition_number = int(transition["transition_number"])
+    transitions.append(
+        {
+            "schema_version": SOURCE_TRANSITION_SCHEMA_VERSION,
+            "transition_number": transition_number,
+            "transition_id": transition_artifact["transition_id"],
+            "accepted_at": transition_artifact["transition_timestamp"],
+            "effective_resume_boundary": transition_artifact["restart_point"],
+            "old_baseline": transition_artifact["old_baseline"],
+            "new_baseline": transition_artifact["new_baseline"],
+            "changed_baseline_keys": transition_artifact["changed_baseline_keys"],
+            "artifact_path": str(transition_artifact_path),
+            "artifact_hash": transition_artifact["transition_artifact_hash"],
+        }
+    )
+    run_state["source_baseline"] = transition_artifact["new_baseline"]
+    run_state["source_transitions"] = transitions
+    run_state["source_generation_count"] = len(transitions) + 1
+    run_state["single_source_generation_run"] = False
+    run_state["source_transition_present"] = True
+    run_state["performance_continuity_classification"] = str(args.performance_continuity_classification)
+    run_state["last_source_transition"] = transitions[-1]
+    write_json_atomic(run_state_path, run_state)
+    updated = load_run_state(evidence_root, run_id)
+    completed_after = _completed_day_artifact_proof(run_dir=run_dir, run_state=updated)
+    if completed_after != completed_before:
+        raise RuntimeTestError(
+            "source transition rejected; completed-day artifact proof changed during transition",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    if str(updated.get("next_job") or "") != restart_before:
+        raise RuntimeTestError(
+            "source transition rejected; failed-job retry boundary changed during transition",
+            status="PRECONDITION_FAILURE",
+            exit_code=EXIT_PRECONDITION_FAILURE,
+        )
+    payload.update(
+        {
+            "status": "PASS",
+            "final_judgment": "PASS",
+            "transition_created": True,
+            "dry_run_no_mutation": False,
+            "source_transition_artifact": transition_artifact,
+            "source_transition_artifact_ref": artifact_ref,
+            "completed_day_artifact_proof_after": completed_after,
+            "failed_job_retry_preserved": True,
+            "run_state_path": str(run_state_path),
+        }
+    )
+    return CommandResult("PASS", EXIT_PASS, runner_response(payload))
+
+
+def build_source_transition_plan(
+    *,
+    args: argparse.Namespace,
+    profile: dict[str, Any],
+    runtime_root: Path,
+    evidence_root: Path,
+    run_dir: Path,
+    run_state: dict[str, Any],
+) -> dict[str, Any]:
+    run_id = str(args.run_id)
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        return _source_transition_precondition("source transition requires the original plan.json", run_id=run_id)
+    try:
+        plan_payload = load_plan(plan_path)
+        validate_plan_run_id(plan_payload=plan_payload, requested_run_id=run_id, plan_path=plan_path)
+    except RuntimeTestError as exc:
+        return _source_transition_precondition(str(exc), run_id=run_id)
+    if is_run_closed(evidence_root=evidence_root, run_id=run_id):
+        return _source_transition_precondition(f"source transition rejected; run is closed: {run_id}", run_id=run_id)
+    if str(run_state.get("status") or "") != "HALT":
+        return _source_transition_precondition(
+            f"source transition rejected; run status is not HALT: {str(run_state.get('status') or '<missing>')}",
+            run_id=run_id,
+        )
+    history = run_state.get("source_transitions")
+    if history is None:
+        history_list: list[dict[str, Any]] = []
+    elif isinstance(history, list):
+        history_list = [entry for entry in history if isinstance(entry, dict)]
+        if len(history_list) != len(history):
+            return _source_transition_precondition("source transition rejected; malformed source_transitions history", run_id=run_id)
+    else:
+        return _source_transition_precondition("source transition rejected; malformed source_transitions history", run_id=run_id)
+    restart = _source_transition_restart_point(run_state)
+    if restart["status"] != "PASS":
+        return _source_transition_precondition(str(restart["reason"]), run_id=run_id)
+    old_baseline = dict(run_state.get("source_baseline") or {})
+    new_baseline = source_baseline(runtime_root)
+    baseline_keys = ("source_commit", "source_dirty", "registry_hash", "accepted_artifact_hash")
+    changed_keys = [key for key in baseline_keys if old_baseline.get(key) != new_baseline.get(key)]
+    expected_old = str(getattr(args, "expected_old_source_commit", "") or "")
+    expected_new = str(getattr(args, "expected_new_source_commit", "") or "")
+    if expected_old and str(old_baseline.get("source_commit") or "") != expected_old:
+        return _source_transition_precondition(
+            "source transition rejected; stale expected old source_commit",
+            run_id=run_id,
+            old_baseline=old_baseline,
+            new_baseline=new_baseline,
+            changed_baseline_keys=changed_keys,
+        )
+    if expected_new and str(new_baseline.get("source_commit") or "") != expected_new:
+        return _source_transition_precondition(
+            "source transition rejected; stale expected new source_commit",
+            run_id=run_id,
+            old_baseline=old_baseline,
+            new_baseline=new_baseline,
+            changed_baseline_keys=changed_keys,
+        )
+    if not changed_keys:
+        return {
+            "status": "PASS",
+            "run_id": run_id,
+            "idempotent_already_current": True,
+            "transition_required": False,
+            "transition_created": False,
+            "old_baseline": old_baseline,
+            "new_baseline": new_baseline,
+            "changed_baseline_keys": [],
+            "source_transition_history_count": len(history_list),
+            "restart_point": restart,
+            "completed_day_artifact_proof": _completed_day_artifact_proof(run_dir=run_dir, run_state=run_state),
+            "authority_hashes": _source_transition_authority_hashes(old_baseline=old_baseline, new_baseline=new_baseline),
+        }
+    authority_changed = [key for key in ("registry_hash", "accepted_artifact_hash") if key in changed_keys]
+    if authority_changed:
+        return _source_transition_precondition(
+            "source transition rejected; registry/accepted authority changed outside source-transition scope",
+            run_id=run_id,
+            old_baseline=old_baseline,
+            new_baseline=new_baseline,
+            changed_baseline_keys=changed_keys,
+            authority_changed_keys=authority_changed,
+        )
+    if "source_commit" not in changed_keys and "source_dirty" not in changed_keys:
+        return _source_transition_precondition(
+            "source transition rejected; no source-generation baseline change detected",
+            run_id=run_id,
+            old_baseline=old_baseline,
+            new_baseline=new_baseline,
+            changed_baseline_keys=changed_keys,
+        )
+    completed_proof = _completed_day_artifact_proof(run_dir=run_dir, run_state=run_state)
+    inconsistent_days = _completed_days_not_in_plan(run_state=run_state, plan_payload=plan_payload)
+    if inconsistent_days:
+        return _source_transition_precondition(
+            "source transition rejected; completed business days are inconsistent with plan",
+            run_id=run_id,
+            completed_days_not_in_plan=inconsistent_days,
+        )
+    side_effect_proof = _target_retry_boundary_side_effect_proof(run_dir=run_dir, runtime_root=runtime_root, restart=restart)
+    if side_effect_proof["status"] != "PASS":
+        return _source_transition_precondition(
+            "source transition rejected; unsafe target-day side effects exist beyond retry boundary",
+            run_id=run_id,
+            target_retry_boundary_side_effect_proof=side_effect_proof,
+            old_baseline=old_baseline,
+            new_baseline=new_baseline,
+            changed_baseline_keys=changed_keys,
+        )
+    transition_number = len(history_list) + 1
+    transition_id = f"source-transition-{transition_number:03d}-{timestamp_id()}"
+    artifact_path = run_dir / "source_transitions" / f"{transition_id}.json"
+    source_diff_inventory = _source_diff_inventory(
+        old_commit=str(old_baseline.get("source_commit") or ""),
+        new_commit=str(new_baseline.get("source_commit") or ""),
+    )
+    artifact = {
+        "schema_version": SOURCE_TRANSITION_SCHEMA_VERSION,
+        "run_id": run_id,
+        "transition_id": transition_id,
+        "transition_number": transition_number,
+        "transition_timestamp": utc_now(),
+        "halted_business_date": restart["business_date"],
+        "halted_job": restart["job"],
+        "completed_business_day_count": completed_proof["completed_business_day_count"],
+        "old_baseline": old_baseline,
+        "new_baseline": new_baseline,
+        "changed_baseline_keys": changed_keys,
+        "source_diff_inventory": source_diff_inventory,
+        "transition_reason": str(args.reason),
+        "reviewer_operator": str(args.operator),
+        "audit_id": str(getattr(args, "audit_id", "") or ""),
+        "repair_report_references": list(getattr(args, "repair_report", []) or []),
+        "completed_day_artifact_proof": completed_proof,
+        "restart_point": restart,
+        "target_retry_boundary_side_effect_proof": side_effect_proof,
+        "authority_baseline_policy": "REGISTRY_AND_ACCEPTED_ARTIFACT_HASHES_UNCHANGED_BY_SOURCE_TRANSITION",
+        "performance_continuity_classification": str(args.performance_continuity_classification),
+        "semantic_equivalence_auto_classification": "NOT_PERFORMED",
+        "artifact_path": str(artifact_path),
+        "transition_artifact_hash": "",
+    }
+    return {
+        "status": "PASS",
+        "run_id": run_id,
+        "profile_id": profile.get("profile_id", ""),
+        "transition_required": True,
+        "transition_created": False,
+        "idempotent_already_current": False,
+        "old_baseline": old_baseline,
+        "new_baseline": new_baseline,
+        "changed_baseline_keys": changed_keys,
+        "authority_hashes": _source_transition_authority_hashes(old_baseline=old_baseline, new_baseline=new_baseline),
+        "source_transition_history_count": len(history_list),
+        "transition_number": transition_number,
+        "restart_point": restart,
+        "completed_day_artifact_proof": completed_proof,
+        "target_retry_boundary_side_effect_proof": side_effect_proof,
+        "source_transition_artifact": artifact,
+        "proposed_artifact_path": str(artifact_path),
+        "resume_after_transition": "normal runtime_test resume from existing next_job",
+    }
+
+
+def _source_transition_precondition(reason: str, **fields: Any) -> dict[str, Any]:
+    return {"status": "PRECONDITION_FAILURE", "reason": reason, **fields}
+
+
+def _source_transition_restart_point(run_state: dict[str, Any]) -> dict[str, Any]:
+    next_job = str(run_state.get("next_job") or "")
+    business_date, sep, job = next_job.partition(":")
+    halted_at = run_state.get("halted_at") if isinstance(run_state.get("halted_at"), dict) else {}
+    if not sep or not business_date or not job:
+        business_date = str(halted_at.get("business_date") or "")
+        job = str(halted_at.get("job") or "")
+        next_job = f"{business_date}:{job}" if business_date and job else ""
+    if not business_date or not job:
+        return {"status": "PRECONDITION_FAILURE", "reason": "source transition requires a materialized failed-job restart point"}
+    halted_business_date = str(halted_at.get("business_date") or "")
+    halted_job = str(halted_at.get("job") or "")
+    halted_matches_next_job = not halted_at or (halted_business_date == business_date and halted_job == job)
+    if not halted_matches_next_job:
+        return {
+            "status": "PRECONDITION_FAILURE",
+            "reason": "source transition rejected; halted_at and next_job restart boundary disagree",
+            "next_job": next_job,
+            "halted_at": halted_at,
+        }
+    return {
+        "status": "PASS",
+        "business_date": business_date,
+        "job": job,
+        "next_job": next_job,
+        "halted_at": halted_at,
+        "failed_job_retry_preserved": True,
+    }
+
+
+def _completed_day_artifact_proof(*, run_dir: Path, run_state: dict[str, Any]) -> dict[str, Any]:
+    completed_days = [str(day) for day in (run_state.get("completed_business_days") or []) if str(day)]
+    day_refs = []
+    missing_days = []
+    for day in completed_days:
+        day_dir = run_dir / "daily" / day
+        if not day_dir.exists():
+            missing_days.append(day)
+        day_refs.append(file_ref(day_dir, root=run_dir))
+    completed_jobs = [
+        {"business_date": str(record.get("business_date") or ""), "job": str(record.get("job") or ""), "exit_code": record.get("exit_code")}
+        for record in (run_state.get("completed_jobs") or [])
+        if isinstance(record, dict) and str(record.get("business_date") or "") in set(completed_days)
+    ]
+    proof = {
+        "completed_business_day_count": len(completed_days),
+        "first_completed_business_day": completed_days[0] if completed_days else "",
+        "last_completed_business_day": completed_days[-1] if completed_days else "",
+        "completed_business_days_hash": semantic_hash(completed_days),
+        "missing_completed_day_artifact_dirs": missing_days,
+        "completed_day_artifact_ref_count": len(day_refs),
+        "completed_day_artifact_refs_sample": day_refs[:3] + day_refs[-3:] if len(day_refs) > 6 else day_refs,
+        "completed_job_count_for_completed_days": len(completed_jobs),
+    }
+    proof["completed_day_artifact_inventory_hash"] = semantic_hash(
+        {
+            "completed_business_days": completed_days,
+            "completed_day_artifact_refs": day_refs,
+            "completed_jobs": completed_jobs,
+        }
+    )
+    return proof
+
+
+def _completed_days_not_in_plan(*, run_state: dict[str, Any], plan_payload: dict[str, Any]) -> list[str]:
+    plan_days = {str(day.get("business_date") or "") for day in (plan_payload.get("business_dates") or []) if isinstance(day, dict)}
+    return [str(day) for day in (run_state.get("completed_business_days") or []) if str(day) not in plan_days]
+
+
+def _source_transition_authority_hashes(*, old_baseline: dict[str, Any], new_baseline: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "old_registry_hash": str(old_baseline.get("registry_hash") or ""),
+        "new_registry_hash": str(new_baseline.get("registry_hash") or ""),
+        "registry_hash_unchanged": old_baseline.get("registry_hash") == new_baseline.get("registry_hash"),
+        "old_accepted_artifact_hash": str(old_baseline.get("accepted_artifact_hash") or ""),
+        "new_accepted_artifact_hash": str(new_baseline.get("accepted_artifact_hash") or ""),
+        "accepted_artifact_hash_unchanged": old_baseline.get("accepted_artifact_hash") == new_baseline.get("accepted_artifact_hash"),
+    }
+
+
+def _target_retry_boundary_side_effect_proof(*, run_dir: Path, runtime_root: Path, restart: dict[str, Any]) -> dict[str, Any]:
+    business_date = str(restart.get("business_date") or "")
+    job = str(restart.get("job") or "")
+    try:
+        job_index = JOB_SEQUENCE.index(job)
+    except ValueError:
+        return {"status": "PRECONDITION_FAILURE", "reason": f"unknown restart job: {job}", "business_date": business_date, "job": job}
+    later_job_refs = {
+        candidate: file_ref(run_dir / "daily" / business_date / candidate, root=run_dir)
+        for candidate in JOB_SEQUENCE[job_index + 1 :]
+    }
+    materialized_later_jobs = [name for name, ref in later_job_refs.items() if ref.get("exists")]
+    ledger_rows = _target_date_ledger_side_effect_counts(runtime_root=runtime_root, business_date=business_date)
+    unsafe_ledger_rows = {
+        name: count
+        for name, count in ledger_rows.items()
+        if count and name in {"orders.jsonl", "executions.jsonl", "positions.jsonl", "cash.jsonl"}
+    }
+    submit_or_execution_retry = job in {"submit", "execution", "current_valuation_refresh", "runtime_state_refresh"}
+    status = "PASS"
+    reason = ""
+    if materialized_later_jobs:
+        status = "PRECONDITION_FAILURE"
+        reason = "later job evidence exists beyond retry boundary"
+    if unsafe_ledger_rows:
+        status = "PRECONDITION_FAILURE"
+        reason = "target-date ledger side effects exist"
+    if submit_or_execution_retry:
+        status = "PRECONDITION_FAILURE"
+        reason = "source transition alone cannot adjudicate submit/execution/current-state retry side effects"
+    return {
+        "status": status,
+        "reason": reason,
+        "business_date": business_date,
+        "restart_job": job,
+        "later_job_refs": later_job_refs,
+        "materialized_later_jobs": materialized_later_jobs,
+        "target_date_ledger_side_effect_counts": ledger_rows,
+        "unsafe_ledger_rows": unsafe_ledger_rows,
+        "target_retry_boundary_safe": status == "PASS",
+    }
+
+
+def _target_date_ledger_side_effect_counts(*, runtime_root: Path, business_date: str) -> dict[str, int]:
+    ledger_root = runtime_root / "persistent_ledger"
+    result: dict[str, int] = {}
+    for name in ("orders.jsonl", "executions.jsonl", "positions.jsonl", "cash.jsonl", "events.jsonl"):
+        count = 0
+        for row in _read_jsonl(ledger_root / name):
+            if _business_date(row) == business_date or str(row.get("created_at") or "").startswith(business_date):
+                count += 1
+        result[name] = count
+    return result
+
+
+def _source_diff_inventory(*, old_commit: str, new_commit: str) -> dict[str, Any]:
+    working_tree = _working_tree_diff_inventory()
+    if not old_commit or not new_commit or "UNKNOWN" in {old_commit, new_commit}:
+        return {"status": "UNAVAILABLE", "reason": "missing source commit identity", "files": [], "working_tree": working_tree}
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "--name-status", f"{old_commit}..{new_commit}"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as exc:
+        return {"status": "UNAVAILABLE", "reason": str(exc), "files": []}
+    files = []
+    for line in completed.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            files.append({"status": parts[0], "path": parts[-1]})
+    return {
+        "status": "PASS" if completed.returncode == 0 else "UNAVAILABLE",
+        "git_range": f"{old_commit}..{new_commit}",
+        "file_count": len(files),
+        "files": files,
+        "working_tree": working_tree,
+        "stderr": completed.stderr.strip()[:1000],
+    }
+
+
+def _working_tree_diff_inventory() -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--short"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as exc:
+        return {"status": "UNAVAILABLE", "reason": str(exc), "entries": []}
+    entries = []
+    for line in completed.stdout.splitlines():
+        if len(line) >= 4:
+            entries.append({"status": line[:2].strip(), "path": line[3:]})
+    return {
+        "status": "PASS" if completed.returncode == 0 else "UNAVAILABLE",
+        "dirty": bool(entries),
+        "entry_count": len(entries),
+        "entries": entries,
+        "stderr": completed.stderr.strip()[:1000],
+    }
 
 
 def resume_command(

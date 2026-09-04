@@ -2917,23 +2917,25 @@ def test_phase29_l16_semantic_reentry_cooldown_and_recovery_hurdle(tmp_path: Pat
     )
     by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
 
-    assert by_code["11110"]["semantic_buy_type"] == "REENTRY"
+    assert by_code["11110"]["semantic_buy_type"] == "BUY_NEW"
     assert by_code["11110"]["reentry_cooldown_status"] == "FAIL_CLOSED"
-    assert by_code["11110"]["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CHURN_PROTECTION"
+    assert by_code["11110"]["recent_exit_guard_state"] == "MALFORMED_RECENT_EXIT_GUARD"
+    assert by_code["11110"]["reentry_semantic_state"] == "RECENT_EXIT_GUARD_MALFORMED"
     assert by_code["11110"]["reentry_semantic_status"] == "FAIL_CLOSED"
-    assert "REENTRY_BLOCKED_CHURN_PROTECTION" in by_code["11110"]["reentry_reason_codes"]
+    assert "RECENT_EXIT_GUARD_MALFORMED" in by_code["11110"]["reentry_reason_codes"]
     assert by_code["11110"]["target_weight"] == 0.0
-    assert by_code["22220"]["semantic_buy_type"] == "REENTRY"
+    assert by_code["22220"]["semantic_buy_type"] == "BUY_NEW"
     assert by_code["22220"]["reentry_cooldown_status"] == "PASS"
-    assert by_code["22220"]["reentry_recovery_status"] == "PASS"
-    assert by_code["22220"]["reentry_semantic_state"] == "REENTRY_ELIGIBLE"
-    assert by_code["22220"]["reentry_semantic_status"] == "PASS"
+    assert by_code["22220"]["recent_exit_guard_state"] == "EXPIRED_NOT_CURRENT_DECISION_AUTHORITY"
+    assert by_code["22220"]["reentry_recovery_status"] == "NOT_APPLICABLE"
+    assert by_code["22220"]["reentry_semantic_state"] == "REENTRY_NOT_APPLICABLE"
+    assert by_code["22220"]["reentry_semantic_status"] == "NOT_APPLICABLE"
     assert by_code["22220"]["reentry_semantic_eligibility"]["owner"] == "PORTFOLIO_CONSTRUCTION"
     assert by_code["22220"]["target_weight"] == 0.05
-    assert by_code["33330"]["reentry_recovery_status"] == "PASS"
-    assert by_code["33330"]["reentry_recovery_reason"] == "reentry_recovery_qualified"
+    assert by_code["33330"]["reentry_recovery_status"] == "NOT_APPLICABLE"
+    assert by_code["33330"]["reentry_recovery_reason"] == "not_reentry"
     assert by_code["33330"]["reentry_opportunity_qualification_status"] == "CURRENT_BUY_AUTHORITY"
-    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_ELIGIBLE"
+    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_NOT_APPLICABLE"
     assert by_code["33330"]["target_weight"] > 0.0
 
 
@@ -2974,7 +2976,7 @@ def test_phase29_l21r3_reentry_capacity_authority_resolves_normal_excessive_and_
     )
     by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
 
-    assert by_code["11110"]["semantic_buy_type"] == "REENTRY"
+    assert by_code["11110"]["semantic_buy_type"] == "BUY_NEW"
     assert by_code["11110"]["capacity_ratio"] == 0.00018
     assert by_code["11110"]["liquidity_capacity_status"] == "NORMAL"
     assert by_code["11110"]["reentry_capacity_status"] == "NORMAL"
@@ -2983,19 +2985,19 @@ def test_phase29_l21r3_reentry_capacity_authority_resolves_normal_excessive_and_
 
     assert by_code["22220"]["capacity_ratio"] == 0.18
     assert by_code["22220"]["liquidity_capacity_status"] == "SEVERE"
-    assert by_code["22220"]["reentry_recovery_status"] == "FAIL_CLOSED"
-    assert by_code["22220"]["reentry_recovery_reason"] == "reentry_capacity_unavailable"
-    assert by_code["22220"]["reentry_semantic_status"] == "FAIL_CLOSED"
-    assert by_code["22220"]["reentry_constraint_scope"] == "SYMBOL_LOCAL"
-    assert by_code["22220"]["target_weight"] == 0.0
+    assert by_code["22220"]["reentry_recovery_status"] == "NOT_APPLICABLE"
+    assert by_code["22220"]["reentry_recovery_reason"] == "not_reentry"
+    assert by_code["22220"]["reentry_semantic_status"] == "NOT_APPLICABLE"
+    assert by_code["22220"]["recent_exit_guard_state"] == "EXPIRED_NOT_CURRENT_DECISION_AUTHORITY"
+    assert by_code["22220"]["target_weight"] > 0.0
 
     assert by_code["33330"]["capacity_ratio"] is None
     assert by_code["33330"]["liquidity_capacity_status"] == "UNKNOWN"
-    assert by_code["33330"]["reentry_recovery_status"] == "REVIEW_REQUIRED"
-    assert by_code["33330"]["reentry_recovery_reason"] == "reentry_capacity_unavailable"
-    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_INSUFFICIENT_EVIDENCE"
-    assert by_code["33330"]["reentry_semantic_status"] == "REVIEW_REQUIRED"
-    assert by_code["33330"]["target_weight"] == 0.0
+    assert by_code["33330"]["reentry_recovery_status"] == "NOT_APPLICABLE"
+    assert by_code["33330"]["reentry_recovery_reason"] == "not_reentry"
+    assert by_code["33330"]["reentry_semantic_state"] == "REENTRY_NOT_APPLICABLE"
+    assert by_code["33330"]["reentry_semantic_status"] == "NOT_APPLICABLE"
+    assert by_code["33330"]["target_weight"] > 0.0
 
 
 def test_phase31_g26_reentry_rejection_is_symbol_local_and_next_competitor_survives(tmp_path: Path) -> None:
@@ -3015,9 +3017,10 @@ def test_phase31_g26_reentry_rejection_is_symbol_local_and_next_competitor_survi
     )
     by_code = {member["security_code"]: member for member in payload["portfolio_members"]}
 
-    assert by_code["11110"]["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CURRENT_EVIDENCE"
-    assert by_code["11110"]["reentry_constraint_scope"] == "SYMBOL_LOCAL"
-    assert by_code["11110"]["target_weight"] == 0.0
+    assert by_code["11110"]["semantic_buy_type"] == "BUY_NEW"
+    assert by_code["11110"]["recent_exit_guard_state"] == "EXPIRED_NOT_CURRENT_DECISION_AUTHORITY"
+    assert by_code["11110"]["reentry_semantic_state"] == "REENTRY_NOT_APPLICABLE"
+    assert by_code["11110"]["target_weight"] > 0.0
     assert by_code["22220"]["semantic_buy_type"] == "BUY_NEW"
     assert by_code["22220"]["target_weight"] == 0.18
 
@@ -3040,11 +3043,12 @@ def test_phase29_l21r3_prior_exit_persists_when_buy_quality_temporarily_excludes
     assert member["membership_intent"] == "EXCLUDE"
     assert member["target_weight"] == 0.0
     assert member["prior_exit_business_date"] == "2026-07-09"
-    assert member["semantic_buy_type"] == "REENTRY"
+    assert member["semantic_buy_type"] == "BUY_NEW"
     assert member["reentry_cooldown_status"] == "PASS"
-    assert member["reentry_semantic_state"] == "REENTRY_INSUFFICIENT_EVIDENCE"
-    assert member["reentry_semantic_status"] == "REVIEW_REQUIRED"
-    assert member["reentry_prior_exit_context_classification"] == "RECOVERABLE_PROVENANCE_DEFECT"
+    assert member["recent_exit_guard_state"] == "EXPIRED_NOT_CURRENT_DECISION_AUTHORITY"
+    assert member["reentry_semantic_state"] == "REENTRY_NOT_APPLICABLE"
+    assert member["reentry_semantic_status"] == "NOT_APPLICABLE"
+    assert member["reentry_prior_exit_context_classification"] == "NOT_APPLICABLE"
 
 
 def test_phase29_l21s_one_lot_fallback_allocates_positive_buy_new_below_normal_lot_rounding() -> None:

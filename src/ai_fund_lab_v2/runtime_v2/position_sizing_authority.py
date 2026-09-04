@@ -644,6 +644,10 @@ def _explicit_hard_blocker_present(row: Mapping[str, Any], *, semantic: str) -> 
     corporate_action = str(row.get("corporate_action_status") or row.get("reentry_corporate_action_status") or "").upper()
     if any(marker in corporate_action for marker in ("HALT", "QUARANTINE", "BLOCK", "REVIEW", "SUSPEND")):
         return True
+    guard_state = str(row.get("recent_exit_guard_state") or "").upper()
+    guard_status = str(row.get("recent_exit_guard_status") or "").upper()
+    if guard_state in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"} and guard_status != "PASS":
+        return True
     if semantic == "REENTRY":
         for field in (
             "reentry_cooldown_status",

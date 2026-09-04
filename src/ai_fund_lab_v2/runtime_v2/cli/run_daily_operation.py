@@ -1009,6 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_root=Path(args.runtime_root),
                 business_date=business_date,
                 mode=args.mode,
+                runtime_test_run_id=args.runtime_test_run_id or "",
                 snapshot_provider=environment_composition.execution_snapshot_provider
                 if environment_composition is not None
                 else None,
@@ -2532,6 +2533,14 @@ def _write_execution_manifest_evidence(
             "no_action_reason": execution.get("no_action_reason") or "",
             "execution_references": execution.get("execution_references") or [],
             "item_lifecycle_authority": execution.get("item_lifecycle_authority") or {"status": "NOT_APPLICABLE"},
+        },
+    )
+    _write_json_file(
+        evidence_dir / "recent_exit_guard_materialization.json",
+        execution.get("recent_exit_guard_materialization")
+        or {
+            "status": "NOT_EXECUTED",
+            "reason": "execution_stage_not_reached",
         },
     )
 

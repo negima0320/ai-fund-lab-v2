@@ -36,6 +36,10 @@ from ai_fund_lab_v2.runtime_v2.pending.review_scope_authority import (
     build_pending_review_scope_authority,
     pending_scope_no_submission_terminal_authority,
 )
+from ai_fund_lab_v2.runtime_v2.recent_exit_guard import (
+    materialize_recent_exit_guard_from_execution,
+    recent_exit_guard_materialization_to_dict,
+)
 from ai_fund_lab_v2.runtime_v2.storage.path_resolver import (
     is_mode_rooted_runtime_root,
     reject_mode_rooted_runtime_root,
@@ -133,6 +137,7 @@ class ExecutionReadOnlyPipelineResult:
     current_commit_status: str = "NOT_EXECUTED"
     transaction_consistency_status: str = "NOT_EVALUATED"
     execution_transaction_id: str = ""
+    recent_exit_guard_materialization: dict[str, Any] | None = None
 
     def to_stage_details(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,6 +150,7 @@ def run_execution_readonly_pipeline(
     mode: str,
     snapshot_provider: Callable[..., Any] | None = None,
     demo_execution_fallback_authority_path: Path | str | None = None,
+    runtime_test_run_id: str = "",
 ) -> ExecutionReadOnlyPipelineResult:
     """Run Broker ReadOnly ingestion for the regular execution job.
 
@@ -586,6 +592,10 @@ def run_execution_readonly_pipeline(
     ledger_commit_status = "NOT_EXECUTED"
     current_commit_status = "NOT_EXECUTED"
     transaction_consistency_status = "NOT_EVALUATED"
+    recent_exit_guard_materialization: dict[str, Any] = {
+        "status": "NOT_EXECUTED",
+        "reason": "execution_not_committed",
+    }
     try:
         orders_appended = _append_ledger_records(runtime_root_path / "persistent_ledger" / "orders.jsonl", ledger_orders)
         executions_appended = _append_ledger_records(
@@ -623,6 +633,19 @@ def run_execution_readonly_pipeline(
         runtime_state_version = current_apply.runtime_state_version
         current_commit_status = current_apply.status
         persistent_commit_completed = current_apply.status in {"APPLIED", "NOOP_ALREADY_APPLIED"}
+        if persistent_commit_completed:
+            recent_exit_guard_materialization = recent_exit_guard_materialization_to_dict(
+                materialize_recent_exit_guard_from_execution(
+                    runtime_root=runtime_root_path,
+                    business_date=business_date,
+                    ledger_orders=ledger_orders,
+                    ledger_executions=ledger_executions,
+                    runtime_test_run_id=runtime_test_run_id,
+                )
+            )
+            if str(recent_exit_guard_materialization.get("status") or "") != "PASS":
+                status = "REVIEW_REQUIRED"
+                reason = str(recent_exit_guard_materialization.get("reason") or "recent_exit_guard_materialization_failed")
         transaction_consistency_status = "PASS" if persistent_commit_completed else "REVIEW_REQUIRED"
     except Exception as exc:
         status = "REVIEW_REQUIRED"
@@ -753,6 +776,7 @@ def run_execution_readonly_pipeline(
         current_commit_status=current_commit_status,
         transaction_consistency_status=transaction_consistency_status,
         execution_transaction_id=execution_transaction_id,
+        recent_exit_guard_materialization=recent_exit_guard_materialization,
     )
 
 

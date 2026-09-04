@@ -1665,6 +1665,33 @@ Momentum Continuation is introduced as a PIT-only foundation for HOLD / ADD / RE
 
 Re-entry is not a separate action. It is a new `BUY_NEW` after full EXIT and must pass the same canonical chain without preferential treatment. Prior campaign PnL, Paper Ledger results, future price, historical-test performance, and audit judgments must not become Strategy inputs.
 
+Phase32-EW makes the REENTRY boundary explicit:
+
+```text
+PRIOR OWNERSHIP IS AUDIT LINEAGE, NOT PERMANENT CURRENT BUY AUTHORITY
+RECENT EXIT CHURN PROTECTION MUST BE BOUNDED
+AUDITABILITY DOES NOT REQUIRE DAILY FULL-HISTORY MATERIALIZATION
+```
+
+A flat symbol with old prior ownership is evaluated as ordinary current `BUY_NEW`
+unless a bounded recent-exit guard is active. The guard may block or review only
+while the recent EXIT remains materially current, and it may release when
+decision-time PIT evidence requalifies the opportunity. Ledger, PM EXIT,
+campaign, and registry evidence remain canonical audit sources, but full prior
+campaign/PM history must not be re-materialized daily as current rank, target,
+allocation, or eligibility authority.
+
+Phase32-EZ fixes the runtime connectivity for that guard. The bounded guard's
+current-decision source is a compact run-scoped index materialized only after a
+same-day full `SELL_EXIT` / `EXIT` execution has been persistently committed.
+The index stores the symbol, exit business date, prior campaign id, minimal
+PM/Strategy decision pointers, bounded guard status, run binding, and expiry
+contract. It is discovered by the next decision day as `recent_exit_guard`
+lineage while the BUY semantic remains ordinary `BUY_NEW`. It must reject stale
+cross-run rows when a runtime-test run id is known, compact expired rows, and
+must not restore whole-run `executions.jsonl` scans, strict-prior PM EXIT scans,
+or permanent old-ownership penalties in the current BUY hot path.
+
 Future performance work must follow the Phase27-D1 sequence: repair BUY_ADD authority first, prove the canonical contract with targeted tests, then add observability/shadow foundations, and only then run controlled performance experiments one change at a time.
 
 ## 30. Phase29-L21T-AV Multi-Horizon Momentum Trajectory Semantics

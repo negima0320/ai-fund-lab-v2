@@ -1,0 +1,156 @@
+{
+  "classification_summary": {
+    "DELETE": 1,
+    "KEEP": 123,
+    "PRESERVE_SUMMARY": 89629
+  },
+  "daily_date_count": 557,
+  "delete_scope_planned": [
+    "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/daily",
+    "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/.DS_Store"
+  ],
+  "file_count_before": 70222,
+  "first_daily_date": "2022-10-03",
+  "last_daily_date": "2025-01-09",
+  "no_future_information_used_for_production_judgment": true,
+  "period_summary": {
+    "2023_strong_growth": {
+      "avg_bq_positive_count": 42.011905,
+      "avg_capitalized_pc_member_count": 13.047619,
+      "avg_cash": 272919.166667,
+      "avg_daily_dir_size_bytes": 138332093.238095,
+      "avg_equity": 1450135.47619,
+      "avg_exposure": 0.87045,
+      "avg_market_value": 1255193.214286,
+      "avg_old_gt120bd_reentry_suppressed_count": 2.202381,
+      "avg_pc_member_count": 52.821429,
+      "avg_positive_add_count": 0.047619,
+      "avg_prior_exit_lineage_row_count": 22.904762,
+      "avg_reentry_suppressed_count": 21.97619,
+      "avg_total_elapsed_seconds": 143.278769,
+      "days": 84,
+      "period": [
+        "2023-03-01",
+        "2023-06-30"
+      ]
+    },
+    "2024_late_stagnation": {
+      "avg_bq_positive_count": 42.832,
+      "avg_capitalized_pc_member_count": 8.84,
+      "avg_cash": 839238.481013,
+      "avg_daily_dir_size_bytes": 241177755.088,
+      "avg_equity": 1460416.96,
+      "avg_exposure": 0.697525,
+      "avg_market_value": 930018.24,
+      "avg_old_gt120bd_reentry_suppressed_count": 18.504,
+      "avg_pc_member_count": 52.72,
+      "avg_positive_add_count": 0.0,
+      "avg_prior_exit_lineage_row_count": 37.672,
+      "avg_reentry_suppressed_count": 36.76,
+      "avg_total_elapsed_seconds": 277.84407,
+      "days": 125,
+      "period": [
+        "2024-07-01",
+        "2024-12-31"
+      ]
+    },
+    "2024_post_march": {
+      "avg_bq_positive_count": 42.770408,
+      "avg_capitalized_pc_member_count": 8.908163,
+      "avg_cash": 864688.135593,
+      "avg_daily_dir_size_bytes": 231195838.02551,
+      "avg_equity": 1483097.040816,
+      "avg_exposure": 0.712125,
+      "avg_market_value": 962519.489796,
+      "avg_old_gt120bd_reentry_suppressed_count": 16.714286,
+      "avg_pc_member_count": 52.382653,
+      "avg_positive_add_count": 0.0,
+      "avg_prior_exit_lineage_row_count": 37.780612,
+      "avg_reentry_suppressed_count": 37.015306,
+      "avg_total_elapsed_seconds": 264.860179,
+      "days": 196,
+      "period": [
+        "2024-03-18",
+        "2024-12-31"
+      ]
+    }
+  },
+  "preserved_paths": {
+    "daily_metrics_csv": "docs/phase_reports/phase32_ex_preserved_old_run_evidence/old_run_daily_metrics.csv",
+    "inventory_csv": "docs/phase_reports/phase32_ex_preserved_old_run_evidence/old_run_full_inventory_before_cleanup.csv",
+    "reentry_bias_json": "docs/phase_reports/phase32_ex_preserved_old_run_evidence/old_run_reentry_history_bias_minimal_evidence.json",
+    "run_level_metadata_kept_in_place": [
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/run_state.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/plan.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/historical_evaluation_authority.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/fresh_run_summary.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/final_summary.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/abandonment.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/strategy_shadow_manifest.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/strategy_shadow_summary.json",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/final_state_snapshot",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/recovery",
+      "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z/source_transitions"
+    ]
+  },
+  "reentry_suppressed_age_buckets": {
+    "11-30": 2265,
+    "121-250": 2846,
+    "251-400": 1582,
+    "31-60": 1638,
+    "61-120": 1979,
+    "<=10": 4283,
+    ">400": 735
+  },
+  "run_id": "runtime-test-historical-extended-smoke-20260902T060955933565Z",
+  "run_identity": {
+    "business_days": 650,
+    "final_judgment": "ABANDONED",
+    "initial_cash": 1000000.0,
+    "profile": "historical-extended-smoke",
+    "source_commit_current_in_run_state": null,
+    "start_date": "2022-10-03",
+    "status": "ABANDONED"
+  },
+  "run_path": "reports/runtime_tests/runs/runtime-test-historical-extended-smoke-20260902T060955933565Z",
+  "schema_version": "phase32_ex_old_run_minimal_evidence_summary.v1",
+  "size_before_bytes": 100987275048,
+  "top_reentry_suppression_reasons": [
+    [
+      "reentry_unknown_prior_context_independence_not_established",
+      3505
+    ],
+    [
+      "reentry_repeated_unresolved_churn",
+      3349
+    ],
+    [
+      "reentry_trend_recovery_not_satisfied",
+      3248
+    ],
+    [
+      "reentry_hard_stop_new_thesis_not_sufficient",
+      2255
+    ],
+    [
+      "reentry_entry_admission_not_allowed",
+      1236
+    ],
+    [
+      "reentry_recovery_qualified",
+      711
+    ],
+    [
+      "recoverable_prior_exit_context_defect",
+      692
+    ],
+    [
+      "reentry_momentum_recovery_not_satisfied",
+      312
+    ],
+    [
+      "reentry_capacity_unavailable",
+      20
+    ]
+  ]
+}

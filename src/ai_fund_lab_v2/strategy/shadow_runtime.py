@@ -1206,47 +1206,116 @@ def _supply_prior_exit_state(
     opportunity: Mapping[str, Any],
     current: Mapping[str, Any],
 ) -> dict[str, Any]:
-    ledger_path = runtime_root / "persistent_ledger" / "executions.jsonl"
-    executions = _read_jsonl(ledger_path)
     current_symbols = {
         str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
         for row in current.get("rows") or ()
         if isinstance(row, Mapping) and _float(row.get("quantity"), default=0.0) > 0
     }
-    pm_exit_evidence = (
-        _strict_prior_pm_exit_decision_evidence_by_campaign(run_dir=run_dir, business_date=business_date)
-        if run_dir is not None
-        else {}
-    )
-    prior_by_symbol = _resolve_prior_closed_campaigns_from_executions(
-        executions=executions,
+    guard_source = _bounded_recent_exit_guard_state_by_symbol(
+        run_dir=run_dir,
+        runtime_root=runtime_root,
         business_date=business_date,
-        pm_exit_evidence_by_campaign=pm_exit_evidence,
     )
-    candidate_result = _attach_prior_exit_to_summary(candidate, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
-    opportunity_result = _attach_prior_exit_to_summary(opportunity, prior_by_symbol=prior_by_symbol, current_symbols=current_symbols)
+    guard_by_symbol = guard_source["by_symbol"]
+    candidate_result = _attach_prior_exit_to_summary(candidate, prior_by_symbol=guard_by_symbol, current_symbols=current_symbols)
+    opportunity_result = _attach_prior_exit_to_summary(opportunity, prior_by_symbol=guard_by_symbol, current_symbols=current_symbols)
     supplied_symbols = sorted(set(candidate_result["supplied_symbols"]) | set(opportunity_result["supplied_symbols"]))
     return {
         "candidate": candidate_result["summary"],
         "opportunity": opportunity_result["summary"],
         "evidence": {
-            "schema_version": "phase29_l21k_prior_exit_state_materialization_evidence.v1",
+            "schema_version": "phase32_ew_bounded_recent_exit_guard_supply_evidence.v1",
             "business_date": business_date,
-            "authority": "persistent_ledger_execution_history",
-            "source_path": str(ledger_path),
-            "source_hash": _file_hash(ledger_path),
-            "pm_exit_evidence_supplied": bool(pm_exit_evidence),
-            "pm_exit_evidence_campaign_count": len(pm_exit_evidence),
-            "temporal_selection_rule": "execution_business_date_strictly_less_than_decision_business_date",
-            "materialized_field": "prior_exit_context",
-            "prior_closed_campaign_count": len(prior_by_symbol),
+            "authority": "bounded_recent_exit_guard_index",
+            "source_path": guard_source["source_path"],
+            "source_hash": guard_source["source_hash"],
+            "stale_or_cross_run_guard_rows_rejected": guard_source.get("stale_or_cross_run_rows_rejected", 0),
+            "pm_exit_evidence_supplied": False,
+            "pm_exit_evidence_campaign_count": 0,
+            "temporal_selection_rule": "guard_exit_business_date_strictly_less_than_decision_business_date",
+            "materialized_field": "recent_exit_guard_minimal_lineage",
+            "prior_closed_campaign_count": len(guard_by_symbol),
             "candidate_supplied_count": candidate_result["supplied_count"],
             "opportunity_supplied_count": opportunity_result["supplied_count"],
             "supplied_symbols": supplied_symbols,
-            "current_position_symbols_skipped": sorted(symbol for symbol in current_symbols if symbol in prior_by_symbol),
+            "current_position_symbols_skipped": sorted(symbol for symbol in current_symbols if symbol in guard_by_symbol),
             "future_or_same_day_exit_used": False,
             "post_hoc_pnl_input_used": False,
-            "missing_prior_exit_behavior": "normal_buy_new_unchanged",
+            "missing_prior_exit_behavior": "ordinary_current_buy_unchanged",
+            "full_executions_jsonl_scanned_for_reentry": False,
+            "strict_prior_pm_exit_artifacts_scanned_for_reentry": False,
+            "full_prior_campaign_history_scanned_for_reentry": False,
+            "daily_full_prior_exit_context_materialized": False,
+        },
+    }
+
+
+def _bounded_recent_exit_guard_state_by_symbol(
+    *,
+    run_dir: Path | None,
+    runtime_root: Path,
+    business_date: str,
+) -> dict[str, Any]:
+    paths = [
+        runtime_root / "runtime_state" / "recent_exit_guard" / f"{business_date}.json",
+        runtime_root / "runtime_state" / "recent_exit_guard.json",
+    ]
+    if run_dir is not None:
+        paths.append(run_dir / "daily" / business_date / "strategy" / "recent_exit_guard.json")
+    expected_runtime_test_run_id = run_dir.name if run_dir is not None else ""
+    for path in paths:
+        payload = _read_json(path)
+        rows = payload.get("rows") if isinstance(payload.get("rows"), list) else payload.get("guards")
+        if not isinstance(rows, list):
+            continue
+        by_symbol: dict[str, dict[str, Any]] = {}
+        stale_or_cross_run_rows_rejected = 0
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            row_run_id = str(row.get("runtime_test_run_id") or row.get("run_id") or "").strip()
+            if expected_runtime_test_run_id and row_run_id and row_run_id != expected_runtime_test_run_id:
+                stale_or_cross_run_rows_rejected += 1
+                continue
+            symbol = str(row.get("symbol") or row.get("security_code") or row.get("code") or "").strip()
+            exit_date = str(row.get("most_recent_full_exit_business_date") or row.get("prior_exit_business_date") or "").strip()
+            if not symbol or not exit_date or exit_date >= business_date:
+                continue
+            by_symbol[symbol] = _minimal_recent_exit_guard_row(row, business_date=business_date, source_path=path)
+        return {
+            "by_symbol": by_symbol,
+            "source_path": str(path),
+            "source_hash": _file_hash(path),
+            "stale_or_cross_run_rows_rejected": stale_or_cross_run_rows_rejected,
+        }
+    return {"by_symbol": {}, "source_path": "", "source_hash": "", "stale_or_cross_run_rows_rejected": 0}
+
+
+def _minimal_recent_exit_guard_row(row: Mapping[str, Any], *, business_date: str, source_path: Path) -> dict[str, Any]:
+    exit_date = str(row.get("most_recent_full_exit_business_date") or row.get("prior_exit_business_date") or "").strip()
+    prior_campaign_id = str(row.get("prior_campaign_id") or row.get("prior_exit_campaign_id") or "").strip()
+    source_pm_decision_id = str(row.get("source_pm_decision_id") or "").strip()
+    source_decision_id = str(row.get("source_decision_id") or "").strip()
+    return {
+        "prior_exit_business_date": exit_date,
+        "prior_campaign_id": prior_campaign_id,
+        "prior_exit_campaign_id": prior_campaign_id,
+        "source_pm_decision_id": source_pm_decision_id,
+        "source_decision_id": source_decision_id,
+        "prior_exit_provenance_status": str(row.get("prior_exit_provenance_status") or "PASS"),
+        "prior_exit_reason": str(row.get("guard_relevant_exit_class") or row.get("prior_exit_reason") or ""),
+        "ownership_lineage": "PRIOR_EXIT_LINEAGE_PRESENT",
+        "recent_exit_guard_state": str(row.get("recent_exit_guard_state") or "ACTIVE_RECENT_EXIT_GUARD"),
+        "recent_exit_guard_status": str(row.get("recent_exit_guard_status") or "FAIL_CLOSED"),
+        "recent_exit_guard_reason": str(row.get("recent_exit_guard_reason") or "recent_exit_churn_guard_active"),
+        "recent_exit_guard_source": {
+            "source_path": str(source_path),
+            "source_hash": _file_hash(source_path),
+            "business_date": business_date,
+            "prior_exit_business_date": exit_date,
+            "prior_campaign_id": prior_campaign_id,
+            "source_pm_decision_id": source_pm_decision_id,
+            "source_decision_id": source_decision_id,
         },
     }
 

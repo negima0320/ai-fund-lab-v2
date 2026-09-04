@@ -53,6 +53,8 @@ LOT_AWARE_REALLOCATION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_LOT_AWARE_FINAL_
 LOW_PRICE_RISK_ALLOCATION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_LOW_PRICE_RISK_ALLOCATION_AUTHORITY"
 SEMANTIC_REENTRY_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_SEMANTIC_REENTRY_AUTHORITY"
 REENTRY_SEMANTIC_ELIGIBILITY_SCHEMA_VERSION = "portfolio_construction.reentry_semantic_eligibility.v1"
+RECENT_EXIT_GUARD_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_RECENT_EXIT_GUARD_AUTHORITY"
+RECENT_EXIT_GUARD_SCHEMA_VERSION = "portfolio_construction.recent_exit_guard.v1"
 CAPITAL_COMPETITION_AUTHORITY_TYPE = "PORTFOLIO_CONSTRUCTION_CAPITAL_COMPETITION_AUTHORITY"
 FINAL_NO_DEPLOYABLE_OPPORTUNITY_OWNER = "PORTFOLIO_CONSTRUCTION"
 CAPITAL_COMPETITOR_TYPES = ("NEW_BUY", "ADD", "CASH")
@@ -63,6 +65,7 @@ CANONICAL_ADD_MARGINAL_CAPITAL_COMPETITION_SCHEMA_VERSION = "canonical_add_margi
 CANONICAL_ADD_MARGINAL_CAPITAL_COMPETITION_AUTHORITY_SCHEMA_VERSION = (
     "canonical_add_marginal_capital_competition_authority.v1"
 )
+UNIFIED_MARGINAL_CAPITAL_SHADOW_ERROR_SCHEMA_VERSION = "unified_marginal_capital_shadow_error.v1"
 ADD_ACCELERATION_AUTHORITY_SCHEMA_VERSION = "portfolio_construction.add_acceleration_authority.v1"
 LOT_AWARE_ALLOCATION_TO_SIZING_COMPATIBILITY_SCHEMA_VERSION = (
     "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1"
@@ -1276,22 +1279,16 @@ def _resolve_low_price_reentry_allocation_guard(
     member_reason_code = ""
     adjustments: list[dict[str, Any]] = []
 
-    if is_buy_new and semantic_buy["semantic_buy_type"] == "REENTRY":
+    recent_guard_active = str(semantic_buy.get("recent_exit_guard_state") or "").upper() == "ACTIVE_RECENT_EXIT_GUARD"
+    if is_buy_new and recent_guard_active:
         if reentry_eligibility["eligibility_status"] != "PASS":
             final_weight = 0.0
             final_membership = False
-            if reentry_eligibility["reentry_semantic_state"] == "REENTRY_NOT_ELIGIBLE_CHURN_PROTECTION":
-                reason = "semantic_reentry_cooldown_blocked"
-                zero_reason = "reentry_minimum_cooldown_not_satisfied"
-                review = ""
-                reason_code = "semantic_reentry_cooldown_blocked"
-                member_reason_code = "reentry_minimum_cooldown_not_satisfied"
-            else:
-                reason = "semantic_reentry_recovery_hurdle_not_satisfied"
-                zero_reason = str(recovery["reentry_recovery_reason"])
-                review = "" if recovery["reentry_recovery_status"] == "FAIL_CLOSED" else str(recovery["reentry_recovery_reason"])
-                reason_code = "semantic_reentry_recovery_blocked"
-                member_reason_code = str(recovery["reentry_recovery_reason"])
+            reason = "recent_exit_guard_blocked"
+            zero_reason = str(recovery["reentry_recovery_reason"] or "recent_exit_guard_not_requalified")
+            review = "" if recovery["reentry_recovery_status"] == "FAIL_CLOSED" else zero_reason
+            reason_code = "recent_exit_guard_blocked"
+            member_reason_code = zero_reason
 
     low_price_guard_active = is_buy_side_allocation and price_tier in PRICE_TICK_RISK_CAPS and final_weight > 0
     if low_price_guard_active and rolling_value is None:
@@ -1424,34 +1421,73 @@ def _semantic_reentry_evidence(*, row: Mapping[str, Any], business_date: str, is
             "business_days_since_exit": None,
             "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
             "reentry_cooldown_status": "NOT_APPLICABLE",
+            "ownership_lineage": "CURRENT_POSITION",
+            "recent_exit_guard_state": "NOT_APPLICABLE",
+            "recent_exit_guard_status": "NOT_APPLICABLE",
         }
     prior_exit = _prior_exit_business_date(row)
     if not prior_exit or prior_exit >= business_date:
+        if prior_exit and prior_exit >= business_date:
+            return {
+                "semantic_buy_type": "BUY_NEW",
+                "prior_exit_business_date": prior_exit,
+                "business_days_since_exit": None,
+                "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
+                "reentry_cooldown_status": "FAIL_CLOSED",
+                "ownership_lineage": "PRIOR_EXIT_LINEAGE_PRESENT",
+                "recent_exit_guard_state": "MALFORMED_RECENT_EXIT_GUARD",
+                "recent_exit_guard_status": "FAIL_CLOSED",
+                "recent_exit_guard_reason": "prior_exit_date_not_strictly_prior",
+            }
         return {
             "semantic_buy_type": "BUY_NEW",
             "prior_exit_business_date": "",
             "business_days_since_exit": None,
             "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
             "reentry_cooldown_status": "NOT_APPLICABLE",
+            "ownership_lineage": "NEVER_HELD_OR_NO_ACTIVE_LINEAGE",
+            "recent_exit_guard_state": "NOT_APPLICABLE",
+            "recent_exit_guard_status": "NOT_APPLICABLE",
         }
     days_since_exit = _completed_business_days_between(prior_exit, business_date)
-    status = "PASS" if days_since_exit >= REENTRY_COOLDOWN_BUSINESS_DAYS else "FAIL_CLOSED"
     prior_context = _prior_exit_context(row)
+    guard_active = days_since_exit < REENTRY_COOLDOWN_BUSINESS_DAYS
+    if guard_active and not (prior_context.get("prior_campaign_id") and prior_context.get("source_pm_decision_id")):
+        guard_state = "MALFORMED_RECENT_EXIT_GUARD"
+        guard_status = "FAIL_CLOSED"
+        guard_reason = "active_recent_exit_guard_missing_minimal_source_pointer"
+    elif guard_active:
+        guard_state = "ACTIVE_RECENT_EXIT_GUARD"
+        guard_status = "FAIL_CLOSED"
+        guard_reason = "recent_exit_churn_guard_active"
+    else:
+        guard_state = "EXPIRED_NOT_CURRENT_DECISION_AUTHORITY"
+        guard_status = "PASS"
+        guard_reason = "prior_exit_lineage_audit_only"
     return {
-        "semantic_buy_type": "REENTRY",
+        "semantic_buy_type": "BUY_NEW",
         "prior_exit_business_date": prior_exit,
         "prior_campaign_id": prior_context["prior_campaign_id"],
         "prior_exit_campaign_id": prior_context["prior_campaign_id"],
         "prior_exit_decision_type": prior_context["prior_exit_decision_type"],
         "prior_exit_reason": prior_context["prior_exit_reason"],
-        "prior_exit_reason_codes": prior_context["prior_exit_reason_codes"],
         "source_pm_decision_id": prior_context["source_pm_decision_id"],
         "source_decision_id": prior_context["source_decision_id"],
         "prior_exit_provenance_status": prior_context["provenance_status"],
-        "prior_exit_context": prior_context,
         "business_days_since_exit": days_since_exit,
         "reentry_cooldown_threshold_bd": REENTRY_COOLDOWN_BUSINESS_DAYS,
-        "reentry_cooldown_status": status,
+        "reentry_cooldown_status": "FAIL_CLOSED" if guard_active else "PASS",
+        "ownership_lineage": "PRIOR_EXIT_LINEAGE_PRESENT",
+        "recent_exit_guard_state": guard_state,
+        "recent_exit_guard_status": guard_status,
+        "recent_exit_guard_reason": guard_reason,
+        "recent_exit_guard_source": {
+            "prior_campaign_id": prior_context["prior_campaign_id"],
+            "prior_exit_business_date": prior_exit,
+            "source_pm_decision_id": prior_context["source_pm_decision_id"],
+            "source_decision_id": prior_context["source_decision_id"],
+            "prior_exit_provenance_status": prior_context["provenance_status"],
+        },
     }
 
 
@@ -1510,8 +1546,11 @@ def _reentry_recovery_evidence(*, row: Mapping[str, Any], semantic: Mapping[str,
         "prior_same_symbol_exit_count": prior_exit_count,
         "reentry_capacity_status": liquidity_status,
     }
-    if semantic.get("semantic_buy_type") != "REENTRY":
+    guard_state = str(semantic.get("recent_exit_guard_state") or "").upper()
+    if guard_state not in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"}:
         return base
+    if guard_state == "MALFORMED_RECENT_EXIT_GUARD":
+        return {**base, "reentry_recovery_status": "FAIL_CLOSED", "reentry_recovery_reason": str(semantic.get("recent_exit_guard_reason") or "malformed_recent_exit_guard_authority")}
     failures: list[str] = []
     unknowns: list[str] = []
     context_class = context_classification["classification"]
@@ -1621,7 +1660,7 @@ def _reentry_prior_exit_context_classification(
     previous_exit_reason: str,
     previous_exit_reason_class: str,
 ) -> dict[str, str]:
-    if semantic.get("semantic_buy_type") != "REENTRY":
+    if str(semantic.get("recent_exit_guard_state") or "").upper() not in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"}:
         return {"classification": "NOT_APPLICABLE", "reason": "not_reentry"}
     explicit = str(row.get("reentry_prior_exit_context_classification") or row.get("prior_exit_context_classification") or "").upper()
     if explicit in {"COMPLETE_AUTHORITATIVE_CONTEXT", "RECOVERABLE_PROVENANCE_DEFECT", "REENTRY_UNKNOWN_PRIOR_CONTEXT"}:
@@ -1712,7 +1751,9 @@ def _canonical_reentry_semantic_eligibility(
     broker_status = _reentry_broker_eligibility_status(row)
     corporate_action_status = str(recovery.get("reentry_corporate_action_status") or _corporate_action_status(row))
     safety_status = _reentry_safety_status(row=row, liquidity_status=liquidity_status, reason_text=" ".join([target_weight_reason, zero_weight_reason, review_reason]))
-    if semantic_type != "REENTRY":
+    guard_state = str(semantic.get("recent_exit_guard_state") or "NOT_APPLICABLE").upper()
+    guard_active = guard_state in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"}
+    if not guard_active:
         return {
             "schema_version": REENTRY_SEMANTIC_ELIGIBILITY_SCHEMA_VERSION,
             "owner": "PORTFOLIO_CONSTRUCTION",
@@ -1721,11 +1762,14 @@ def _canonical_reentry_semantic_eligibility(
             "semantic_buy_type": semantic_type,
             "eligibility_status": "NOT_APPLICABLE",
             "reentry_semantic_state": "REENTRY_NOT_APPLICABLE",
-            "reason_codes": ["REENTRY_NOT_APPLICABLE"],
-            "reentry_identity": "NOT_REENTRY",
+            "reason_codes": ["REENTRY_CURRENT_DECISION_SEMANTIC_REMOVED"],
+            "reentry_identity": "AUDIT_LINEAGE_ONLY" if prior_exit_date else "NOT_REENTRY",
             "prior_exit_context_status": "NOT_APPLICABLE",
             "churn_protection_status": "NOT_APPLICABLE",
             "renewed_current_evidence_status": "NOT_APPLICABLE",
+            "recent_exit_guard_state": guard_state,
+            "recent_exit_guard_status": str(semantic.get("recent_exit_guard_status") or "NOT_APPLICABLE"),
+            "recent_exit_guard_reason": str(semantic.get("recent_exit_guard_reason") or ""),
             "candidate_eligibility_status": current_candidate_status,
             "broker_eligibility_status": broker_status,
             "corporate_action_status": corporate_action_status,
@@ -1736,7 +1780,7 @@ def _canonical_reentry_semantic_eligibility(
             "future_outcome_inputs_used": 0,
             "paper_ledger_inputs_used": 0,
         }
-    reason_codes.append("REENTRY_IDENTITY_PRIOR_EXIT")
+    reason_codes.append("RECENT_EXIT_GUARD_ACTIVE")
     prior_exit_context_status = "PASS"
     if str(recovery.get("previous_exit_reason_class") or "").upper() == "GENERIC":
         prior_exit_context_status = "REVIEW_REQUIRED"
@@ -1757,15 +1801,14 @@ def _canonical_reentry_semantic_eligibility(
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
-    cooldown_status = str(semantic.get("reentry_cooldown_status") or "").upper()
-    if cooldown_status != "PASS":
+    if guard_state == "MALFORMED_RECENT_EXIT_GUARD":
         return _reentry_semantic_result(
             business_date=business_date,
             semantic=semantic,
             recovery=recovery,
             eligibility_status="FAIL_CLOSED",
-            state="REENTRY_NOT_ELIGIBLE_CHURN_PROTECTION",
-            reason_codes=[*reason_codes, "REENTRY_BLOCKED_CHURN_PROTECTION"],
+            state="RECENT_EXIT_GUARD_MALFORMED",
+            reason_codes=[*reason_codes, "RECENT_EXIT_GUARD_MALFORMED"],
             prior_exit_context_status=prior_exit_context_status,
             churn_status="FAIL_CLOSED",
             renewed_status="NOT_EVALUATED",
@@ -1775,7 +1818,7 @@ def _canonical_reentry_semantic_eligibility(
             safety_status=safety_status,
             temporal_status=temporal_status,
         )
-    reason_codes.append("REENTRY_CHURN_PROTECTION_SATISFIED")
+    reason_codes.append("RECENT_EXIT_GUARD_REQUIRES_CURRENT_PIT_REQUALIFICATION")
     recovery_status = str(recovery.get("reentry_recovery_status") or "").upper()
     recovery_reason = str(recovery.get("reentry_recovery_reason") or "")
     if recovery_status != "PASS":
@@ -1837,8 +1880,8 @@ def _canonical_reentry_semantic_eligibility(
         semantic=semantic,
         recovery=recovery,
         eligibility_status="PASS",
-        state="REENTRY_ELIGIBLE",
-        reason_codes=[*reason_codes, "REENTRY_ELIGIBLE_RENEWED_EVIDENCE"],
+        state="RECENT_EXIT_GUARD_CURRENT_PIT_REQUALIFIED",
+        reason_codes=[*reason_codes, "RECENT_EXIT_GUARD_CURRENT_PIT_REQUALIFIED"],
         prior_exit_context_status=prior_exit_context_status,
         churn_status="PASS",
         renewed_status="PASS",
@@ -1901,6 +1944,10 @@ def _reentry_semantic_result(
         "safety_restriction_status": safety_status,
         "temporal_contract_status": temporal_status,
         "constraint_scope": "SYMBOL_LOCAL",
+        "recent_exit_guard_state": str(semantic.get("recent_exit_guard_state") or ""),
+        "recent_exit_guard_status": str(semantic.get("recent_exit_guard_status") or ""),
+        "recent_exit_guard_reason": str(semantic.get("recent_exit_guard_reason") or ""),
+        "recent_exit_guard_source": dict(semantic.get("recent_exit_guard_source") or {}),
         "decision_input_provenance": "DECISION_TIME_PIT_FIELDS_ONLY",
         "future_outcome_inputs_used": 0,
         "paper_ledger_inputs_used": 0,
@@ -3041,12 +3088,22 @@ def build_capital_competition_framework(
         cash_evidence=cash_evidence,
         incremental_budget_evidence=incremental_budget_evidence,
     )
+    resolved_business_date = business_date or _business_date_from_members(members)
+    unified_marginal_capital_shadow = _build_non_authoritative_unified_marginal_capital_shadow(
+        members=members,
+        competitors=competitors,
+        cash_evidence=cash_evidence,
+        market_candidate_cash_interaction=market_candidate_cash_interaction,
+        business_date=resolved_business_date,
+        incremental_budget_evidence=incremental_budget_evidence,
+        risk_pacing_evidence=risk_pacing_evidence,
+    )
     return {
         "schema_version": "portfolio_construction.capital_competition.v1",
         "authority": {
             "authority_type": CAPITAL_COMPETITION_AUTHORITY_TYPE,
             "owner": FINAL_NO_DEPLOYABLE_OPPORTUNITY_OWNER,
-            "business_date": business_date or _business_date_from_members(members),
+            "business_date": resolved_business_date,
             "competitor_ordering": "marginal_capital_value_then_quality_then_construction_priority_then_symbol",
             "new_buy_automatic_priority": False,
             "add_automatic_priority": False,
@@ -3079,6 +3136,9 @@ def build_capital_competition_framework(
             "add_marginal_pm_intent_owner_preserved": True,
             "add_marginal_position_sizing_quantity_owner_preserved": True,
             "add_marginal_runtime_priority_redecision_allowed": False,
+            "unified_marginal_capital_shadow_schema_version": marginal_capital_value.UNIFIED_SHADOW_SCHEMA_VERSION,
+            "unified_marginal_capital_shadow_authoritative_consumer_count": 0,
+            "unified_marginal_capital_shadow_production_consumer": False,
             "single_path_remains_only_authoritative_trading_path": True,
             "dual_capital_authority": False,
         },
@@ -3092,6 +3152,7 @@ def build_capital_competition_framework(
         "canonical_residual_reconsideration_shadow": canonical_residual_reconsideration_shadow,
         "canonical_add_marginal_capital_competition": canonical_add_marginal_competition,
         "canonical_add_marginal_capital_competition_authority": canonical_add_marginal_competition_authority,
+        "unified_marginal_capital_shadow": unified_marginal_capital_shadow,
         "capital_competition_winner_type": market_candidate_cash_interaction["capital_competition_winner_type"],
         "capital_competition_winner_symbol": market_candidate_cash_interaction["capital_competition_winner_symbol"],
         "capital_competition_winner_reason_codes": market_candidate_cash_interaction["winner_reason_codes"],
@@ -3141,6 +3202,61 @@ def build_capital_competition_framework(
             "reason_codes": final_reason_codes,
         },
     }
+
+
+def _build_non_authoritative_unified_marginal_capital_shadow(
+    *,
+    members: Sequence[Mapping[str, Any]],
+    competitors: Sequence[Mapping[str, Any]],
+    cash_evidence: Mapping[str, Any],
+    market_candidate_cash_interaction: Mapping[str, Any],
+    business_date: str,
+    incremental_budget_evidence: Mapping[str, Any],
+    risk_pacing_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        return marginal_capital_value.build_unified_marginal_capital_shadow(
+            members=members,
+            competitors=competitors,
+            cash_evidence=cash_evidence,
+            market_candidate_cash_interaction=market_candidate_cash_interaction,
+            business_date=business_date,
+            incremental_budget_evidence=incremental_budget_evidence,
+            risk_pacing_evidence=risk_pacing_evidence,
+        )
+    except Exception as exc:
+        source_path = Path(marginal_capital_value.__file__ or "")
+        try:
+            source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest() if source_path.is_file() else ""
+        except OSError:
+            source_hash = ""
+        return {
+            "schema_version": UNIFIED_MARGINAL_CAPITAL_SHADOW_ERROR_SCHEMA_VERSION,
+            "shadow_schema": marginal_capital_value.UNIFIED_SHADOW_SCHEMA_VERSION,
+            "authority_type": marginal_capital_value.UNIFIED_SHADOW_AUTHORITY_TYPE,
+            "contract_id": marginal_capital_value.UNIFIED_SHADOW_CONTRACT_ID,
+            "producer": marginal_capital_value.PRODUCER,
+            "component": "unified_marginal_capital_shadow",
+            "status": "SHADOW_ERROR",
+            "producer_result_status": "SHADOW_ERROR",
+            "business_date": business_date,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "source_version": marginal_capital_value.PRODUCER,
+            "source_path": str(source_path),
+            "source_hash": source_hash,
+            "authoritative_consumer_count": 0,
+            "shadow_only": True,
+            "production_allocation_consumer": False,
+            "production_ordering_consumer": False,
+            "production_sizing_consumer": False,
+            "runtime_planning_consumer": False,
+            "production_consumer_connected": False,
+            "runtime_switch_performed": False,
+            "broker_write_performed": False,
+            "reason_codes": ["NON_AUTHORITATIVE_SHADOW_GENERATION_ERROR"],
+            "canonical_production_artifact_survives_shadow_failure": True,
+        }
 
 
 def _canonical_deployment_set(
@@ -6083,6 +6199,19 @@ def _context_ratio(context: Mapping[str, Any], key: str, *, default: float | Non
 
 
 def _blocked_reentry_buy_new_reason(member: Mapping[str, Any]) -> str:
+    guard_state = str(member.get("recent_exit_guard_state") or "").upper()
+    guard_status = str(member.get("recent_exit_guard_status") or "").upper()
+    if not guard_state and isinstance(member.get("reentry_semantic_eligibility"), Mapping):
+        guard_state = str((member.get("reentry_semantic_eligibility") or {}).get("recent_exit_guard_state") or "").upper()
+        guard_status = guard_status or str((member.get("reentry_semantic_eligibility") or {}).get("recent_exit_guard_status") or "").upper()
+    if isinstance(member.get("semantic_reentry_authority"), Mapping):
+        semantic_result = (member.get("semantic_reentry_authority") or {}).get("semantic_result")
+        if isinstance(semantic_result, Mapping):
+            guard_state = guard_state or str(semantic_result.get("recent_exit_guard_state") or "").upper()
+            guard_status = guard_status or str(semantic_result.get("recent_exit_guard_status") or "").upper()
+    if guard_state in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"} and guard_status != "PASS":
+        return "recent_exit_guard_buy_new_bypass_blocked"
+
     semantic = str(member.get("semantic_buy_type") or "").upper()
     semantic_result: Mapping[str, Any] = {}
     if not semantic and isinstance(member.get("semantic_reentry_authority"), Mapping):
