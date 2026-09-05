@@ -1644,6 +1644,7 @@ def _structured_add_worthiness_evidence(
     risk_status = str(risk.get("status") or "").upper()
     add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
     reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
+    add_history_count = int(add_history.get("event_count") or 0)
     reasons: list[str] = []
     if campaign_status != "COMPLETE":
         reasons.append("canonical_campaign_identity_missing")
@@ -1651,8 +1652,6 @@ def _structured_add_worthiness_evidence(
         reasons.append("incremental_continuation_quality_not_pass")
     if risk_status not in {"PASS", "REVIEW_REQUIRED", ""}:
         reasons.append("downside_risk_blocks_add")
-    if int(add_history.get("event_count") or 0) >= 5:
-        reasons.append("prior_add_history_limits_incremental_add")
     if int(reduce_history.get("event_count") or 0) > 0:
         reasons.append("prior_reduce_history_requires_add_review")
     status = "PASS" if not reasons else "NO_ADD"
@@ -1665,6 +1664,11 @@ def _structured_add_worthiness_evidence(
         "observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
         "observed_giveback": lifecycle.get("observed_giveback"),
         "add_history_summary": add_history,
+        "add_count_observability_only": True,
+        "current_campaign_add_count": add_history_count,
+        "add_count_limit_reached_observed": add_history_count >= 5,
+        "add_count_excess_observed": max(add_history_count - 5, 0),
+        "add_count_standalone_decision_authority": False,
         "reduce_history_summary": reduce_history,
         "prior_unrepresentable_reduce_summary": lifecycle.get("prior_unrepresentable_reduce_summary") or {},
         "pm_decision_history_summary": lifecycle.get("pm_decision_history_summary") or {},

@@ -674,6 +674,33 @@ run id is known, compact expired guard rows, and avoid whole-run
 The current BUY action type remains `BUY_NEW`; active guard status is the only
 temporary blocker/release surface.
 
+Phase32-GD's Fresh Target Portfolio SHADOW consumes this boundary as a
+diagnostic invariant. A flat security with old prior ownership and a never-held
+security with equivalent current PIT evidence must receive the same fresh target
+treatment once the bounded recent-exit guard is inactive. Active guard state may
+be shown as a bounded exception, but permanent REENTRY lineage, old campaign
+facts, prior ADD/EXIT counts, average cost, realized PnL, campaign PnL, and
+campaign age must not become current fresh-target membership or weight inputs.
+The SHADOW artifact may expose `BUY_NEW_CONTEXT` or `BUY_ADD_CONTEXT` only to
+explain the delta from current actual holdings; those labels do not create
+action, quantity, order, PM, PC, PS, Runtime, Pending, Submit, Execution, Safety,
+or broker authority.
+
+Phase32-GF requires runtime-test Fresh Target materialization to carry the
+current run binding explicitly. The canonical source is the runtime-test context
+already passed into `generate_strategy_shadow_for_day`; the SHADOW must not
+infer run identity from a latest-run path and must reject explicit stale
+cross-run source evidence without promoting the diagnostic to Production.
+
+Phase32-GH requires the same run binding to survive the final lot-aware
+Portfolio Construction materialization. Any internal re-run of
+`build_capital_competition_framework` during
+`apply_lot_aware_final_reallocation` must receive the same
+`runtime_test_context` as the draft/pre-lot path. A fallback may read the
+draft's existing Fresh Target binding, but must not use latest-run discovery or
+cross-run evidence. The resulting diagnostic remains SHADOW-only with no
+Production consumers.
+
 This replaces the old model:
 
 ```text

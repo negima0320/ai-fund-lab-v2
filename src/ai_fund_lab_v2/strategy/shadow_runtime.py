@@ -347,6 +347,17 @@ def generate_strategy_shadow_for_day(
             buy_quality_summary=_pc_summary(results.get("buy_quality", {}), business_date),
             strategy_intelligence_artifact_path=artifact_paths["strategy_intelligence"],
             output_path=artifact_paths["portfolio_construction_draft"],
+            runtime_test_context={
+                "run_id": run_id,
+                "profile_id": profile_id,
+                "evidence_root": str(run_dir),
+                "business_date": business_date,
+                "feature_date": str(feature_authority.get("selected_feature_date") or business_date),
+                "artifact_subdir": artifact_subdir,
+                "authority_role": authority_role,
+                "materialization_role": materialization_role,
+                "source": "generate_strategy_shadow_for_day",
+            },
             as_of=as_of,
         ),
     )
@@ -376,6 +387,17 @@ def generate_strategy_shadow_for_day(
             draft_path=artifact_paths["portfolio_construction_draft"],
             preflight_path=artifact_paths["position_sizing_preflight"],
             output_path=artifact_paths["portfolio_construction"],
+            runtime_test_context={
+                "run_id": run_id,
+                "profile_id": profile_id,
+                "evidence_root": str(run_dir),
+                "business_date": business_date,
+                "feature_date": str(feature_authority.get("selected_feature_date") or business_date),
+                "artifact_subdir": artifact_subdir,
+                "authority_role": authority_role,
+                "materialization_role": materialization_role,
+                "source": "generate_strategy_shadow_for_day",
+            },
         ),
     )
     produce(
@@ -2497,9 +2519,14 @@ def _produce_lot_aware_final_portfolio_construction(
     draft_path: Path,
     preflight_path: Path,
     output_path: Path,
+    runtime_test_context: Mapping[str, Any] | None = None,
 ) -> Any:
     draft = _read_json(draft_path)
     preflight = _read_json(preflight_path)
+    resolved_runtime_test_context = runtime_test_context or _runtime_test_context_from_portfolio_construction_draft(
+        draft,
+        business_date=business_date,
+    )
     reallocation = portfolio_construction.apply_lot_aware_final_reallocation(
         members=[dict(row) for row in draft.get("portfolio_members") or []],
         lot_feasibility_rows=[dict(row) for row in preflight.get("lot_feasibility_preflight") or []],
@@ -2512,6 +2539,7 @@ def _produce_lot_aware_final_portfolio_construction(
             if isinstance(draft.get("portfolio_policy_allocation_authority"), Mapping)
             else {}
         ),
+        runtime_test_context=resolved_runtime_test_context,
     )
     final_payload = {
         **draft,
@@ -2534,6 +2562,30 @@ def _produce_lot_aware_final_portfolio_construction(
         artifact_path=str(output_path),
         artifact_hash=artifact_hash,
     )
+
+
+def _runtime_test_context_from_portfolio_construction_draft(
+    draft: Mapping[str, Any],
+    *,
+    business_date: str,
+) -> dict[str, Any]:
+    capital_competition = draft.get("capital_competition") if isinstance(draft.get("capital_competition"), Mapping) else {}
+    shadow = (
+        capital_competition.get("fresh_target_portfolio_shadow")
+        if isinstance(capital_competition.get("fresh_target_portfolio_shadow"), Mapping)
+        else {}
+    )
+    binding = shadow.get("run_evidence_root_binding") if isinstance(shadow.get("run_evidence_root_binding"), Mapping) else {}
+    run_id = str(shadow.get("run_id") or shadow.get("runtime_test_run_id") or binding.get("run_id") or "").strip()
+    evidence_root = str(shadow.get("run_evidence_root") or binding.get("evidence_root") or "").strip()
+    return {
+        "run_id": run_id,
+        "evidence_root": evidence_root,
+        "business_date": business_date,
+        "source": "portfolio_construction_draft_fresh_target_binding"
+        if run_id and evidence_root
+        else "missing_runtime_test_context_for_lot_aware_final_rebuild",
+    }
 
 
 class _SimpleProducerResult:

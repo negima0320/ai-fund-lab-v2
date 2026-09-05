@@ -66,6 +66,7 @@ CANONICAL_ADD_MARGINAL_CAPITAL_COMPETITION_AUTHORITY_SCHEMA_VERSION = (
     "canonical_add_marginal_capital_competition_authority.v1"
 )
 UNIFIED_MARGINAL_CAPITAL_SHADOW_ERROR_SCHEMA_VERSION = "unified_marginal_capital_shadow_error.v1"
+FRESH_TARGET_PORTFOLIO_SHADOW_ERROR_SCHEMA_VERSION = "fresh_target_portfolio_shadow_error.v1"
 ADD_ACCELERATION_AUTHORITY_SCHEMA_VERSION = "portfolio_construction.add_acceleration_authority.v1"
 LOT_AWARE_ALLOCATION_TO_SIZING_COMPATIBILITY_SCHEMA_VERSION = (
     "portfolio_construction.lot_aware_allocation_to_sizing_compatibility.v1"
@@ -180,6 +181,7 @@ def produce_portfolio_construction_artifact(
     output_path: Path | str,
     buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
     strategy_intelligence_artifact_path: Path | str | None = None,
+    runtime_test_context: Mapping[str, Any] | None = None,
     as_of: str | None = None,
 ) -> PortfolioConstructionProducerResult:
     payload, evidence = build_portfolio_construction_payload(
@@ -195,6 +197,7 @@ def produce_portfolio_construction_artifact(
         policy_config_summary=policy_config_summary,
         buy_quality_summary=buy_quality_summary,
         strategy_intelligence_artifact_path=strategy_intelligence_artifact_path,
+        runtime_test_context=runtime_test_context,
         as_of=as_of,
     )
     validate_portfolio_construction_artifact(payload)
@@ -226,6 +229,7 @@ def build_portfolio_construction_payload(
     policy_config_summary: PortfolioConstructionSourceSummary,
     buy_quality_summary: PortfolioConstructionSourceSummary | None = None,
     strategy_intelligence_artifact_path: Path | str | None = None,
+    runtime_test_context: Mapping[str, Any] | None = None,
     as_of: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _validate_iso_date(business_date, field="business_date")
@@ -343,6 +347,7 @@ def build_portfolio_construction_payload(
         business_date=business_date,
         incremental_budget_evidence=weight_contract["incremental_budget_reconciliation"],
         risk_pacing_evidence=weight_contract["portfolio_policy_allocation_authority"]["risk_pacing_evidence"],
+        runtime_test_context=runtime_test_context,
     )
     duplicate_conflicts = [reason for reason in reconciliation_reasons if reason.startswith("duplicate_security_unresolved")]
     if duplicate_conflicts:
@@ -2802,18 +2807,12 @@ def _reconcile_incremental_budget(
         business_date=_business_date_from_members(members),
     )
     marginal_priority_by_symbol = marginal_priority["by_symbol"]
-    marginal_priority_requires_stable_order = any(
-        str(authority.get("comparison_sufficiency") or "") == "INSUFFICIENT"
-        for authority in marginal_priority_by_symbol.values()
-    )
     accepted_by_index: dict[int, float] = {}
     remaining = allocation_budget if total_requested_incremental <= allocation_budget else available_budget
     for request in sorted(
         participant_requests,
         key=lambda item: (
-            item["priority"]
-            if marginal_priority_requires_stable_order
-            else _positive_int(
+            _positive_int(
                 (marginal_priority_by_symbol.get(str(item["security_code"])) or {}).get("canonical_marginal_capital_priority_index"),
                 999999,
             ),
@@ -2883,6 +2882,7 @@ def build_capital_competition_framework(
     lot_reallocation_evidence: Mapping[str, Any] | None = None,
     lot_sizing_context_evidence: Mapping[str, Any] | None = None,
     risk_pacing_evidence: Mapping[str, Any] | None = None,
+    runtime_test_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     incremental_budget_evidence = incremental_budget_evidence or {}
     lot_reallocation_evidence = lot_reallocation_evidence or {}
@@ -3098,6 +3098,14 @@ def build_capital_competition_framework(
         incremental_budget_evidence=incremental_budget_evidence,
         risk_pacing_evidence=risk_pacing_evidence,
     )
+    fresh_target_portfolio_shadow = _build_non_authoritative_fresh_target_portfolio_shadow(
+        members=members,
+        unified_marginal_capital_shadow=unified_marginal_capital_shadow,
+        cash_evidence=cash_evidence,
+        business_date=resolved_business_date,
+        target_gross_exposure=target_gross_exposure,
+        runtime_test_context=runtime_test_context,
+    )
     return {
         "schema_version": "portfolio_construction.capital_competition.v1",
         "authority": {
@@ -3139,6 +3147,9 @@ def build_capital_competition_framework(
             "unified_marginal_capital_shadow_schema_version": marginal_capital_value.UNIFIED_SHADOW_SCHEMA_VERSION,
             "unified_marginal_capital_shadow_authoritative_consumer_count": 0,
             "unified_marginal_capital_shadow_production_consumer": False,
+            "fresh_target_portfolio_shadow_schema_version": marginal_capital_value.FRESH_TARGET_PORTFOLIO_SHADOW_SCHEMA_VERSION,
+            "fresh_target_portfolio_shadow_authoritative_consumer_count": 0,
+            "fresh_target_portfolio_shadow_production_consumer": False,
             "single_path_remains_only_authoritative_trading_path": True,
             "dual_capital_authority": False,
         },
@@ -3153,6 +3164,7 @@ def build_capital_competition_framework(
         "canonical_add_marginal_capital_competition": canonical_add_marginal_competition,
         "canonical_add_marginal_capital_competition_authority": canonical_add_marginal_competition_authority,
         "unified_marginal_capital_shadow": unified_marginal_capital_shadow,
+        "fresh_target_portfolio_shadow": fresh_target_portfolio_shadow,
         "capital_competition_winner_type": market_candidate_cash_interaction["capital_competition_winner_type"],
         "capital_competition_winner_symbol": market_candidate_cash_interaction["capital_competition_winner_symbol"],
         "capital_competition_winner_reason_codes": market_candidate_cash_interaction["winner_reason_codes"],
@@ -3255,6 +3267,69 @@ def _build_non_authoritative_unified_marginal_capital_shadow(
             "runtime_switch_performed": False,
             "broker_write_performed": False,
             "reason_codes": ["NON_AUTHORITATIVE_SHADOW_GENERATION_ERROR"],
+            "canonical_production_artifact_survives_shadow_failure": True,
+        }
+
+
+def _build_non_authoritative_fresh_target_portfolio_shadow(
+    *,
+    members: Sequence[Mapping[str, Any]],
+    unified_marginal_capital_shadow: Mapping[str, Any],
+    cash_evidence: Mapping[str, Any],
+    business_date: str,
+    target_gross_exposure: float | None,
+    runtime_test_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_context = dict(runtime_test_context or {})
+    try:
+        return marginal_capital_value.build_fresh_target_portfolio_shadow(
+            members=members,
+            unified_marginal_capital_shadow=unified_marginal_capital_shadow,
+            cash_evidence=cash_evidence,
+            business_date=business_date,
+            feature_date=business_date,
+            target_gross_exposure=target_gross_exposure,
+            run_id=str(runtime_context.get("run_id") or ""),
+            evidence_root=str(runtime_context.get("evidence_root") or ""),
+            require_run_id=bool(runtime_context),
+        )
+    except Exception as exc:
+        source_path = Path(marginal_capital_value.__file__ or "")
+        try:
+            source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest() if source_path.is_file() else ""
+        except OSError:
+            source_hash = ""
+        return {
+            "schema_version": FRESH_TARGET_PORTFOLIO_SHADOW_ERROR_SCHEMA_VERSION,
+            "shadow_schema": marginal_capital_value.FRESH_TARGET_PORTFOLIO_SHADOW_SCHEMA_VERSION,
+            "authority_type": marginal_capital_value.FRESH_TARGET_PORTFOLIO_SHADOW_AUTHORITY_TYPE,
+            "contract_id": marginal_capital_value.FRESH_TARGET_PORTFOLIO_SHADOW_CONTRACT_ID,
+            "producer": marginal_capital_value.PRODUCER,
+            "component": "fresh_target_portfolio_shadow",
+            "status": "SHADOW_ERROR",
+            "producer_result_status": "SHADOW_ERROR",
+            "run_id": str(runtime_context.get("run_id") or ""),
+            "runtime_test_run_id": str(runtime_context.get("run_id") or ""),
+            "run_evidence_root": str(runtime_context.get("evidence_root") or ""),
+            "business_date": business_date,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "source_version": marginal_capital_value.PRODUCER,
+            "source_path": str(source_path),
+            "source_hash": source_hash,
+            "authoritative_consumer_count": 0,
+            "shadow_only": True,
+            "action_authority": False,
+            "quantity_authority": False,
+            "order_authority": False,
+            "production_allocation_consumer": False,
+            "production_ordering_consumer": False,
+            "production_sizing_consumer": False,
+            "runtime_planning_consumer": False,
+            "production_consumer_connected": False,
+            "runtime_switch_performed": False,
+            "broker_write_performed": False,
+            "reason_codes": ["NON_AUTHORITATIVE_FRESH_TARGET_SHADOW_GENERATION_ERROR"],
             "canonical_production_artifact_survives_shadow_failure": True,
         }
 
@@ -7067,6 +7142,7 @@ def apply_lot_aware_final_reallocation(
     incremental_budget_evidence: Mapping[str, Any] | None = None,
     final_capital_competition_risk_pacing_evidence: Mapping[str, Any] | None = None,
     risk_pacing_evidence: Mapping[str, Any] | None = None,
+    runtime_test_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     feasibility_by_symbol = {
         str(row.get("symbol") or row.get("security_code") or ""): dict(row)
@@ -7168,6 +7244,7 @@ def apply_lot_aware_final_reallocation(
             total_target_weight=round(sum(float(member.get("target_weight") or 0.0) for member in members), TARGET_WEIGHT_DECIMALS),
             business_date=business_date,
             risk_pacing_evidence=risk_pacing_evidence,
+            runtime_test_context=runtime_test_context,
         )
         if risk_pacing_evidence
         else {}
@@ -7178,10 +7255,6 @@ def apply_lot_aware_final_reallocation(
         if isinstance(item, Mapping) and str(item.get("symbol") or "")
     }
     marginal_priority_by_symbol = marginal_priority["by_symbol"]
-    marginal_priority_requires_stable_order = any(
-        str(authority.get("comparison_sufficiency") or "") == "INSUFFICIENT"
-        for authority in marginal_priority_by_symbol.values()
-    )
     accepted_by_index: dict[int, float] = {}
     skipped: list[dict[str, Any]] = []
     skipped_by_index: dict[int, str] = {}
@@ -7228,7 +7301,7 @@ def apply_lot_aware_final_reallocation(
         candidates,
         key=lambda value: (
             _g43_binding_reconsideration_order(value.get("pre_lot_binding_result")),
-            value["quality_order"] if marginal_priority_requires_stable_order else value["marginal_capital_priority"],
+            value["marginal_capital_priority"],
             value["quality_order"],
             value["priority"],
             value["symbol"],
@@ -7787,6 +7860,7 @@ def apply_lot_aware_final_reallocation(
         incremental_budget_evidence=incremental_budget_evidence,
         lot_reallocation_evidence=base_evidence,
         risk_pacing_evidence=final_capital_competition_risk_pacing_evidence or {},
+        runtime_test_context=runtime_test_context,
     )
     return {
         "members": final_members,
@@ -9397,6 +9471,7 @@ def _strategy_intelligence_member_fields(
     tick_momentum = cq.get("quantization_aware_momentum_confidence") if isinstance(cq.get("quantization_aware_momentum_confidence"), Mapping) else {}
     add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
     reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
+    add_history_count = int(add_history.get("event_count") or 0)
     add_worthiness = _campaign_aware_add_worthiness_state(
         lifecycle=lifecycle,
         cq=cq,
@@ -9421,7 +9496,11 @@ def _strategy_intelligence_member_fields(
         "strategy_intelligence_current_campaign_relative_return": lifecycle.get("current_campaign_relative_return"),
         "strategy_intelligence_observed_campaign_mfe": lifecycle.get("observed_campaign_mfe"),
         "strategy_intelligence_observed_giveback": lifecycle.get("observed_giveback"),
-        "strategy_intelligence_add_history_count": int(add_history.get("event_count") or 0),
+        "strategy_intelligence_add_history_count": add_history_count,
+        "strategy_intelligence_add_count_observability_only": True,
+        "strategy_intelligence_add_count_limit_reached_observed": add_history_count >= 5,
+        "strategy_intelligence_add_count_excess_observed": max(add_history_count - 5, 0),
+        "strategy_intelligence_add_count_standalone_decision_authority": False,
         "strategy_intelligence_reduce_history_count": int(reduce_history.get("event_count") or 0),
         "strategy_intelligence_profit_protection_status": str(profit.get("status") or ""),
         "strategy_intelligence_add_worthiness_state": add_worthiness,
@@ -9478,10 +9557,7 @@ def _campaign_aware_add_worthiness_state(
         return "NOT_APPLICABLE"
     if str(lifecycle.get("campaign_identity_authority_status") or "").upper() != "COMPLETE":
         return "NO_ADD"
-    add_history = lifecycle.get("add_history_summary") if isinstance(lifecycle.get("add_history_summary"), Mapping) else {}
     reduce_history = lifecycle.get("reduce_history_summary") if isinstance(lifecycle.get("reduce_history_summary"), Mapping) else {}
-    if int(add_history.get("event_count") or 0) >= 5:
-        return "NO_ADD"
     if int(reduce_history.get("event_count") or 0) > 0:
         return "NO_ADD"
     if str(cq.get("status") or "").upper() != "PASS":

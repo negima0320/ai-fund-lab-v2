@@ -3027,3 +3027,15 @@ preference, target weights, discrete quantity, HOLD / ADD / REDUCE / EXIT
 actions, or rotation decisions. Runtime may only consume the canonical
 Strategy, Portfolio Construction, Position Sizing, Pending, Submit, Safety, and
 Execution authorities at their defined boundaries.
+
+## Phase32-GN Runtime Boundary For BUY Priority
+
+Runtime does not recompute Phase32-GN BUY Investment Priority and does not
+reinterpret BUY_NEW / BUY_ADD relationship materialization. Runtime consumes
+the selected Portfolio Construction and Position Sizing outputs exactly as
+authority handoffs.
+
+Fresh Target SHADOW remains non-authoritative at Runtime. Its Cash,
+`RELEASE`, `EXIT_CANDIDATE`, target-weight, and order-like diagnostic fields
+must not create Runtime Planning, Pending, Submit, Execution, Safety, or broker
+behavior.

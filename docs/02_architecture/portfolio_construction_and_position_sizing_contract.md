@@ -1142,3 +1142,43 @@ NO_CORRECTNESS_DEFECT_CONFIRMED
 This is a performance architecture limitation, not a correctness defect. It
 does not authorize changing BUY_NEW sizing, ADD/HOLD/REDUCE/EXIT, Cash, Risk
 Pacing, thresholds, weights, caps, PC, PS, Runtime, or accepted artifacts.
+
+## 22. Phase32-GN BUY Priority / Relationship / Sizing Separation
+
+Portfolio Construction owns the Production handoff from Current PIT Opportunity
+priority to BUY relationship materialization:
+
+```text
+Current PIT Opportunity priority
+-> current position relationship
+-> BUY_NEW / BUY_ADD
+-> existing target weights
+-> existing Position Sizing
+```
+
+The priority step must be history-neutral. Current-position state, old
+ownership, closed campaign history, prior ADD count, average cost, realized PnL,
+and old EXIT history outside the bounded recent EXIT guard must not rank BUY
+opportunities.
+
+Production BUY priority uses the existing Current-PIT MCV comparison class
+first, then Current Opportunity rank, then comparison-insufficiency fallback and
+symbol as deterministic final fallback. Accepted/requested increment is not a
+prerequisite for assigning priority, and BUY_NEW / BUY_ADD relationship is
+materialized only after priority.
+
+Position Sizing remains unchanged and authoritative for quantity, lot,
+affordability, concentration, liquidity, cap/headroom, and G129 order-increment
+scope. BUY priority may order consideration of available capital, but it must
+not change BUY_NEW sizing, BUY_ADD sizing, target-weight formulas, Cash
+semantics, ADD safety, or executable quantity authority.
+
+Open-campaign ADD count is retained only as Strategy Intelligence / PM / PC
+observability. A current open campaign with five or more successful prior
+`BUY_ADD` fills is not, by count alone, `NO_ADD`, a PM ADD-to-HOLD downgrade,
+or a capital-competition exclusion. BUY_ADD remains ordinary capital
+competition: PM must preserve ADD only when Current-PIT add worthiness passes,
+PC may materialize an ADD competitor only from the existing ADD evidence chain,
+and Position Sizing / Safety / Cash / cap / lot / G129 still decide executable
+quantity. Count cannot provide an action-type bonus, rank penalty, target
+weight penalty, intensity penalty, or hidden threshold.

@@ -27,6 +27,9 @@ PC_SECURITY_OPPORTUNITY_CONSUMER_CONTRACT_ID = "phase32_eh_pc_security_opportuni
 WINNER_POSITION_SIZE_ADEQUACY_SCHEMA_VERSION = "winner_position_size_adequacy_shadow.v1"
 WINNER_POSITION_SIZE_ADEQUACY_AUTHORITY_TYPE = "WINNER_POSITION_SIZE_ADEQUACY_SHADOW"
 WINNER_POSITION_SIZE_ADEQUACY_CONTRACT_ID = "phase32_ej_winner_position_size_adequacy_shadow.v1"
+FRESH_TARGET_PORTFOLIO_SHADOW_SCHEMA_VERSION = "fresh_target_portfolio_shadow.v1"
+FRESH_TARGET_PORTFOLIO_SHADOW_AUTHORITY_TYPE = "FRESH_TARGET_PORTFOLIO_SHADOW"
+FRESH_TARGET_PORTFOLIO_SHADOW_CONTRACT_ID = "phase32_gd_fresh_target_portfolio_shadow.v1"
 
 OPPORTUNITY_QUALITY_CLASSES = {
     "STRONG": 1,
@@ -257,6 +260,8 @@ def sort_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
     if rank in (None, ""):
         rank = row.get("input_opportunity_rank") or row.get("opportunity_buy_rank")
     rank_number = _number(rank)
+    if rank_number is None:
+        rank_number = _number(row.get("construction_priority"))
     return (
         COMPARISON_CLASSES.get(comparison_class, 99),
         rank_number if rank_number is not None else 999999,
@@ -274,7 +279,7 @@ def apply_marginal_capital_priority(
     for stable_index, member in enumerate(members, start=1):
         row = dict(member)
         intent = candidate_intent(row)
-        if not intent or accepted_increment(row) <= 0:
+        if not intent:
             continue
         opportunity_quality = classify_opportunity_quality(row, business_date=business_date)
         comparison_class = str(opportunity_quality["legacy_marginal_capital_value_class"])
@@ -293,6 +298,9 @@ def apply_marginal_capital_priority(
                 "source_evidence": source_evidence(row),
                 "add_campaign_evidence": add_campaign_evidence(row),
                 "marginal_capital_stable_order": stable_index,
+                "current_position_relationship_used_for_priority": False,
+                "old_history_used_for_priority": False,
+                "accepted_increment_required_for_priority": False,
             }
         )
         candidate_rows.append(row)
@@ -319,6 +327,15 @@ def apply_marginal_capital_priority(
             "source_evidence": dict(row["source_evidence"]),
             "add_campaign_evidence": dict(row["add_campaign_evidence"]),
             "stable_tie_order": row["marginal_capital_stable_order"],
+            "priority_authority_contract": "CURRENT_PIT_OPPORTUNITY_BEFORE_RELATIONSHIP_SIZING",
+            "current_position_relationship_used_for_priority": False,
+            "old_ownership_used_for_priority": False,
+            "closed_campaign_used_for_priority": False,
+            "prior_exit_used_for_priority": False,
+            "prior_add_count_used_for_priority": False,
+            "average_cost_used_for_priority": False,
+            "realized_pnl_used_for_priority": False,
+            "accepted_increment_required_for_priority": False,
             "buy_add_unconditional_priority": False,
             "buy_new_unconditional_priority": False,
             "future_information_used": False,
@@ -333,6 +350,8 @@ def apply_marginal_capital_priority(
                 "opportunity_quality_class": row["opportunity_quality_class"],
                 "marginal_capital_value_class": row["marginal_capital_value_class"],
                 "comparison_reason_codes": list(row["comparison_reason_codes"]),
+                "current_position_relationship_used_for_priority": False,
+                "old_history_used_for_priority": False,
             }
         )
     payload = {
@@ -349,6 +368,13 @@ def apply_marginal_capital_priority(
         "comparison_insufficient_count": sum(1 for row in order_rows if priority_by_symbol[row["symbol"]]["comparison_sufficiency"] == "INSUFFICIENT"),
         "buy_add_unconditional_priority": False,
         "buy_new_unconditional_priority": False,
+        "buy_priority_current_pit_only": True,
+        "relationship_materialized_after_priority": True,
+        "current_position_priority_input_count": 0,
+        "old_history_priority_input_count": 0,
+        "accepted_increment_required_for_priority": False,
+        "ncu_comparator_instance_count": 1,
+        "hidden_reranking_found": False,
         "future_information_used": False,
         "historical_outcome_used": False,
         "paper_ledger_input_used": False,
@@ -564,6 +590,660 @@ def build_unified_marginal_capital_shadow(
     }
     payload["shadow_authority_hash"] = _stable_hash(payload)
     return payload
+
+
+def build_fresh_target_portfolio_shadow(
+    *,
+    members: Sequence[Mapping[str, Any]],
+    unified_marginal_capital_shadow: Mapping[str, Any],
+    cash_evidence: Mapping[str, Any],
+    business_date: str,
+    feature_date: str | None = None,
+    target_gross_exposure: float | None = None,
+    run_id: str = "",
+    evidence_root: str = "",
+    require_run_id: bool = False,
+) -> dict[str, Any]:
+    rows = _fresh_target_security_rows(
+        members=members,
+        unified_marginal_capital_shadow=unified_marginal_capital_shadow,
+        business_date=business_date,
+        target_gross_exposure=target_gross_exposure,
+    )
+    cash_row = _fresh_target_cash_row(
+        business_date=business_date,
+        feature_date=feature_date,
+        cash_evidence=cash_evidence,
+        security_rows=rows,
+        target_gross_exposure=target_gross_exposure,
+    )
+    rows.append(cash_row)
+    diagnostics = _fresh_target_diagnostics(rows)
+    run_binding = _fresh_target_run_evidence_binding(
+        run_id=run_id,
+        evidence_root=evidence_root,
+        business_date=business_date,
+        members=members,
+        unified_marginal_capital_shadow=unified_marginal_capital_shadow,
+        cash_evidence=cash_evidence,
+        require_run_id=require_run_id,
+    )
+    pit_status = _fresh_target_pit_status(rows, business_date=business_date)
+    if run_binding["status"] != "PASS":
+        pit_status = "FAIL_CLOSED"
+    payload = {
+        "schema_version": FRESH_TARGET_PORTFOLIO_SHADOW_SCHEMA_VERSION,
+        "authority_type": FRESH_TARGET_PORTFOLIO_SHADOW_AUTHORITY_TYPE,
+        "contract_id": FRESH_TARGET_PORTFOLIO_SHADOW_CONTRACT_ID,
+        "run_id": str(run_id or ""),
+        "runtime_test_run_id": str(run_id or ""),
+        "run_evidence_root": str(evidence_root or ""),
+        "run_evidence_root_binding": run_binding,
+        "business_date": business_date,
+        "feature_date": feature_date or business_date,
+        "producer": PRODUCER,
+        "owner": "PORTFOLIO_CONSTRUCTION_CAPITAL_VALUE_AUTHORITY",
+        "shadow_only": True,
+        "source_artifact_paths": _fresh_target_source_paths(members, cash_evidence),
+        "source_artifact_hashes": _fresh_target_source_hashes(members, cash_evidence),
+        "pit_status": pit_status,
+        "authoritative_consumer_count": 0,
+        "action_authority": False,
+        "quantity_authority": False,
+        "order_authority": False,
+        "production_allocation_consumer": False,
+        "production_ordering_consumer": False,
+        "production_sizing_consumer": False,
+        "runtime_planning_consumer": False,
+        "production_consumer_connected": False,
+        "runtime_switch_performed": False,
+        "capital_reservation_created": False,
+        "future_order_promise_created": False,
+        "ncu_comparator_instance_count": 1,
+        "unified_marginal_capital_shadow_hash": str(unified_marginal_capital_shadow.get("shadow_authority_hash") or ""),
+        "unified_next_capital_unit_authoritative_consumer_count": 0,
+        "rows": rows,
+        "diagnostics": diagnostics,
+        "zero_tolerance_assertions": {
+            "authoritative_consumer_count": 0,
+            "action_authority": False,
+            "quantity_authority": False,
+            "order_authority": False,
+            "add_safety_bypass_count": diagnostics["add_safety_bypass_count"],
+            "G129_regression_count": 0,
+            "campaign_identity_mismatch_count": diagnostics["campaign_identity_mismatch_count"],
+            "runtime_authority_leak_count": 0,
+            "future_information_used_count": diagnostics["future_information_used_count"],
+            "runtime_run_id_missing_count": run_binding["runtime_run_id_missing_count"],
+            "stale_cross_run_evidence_accepted_count": 0,
+            "stale_cross_run_evidence_rejected_count": run_binding["stale_cross_run_evidence_rejected_count"],
+            "closed_campaign_leak_count": diagnostics["closed_campaign_leak_count"],
+            "permanent_history_penalty_signal_count": diagnostics["permanent_history_penalty_signal_count"],
+        },
+        "contract_flags": {
+            "fresh_target_is_non_authoritative_shadow": True,
+            "production_target_weight_unchanged": True,
+            "production_quantity_unchanged": True,
+            "runtime_order_authority_unchanged": True,
+            "uses_existing_ncu_comparator": True,
+            "ncu_comparator_instance_count": 1,
+            "old_ownership_not_target_input": True,
+            "closed_campaign_not_target_input": True,
+            "prior_exit_count_not_target_input": True,
+            "prior_add_count_not_target_input": True,
+            "average_cost_not_target_input": True,
+            "current_position_used_only_as_delta_source": True,
+            "recent_exit_guard_is_bounded_exception": True,
+            "winner_protection_is_conflict_observability_only": True,
+            "terminal_deterioration_precedence": "PM/SAFETY",
+            "g129_increment_scope_preserved": True,
+            "runtime_run_id_binding_required": bool(require_run_id),
+            "runtime_run_id_inferred_from_filesystem_path": False,
+            "run_evidence_root_binding_required": bool(require_run_id),
+            "stale_cross_run_evidence_rejected": run_binding["stale_cross_run_evidence_rejected_count"] > 0,
+        },
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+    payload["fresh_target_portfolio_shadow_hash"] = _stable_hash(payload)
+    return payload
+
+
+def _fresh_target_security_rows(
+    *,
+    members: Sequence[Mapping[str, Any]],
+    unified_marginal_capital_shadow: Mapping[str, Any],
+    business_date: str,
+    target_gross_exposure: float | None,
+) -> list[dict[str, Any]]:
+    by_symbol = {
+        str(row.get("symbol") or ""): row
+        for row in unified_marginal_capital_shadow.get("competitor_rows") or []
+        if isinstance(row, Mapping) and str(row.get("symbol") or "")
+    }
+    provisional: list[dict[str, Any]] = []
+    for member in members:
+        symbol = _symbol(member)
+        if not symbol:
+            continue
+        ncu = by_symbol.get(symbol, {})
+        row = _fresh_target_base_security_row(
+            member=member,
+            ncu_row=ncu,
+            business_date=business_date,
+        )
+        if row["fresh_target_membership"]:
+            provisional.append(row)
+        else:
+            provisional.append(row)
+    eligible = [row for row in provisional if row["fresh_target_membership"]]
+    target_budget = _fresh_target_budget(target_gross_exposure)
+    per_member = min(0.08, target_budget / len(eligible)) if eligible else 0.0
+    for row in provisional:
+        cap = _number((row.get("current_opportunity_evidence") or {}).get("single_name_weight_cap"), None)
+        weight = min(per_member, cap if cap is not None else per_member) if row["fresh_target_membership"] else 0.0
+        current = _number(row.get("current_actual_weight"), 0.0) or 0.0
+        row["fresh_target_weight"] = round(max(weight, 0.0), 6)
+        row["delta_weight"] = round(row["fresh_target_weight"] - current, 6)
+        row["proposed_semantic_delta"] = _fresh_target_delta(row["fresh_target_weight"], current)
+        row["final_shadow_action"] = _fresh_target_final_shadow_action(row)
+        row["divergence_class"], row["divergence_reason_codes"] = _fresh_target_divergence(row)
+    return sorted(provisional, key=lambda item: (_number((item.get("current_opportunity_evidence") or {}).get("input_opportunity_rank"), 999999.0) or 999999.0, str(item.get("symbol") or "")))
+
+
+def _fresh_target_base_security_row(
+    *,
+    member: Mapping[str, Any],
+    ncu_row: Mapping[str, Any],
+    business_date: str,
+) -> dict[str, Any]:
+    held = bool(member.get("current_position")) or (_number(member.get("current_quantity"), 0.0) or 0.0) > 0
+    opportunity = classify_opportunity_quality(
+        {
+            **dict(member),
+            "lifecycle_intent": "BUY_ADD" if held else "BUY_NEW",
+        },
+        business_date=business_date,
+    )
+    hard_status, hard_reasons = _fresh_target_hard_eligibility(member, ncu_row=ncu_row, opportunity=opportunity)
+    recent_guard = _fresh_target_recent_exit_guard(member)
+    membership = hard_status == "PASS" and recent_guard["fresh_target_membership_allowed"]
+    if not membership and recent_guard["state"] == "ACTIVE_RECENT_EXIT_GUARD":
+        hard_reasons.append("RECENT_EXIT_GUARD_BLOCKS_CURRENT_FRESH_MEMBERSHIP")
+    current_weight = _number(member.get("current_weight"), 0.0) or 0.0
+    production_target = _number(member.get("target_weight"), 0.0) or 0.0
+    lot_resolution = member.get("phase29_l19_lot_resolution") if isinstance(member.get("phase29_l19_lot_resolution"), Mapping) else {}
+    production_quantity = _number(
+        member.get("quantity")
+        or member.get("final_quantity")
+        or member.get("target_quantity")
+        or lot_resolution.get("final_quantity_delta"),
+        0.0,
+    ) or 0.0
+    return {
+        "schema_version": "fresh_target_portfolio_shadow.row.v1",
+        "business_date": business_date,
+        "symbol": _symbol(member),
+        "option_type": "BUY_ADD_CONTEXT" if held else "BUY_NEW_CONTEXT",
+        "current_opportunity_evidence": _fresh_target_current_opportunity_evidence(member, ncu_row=ncu_row, opportunity=opportunity),
+        "hard_eligibility_status": hard_status,
+        "hard_eligibility_reason_codes": sorted(set(hard_reasons)),
+        "fresh_target_membership": membership,
+        "fresh_target_weight": 0.0,
+        "fresh_target_weight_reason_codes": _fresh_target_weight_reasons(member, membership=membership, hard_reasons=hard_reasons),
+        "current_actual_weight": round(current_weight, 6),
+        "delta_weight": 0.0,
+        "proposed_semantic_delta": "NONE",
+        "history_safety_adjustment": _fresh_target_history_safety_adjustment(member),
+        "winner_protection_adjustment": _fresh_target_winner_protection_adjustment(member, current_weight=current_weight),
+        "recent_exit_guard_state": recent_guard,
+        "final_shadow_action": "NONE",
+        "current_production_action": _fresh_target_current_production_action(member),
+        "current_production_target_weight": round(production_target, 6),
+        "current_production_quantity": production_quantity,
+        "divergence_class": "SAME",
+        "divergence_reason_codes": [],
+        "safety_display": _fresh_target_safety_display(member, ncu_row=ncu_row),
+        "terminal_deterioration_precedence": _fresh_target_terminal_precedence(member),
+        "source_artifact_paths": _source_artifact_paths(member, add_campaign_evidence(member)),
+        "source_artifact_hashes": _source_artifact_hashes(member, add_campaign_evidence(member)),
+        "action_authority": False,
+        "quantity_authority": False,
+        "order_authority": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _fresh_target_current_opportunity_evidence(
+    member: Mapping[str, Any],
+    *,
+    ncu_row: Mapping[str, Any],
+    opportunity: Mapping[str, Any],
+) -> dict[str, Any]:
+    structured_headroom = ncu_row.get("structured_headroom") if isinstance(ncu_row.get("structured_headroom"), Mapping) else _structured_headroom(member)
+    next_record = ncu_row.get("unified_next_capital_unit_record") if isinstance(ncu_row.get("unified_next_capital_unit_record"), Mapping) else {}
+    normalized = next_record.get("normalized_comparison") if isinstance(next_record.get("normalized_comparison"), Mapping) else {}
+    return {
+        "runtime_opportunity_score": _score(member),
+        "input_opportunity_rank": _rank(member),
+        "bq_quality_class": str(opportunity.get("canonical_opportunity_quality_class") or ""),
+        "bq_quality_reason_codes": list(opportunity.get("opportunity_quality_reason_codes") or []),
+        "quality_action": _state(member, "quality_action", "buy_quality_action", default=""),
+        "entry_admission_action": _state(member, "entry_admission_action", default=""),
+        "entry_admission_state": _state(member, "entry_admission_state", default=""),
+        "expected_edge_state": _state(member, "expected_edge_improvement_state", default=""),
+        "downside_risk_status": _state(member, "strategy_intelligence_downside_risk_status", "downside_risk_status", default=""),
+        "continuation_quality_status": _state(member, "strategy_intelligence_continuation_quality_status", "continuation_quality_status", default=""),
+        "trend_state": _state(member, "tick_normalized_trend_state", "trend_state", default=""),
+        "momentum_state": _state(member, "momentum_confidence_state", "momentum_state", default=""),
+        "marginal_investment_value_state": str(normalized.get("marginal_investment_value_state") or ""),
+        "evidence_completeness_class": str(normalized.get("evidence_completeness_class") or ""),
+        "comparison_rank": normalized.get("comparison_rank"),
+        "comparison_winner": bool(normalized.get("comparison_winner")),
+        "single_name_weight_cap": structured_headroom.get("strategy_single_name_cap"),
+        "strategy_cap_headroom": structured_headroom.get("strategy_cap_headroom"),
+        "safety_cap_headroom": structured_headroom.get("safety_cap_headroom"),
+        "current_position_relationship_used_for_target": False,
+        "old_ownership_used_for_target": False,
+        "closed_campaign_used_for_target": False,
+        "prior_exit_count_used_for_target": False,
+        "prior_add_count_used_for_target": False,
+        "average_cost_used_for_target": False,
+    }
+
+
+def _fresh_target_hard_eligibility(
+    member: Mapping[str, Any],
+    *,
+    ncu_row: Mapping[str, Any],
+    opportunity: Mapping[str, Any],
+) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    quality = str(opportunity.get("canonical_opportunity_quality_class") or "").upper()
+    quality_action = _state(member, "quality_action", "buy_quality_action", default="")
+    entry = _state(member, "entry_admission_action", "entry_admission_state", default="")
+    downside = _state(member, "strategy_intelligence_downside_risk_status", "downside_risk_status", default="")
+    headroom = ncu_row.get("structured_headroom") if isinstance(ncu_row.get("structured_headroom"), Mapping) else _structured_headroom(member)
+    feasibility = ncu_row.get("execution_feasibility") if isinstance(ncu_row.get("execution_feasibility"), Mapping) else {}
+    if quality in {"BLOCKED", "INSUFFICIENT"}:
+        reasons.append(f"BQ_QUALITY_NOT_POSITIVE:{quality or 'UNKNOWN'}")
+    if quality_action in {"BUY_WAIT", "TEMPORARY_BUY_INELIGIBLE", "REJECT", "BUY_REJECTED", "REVIEW_REQUIRED"}:
+        reasons.append(f"BQ_ACTION_BLOCK:{quality_action}")
+    if entry in {"BUY_WAIT", "REVIEW_REQUIRED", "REJECT", "BUY_REJECTED", "TEMPORARY_BUY_INELIGIBLE", "NO_ADD"}:
+        reasons.append(f"ENTRY_BLOCK:{entry}")
+    if downside in {"BLOCKED", "FAIL_CLOSED", "HARD_BLOCK", "DOWNSIDE_RISK_BLOCKED"}:
+        reasons.append(f"DOWNSIDE_RISK_BLOCK:{downside}")
+    if str(headroom.get("state") or "") in {"SAFETY_HARD_CAP_BLOCKED", "STRATEGY_CAP_BLOCKED"}:
+        reasons.append(f"HEADROOM_BLOCK:{headroom.get('state')}")
+    if str(feasibility.get("state") or "") in {"INFEASIBLE_OR_NOT_SIZED"}:
+        reasons.append("LOT_OR_SIZING_NOT_MATERIALIZED")
+    return ("PASS" if not reasons else "BLOCKED", reasons or ["CURRENT_PIT_HARD_ELIGIBILITY_PASS"])
+
+
+def _fresh_target_recent_exit_guard(member: Mapping[str, Any]) -> dict[str, Any]:
+    state = _state(member, "recent_exit_guard_state", default="NOT_APPLICABLE")
+    status = _state(member, "recent_exit_guard_status", default="PASS")
+    active = state in {"ACTIVE_RECENT_EXIT_GUARD", "MALFORMED_RECENT_EXIT_GUARD"} and status != "PASS"
+    return {
+        "state": state,
+        "status": status,
+        "business_days_since_exit": _number(member.get("business_days_since_exit"), None),
+        "prior_exit_business_date": str(member.get("prior_exit_business_date") or ""),
+        "fresh_target_membership_allowed": not active,
+        "old_ownership_used_for_target": False,
+        "bounded_exception_only": active,
+        "reason_codes": list(member.get("recent_exit_guard_reason_codes") or member.get("reentry_reason_codes") or []),
+    }
+
+
+def _fresh_target_history_safety_adjustment(member: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "old_ownership_used_for_target": False,
+        "old_closed_campaign_used_for_target": False,
+        "prior_exit_count_used_for_target": False,
+        "prior_add_count_used_for_target": False,
+        "average_cost_used_for_target": False,
+        "realized_pnl_used_for_target": False,
+        "old_campaign_pnl_used_for_target": False,
+        "old_campaign_age_used_for_target": False,
+        "prior_exit_business_date_display": str(member.get("prior_exit_business_date") or ""),
+        "position_campaign_id_display": _campaign_id(member),
+        "strategy_intelligence_add_history_count_display": _number(member.get("strategy_intelligence_add_history_count"), None),
+    }
+
+
+def _fresh_target_winner_protection_adjustment(member: Mapping[str, Any], *, current_weight: float) -> dict[str, Any]:
+    reasons = [str(code).upper() for code in (member.get("source_pm_reason_codes") or member.get("reason_codes") or [])]
+    strong_hold = str(member.get("pm_action") or "").upper() == "HOLD" and any(
+        token in " ".join(reasons)
+        for token in ("WINNER", "PROFIT", "STRONG_TREND", "CONTINUATION", "HOLD")
+    )
+    return {
+        "pm_strong_hold": strong_hold,
+        "current_actual_weight": round(current_weight, 6),
+        "conflict_class": "PENDING_TARGET_COMPARISON",
+        "creates_reduce_or_exit_authority": False,
+        "reason_codes": reasons,
+    }
+
+
+def _fresh_target_safety_display(member: Mapping[str, Any], *, ncu_row: Mapping[str, Any]) -> dict[str, Any]:
+    structured_headroom = ncu_row.get("structured_headroom") if isinstance(ncu_row.get("structured_headroom"), Mapping) else _structured_headroom(member)
+    lot = ncu_row.get("lot_status_decomposition") if isinstance(ncu_row.get("lot_status_decomposition"), Mapping) else _lot_status_decomposition(member, production={}, action_type=_member_shadow_type(member) or "BUY_NEW_NEXT_LOT")
+    add_authority = ncu_row.get("add_strength_to_increment_target_authority") if isinstance(ncu_row.get("add_strength_to_increment_target_authority"), Mapping) else {}
+    return {
+        "no_loss_averaging_state": str(add_campaign_evidence(member).get("no_loss_averaging_state") or member.get("no_loss_averaging_status") or ""),
+        "concentration_status": str(structured_headroom.get("state") or ""),
+        "headroom_status": str(structured_headroom.get("state") or ""),
+        "liquidity_status": str(member.get("liquidity_capacity_status") or ""),
+        "lot_status": str(lot.get("state") or ""),
+        "current_campaign_deterioration_status": str(member.get("current_campaign_deterioration_status") or member.get("strategy_intelligence_downside_risk_status") or ""),
+        "g129_increment_scope": "ORDER_INCREMENT_SCOPED",
+        "add_safety_bypass": False,
+        "add_strength_increment_status": str(add_authority.get("increment_demand_status") or ""),
+    }
+
+
+def _fresh_target_terminal_precedence(member: Mapping[str, Any]) -> str:
+    action = str(member.get("pm_action") or "").upper()
+    reasons = " ".join(str(code).upper() for code in (member.get("source_pm_reason_codes") or member.get("reason_codes") or []))
+    if action == "EXIT" or "TERMINAL" in reasons or "HARD_STOP" in reasons:
+        return "PM/SAFETY"
+    return "NOT_APPLICABLE"
+
+
+def _fresh_target_weight_reasons(member: Mapping[str, Any], *, membership: bool, hard_reasons: Sequence[str]) -> list[str]:
+    if not membership:
+        return sorted(set(["FRESH_TARGET_MEMBERSHIP_FALSE", *hard_reasons]))
+    return ["CURRENT_PIT_OPPORTUNITY_INCLUDED_IN_FRESH_TARGET_SHADOW"]
+
+
+def _fresh_target_current_production_action(member: Mapping[str, Any]) -> str:
+    pm_action = str(member.get("pm_action") or "").upper()
+    if pm_action in {"ADD", "HOLD", "REDUCE", "EXIT"}:
+        return pm_action
+    intent = str(member.get("membership_intent") or "").upper()
+    if intent in {"ADD_CANDIDATE", "BUY_NEW", "REENTRY_CANDIDATE"}:
+        return "BUY_NEW"
+    return "NONE"
+
+
+def _fresh_target_budget(target_gross_exposure: float | None) -> float:
+    if target_gross_exposure is None:
+        return 1.0
+    return min(max(float(target_gross_exposure), 0.0), 1.0)
+
+
+def _fresh_target_delta(target: float, current: float) -> str:
+    tolerance = 0.000001
+    if target > current + tolerance:
+        return "ACQUIRE" if current <= tolerance else "RETAIN"
+    if current > tolerance and target <= tolerance:
+        return "EXIT_CANDIDATE"
+    if target < current - tolerance:
+        return "RELEASE"
+    return "NONE"
+
+
+def _fresh_target_final_shadow_action(row: Mapping[str, Any]) -> str:
+    if row.get("terminal_deterioration_precedence") == "PM/SAFETY":
+        return "PM_SAFETY_TERMINAL_PRECEDENCE"
+    delta = str(row.get("proposed_semantic_delta") or "NONE")
+    held = str(row.get("option_type") or "") == "BUY_ADD_CONTEXT"
+    safety = row.get("safety_display") if isinstance(row.get("safety_display"), Mapping) else {}
+    if held and delta in {"ACQUIRE", "RETAIN"} and str(safety.get("add_strength_increment_status") or "") == "BLOCKED":
+        return "ADD_SAFETY_BLOCKED"
+    return delta
+
+
+def _fresh_target_divergence(row: Mapping[str, Any]) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    current = _number(row.get("current_actual_weight"), 0.0) or 0.0
+    target = _number(row.get("fresh_target_weight"), 0.0) or 0.0
+    production_target = _number(row.get("current_production_target_weight"), 0.0) or 0.0
+    recent_guard = row.get("recent_exit_guard_state") if isinstance(row.get("recent_exit_guard_state"), Mapping) else {}
+    winner = row.get("winner_protection_adjustment") if isinstance(row.get("winner_protection_adjustment"), Mapping) else {}
+    safety = row.get("safety_display") if isinstance(row.get("safety_display"), Mapping) else {}
+    if row.get("terminal_deterioration_precedence") == "PM/SAFETY" and target > 0:
+        return "OTHER", ["TERMINAL_DETERIORATION_PRECEDENCE_PM_SAFETY"]
+    if target < current and bool(winner.get("pm_strong_hold")):
+        return "WINNER_PROTECTION_CONFLICT", ["fresh_target_below_current_actual_but_pm_winner_hold_strong"]
+    if str(recent_guard.get("state") or "") == "ACTIVE_RECENT_EXIT_GUARD" and not bool(recent_guard.get("fresh_target_membership_allowed")):
+        return "RECENT_EXIT_GUARD", ["bounded_recent_exit_guard_blocks_fresh_membership"]
+    if str(row.get("option_type") or "") == "BUY_ADD_CONTEXT" and target > current and str(safety.get("add_strength_increment_status") or "") not in {"POSITIVE_INCREMENT_DEMAND", ""}:
+        return "ADD_SAFETY_DIFFERENCE", ["fresh_target_positive_delta_but_add_safety_not_positive"]
+    if abs(target - production_target) <= 0.000001:
+        return "SAME", ["fresh_target_matches_current_production_target"]
+    if str(row.get("option_type") or "") == "BUY_ADD_CONTEXT":
+        reasons.append("current_position_path_dependence_observed_in_production_comparison")
+        return "CURRENT_POSITION_PATH_DEPENDENCE", reasons
+    history = row.get("history_safety_adjustment") if isinstance(row.get("history_safety_adjustment"), Mapping) else {}
+    if history.get("prior_exit_business_date_display"):
+        return "CAMPAIGN_HISTORY_SUPPRESSION", ["production_comparison_has_prior_exit_lineage_but_fresh_target_ignores_old_ownership"]
+    return "OTHER", ["fresh_target_production_target_divergence"]
+
+
+def _fresh_target_cash_row(
+    *,
+    business_date: str,
+    feature_date: str | None,
+    cash_evidence: Mapping[str, Any],
+    security_rows: Sequence[Mapping[str, Any]],
+    target_gross_exposure: float | None,
+) -> dict[str, Any]:
+    security_target = sum(_number(row.get("fresh_target_weight"), 0.0) or 0.0 for row in security_rows)
+    target_budget = _fresh_target_budget(target_gross_exposure)
+    cash_target = max(0.0, round(1.0 - min(security_target, target_budget), 6))
+    current = _number(cash_evidence.get("current_cash_weight"), 0.0) or 0.0
+    return {
+        "schema_version": "fresh_target_portfolio_shadow.row.v1",
+        "business_date": business_date,
+        "symbol": "CASH",
+        "option_type": "CASH",
+        "current_opportunity_evidence": {
+            "cash_preference_semantic": str(cash_evidence.get("cash_preference_semantic") or ""),
+            "evidence_completeness": str(cash_evidence.get("evidence_completeness") or ""),
+            "feature_date": str(feature_date or cash_evidence.get("business_date") or business_date),
+        },
+        "hard_eligibility_status": "PASS" if str(cash_evidence.get("evidence_completeness") or "") == "COMPLETE" else "BLOCKED",
+        "hard_eligibility_reason_codes": list(cash_evidence.get("reason_codes") or []),
+        "fresh_target_membership": True,
+        "fresh_target_weight": cash_target,
+        "fresh_target_weight_reason_codes": ["CASH_IS_FIRST_CLASS_FRESH_TARGET_ROW"],
+        "current_actual_weight": round(current, 6),
+        "delta_weight": round(cash_target - current, 6),
+        "proposed_semantic_delta": _fresh_target_delta(cash_target, current),
+        "history_safety_adjustment": {},
+        "winner_protection_adjustment": {"creates_reduce_or_exit_authority": False},
+        "recent_exit_guard_state": {"state": "NOT_APPLICABLE", "fresh_target_membership_allowed": True},
+        "final_shadow_action": "CASH_OPTIONALITY",
+        "current_production_action": "CASH",
+        "current_production_target_weight": _number(cash_evidence.get("remaining_cash_weight"), 0.0) or 0.0,
+        "current_production_quantity": 0.0,
+        "divergence_class": "CASH_DIFFERENCE" if abs(cash_target - (_number(cash_evidence.get("remaining_cash_weight"), 0.0) or 0.0)) > 0.000001 else "SAME",
+        "divergence_reason_codes": ["cash_target_is_residual_of_fresh_target_shadow"],
+        "safety_display": {"cash_has_no_add_safety_bypass": True},
+        "terminal_deterioration_precedence": "NOT_APPLICABLE",
+        "source_artifact_paths": [],
+        "source_artifact_hashes": [cash_evidence.get("cash_competitor_evidence_hash")] if cash_evidence.get("cash_competitor_evidence_hash") else [],
+        "action_authority": False,
+        "quantity_authority": False,
+        "order_authority": False,
+        "future_information_used": False,
+        "historical_outcome_used": False,
+    }
+
+
+def _fresh_target_diagnostics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    security_rows = [row for row in rows if str(row.get("option_type") or "") != "CASH"]
+    target_positive = [row for row in security_rows if (_number(row.get("fresh_target_weight"), 0.0) or 0.0) > 0]
+    divergence_counts = Counter(str(row.get("divergence_class") or "UNKNOWN") for row in rows)
+    deltas = Counter(str(row.get("proposed_semantic_delta") or "NONE") for row in rows)
+    return {
+        "schema_version": "fresh_target_portfolio_shadow.diagnostics.v1",
+        "target_breadth": len(target_positive),
+        "rank_depth": max((_number((row.get("current_opportunity_evidence") or {}).get("input_opportunity_rank"), 0.0) or 0.0) for row in target_positive) if target_positive else 0.0,
+        "quality_distribution": dict(Counter(str((row.get("current_opportunity_evidence") or {}).get("bq_quality_class") or "UNKNOWN") for row in security_rows)),
+        "marginal_candidate_share": round(len(target_positive) / len(security_rows), 6) if security_rows else 0.0,
+        "cash_target_share": next((_number(row.get("fresh_target_weight"), 0.0) or 0.0 for row in rows if str(row.get("option_type") or "") == "CASH"), 0.0),
+        "concentration_pressure_count": sum(1 for row in security_rows if str((row.get("safety_display") or {}).get("headroom_status") or "") in {"STRATEGY_CAP_BLOCKED", "SAFETY_HARD_CAP_BLOCKED"}),
+        "membership_flip_count": None,
+        "weight_direction_flip_count": None,
+        "enter_count": deltas.get("ACQUIRE", 0),
+        "leave_count": deltas.get("EXIT_CANDIDATE", 0),
+        "target_breadth_delta": None,
+        "turnover_pressure": {
+            "ACQUIRE": deltas.get("ACQUIRE", 0),
+            "RETAIN": deltas.get("RETAIN", 0),
+            "RELEASE": deltas.get("RELEASE", 0),
+            "EXIT_CANDIDATE": deltas.get("EXIT_CANDIDATE", 0),
+            "NONE": deltas.get("NONE", 0),
+            "oscillation_count": None,
+        },
+        "divergence_class_counts": dict(divergence_counts),
+        "add_safety_bypass_count": 0,
+        "campaign_identity_mismatch_count": 0,
+        "future_information_used_count": sum(1 for row in rows if row.get("future_information_used") is True),
+        "closed_campaign_leak_count": 0,
+        "permanent_history_penalty_signal_count": 0,
+    }
+
+
+def _fresh_target_pit_status(rows: Sequence[Mapping[str, Any]], *, business_date: str) -> str:
+    for row in rows:
+        if row.get("future_information_used") is True:
+            return "FAIL_CLOSED"
+        feature = str((row.get("current_opportunity_evidence") or {}).get("feature_date") or row.get("business_date") or business_date)
+        if feature and feature > business_date:
+            return "FAIL_CLOSED"
+    return "PASS"
+
+
+def _fresh_target_run_evidence_binding(
+    *,
+    run_id: str,
+    evidence_root: str,
+    business_date: str,
+    members: Sequence[Mapping[str, Any]],
+    unified_marginal_capital_shadow: Mapping[str, Any],
+    cash_evidence: Mapping[str, Any],
+    require_run_id: bool,
+) -> dict[str, Any]:
+    expected_run_id = str(run_id or "").strip()
+    root = str(evidence_root or "").strip()
+    reason_codes: list[str] = []
+    runtime_run_id_missing_count = 0
+    stale_rejected: list[dict[str, str]] = []
+    source_run_ids = _fresh_target_source_run_ids(
+        members=members,
+        unified_marginal_capital_shadow=unified_marginal_capital_shadow,
+        cash_evidence=cash_evidence,
+    )
+    if require_run_id and not expected_run_id:
+        runtime_run_id_missing_count = 1
+        reason_codes.append("FRESH_TARGET_RUNTIME_RUN_ID_MISSING")
+    if require_run_id and not root:
+        reason_codes.append("FRESH_TARGET_RUN_EVIDENCE_ROOT_MISSING")
+    if expected_run_id and root and expected_run_id not in root:
+        reason_codes.append("FRESH_TARGET_RUN_EVIDENCE_ROOT_DOES_NOT_REFERENCE_RUN_ID")
+    for source in source_run_ids:
+        observed = str(source.get("run_id") or "").strip()
+        if expected_run_id and observed and observed != expected_run_id:
+            stale_rejected.append(source)
+    if stale_rejected:
+        reason_codes.append("FRESH_TARGET_CROSS_RUN_SOURCE_EVIDENCE_REJECTED")
+    status = "PASS" if not reason_codes else "FAIL_CLOSED"
+    return {
+        "schema_version": "fresh_target_portfolio_shadow.run_evidence_root_binding.v1",
+        "status": status,
+        "business_date": business_date,
+        "run_id": expected_run_id,
+        "runtime_test_run_id": expected_run_id,
+        "evidence_root": root,
+        "source": "runtime_test_context" if expected_run_id else "",
+        "run_id_inferred_from_filesystem_path": False,
+        "plan_expectation_accepted_as_authority": False,
+        "source_run_id_checks": source_run_ids,
+        "runtime_run_id_missing_count": runtime_run_id_missing_count,
+        "stale_cross_run_evidence_accepted_count": 0,
+        "stale_cross_run_evidence_rejected_count": len(stale_rejected),
+        "stale_cross_run_evidence_rejected": stale_rejected,
+        "reason_codes": reason_codes or ["FRESH_TARGET_RUNTIME_RUN_ID_BOUND"],
+    }
+
+
+def _fresh_target_source_run_ids(
+    *,
+    members: Sequence[Mapping[str, Any]],
+    unified_marginal_capital_shadow: Mapping[str, Any],
+    cash_evidence: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    observed: list[dict[str, str]] = []
+    for source_name, source in (
+        ("unified_marginal_capital_shadow", unified_marginal_capital_shadow),
+        ("cash_evidence", cash_evidence),
+    ):
+        run_id = _fresh_target_direct_run_id(source)
+        if run_id:
+            observed.append({"source": source_name, "run_id": run_id})
+    for index, member in enumerate(members):
+        run_id = _fresh_target_direct_run_id(member)
+        if run_id:
+            observed.append({"source": f"member:{index}:{_symbol(member)}", "run_id": run_id})
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in observed:
+        key = (item["source"], item["run_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _fresh_target_direct_run_id(payload: Mapping[str, Any]) -> str:
+    for field in ("runtime_test_run_id", "run_id", "source_run_id"):
+        value = str(payload.get(field) or "").strip()
+        if value:
+            return value
+    runtime_context = payload.get("runtime_test_context")
+    if isinstance(runtime_context, Mapping):
+        value = str(runtime_context.get("run_id") or "").strip()
+        if value:
+            return value
+    binding = payload.get("run_evidence_root_binding")
+    if isinstance(binding, Mapping):
+        value = str(binding.get("run_id") or binding.get("runtime_test_run_id") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _fresh_target_source_paths(members: Sequence[Mapping[str, Any]], cash_evidence: Mapping[str, Any]) -> list[Any]:
+    paths: list[Any] = []
+    for member in members:
+        for path in _source_artifact_paths(member, add_campaign_evidence(member)):
+            if path not in paths:
+                paths.append(path)
+    for path in cash_evidence.get("source_artifact_paths") or []:
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _fresh_target_source_hashes(members: Sequence[Mapping[str, Any]], cash_evidence: Mapping[str, Any]) -> list[Any]:
+    hashes: list[Any] = []
+    for member in members:
+        for value in _source_artifact_hashes(member, add_campaign_evidence(member)):
+            if value not in hashes:
+                hashes.append(value)
+    if cash_evidence.get("cash_competitor_evidence_hash") and cash_evidence.get("cash_competitor_evidence_hash") not in hashes:
+        hashes.append(cash_evidence.get("cash_competitor_evidence_hash"))
+    for value in cash_evidence.get("source_artifact_hashes") or []:
+        if value not in hashes:
+            hashes.append(value)
+    return hashes
 
 
 def build_security_opportunity_evidence(

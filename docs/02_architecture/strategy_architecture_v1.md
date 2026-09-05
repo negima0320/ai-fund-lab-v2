@@ -1608,6 +1608,17 @@ NO_POSITION
   -> Optional future BUY_NEW as Re-entry
 ```
 
+Open-campaign ADD count is observability and audit metadata, not standalone
+ADD investment or Safety authority. Production has no fixed ADD-count hard cap.
+Repeated ADD may proceed only when each increment independently satisfies the
+existing Current-PIT ADD worthiness evidence, capital competition, sizing,
+cash, cap/headroom, lot feasibility, Safety, and order-increment authority.
+Prior successful ADD count must not become a rank penalty, hidden score,
+target-weight reduction, ADD intensity reduction, threshold, or automatic
+HOLD/NO_ADD downgrade. The count scope remains current open campaign
+successful `BUY_ADD` fills and resets through the established full EXIT / flat
+campaign boundary; campaign identity logic itself is unchanged.
+
 Allowed canonical position decisions are:
 
 ```text
@@ -1692,6 +1703,49 @@ cross-run rows when a runtime-test run id is known, compact expired rows, and
 must not restore whole-run `executions.jsonl` scans, strict-prior PM EXIT scans,
 or permanent old-ownership penalties in the current BUY hot path.
 
+Phase32-GD adds `fresh_target_portfolio_shadow.v1` as a non-authoritative
+Portfolio Construction diagnostic. It asks what a history-neutral fresh target
+portfolio would look like from current PIT opportunity, Buy Quality, Entry,
+continuation, downside/risk, regime, cash, headroom, and hard eligibility
+evidence. It may display whether a row is currently held or flat only to compute
+`fresh_target_weight - current_actual_weight`; old ownership, old closed
+campaigns, prior EXIT count, prior ADD count, average cost, realized PnL,
+campaign PnL, campaign age, future return, and historical outcome are forbidden
+fresh-target inputs. The artifact is SHADOW only:
+
+```text
+authoritative_consumer_count = 0
+action_authority = false
+quantity_authority = false
+order_authority = false
+```
+
+Phase32-GF binds this SHADOW artifact to the canonical runtime-test context
+when the runtime path materializes it. `run_id`, `runtime_test_run_id`, and
+`run_evidence_root` come from `generate_strategy_shadow_for_day`'s
+runtime-test inputs, not from latest-run discovery or filesystem inference.
+Missing runtime run id or explicit cross-run source evidence must make the
+Fresh Target SHADOW PIT status fail closed while keeping all Production
+consumers disconnected.
+
+Phase32-GH extends that binding contract through the final lot-aware Portfolio
+Construction rebuild. The same runtime-test context must be supplied to
+`portfolio_construction_draft`, to the pre-lot capital competition evidence,
+and to the final `lot_aware_final_reallocation.capital_competition` rebuild.
+If the finalizer is invoked without an explicit context, it may recover only the
+already-materialized draft Fresh Target run binding; it must not discover a
+latest run from the filesystem. Missing or stale binding remains a SHADOW
+fail-closed condition and must not alter Production members or executable
+authority.
+
+`BUY_NEW_CONTEXT`, `BUY_ADD_CONTEXT`, and `CASH` rows are observability labels,
+not executable actions. Any `ACQUIRE`, `RETAIN`, `RELEASE`,
+`EXIT_CANDIDATE`, or `NONE` delta is diagnostic only and must not be consumed by
+PM, PC, PS, Runtime Planning, Pending, Submit, Execution, Safety, or broker
+logic as trading authority. Winner protection conflicts and terminal
+deterioration precedence are reported as conflicts/precedence evidence only:
+PM/Safety still own real HOLD/REDUCE/EXIT authority.
+
 Future performance work must follow the Phase27-D1 sequence: repair BUY_ADD authority first, prove the canonical contract with targeted tests, then add observability/shadow foundations, and only then run controlled performance experiments one change at a time.
 
 ## 30. Phase29-L21T-AV Multi-Horizon Momentum Trajectory Semantics
@@ -1750,3 +1804,21 @@ Strategy Architecture preserves the following authority split:
 G136 is documentation only. It does not implement new artifacts, change BUY_NEW
 or BUY_ADD semantics, change Market Quality / Risk Pacing, create rotation
 orders, or advance Phase31.
+
+## 32. Phase32-GN History-Neutral BUY Priority Contract
+
+BUY Investment Priority is now defined as Current PIT Opportunity authority.
+BUY_NEW and BUY_ADD are relationship outcomes materialized after priority, not
+inputs that can boost or penalize investment attractiveness.
+
+Production BUY priority uses existing MCV Current-PIT comparison class first,
+Current Opportunity rank second, comparison-insufficiency fallback third, and
+symbol only as deterministic final fallback. Accepted/requested increment is not
+a prerequisite for priority.
+
+Historical ownership, closed campaign state, prior ADD count, old campaign PnL
+/ age, average cost, realized PnL, and prior EXIT outside the bounded recent
+EXIT guard are not BUY attractiveness authority. SELL, REDUCE, EXIT, HOLD,
+Winner Protection, Profit Retention, PM action authority, Cash semantics,
+Position Sizing, ADD safety, G129, REENTRY, Runtime Planning, Pending, Submit,
+Execution, Safety, and broker boundaries remain unchanged.

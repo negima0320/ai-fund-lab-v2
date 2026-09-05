@@ -592,6 +592,34 @@ a HOLD position has a materially superior alternative.
 
 This document intentionally does not define a concrete JSON schema.
 
+Phase32-GD implementation note:
+
+```text
+fresh_target_portfolio_shadow.v1
+```
+
+is the first non-authoritative Fresh Target Portfolio diagnostic artifact. It
+reuses the existing unified next-capital-unit comparator exactly once and
+materializes history-neutral target membership, target weight, current actual
+weight, diagnostic delta, Cash row, winner-protection conflict, terminal
+deterioration precedence, and production-vs-shadow divergence classes. It is not
+the future canonical portfolio rotation authority and it does not change
+Production target, sizing, order, PM, Runtime, Safety, or broker behavior.
+
+Phase32-GF adds runtime-test run binding to that diagnostic artifact. Runtime
+materialization must publish the current `run_id`/`runtime_test_run_id` and
+`run_evidence_root` from the existing runtime-test context. Missing run id,
+missing evidence root, evidence-root mismatch, or explicit source evidence from
+another run makes the Fresh Target SHADOW `pit_status=FAIL_CLOSED`; the artifact
+remains non-authoritative and `authoritative_consumer_count=0`.
+
+Phase32-GH closes the final lot-aware rebuild gap. The final PC artifact has
+multiple Fresh Target SHADOW materialization sites: draft/pre-lot capital
+competition and the final `lot_aware_final_reallocation.capital_competition`.
+All sites must use the same runtime-test context, and the final rebuild must not
+drop `run_id` or `run_evidence_root` while preserving the same non-authoritative
+logic and zero Production consumers.
+
 ## 22. Implementation Sequencing
 
 Future sequencing:
@@ -606,6 +634,11 @@ Future sequencing:
 8. Authoritative rotation only after focused acceptance.
 
 Portfolio Rotation depends on High-Resolution Marginal Capital Value.
+
+Phase32-GD satisfies step 2 only for the Fresh Target diagnostic subset.
+Production consumption remains forbidden until the SHADOW stability, turnover,
+winner protection, churn guard, safety, capital-scale, and regression metrics
+are accepted separately.
 
 ## 23. Validation Principles
 
@@ -723,3 +756,32 @@ graduation, repeated starter saturation, and repeated Cash / NEW allocation
 while valid incumbents remain undercapitalized. Historical performance outcome
 alone must not select features, weights, thresholds, ranking rules, comparator
 rules, or rotation rules.
+
+## 27. Phase32-GW BUY Investment Priority Production Contract
+
+Phase32-GW preserves the Phase32-GN history-neutral BUY priority repair and
+restores the existing Current-PIT MCV comparator order:
+
+```text
+BUY Investment Priority = Current PIT Opportunity authority
+Comparator order = MCV Current-PIT comparison class -> Current Opportunity rank -> comparison insufficiency -> symbol
+BUY_NEW / BUY_ADD relationship = materialized after priority
+Accepted increment = not a prerequisite for priority
+```
+
+Historical ownership, closed campaign state, old campaign PnL / age, prior ADD
+count, average cost, realized PnL, and prior EXIT outside the bounded recent
+EXIT guard are not BUY attractiveness authority. Current position may determine
+whether a prioritized opportunity is handled as BUY_NEW or BUY_ADD, and it may
+remain safety / sizing context after priority, but it must not rank the
+opportunity.
+
+The existing Marginal Capital Value / NCU comparator remains the single
+comparison authority. No Fresh BUY score, NEW bonus, ADD bonus, Cash bonus,
+second comparator, new module, new authoritative artifact, or new schema family
+is introduced.
+
+Fresh Target SHADOW remains observability and validation only. Its equal-ish
+weights, Cash row, `RELEASE`, and `EXIT_CANDIDATE` semantics are not Production
+allocation, PM, Position Sizing, Runtime Planning, Pending, Submit, Execution,
+Safety, or broker authority.
